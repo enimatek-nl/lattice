@@ -1,0 +1,46 @@
+# Build output
+/bin/
+/build/
+/dist/
+/server
+/endpoints
+/lattice
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test and coverage output
+*.test
+*.out
+coverage.*
+*.cover
+/profile/
+*.pprof
+
+# Runtime state: SQLite databases and media store
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+/data/
+/media/
+/tmp/
+*.log
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+/secrets/
+
+# Editors and OS cruft
+/.idea/
+/.vscode/
+*.swp
+*~
+.DS_Store
