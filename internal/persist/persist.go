@@ -23,12 +23,15 @@ type Database struct {
 	AliasRepo        AliasRepo
 	AccountDataRepo  AccountDataRepo
 	DeviceRepo       DeviceRepo
+	DeviceKeyRepo    DeviceKeyRepo
+	DeviceListRepo   DeviceListRepo
 	EventRepo        EventRepo
 	FilterRepo       FilterRepo
 	MediaRepo        MediaRepo
 	MembershipRepo   MembershipRepo
 	MetaRepo         MetaRepo
 	NotificationRepo NotificationRepo
+	OneTimeKeyRepo   OneTimeKeyRepo
 	PresenceRepo     PresenceRepo
 	ProfileRepo      ProfileRepo
 	ReportRepo       ReportRepo
@@ -74,6 +77,9 @@ func models() []any {
 		&Typing{},
 		&ToDevice{},
 		&Txn{},
+		&DeviceKey{},
+		&OneTimeKey{},
+		&DeviceListChange{},
 	}
 }
 
@@ -117,12 +123,15 @@ func NewFromGORM(gdb *gorm.DB) *Database {
 		AliasRepo:        NewAliasRepo(gdb),
 		AccountDataRepo:  NewAccountDataRepo(gdb),
 		DeviceRepo:       NewDeviceRepo(gdb),
+		DeviceKeyRepo:    NewDeviceKeyRepo(gdb),
+		DeviceListRepo:   NewDeviceListRepo(gdb),
 		EventRepo:        NewEventRepo(gdb),
 		FilterRepo:       NewFilterRepo(gdb),
 		MediaRepo:        NewMediaRepo(gdb),
 		MembershipRepo:   NewMembershipRepo(gdb),
 		MetaRepo:         NewMetaRepo(gdb),
 		NotificationRepo: NewNotificationRepo(gdb),
+		OneTimeKeyRepo:   NewOneTimeKeyRepo(gdb),
 		PresenceRepo:     NewPresenceRepo(gdb),
 		ProfileRepo:      NewProfileRepo(gdb),
 		ReportRepo:       NewReportRepo(gdb),

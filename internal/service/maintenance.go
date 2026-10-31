@@ -15,20 +15,29 @@ const (
 	ToDeviceLifetime  = 24 * time.Hour
 	TxnLifetime       = 24 * time.Hour
 	TypingGracePeriod = 30 * time.Second
+	// KeyRetention is how long one-time keys and device list changes are kept.
+	// Claimed keys have to stay listed long enough that a replayed claim cannot
+	// hand the same key out twice, and device list changes must outlive the
+	// longest reasonable gap between two syncs.
+	KeyRetention = 30 * 24 * time.Hour
 	// MaintenancePeriod is how often the housekeeping loop runs by default.
 	MaintenancePeriod = time.Minute
 )
 
 // MaintenanceReport counts what one housekeeping pass removed.
 type MaintenanceReport struct {
-	ToDeviceRemoved int64 `json:"to_device_removed"`
-	TxnsRemoved     int64 `json:"transactions_removed"`
-	TypingRemoved   int64 `json:"typing_removed"`
+	ToDeviceRemoved      int64 `json:"to_device_removed"`
+	TxnsRemoved          int64 `json:"transactions_removed"`
+	TypingRemoved        int64 `json:"typing_removed"`
+	AuthSessionsDropped  int64 `json:"auth_sessions_dropped"`
+	KeysRemoved          int64 `json:"one_time_keys_removed"`
+	DeviceChangesRemoved int64 `json:"device_list_changes_removed"`
 }
 
 // empty reports whether the pass had nothing to do.
 func (r MaintenanceReport) empty() bool {
-	return r.ToDeviceRemoved == 0 && r.TxnsRemoved == 0 && r.TypingRemoved == 0
+	return r.ToDeviceRemoved == 0 && r.TxnsRemoved == 0 && r.TypingRemoved == 0 &&
+		r.AuthSessionsDropped == 0 && r.KeysRemoved == 0 && r.DeviceChangesRemoved == 0
 }
 
 // RunMaintenance prunes expired to-device messages, forgotten transaction ids
@@ -60,6 +69,20 @@ func (s *Service) RunMaintenance(ctx context.Context) (MaintenanceReport, error)
 	}
 	report.TypingRemoved = expired
 
+	report.AuthSessionsDropped = s.expireAuthSessions(now)
+
+	expired, err = s.db.OneTimeKeyRepo.Expire(now - KeyRetention.Milliseconds())
+	if err != nil {
+		return report, matrix.ErrInternal(err)
+	}
+	report.KeysRemoved = expired
+
+	expired, err = s.db.DeviceListRepo.Expire(now - KeyRetention.Milliseconds())
+	if err != nil {
+		return report, matrix.ErrInternal(err)
+	}
+	report.DeviceChangesRemoved = expired
+
 	return report, nil
 }
 
@@ -88,8 +111,9 @@ func (s *Service) StartMaintenance(ctx context.Context, period time.Duration) fu
 					continue
 				}
 				if !report.empty() {
-					log.Printf("maintenance: dropped %d to-device messages, %d transactions, %d typing rows",
-						report.ToDeviceRemoved, report.TxnsRemoved, report.TypingRemoved)
+					log.Printf("maintenance: dropped %d to-device messages, %d transactions, %d typing rows, %d keys, %d device list changes",
+						report.ToDeviceRemoved, report.TxnsRemoved, report.TypingRemoved,
+						report.KeysRemoved, report.DeviceChangesRemoved)
 				}
 			}
 		}

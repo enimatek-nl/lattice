@@ -9,7 +9,9 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/enimatek-nl/lattice/internal/auth"
@@ -27,8 +29,6 @@ type Config struct {
 	Version string
 	// RegistrationDisabled closes self-service registration.
 	RegistrationDisabled bool
-	// RegistrationSecrets enable registration_token login flows.
-	RegistrationSecrets []string
 	// AllowGuests enables guest account creation.
 	AllowGuests bool
 	// EnableMedia turns the media endpoints on.
@@ -67,7 +67,91 @@ func New(svc *service.Service, store *auth.Store, cfg Config) *App {
 		logger: log.New(log.Writer(), "lattice: ", log.LstdFlags),
 	}
 	app.registerRoutes()
+	// Anything the route table does not cover gets a Matrix error instead of the
+	// plain "404 page not found" of net/http. Clients render the raw text of that
+	// page as an opaque "Server returned 404 error", which hides which endpoint
+	// the homeserver does not implement.
+	app.mux.HandleFunc("/", app.handleUnknownEndpoint)
 	return app
+}
+
+// handleUnknownEndpoint answers every unrouted path with M_UNRECOGNIZED. A path
+// the route table knows under another method still gets a 405: registering a
+// catch-all pattern takes that behaviour away from net/http, so the handler
+// restores it from the route table.
+func (a *App) handleUnknownEndpoint(w http.ResponseWriter, r *http.Request) {
+	if allowed := a.methodsFor(r.URL.Path); len(allowed) > 0 && !containsMethod(allowed, r.Method) {
+		sort.Strings(allowed)
+		w.Header().Set("Allow", strings.Join(allowed, ", "))
+		err := matrix.ErrUnrecognized("no handler for %s %s; this endpoint accepts %s",
+			r.Method, r.URL.Path, strings.Join(allowed, ", "))
+		err.Status = http.StatusMethodNotAllowed
+		a.writeError(w, r, err)
+		return
+	}
+	a.writeError(w, r, matrix.ErrUnrecognized("no handler for %s %s", r.Method, r.URL.Path))
+}
+
+// methodsFor lists the methods the route table registers for a concrete path.
+// Patterns are the method-prefixed strings net/http uses; a {name} segment
+// matches any single segment and a pattern without a method accepts them all.
+func (a *App) methodsFor(path string) []string {
+	var methods []string
+	for _, pattern := range a.routes {
+		method, template, hasMethod := strings.Cut(pattern, " ")
+		if !hasMethod {
+			method, template = "", pattern
+		}
+		if !matchTemplate(template, path) {
+			continue
+		}
+		if method == "" {
+			// The path is registered for every method, so the method cannot be the
+			// reason the request went unmatched.
+			return nil
+		}
+		methods = append(methods, method)
+	}
+	return methods
+}
+
+// matchTemplate compares a route pattern with a request path segment by segment.
+// A {name} segment matches one non-empty segment, and a pattern that ends in a
+// slash is a subtree match, exactly like net/http reads it.
+func matchTemplate(template, path string) bool {
+	want := strings.Split(strings.TrimSuffix(template, "/"), "/")
+	got := strings.Split(path, "/")
+	if strings.HasSuffix(template, "/") {
+		if len(got) < len(want) {
+			return false
+		}
+		got = got[:len(want)]
+	} else if len(want) != len(got) {
+		return false
+	}
+	for i := range want {
+		if strings.HasPrefix(want[i], "{") && strings.HasSuffix(want[i], "}") {
+			if got[i] == "" {
+				// An empty segment is not a value, it is a missing one.
+				return false
+			}
+			continue
+		}
+		if want[i] != got[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// containsMethod reports whether a method is in the list.
+func containsMethod(methods []string, method string) bool {
+	for _, candidate := range methods {
+		if candidate == method {
+			return true
+		}
+	}
+	return false
 }
 
 // Handler returns the routed handler. CORS is applied by the caller so this

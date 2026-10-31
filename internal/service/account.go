@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"net/http"
 	"strings"
 	"time"
 
@@ -34,9 +35,20 @@ type RegisterParams struct {
 	Token       string
 	Admin       bool
 	DisplayName string
+	// DeviceDisplayName is the initial_device_display_name of the request, which
+	// names the new device in the device list.
+	DeviceDisplayName string
+	// CallerAdmin reports whether the request already carries an administrator
+	// access token, which is what the org.matrix.lattice.admin stage relies on.
+	CallerAdmin bool
 }
 
 // Register creates an account, a device and an access token.
+//
+// Registration sits behind a User-Interactive Auth exchange: a request with no
+// auth dict is answered with a 401 that lists the supported flows, which is how
+// clients discover how to register. Guest accounts skip the exchange, because a
+// client asking for a throwaway session has nothing to authenticate with.
 //
 // The first account created on a fresh homeserver becomes an administrator so
 // that administrative endpoints can be reached without out-of-band setup.
@@ -44,8 +56,10 @@ func (s *Service) Register(ctx context.Context, params RegisterParams) (*Session
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if err := s.checkAuthFlow(ctx, params.Auth, params.Username); err != nil {
-		return nil, err
+	if !params.Guest {
+		if err := s.authorizeRegistration(params); err != nil {
+			return nil, err
+		}
 	}
 
 	localpart := params.Username
@@ -100,43 +114,64 @@ func (s *Service) Register(ctx context.Context, params RegisterParams) (*Session
 	if err := s.SeedPushRules(ctx, user.ID); err != nil {
 		return nil, err
 	}
-	return s.newSession(ctx, user, params.DeviceID)
+	return s.newSession(ctx, user, params.DeviceID, params.DeviceDisplayName)
 }
 
 // Login verifies credentials and mints a session. An unknown device ID creates
-// a new device, which is what clients do on first login.
-func (s *Service) Login(ctx context.Context, user, password, deviceID string) (*SessionResult, error) {
+// a new device, which is what clients do on first login; initialDeviceName is
+// the name such a new device gets.
+func (s *Service) Login(ctx context.Context, user, password, deviceID, initialDeviceName string) (*SessionResult, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	identifier := strings.ToLower(strings.TrimSpace(user))
-	if identifier == "" {
+	account, err := s.localUser(user)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.verifyPassword(account, password); err != nil {
+		return nil, err
+	}
+	return s.newSession(ctx, account, deviceID, initialDeviceName)
+}
+
+// localUser resolves a login identifier — a user ID or a bare localpart — into
+// a local account. Unknown and deactivated accounts are reported identically so
+// the endpoint never confirms that a user exists.
+func (s *Service) localUser(identifier string) (*persist.User, error) {
+	localpart := strings.ToLower(strings.TrimSpace(identifier))
+	if localpart == "" {
 		return nil, matrix.ErrForbidden("invalid credentials")
 	}
-	if strings.HasPrefix(identifier, "@") {
-		identifier = matrix.LocalpartOf(identifier)
+	if strings.HasPrefix(localpart, "@") {
+		localpart = matrix.LocalpartOf(localpart)
 	}
-	stored, err := s.db.UserRepo.GetByLocalpart(identifier)
+	account, err := s.db.UserRepo.GetByLocalpart(localpart)
 	if err != nil {
 		if persist.IsNotFound(err) {
 			return nil, matrix.ErrForbidden("invalid credentials")
 		}
 		return nil, matrix.ErrInternal(err)
 	}
-	if stored.Deactivated {
+	if account.Deactivated {
 		return nil, matrix.ErrForbidden("user has been deactivated")
 	}
-	if err := bcrypt.CompareHashAndPassword([]byte(stored.PasswordHash), []byte(password)); err != nil {
-		if errors.Is(err, bcrypt.ErrMismatchedHashAndPassword) {
-			return nil, matrix.ErrForbidden("invalid credentials")
-		}
-		return nil, matrix.ErrInternal(err)
-	}
-	return s.newSession(ctx, stored, deviceID)
+	return account, nil
 }
 
-// newSession creates the device, access token and session row for a user.
-func (s *Service) newSession(ctx context.Context, user *persist.User, deviceID string) (*SessionResult, error) {
+// verifyPassword compares a candidate password with the stored hash.
+func (s *Service) verifyPassword(account *persist.User, password string) error {
+	if err := bcrypt.CompareHashAndPassword([]byte(account.PasswordHash), []byte(password)); err != nil {
+		if errors.Is(err, bcrypt.ErrMismatchedHashAndPassword) {
+			return matrix.ErrForbidden("invalid credentials")
+		}
+		return matrix.ErrInternal(err)
+	}
+	return nil
+}
+
+// newSession creates the device, access token and session row for a user. The
+// initial device name only applies to a device that does not exist yet.
+func (s *Service) newSession(ctx context.Context, user *persist.User, deviceID, initialDeviceName string) (*SessionResult, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -151,10 +186,16 @@ func (s *Service) newSession(ctx context.Context, user *persist.User, deviceID s
 		device = &persist.Device{
 			DeviceID:     deviceID,
 			UserID:       user.ID,
+			DisplayName:  initialDeviceName,
 			LastActiveTS: s.NowMS(),
 		}
 		if err := s.db.DeviceRepo.Create(device); err != nil {
 			return nil, matrix.ErrInternal(err)
+		}
+		// Other devices have to learn this one exists, or they would never
+		// collect its end-to-end keys.
+		if err := s.recordDeviceListChange(ctx, persist.DeviceListChanged, user.ID, deviceID); err != nil {
+			return nil, err
 		}
 	}
 
@@ -183,7 +224,7 @@ func (s *Service) newSession(ctx context.Context, user *persist.User, deviceID s
 		ExpiresInMS:  s.tokens.TTL().Milliseconds(),
 		ValidUntilTS: validUntil.UnixMilli(),
 		HomeServer:   s.serverName,
-		WellKnown:    matrix.Object{"m.homeserver": "https://" + s.serverName},
+		WellKnown:    s.HomeServerConfiguration(),
 		NextBatch:    session.NextBatchToken,
 	}, nil
 }
@@ -223,7 +264,7 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (*SessionRes
 	if err := s.db.SessionRepo.DeleteByToken(session.Token); err != nil {
 		return nil, matrix.ErrInternal(err)
 	}
-	return s.newSession(ctx, user, session.DeviceID)
+	return s.newSession(ctx, user, session.DeviceID, "")
 }
 
 // UsernameAvailable reports whether a localpart is free.
@@ -242,8 +283,10 @@ func (s *Service) UsernameAvailable(ctx context.Context, username string) (bool,
 	return false, matrix.ErrInternal(err)
 }
 
-// checkAuthFlow validates the optional User-Interactive Auth payload of a
-// registration. Lattice supports the dummy and password flows out of the box.
+// checkAuthFlow validates the optional User-Interactive Auth payload of an
+// administrative action such as changing a password or deleting a device.
+// Account registration goes through authorizeRegistration instead, which is the
+// one clients discover by asking for a flow list.
 func (s *Service) checkAuthFlow(ctx context.Context, auth matrix.Object, username string) error {
 	if len(auth) == 0 {
 		return nil
@@ -253,25 +296,19 @@ func (s *Service) checkAuthFlow(ctx context.Context, auth matrix.Object, usernam
 		return matrix.ErrForbidden("malformed auth request")
 	}
 	switch raw {
-	case "m.login.dummy", "m.login.registration_token", "org.matrix.lattice.admin":
+	case StageDummy, StageRegistrationToken, StageAdmin:
 		return nil
-	case "m.login.password":
-		identifier, _ := auth["identifier"].(matrix.Object)
-		user, _ := identifier["user"].(string)
-		password, _ := auth["password"].(string)
-		if user == "" {
-			user, _ = auth["user"].(string)
-		}
-		if user == "" {
-			user = username
-		}
-		_, err := s.Login(ctx, user, password, "")
-		if err != nil {
-			return matrix.ErrForbidden("the user authentication passed in the request body is incorrect")
+	case StagePassword:
+		if err := s.checkPasswordAuth(auth, username); err != nil {
+			var merr *matrix.Error
+			if errors.As(err, &merr) && merr.HTTPStatus() == http.StatusForbidden {
+				return matrix.ErrForbidden("the user authentication passed in the request body is incorrect")
+			}
+			return err
 		}
 		return nil
 	default:
-		return matrix.NewError(matrix.ErrCodeForbidden, 401,
+		return matrix.NewError(matrix.ErrCodeForbidden, http.StatusUnauthorized,
 			"session does not support authentication protocol "+raw)
 	}
 }

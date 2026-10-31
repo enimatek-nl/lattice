@@ -7,6 +7,8 @@ import (
 	"context"
 	"log"
 	"strconv"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -27,6 +29,17 @@ type Service struct {
 	stream atomic.Uint64
 	// maxUploadSize limits media uploads in bytes.
 	maxUploadSize int64
+	// registrationSecrets are the tokens the m.login.registration_token stage
+	// accepts. An empty list means registration is open to anyone.
+	registrationSecrets []string
+	// publicBaseURL is the URL published in the discovery documents. It defaults
+	// to https:// plus the server name, which is wrong whenever clients reach
+	// the server through a proxy or a tunnel.
+	publicBaseURL string
+	// uiaMu guards the in-memory User-Interactive Auth sessions, which remember
+	// the stages a client has already completed.
+	uiaMu       sync.Mutex
+	uiaSessions map[string]*authSession
 	// now is overridable for tests.
 	now func() time.Time
 }
@@ -44,6 +57,25 @@ func WithMaxUploadSize(size int64) Option {
 	return func(s *Service) { s.maxUploadSize = size }
 }
 
+// WithRegistrationSecrets restricts self-service registration to clients that
+// present one of these tokens, which turns the server into an invitation only
+// one and replaces the open m.login.dummy registration flow.
+func WithRegistrationSecrets(secrets ...string) Option {
+	return func(s *Service) {
+		for _, secret := range secrets {
+			if secret = strings.TrimSpace(secret); secret != "" {
+				s.registrationSecrets = append(s.registrationSecrets, secret)
+			}
+		}
+	}
+}
+
+// WithPublicBaseURL publishes the URL clients should use in the well-known
+// document and in login and register responses.
+func WithPublicBaseURL(url string) Option {
+	return func(s *Service) { s.publicBaseURL = strings.TrimRight(strings.TrimSpace(url), "/") }
+}
+
 // New builds a service for the given database and server name.
 func New(db *persist.Database, serverName string, tokens *auth.TokenService, opts ...Option) (*Service, error) {
 	s := &Service{
@@ -53,6 +85,7 @@ func New(db *persist.Database, serverName string, tokens *auth.TokenService, opt
 		tokens:        tokens,
 		now:           time.Now,
 		maxUploadSize: DefaultMaxUploadSize,
+		uiaSessions:   map[string]*authSession{},
 	}
 	for _, opt := range opts {
 		opt(s)

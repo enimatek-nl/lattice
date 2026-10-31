@@ -97,6 +97,11 @@ func (s *Service) DeleteDevices(ctx context.Context, userID string, deviceIDs []
 		if err := s.db.SessionRepo.DeleteByDevice(userID, deviceID); err != nil {
 			return nil, matrix.ErrInternal(err)
 		}
+		// A deleted device must stop collecting end-to-end keys, or other devices
+		// keep encrypting for a session that no longer exists.
+		if err := s.DropDeviceKeys(ctx, userID, deviceID); err != nil {
+			return nil, err
+		}
 	}
 	return result, nil
 }
@@ -109,7 +114,7 @@ func (s *Service) DeleteDevice(ctx context.Context, userID, deviceID string) err
 	if err := s.db.SessionRepo.DeleteByDevice(userID, deviceID); err != nil {
 		return matrix.ErrInternal(err)
 	}
-	return nil
+	return s.DropDeviceKeys(ctx, userID, deviceID)
 }
 
 // ChangePassword replaces the password of an account and revokes its sessions.
@@ -159,6 +164,11 @@ func (s *Service) DeactivateAccount(ctx context.Context, userID string, auth mat
 	}
 	if err := s.db.SessionRepo.DeleteByUser(userID); err != nil {
 		return nil, matrix.ErrInternal(err)
+	}
+	// The key material of a deactivated account goes with it: nobody should be
+	// able to start an end-to-end session with an account that no longer exists.
+	if err := s.DropDeviceKeys(ctx, userID); err != nil {
+		return nil, err
 	}
 	rooms, err := s.db.MembershipRepo.RoomsFor(userID)
 	if err != nil {

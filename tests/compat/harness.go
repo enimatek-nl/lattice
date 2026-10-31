@@ -54,6 +54,14 @@ type Session struct {
 // NewServer starts a homeserver for the duration of a test.
 func NewServer(t *testing.T) *Server {
 	t.Helper()
+	return NewServerWith(t, api.Config{AllowGuests: true})
+}
+
+// NewServerWith starts a homeserver with an explicit API configuration and
+// extra service options, so a test can try a differently configured server —
+// one that only accepts registration tokens, for example.
+func NewServerWith(t *testing.T, cfg api.Config, opts ...service.Option) *Server {
+	t.Helper()
 	// A file database keeps each test isolated; a shared in-memory
 	// cache would be visible to the other tests in the same process.
 	db, err := persist.NewDatabase(filepath.Join(t.TempDir(), "lattice.db"))
@@ -61,16 +69,18 @@ func NewServer(t *testing.T) *Server {
 		t.Fatalf("opening database: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
+	if cfg.ServerName == "" {
+		cfg.ServerName = "test.server"
+	}
+	if !cfg.EnableMedia {
+		cfg.EnableMedia = true
+	}
 	tokens := auth.NewTokenService("test-secret", auth.WithTTL(24*time.Hour))
-	svc, err := service.New(db, "test.server", tokens)
+	svc, err := service.New(db, cfg.ServerName, tokens, opts...)
 	if err != nil {
 		t.Fatalf("building service: %v", err)
 	}
-	app := api.New(svc, auth.NewStore(tokens, db), api.Config{
-		ServerName:  "test.server",
-		EnableMedia: true,
-		AllowGuests: true,
-	})
+	app := api.New(svc, auth.NewStore(tokens, db), cfg)
 	httpServer := httptest.NewServer(app.Handler())
 	t.Cleanup(httpServer.Close)
 	return &Server{
@@ -81,6 +91,13 @@ func NewServer(t *testing.T) *Server {
 		app:   app,
 		users: map[string]*Session{},
 	}
+}
+
+// registrationServer starts a server that only accepts the given registration
+// tokens.
+func registrationServer(t *testing.T, secrets ...string) *Server {
+	t.Helper()
+	return NewServerWith(t, api.Config{AllowGuests: true}, service.WithRegistrationSecrets(secrets...))
 }
 
 // URL returns the base URL of the running server.

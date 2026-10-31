@@ -77,7 +77,20 @@ func (s *Service) Capabilities() matrix.Object {
 	}
 }
 
-// HomeServerConfiguration returns the well-known client document.
-func (s *Service) HomeServerConfiguration() map[string]string {
-	return map[string]string{"m.homeserver": "https://" + s.serverName}
+// HomeServerConfiguration returns the well-known client document: the base URL
+// clients should talk to. The specification nests it under base_url, and the
+// same document is returned by /login and /register.
+func (s *Service) HomeServerConfiguration() matrix.Object {
+	return matrix.Object{
+		"m.homeserver": matrix.Object{"base_url": s.PublicBaseURL()},
+	}
+}
+
+// PublicBaseURL is the URL clients should reach this homeserver on, as
+// published in the discovery documents.
+func (s *Service) PublicBaseURL() string {
+	if s.publicBaseURL != "" {
+		return s.publicBaseURL
+	}
+	return "https://" + s.serverName
 }

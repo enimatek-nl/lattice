@@ -15,7 +15,10 @@ updated: it is the hand-off point after context compaction. Read
     `matrix.DecodeContent`, `matrix.MustParseObject`.
   * `internal/persist` – GORM + gormlite SQLite. `NewDatabase(path)`,
     `db.Close()`, `db.GORM()`, `db.Tx`, `IsNotFound`, `IsDuplicate`. Repos are
-    fields named `XRepo` (`db.EventRepo`, `db.SessionRepo`, …).
+    fields named `XRepo` (`db.EventRepo`, `db.SessionRepo`, …), newest additions:
+    `DeviceKeyRepo` (device identity keys as opaque JSON), `OneTimeKeyRepo`
+    (prekeys plus fallback keys, `Claim` is a conditional update so a key is
+    handed out once) and `DeviceListRepo` (the device list change log).
     `persist.Room` uses field **`ID`** (not `RoomID`); `persist.Event.Matrix()`
     returns a value (not a pointer).
   * `internal/auth` – JWT (HS256) tokens with a `jti` so two sessions of the
@@ -33,13 +36,22 @@ updated: it is the hand-off point after context compaction. Read
     `Search`/`SearchJSON`, `RoomHierarchy`, `MutualRooms`/`DirectRooms`,
     `RoomReceipts`, `RunMaintenance`/`StartMaintenance`,
     `GuestsCanRead`, `PushRules`/`SetPushRule`/…, `Notifications`, `MarkDirectRoom`,
-    `OpenIDToken`, `WhoIs`, `SetAccountFlag`/`AccountFlags` (flags `lock`, `suspend`).
+    `OpenIDToken`, `WhoIs`, `SetAccountFlag`/`AccountFlags` (flags `lock`, `suspend`),
+    `RegistrationFlows`/`RegistrationChallenge`/`RegistrationTokenSupported`
+    (User-Interactive Auth for `/register`, sessions in memory, stages tracked
+    in `internal/service/uia.go`), `HomeServerConfiguration`/`PublicBaseURL`, and
+    the end-to-end key API in `internal/service/keys.go`: `UploadKeys`,
+    `QueryKeys`, `ClaimKeys`, `DeviceListChanges`, `OneTimeKeyCounts`,
+    `DropDeviceKeys`.
   * `internal/api` – `api.New(svc, authStore, api.Config{...})`,
     `app.Handler()`, `app.Registered()` (route patterns, used by the coverage
-    tool). Routes live in `internal/api/routes.go`.
-  * `cmd/server` – flags: `-addr -server-name -db -jwt-secret -token-ttl
-    -max-upload-size -allow-guests -disable-registration -cors-origin
-    -support-email -support-matrix-id -media -maintenance-interval -version`.
+    tool). Routes live in `internal/api/routes.go`. A catch-all `"/"` handler
+    answers unrouted paths with `404 M_UNRECOGNIZED` (and restores the 405 +
+    `Allow` that net/http gives up when a catch-all is registered, by matching
+    the request path against `app.Registered()`).
+  * `cmd/server` – flags: `-addr -server-name -base-url -db -jwt-secret -token-ttl
+    -max-upload-size -allow-guests -disable-registration -registration-secret
+    -cors-origin -support-email -support-matrix-id -media -maintenance-interval -version`.
   * `cmd/endpoints` – coverage report: `go run ./cmd/endpoints -out ENDPOINTS.md`.
   * `tests/compat` – black-box compatibility suite (`harness.go` + tests).
 * Spec/behaviour details already handled (don't "fix" them again):
@@ -50,10 +62,40 @@ updated: it is the hand-off point after context compaction. Read
     (`internal/service/stateguards.go`).
   * `m.room.create` cannot be replaced; `m.room.member` cannot be written via
     `/state` (stateguards).
+  * `matrix.SyncResponse` fields: `device_one_time_keys_count` is a map keyed by
+    algorithm and is present on every authenticated sync; `device_lists` is only
+    sent for incremental syncs, is filtered to users who share a room with the
+    viewer, and its `left` list is always empty (a removed device is reported as a
+    `change`; the spec reserves `left` for users who stopped sharing a room, which
+    Lattice derives from membership state).
   * `POST /logout/all` keeps the calling token valid (spec).
   * Duplicate alias → 409 `M_ALIAS_EXISTS`; alias creator must be joined.
   * `GET /login` advertises `m.login.password` only; no SSO, no 3PID, no OAuth
     (`/_matrix/client/v1/auth_metadata` → 404 on purpose).
+  * End-to-end keys are **opaque**: the JSON a client uploads is the JSON another
+    client gets back, and no signature is ever verified server-side (the clients
+    do that). Consequences that are deliberate: the algorithm of a key is the part
+    before the `:` of its key id; a key uploaded under the field name `key` is
+    rewritten to the algorithm field; an ordinary one-time key is handed out once
+    (`Claim` is a conditional update, so concurrent claims cannot both win) while a
+    fallback key (MSC3288) is handed out repeatedly and never counted in
+    `one_time_key_counts`; a device re-uploading its keys does not lose the ones
+    that were never claimed; keys and prekeys are deleted with their device and on
+    account deactivation.
+  * `POST /register` with no `auth` dict (and `GET /register`) answers **401
+    `M_UNAUTHORIZED`** with `flows`/`params`/`session`/`completed` — that is the
+    only way clients such as Element discover that registration is possible; a
+    400 here shows up in the browser as "Unable to query for supported
+    registration methods". The advertised stage is `m.login.dummy`, or
+    `m.login.registration_token` when `-registration-secret` is set. Guest
+    registration (`?kind=guest`, `kind: "guest"`) skips the exchange, and an
+    unknown `session` is replaced rather than refused. `matrix.Error` carries the
+    challenge payload in its `Extra` field, which `MarshalJSON` merges into the
+    body (`auth.WriteError` encodes the error itself now).
+  * `/.well-known/matrix/client` and the `well_known` field of login/register
+    nest the URL: `{"m.homeserver":{"base_url":"…"}}`. A bare string breaks
+    discovery. The URL comes from `-base-url` (`service.WithPublicBaseURL`),
+    defaulting to `https://<-server-name>`.
   * Media is stored inline in SQLite; thumbnails are PNG via stdlib imaging.
 * Go ServeMux gotchas already worked around:
   * Empty state keys arrive as a trailing `/`; both `…/state/{eventType}` and
@@ -412,15 +454,17 @@ a **single-server, unencrypted** homeserver:
   notification counts, receipts, read markers, `GET /v1/rooms/{id}/receipts`,
   typing, room state, push rules + `pushers` + `/notifications`, search (both
   request forms), spaces + `/hierarchy`, media upload/download, profiles,
-  filters, redaction, threads/relations, account data, the admin routes, and
+  filters, redaction, threads/relations, account data, device keys
+  (`/keys/upload` `/keys/query` `/keys/claim` `/keys/changes` + the key sections
+  of sync), the admin routes, abuse reports, and
   `/.well-known/matrix/{client,server,support}`.
-* Missing, so a client will trip over them: every `/_matrix/client/v3/keys/*`
-  and `/room_keys/*` (**no end-to-end encryption**: no device keys to exchange,
-  so encrypted rooms, verification and key backup cannot work), everything under
+* Missing, so a client will trip over them: cross-signing
+  (`/keys/device_signing/upload`, `/keys/signatures/upload`), server-side key
+  backup (`/room_keys/*`) and therefore interactive verification (**no end-to-end
+  trust layer**: sessions work but are unverified), everything under
   `/_matrix/federation/v1/*` (**no federation**: users can only reach users on
-  this server), `/voip/turnServer` (no calls), SSO, 3PID/email recovery,
-  `m.login.token`, and rate limiting (`ErrLimitExceeded`/`retry_after_ms` exist
-  but nothing calls them).
+  this server), SSO, 3PID/email recovery, `m.login.token`, and rate limiting
+  (`ErrLimitExceeded`/`retry_after_ms` exist but nothing calls them).
 * Operational facts worth repeating to whoever deploys it: `-jwt-secret` should
   always be set — an empty one generates a fresh secret per boot, which logs out
   every client on restart; the binary serves plain HTTP, so TLS terminates in a
@@ -436,8 +480,16 @@ green (the race run takes ~3 minutes because of the long-poll tests, and
 latest chunks added the housekeeping pass for ephemeral data plus the abuse
 report store, and closed small loose ends (long poll timing is now pinned by a
 test, `third_party_signed` invites are refused, notification ordering is fixed
-by a test). Coverage is 113/234 indexed endpoints with 23 extra routes. Pick the
-next chunk from the list below.
+by a test). The newest chunk put registration behind a User-Interactive Auth
+exchange (401 + flow list instead of `M_INVALID_USERNAME`), added
+`m.login.registration_token` support behind `-registration-secret`, fixed the
+well-known client document shape and added `-base-url`, honoured
+`initial_device_display_name` on `/register` and `/login`, added the end-to-end
+device key API (`/keys/upload`, `/keys/query`, `/keys/claim`, `/keys/changes`, the
+key sections of `/sync`, keys removed with their device), answered the third-party
+and TURN endpoints instead of 404-ing them, and made unrouted paths answer
+`404 M_UNRECOGNIZED`. Coverage is 125/234 indexed endpoints with 24 extra routes.
+Pick the next chunk from the list below.
 
 The endpoint index in `SPECS.md` points at a spec corpus that is **not** in this
 workspace (there is no `references/` directory), so specification wording cannot
@@ -449,13 +501,16 @@ fetched first.
 ## Next steps (pick one at a time)
 
 1. The largest missing groups of client endpoints (`go run ./cmd/endpoints -all`
-   lists them): the device key / E2EE APIs (`/keys/upload`, `/keys/query`,
-   `/keys/claim`, `/keys/changes`, cross-signing uploads), server-side key
-   backup (`/room_keys/*`, nine routes), `account/3pid/*` plus the identity
-   `requestToken` endpoints, `/login/sso/redirect`, the appservice APIs
-   (`/appservice/*/ping`, `directory/list/appservice/*`) and the deprecated
-   `initialSync`/`GET /events`. `GET /v3/voip/turnServer` and
-   `GET /v1/register/m.login.registration_token/validity` are cheap one-liners.
+   lists them): the end-to-end **trust layer** on top of the keys that already
+   work — `/keys/device_signing/upload` (cross-signing master/self-signing keys;
+   needs Ed25519 verification over canonical JSON, both available in the stdlib
+   plus a ~40 line canonical-JSON encoder), `/keys/signatures/upload` (merge
+   signature objects into the stored device key), and server-side key backup
+   (`/room_keys/*`, nine routes, opaque encrypted blobs like the keys above).
+   Then: `account/3pid/*` plus the identity `requestToken` endpoints,
+   `/login/sso/redirect`, the appservice APIs (`/appservice/*/ping`,
+   `directory/list/appservice/*`) and the deprecated `initialSync`/`GET /events`.
+   `GET /v3/voip/turnServer` is done (it publishes no relay).
 2. Loose ends spotted while doing history, relations, the user script, the gap
    chunk, the search/spaces chunk and the reports chunk:
    * Seeded push rules are only installed at registration; there is no rule

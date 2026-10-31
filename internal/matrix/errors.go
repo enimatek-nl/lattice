@@ -1,6 +1,7 @@
 package matrix
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -13,6 +14,7 @@ type ErrorCode string
 const (
 	ErrCodeUnknown              ErrorCode = "M_UNKNOWN"
 	ErrCodeForbidden            ErrorCode = "M_FORBIDDEN"
+	ErrCodeUnauthorized         ErrorCode = "M_UNAUTHORIZED"
 	ErrCodeUnknownToken         ErrorCode = "M_UNKNOWN_TOKEN"
 	ErrCodeMissingToken         ErrorCode = "M_MISSING_TOKEN"
 	ErrCodeBadJSON              ErrorCode = "M_BAD_JSON"
@@ -50,8 +52,28 @@ type Error struct {
 	Status int `json:"-"`
 	// RetryAfterMS is optionally included for rate limited responses.
 	RetryAfterMS int64 `json:"retry_after_ms,omitempty"`
+	// Extra holds additional top level keys the endpoint adds to the body, such
+	// as the flows of a User-Interactive Auth challenge. It is serialised by
+	// MarshalJSON rather than by the struct encoder.
+	Extra Object `json:"-"`
 	// cause keeps the underlying implementation error for logs and errors.Is.
 	cause error
+}
+
+// MarshalJSON writes the errcode and error keys plus every Extra field, so an
+// error can carry endpoint specific payload (User-Interactive Auth flows) while
+// staying a single type.
+func (e *Error) MarshalJSON() ([]byte, error) {
+	body := make(Object, len(e.Extra)+3)
+	for key, value := range e.Extra {
+		body[key] = value
+	}
+	body["errcode"] = e.Code
+	body["error"] = e.Message
+	if e.RetryAfterMS != 0 {
+		body["retry_after_ms"] = e.RetryAfterMS
+	}
+	return json.Marshal(body)
 }
 
 // Error implements the error interface.
@@ -77,6 +99,14 @@ func (e *Error) HTTPStatus() int {
 func (e *Error) WithCause(err error) *Error {
 	out := *e
 	out.cause = err
+	return &out
+}
+
+// WithExtra returns a copy of the error whose response body carries the given
+// top level fields in addition to errcode and error.
+func (e *Error) WithExtra(extra Object) *Error {
+	out := *e
+	out.Extra = extra
 	return &out
 }
 
@@ -108,6 +138,12 @@ func ErrNotFound(format string, args ...any) *Error {
 // ErrForbidden returns a 403 M_FORBIDDEN error.
 func ErrForbidden(format string, args ...any) *Error {
 	return newError(ErrCodeForbidden, http.StatusForbidden, format, args...)
+}
+
+// ErrUnauthorized returns a 401 M_UNAUTHORIZED error, which is how a server
+// asks a client to complete a User-Interactive Auth stage.
+func ErrUnauthorized(format string, args ...any) *Error {
+	return newError(ErrCodeUnauthorized, http.StatusUnauthorized, format, args...)
 }
 
 // ErrInvalidRequest returns a 400 M_UNKNOWN error.

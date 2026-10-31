@@ -9,6 +9,7 @@ type SyncResponse struct {
 	ToDevice           *Ephemeral          `json:"to_device,omitempty"`
 	DeviceLists        *DeviceLists        `json:"device_lists,omitempty"`
 	DeviceOneTimeCount *DeviceOneTimeCount `json:"device_one_time_keys_count,omitempty"`
+	UnusedFallbackKeys []string            `json:"device_unused_fallback_key_types,omitempty"`
 	Since              string              `json:"since,omitempty"`
 	DeletedRooms       []string            `json:"rooms_offline,omitempty"`
 }
@@ -81,15 +82,14 @@ type LeftRoom struct {
 	AccountData *Ephemeral `json:"account_data,omitempty"`
 }
 
-// DeviceLists reports members whose device lists changed.
+// DeviceLists reports members whose device lists changed. Both lists are always
+// present when the section is included, which is what clients expect.
 type DeviceLists struct {
-	Changed []string `json:"changed,omitempty"`
-	Left    []string `json:"left,omitempty"`
+	Changed []string `json:"changed"`
+	Left    []string `json:"left"`
 }
 
-// DeviceOneTimeCount reports remaining one-time key counts.
-type DeviceOneTimeCount struct {
-	Curve25519                 int64 `json:"curve25519,omitempty"`
-	UnsignedFallbackCurve25519 int64 `json:"unsignedFallbackCurve25519,omitempty"`
-	FallbackKey                bool  `json:"fallback_key,omitempty"`
-}
+// DeviceOneTimeCount reports how many one-time keys the syncing device still
+// has available, keyed by algorithm. Clients watch these counts to decide when
+// to upload another batch of keys.
+type DeviceOneTimeCount map[string]int64

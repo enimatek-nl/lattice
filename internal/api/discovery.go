@@ -8,7 +8,7 @@ import (
 
 // handleWellKnownClient implements GET /.well-known/matrix/client.
 func (a *App) handleWellKnownClient(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, matrix.Object{"m.homeserver": "https://" + a.cfg.ServerName})
+	writeJSON(w, http.StatusOK, a.svc.HomeServerConfiguration())
 }
 
 // handleWellKnownServer implements GET /.well-known/matrix/server.

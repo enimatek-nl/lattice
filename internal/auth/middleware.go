@@ -27,16 +27,11 @@ const (
 // WriteError writes a Matrix error body to the response.
 func WriteError(w http.ResponseWriter, err error) {
 	merr := matrix.ErrAs(err, persist.IsNotFound)
-	body := matrix.Object{
-		"errcode": merr.Code,
-		"error":   merr.Message,
-	}
-	if merr.RetryAfterMS > 0 {
-		body["retry_after_ms"] = merr.RetryAfterMS
-	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(merr.HTTPStatus())
-	if encErr := json.NewEncoder(w).Encode(body); encErr != nil {
+	// matrix.Error marshals errcode, error and any endpoint specific Extra keys
+	// such as the flows of a User-Interactive Auth challenge.
+	if encErr := json.NewEncoder(w).Encode(merr); encErr != nil {
 		return
 	}
 }

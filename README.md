@@ -5,10 +5,10 @@ the client-server HTTP API, a business layer, and a single SQLite file for
 storage. The goal is a drop-in homeserver for clients that speak the standard
 client API — no federation, no end-to-end encryption, no external services.
 
-**Status:** working single-server, unencrypted homeserver. **113 of the 234**
-endpoints indexed in [SPECS.md](SPECS.md) are implemented, plus 23 extra routes
-(see [ENDPOINTS.md](ENDPOINTS.md)). 61 black-box compatibility tests are green.
-`go build ./... && go vet ./...` clean. Implementation version `0.1.0`
+**Status:** working single-server, unencrypted-to-the-server homeserver. **125 of
+the 234** endpoints indexed in [SPECS.md](SPECS.md) are implemented, plus 24
+extra routes (see [ENDPOINTS.md](ENDPOINTS.md)). 73 black-box compatibility tests
+are green. `go build ./... && go vet ./...` clean. Implementation version `0.1.0`
 (reported by `GET /_matrix/client/versions` as `Lattice/0.1.0`).
 
 ## Quick start
@@ -39,7 +39,32 @@ curl -s "localhost:8008/_matrix/client/v3/sync?access_token=$TOKEN"
 ```
 
 Point a desktop or web client at `http://localhost:8008` and it will discover the
-server through `/.well-known/matrix/client`.
+server through `/.well-known/matrix/client`. When the server sits behind a proxy
+or a tunnel, publish the URL clients should use with `-base-url`; the default is
+`https://<-server-name>`, which is rarely right for a development server.
+
+### Registration is User-Interactive Auth
+
+Registration sits behind the User-Interactive Auth exchange the specification
+defines, because that is how clients discover it:
+
+```sh
+# a request with no auth dict (POST with {} or GET) answers 401 with the flows
+curl -s -X POST localhost:8008/_matrix/client/v3/register -d '{}' -H 'Content-Type: application/json'
+# {"errcode":"M_UNAUTHORIZED","flows":[{"stages":["m.login.dummy"]}],"params":{},
+#  "session":"…","completed":[]}
+```
+
+The client then repeats the request with the stage it completed and the `session`
+it was given. `m.login.dummy` is the flow on an open server; `-registration-secret`
+replaces it with `m.login.registration_token`, and
+`GET /_matrix/client/v1/register/m.login.registration_token/validity` reports which
+one is in force. `m.login.password` and the Lattice-specific
+`org.matrix.lattice.admin` (an administrator vouching for the request) are also
+accepted as stages. Guest accounts skip the exchange — a client asking for a
+throwaway session has nothing to authenticate with. Sessions live in memory and
+are pruned by the housekeeping loop, so a server restart abandons unfinished
+registrations.
 
 ### Flags
 
@@ -47,12 +72,14 @@ server through `/.well-known/matrix/client`.
 | --- | --- | --- |
 | `-addr` | `:8008` | listen address |
 | `-server-name` | `localhost` | homeserver name; user and room IDs end with it |
+| `-base-url` | `https://<-server-name>` | URL published in `/.well-known/matrix/client`; set it when a proxy or tunnel fronts the server |
 | `-db` | `lattice.db` | SQLite database file |
 | `-jwt-secret` | *(empty)* | secret used to sign access tokens; **set it** — an empty value generates a fresh one per boot and logs every client out on restart |
 | `-token-ttl` | `24h` | access token lifetime |
 | `-max-upload-size` | `10 MiB` | maximum media upload size |
 | `-allow-guests` | `true` | allow guest account creation |
 | `-disable-registration` | `false` | turn off self-service registration |
+| `-registration-secret` | *(empty)* | comma separated registration tokens; when set, registering requires one and the open `m.login.dummy` flow disappears |
 | `-cors-origin` | `*` | allowed CORS origin, or a comma separated list |
 | `-support-email`, `-support-matrix-id` | *(empty)* | published in `/.well-known/matrix/support` |
 | `-media` | `true` | enable the media endpoints |
@@ -68,17 +95,26 @@ state), long-polling sync with unread and notification counts, receipts and
 read markers, typing, push rules and pushers, search (both request forms),
 spaces and `/hierarchy`, threads and relations, media upload/download/thumbnail,
 profiles, filters, account data, redaction, device management (`/devices`),
-the admin routes, abuse reports, and `/.well-known/matrix/{client,server,support}`.
+device keys (`/keys/upload`, `/keys/query`, `/keys/claim`, `/keys/changes` and
+the key sections of `/sync`), the admin routes, abuse reports, and
+`/.well-known/matrix/{client,server,support}`. Endpoints that are not implemented
+answer `404 M_UNRECOGNIZED` rather than a bare HTTP 404, so a client can name the
+endpoint that is missing.
 
 ## What does not work yet
 
-* **No end-to-end encryption** — nothing under `/_matrix/client/v3/keys/*` or
-  `/room_keys/*`. There are no device keys to exchange, so encrypted rooms,
-  interactive verification and key backup cannot work.
+* **No end-to-end verification or key backup.** The server stores and hands out
+  the key material clients upload — device keys, one-time keys, fallback keys —
+  without ever reading it, so two clients can establish Olm sessions and exchange
+  `m.room.encrypted` events through Lattice today. What is missing is the trust
+  layer: `/keys/device_signing/upload` and `/keys/signatures/upload`
+  (cross-signing and device verification) and `/room_keys/*` (server-side key
+  backup). Every session is therefore unverified and clients warn about it.
 * **No federation** — nothing under `/_matrix/federation/v1/*`. Users can only
   reach users on this server.
-* **No calls** (`/voip/turnServer`), **no SSO** or `m.login.token`, **no 3PID /
-  email recovery**, **no application services**.
+* **No calls** (`/voip/turnServer` publishes no TURN relay), **no SSO** or
+  `m.login.token`, **no 3PID / email recovery**, **no application services**,
+  **no bridges** (`/thirdparty/protocols` is empty).
 * **No rate limiting** — `M_LIMIT_EXCEEDED` and `retry_after_ms` exist in the
   error types but nothing raises them.
 * Search is a `LIKE` scan over serialised event content: no word index, no
@@ -86,7 +122,10 @@ the admin routes, abuse reports, and `/.well-known/matrix/{client,server,support
 
 ## Operational notes
 
-* The server speaks plain HTTP; terminate TLS in a reverse proxy.
+* The server speaks plain HTTP; terminate TLS in a reverse proxy. Publish the
+  public URL with `-base-url`, otherwise `/.well-known/matrix/client` points
+  clients at `https://<-server-name>` and discovery from a hosted client (for
+  example app.element.io) resolves to the wrong address.
 * Everything — events, state, accounts, and uploaded media — lives in one SQLite
   file. Backing up means copying that file; `-max-upload-size` bounds its growth.
 * Always pass `-jwt-secret`. Sessions are stored server-side, so deleting a

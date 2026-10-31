@@ -13,6 +13,8 @@ func (a *App) registerRoutes() {
 	a.registerUserDataRoutes()
 	a.registerDeviceRoutes()
 	a.registerMediaRoutes()
+	a.registerKeysRoutes()
+	a.registerThirdPartyRoutes()
 }
 
 // registerDiscoveryRoutes serves the public discovery endpoints.
@@ -29,6 +31,11 @@ func (a *App) registerDiscoveryRoutes() {
 // registerAccountRoutes serves registration, login and session endpoints.
 func (a *App) registerAccountRoutes() {
 	a.handle("POST /_matrix/client/v3/register", a.handleRegister)
+	// GET asks for the User-Interactive Auth flows without registering anything,
+	// which is how clients such as Element work out that registration is
+	// possible at all.
+	a.handle("GET /_matrix/client/v3/register", a.handleRegisterFlows)
+	a.handle("GET /_matrix/client/v1/register/m.login.registration_token/validity", a.handleRegistrationTokenValidity)
 	a.handle("GET /_matrix/client/v3/register/available", a.handleRegisterAvailable)
 	a.handle("GET /_matrix/client/v3/login", a.handleLoginFlows)
 	a.handle("POST /_matrix/client/v3/login", a.handleLogin)
@@ -185,4 +192,27 @@ func (a *App) registerMediaRoutes() {
 	a.authenticated("GET /_matrix/client/v1/media/config", a.handleMediaConfig)
 	a.authenticated("GET /_matrix/client/v1/media/preview_url", a.handleMediaPreviewURL)
 	a.authenticated("GET /_matrix/client/v1/media/download/{serverName}/{mediaId}/{fileName}", a.handleMediaDownload)
+}
+
+// registerKeysRoutes serves the end-to-end key distribution endpoints. The
+// server only stores and redistributes key material; the cryptography lives in
+// the clients.
+func (a *App) registerKeysRoutes() {
+	a.authenticated("POST /_matrix/client/v3/keys/upload", a.handleKeysUpload)
+	a.authenticated("POST /_matrix/client/v3/keys/query", a.handleKeysQuery)
+	a.authenticated("POST /_matrix/client/v3/keys/claim", a.handleKeysClaim)
+	a.authenticated("GET /_matrix/client/v3/keys/changes", a.handleKeysChanges)
+}
+
+// registerThirdPartyRoutes serves the third-party identifier lookups and the
+// VoIP helper. Lattice bridges no networks, so the answers are an empty protocol
+// list and honest not-found errors instead of a 404 on every call.
+func (a *App) registerThirdPartyRoutes() {
+	a.handle("GET /_matrix/client/v3/thirdparty/protocols", a.handleThirdPartyProtocols)
+	a.handle("GET /_matrix/client/v3/thirdparty/protocol/{protocol}", a.handleThirdPartyProtocol)
+	a.handle("GET /_matrix/client/v3/thirdparty/user", a.handleThirdPartyUser)
+	a.handle("GET /_matrix/client/v3/thirdparty/user/{protocol}", a.handleThirdPartyUser)
+	a.handle("GET /_matrix/client/v3/thirdparty/location", a.handleThirdPartyLocation)
+	a.handle("GET /_matrix/client/v3/thirdparty/location/{protocol}", a.handleThirdPartyLocation)
+	a.authenticated("GET /_matrix/client/v3/voip/turnServer", a.handleTurnServer)
 }

@@ -145,6 +145,31 @@ func (s *Service) buildSync(ctx context.Context, params SyncParams, filter *Sync
 		changed = true
 	}
 
+	// The key counts belong to a device rather than to a user, so they are only
+	// reported when the request is authenticated with one. They are part of every
+	// response: a client decides whether to upload more keys from these numbers.
+	if params.DeviceID != "" {
+		counts, fallback, err := s.OneTimeKeyCounts(ctx, userID, params.DeviceID)
+		if err != nil {
+			return nil, false, err
+		}
+		response.DeviceOneTimeCount = &counts
+		response.UnusedFallbackKeys = fallback
+	}
+
+	// Device list changes only make sense relative to an earlier position; a
+	// first sync gets the whole key set from POST /keys/query instead.
+	if since > 0 {
+		lists, err := s.DeviceListChanges(ctx, userID, since, pos)
+		if err != nil {
+			return nil, false, err
+		}
+		if lists != nil {
+			response.DeviceLists = lists
+			changed = true
+		}
+	}
+
 	receipts, err := s.receiptEventsForUser(userID, since)
 	if err != nil {
 		return nil, false, err

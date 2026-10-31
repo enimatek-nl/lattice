@@ -17,6 +17,7 @@ type loginBody struct {
 	Medium     string        `json:"medium"`
 	Password   string        `json:"password"`
 	DeviceID   string        `json:"device_id"`
+	DeviceName string        `json:"initial_device_display_name"`
 	Token      string        `json:"token"`
 	Refresh    bool          `json:"refresh_token"`
 	ExpiresIn  int64         `json:"expires_in_ms"`
@@ -65,6 +66,9 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 		Admin       bool          `json:"admin"`
 		DisplayName string        `json:"displayname"`
 		Token       string        `json:"token"`
+		DeviceName  string        `json:"initial_device_display_name"`
+		Stage       string        `json:"type"`
+		Session     string        `json:"session"`
 		Auth        matrix.Object `json:"auth,omitempty"`
 	}
 	if err := decodeBody(r, &body); err != nil {
@@ -82,20 +86,75 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := a.svc.Register(r.Context(), service.RegisterParams{
-		Username:    body.Username,
-		Password:    body.Password,
-		DeviceID:    body.DeviceID,
-		Auth:        body.Auth,
-		Guest:       guest,
-		Token:       body.Token,
-		Admin:       body.Admin && auth.IsAdmin(r),
-		DisplayName: body.DisplayName,
+		Username:          body.Username,
+		Password:          body.Password,
+		DeviceID:          body.DeviceID,
+		Auth:              authDict(body.Stage, body.Session, body.Auth),
+		Guest:             guest,
+		Token:             body.Token,
+		Admin:             body.Admin && auth.IsAdmin(r),
+		CallerAdmin:       auth.IsAdmin(r),
+		DisplayName:       body.DisplayName,
+		DeviceDisplayName: body.DeviceName,
 	})
 	if err != nil {
 		a.writeError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+// authDict folds the legacy top level type and session keys of a registration
+// request into its User-Interactive Auth dict. Older clients put the stage name
+// beside the username rather than under auth, and Synapse still accepts that.
+func authDict(stage, session string, in matrix.Object) matrix.Object {
+	if in == nil {
+		if stage == "" && session == "" {
+			return nil
+		}
+		in = matrix.Object{}
+	}
+	if _, ok := in["type"]; !ok && stage != "" {
+		in["type"] = stage
+	}
+	if _, ok := in["session"]; !ok && session != "" {
+		in["session"] = session
+	}
+	return in
+}
+
+// handleRegisterFlows implements GET /_matrix/client/v3/register, which answers
+// with the User-Interactive Auth challenge instead of registering anything.
+// Clients call it to discover the supported flows before sending credentials.
+//
+//	@Summary	List supported registration flows
+//	@Tags		account
+//	@Produce	json
+//	@Success	401	{object}	service.AuthInfo
+//	@Router		/_matrix/client/v3/register [get]
+func (a *App) handleRegisterFlows(w http.ResponseWriter, r *http.Request) {
+	if a.cfg.RegistrationDisabled {
+		a.writeError(w, r, matrix.ErrForbidden("registration is disabled on this homeserver"))
+		return
+	}
+	a.writeError(w, r, a.svc.RegistrationChallenge(r.Context(), queryValue(r, "session", "")))
+}
+
+// handleRegistrationTokenValidity implements
+// GET /_matrix/client/v1/register/m.login.registration_token/validity, which
+// tells a client whether a registration token is a way in.
+//
+//	@Summary	Check whether registration tokens are supported
+//	@Tags		account
+//	@Produce	json
+//	@Success	200	{object}	map[string]bool
+//	@Router		/_matrix/client/v1/register/m.login.registration_token/validity [get]
+func (a *App) handleRegistrationTokenValidity(w http.ResponseWriter, r *http.Request) {
+	if a.cfg.RegistrationDisabled {
+		a.writeError(w, r, matrix.ErrForbidden("registration is disabled on this homeserver"))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"supported": a.svc.RegistrationTokenSupported()})
 }
 
 // handleRegisterAvailable implements GET /_matrix/client/v3/register/available.
@@ -152,7 +211,7 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 			"session does not support authentication protocol "+body.Type))
 		return
 	}
-	result, err := a.svc.Login(r.Context(), body.userID(), body.Password, body.DeviceID)
+	result, err := a.svc.Login(r.Context(), body.userID(), body.Password, body.DeviceID, body.DeviceName)
 	if err != nil {
 		a.writeError(w, r, err)
 		return

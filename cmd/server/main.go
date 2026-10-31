@@ -28,6 +28,7 @@ func main() {
 	var (
 		addr              = flag.String("addr", ":8008", "address to listen on")
 		serverName        = flag.String("server-name", "localhost", "homeserver name; user and room IDs end with it")
+		publicBaseURL     = flag.String("base-url", "", "URL clients reach this server on, published in /.well-known/matrix/client; defaults to https://<server-name>")
 		dbPath            = flag.String("db", "lattice.db", "SQLite database file")
 		jwtSecret         = flag.String("jwt-secret", "", "secret used to sign access tokens; generated when empty")
 		tokenTTL          = flag.Duration("token-ttl", 24*time.Hour, "access token lifetime")
@@ -40,6 +41,8 @@ func main() {
 		mediaEnabled      = flag.Bool("media", true, "enable the media endpoints")
 		maintenancePeriod = flag.Duration("maintenance-interval", service.MaintenancePeriod,
 			"how often to prune expired to-device messages, transactions and typing rows; 0 disables it")
+		registrationSecrets = flag.String("registration-secret", "",
+			"comma separated registration tokens; when set, registering requires one and the open m.login.dummy flow disappears")
 		showVersion = flag.Bool("version", false, "print the version and exit")
 	)
 	flag.Parse()
@@ -63,7 +66,11 @@ func main() {
 		log.Fatalf("opening database %s: %v", *dbPath, err)
 	}
 	tokens := auth.NewTokenService(secret, auth.WithTTL(*tokenTTL))
-	svc, err := service.New(db, *serverName, tokens, service.WithMaxUploadSize(*maxUpload))
+	svc, err := service.New(db, *serverName, tokens,
+		service.WithMaxUploadSize(*maxUpload),
+		service.WithRegistrationSecrets(splitList(*registrationSecrets)...),
+		service.WithPublicBaseURL(*publicBaseURL),
+	)
 	if err != nil {
 		log.Fatalf("starting service: %v", err)
 	}
