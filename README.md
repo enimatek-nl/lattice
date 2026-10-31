@@ -166,6 +166,18 @@ endpoint that is missing.
   its sync loop whenever crypto setup or a filter changes; for those requests
   Lattice writes no body and logs nothing, so the faults worth reading stay
   visible instead of burying the log in `context canceled`.
+* Every User-Interactive Auth exchange leaves two lines in the log: the challenge
+  (what it was for, the session id, the stages already done and the ones on
+  offer) and the outcome of the stage the client sent. That is how to tell the
+  difference between a client that never came back with credentials, one that
+  came back with the wrong ones, and one whose request was accepted - which is
+  the question a client-side "unable to set up keys" leaves open:
+
+  ```text
+  interactive auth: asking for additional authentication is required to upload
+    cross-signing keys (session 4hQx…, completed [], stages [m.login.password])
+  interactive auth: @tim:localhost completed the m.login.password stage
+  ```
 * Everything — events, state, accounts, and uploaded media — lives in one SQLite
   file. Backing up means copying that file; `-max-upload-size` bounds its growth.
 * Always pass `-jwt-secret`. Sessions are stored server-side, so deleting a

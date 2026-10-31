@@ -296,6 +296,7 @@ func (s *Service) authorizeCrossSigning(userID string, auth matrix.Object) error
 	switch stage {
 	case StagePassword:
 		if err := s.checkPasswordAuth(auth, userID); err != nil {
+			logAuthStage(userID, StagePassword, err)
 			var merr *matrix.Error
 			if errors.As(err, &merr) && merr.HTTPStatus() == http.StatusForbidden {
 				return s.authChallenge(session, "the user authentication passed in the request body is incorrect")
@@ -307,6 +308,7 @@ func (s *Service) authorizeCrossSigning(userID string, auth matrix.Object) error
 	default:
 		return s.authChallenge(session, "session does not support authentication protocol %s", stage)
 	}
+	logAuthStage(userID, stage, nil)
 	session.complete(stage)
 	return nil
 }

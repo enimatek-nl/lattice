@@ -708,6 +708,17 @@ fetched first.
      cross-signing keys are hard deletes now, and the next version number is chosen
      over rows an older Lattice left behind so an existing database recovers on its
      own.
+   * A client that reports "unable to set up keys" after a `401` challenge says
+     nothing about whether it ever answered the challenge. `TestCrossSigningAuthShapes`
+     now replays Element's exact second request - `identifier: {type: m.id.user, user}`,
+     no legacy `user` field, the same session id after a refused attempt, a master
+     key carrying both its self-signature and the device signature the Rust crypto
+     adds - and the server accepts all of it. To make the remaining possibilities
+     visible, every interactive auth exchange logs the challenge (reason, session,
+     completed stages, stages on offer) and the outcome of the stage the client
+     sent. A stale session id is not a lockout: the password check is the gate, so
+     a retry with an unknown session and valid credentials goes through, and one
+     without them does not.
    The sequence has now been replayed by a test; a browser still has to click it.
 3. Loose ends spotted while doing history, relations, the user script, the gap
    chunk, the search/spaces chunk and the reports chunk:

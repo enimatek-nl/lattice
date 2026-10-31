@@ -574,3 +574,134 @@ func TestCrossSigningUsageSpellings(t *testing.T) {
 		t.Errorf("the stored key lost the spelling it arrived with: %v (body %s)", stored["usage"], queried.Raw)
 	}
 }
+
+// TestCrossSigningAuthShapes answers the interactive auth challenge the way
+// Element does, so a difference in field names cannot break a real client: the
+// password stage is retried in the same session, the account is named in an
+// "identifier" object of type m.id.user, and a first attempt with the wrong
+// password only asks again rather than ending the exchange.
+func TestCrossSigningAuthShapes(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	master := newKeyPair(t)
+	object := signingKeyObject(t, alice.UserID, master.public, "master", master.private, master.id)
+
+	// The Rust crypto also signs the master key with the device that uploaded it,
+	// so a real request carries two signatures on that one object. Both have to
+	// survive: dropping the device signature would lose the link between the
+	// identity and the device that published it.
+	deviceKey := matrix.Object{
+		"user_id":    alice.UserID,
+		"device_id":  alice.DeviceID,
+		"algorithms": []string{"m.olm.v1.curve25519-aes-sha2", "m.megolm.v1.aes-sha2"},
+		"keys": matrix.Object{
+			"curve25519:" + alice.DeviceID: base64.RawStdEncoding.EncodeToString(master.public),
+			"ed25519:" + alice.DeviceID:    base64.RawStdEncoding.EncodeToString(master.public),
+		},
+	}
+	server.MustDo(http.MethodPost, "/_matrix/client/v3/keys/upload", alice.Token,
+		matrix.Object{"device_id": alice.DeviceID, "device_key": deviceKey}, http.StatusOK)
+	unsigned := matrix.Object{
+		"user_id": object["user_id"],
+		"usage":   object["usage"],
+		"keys":    object["keys"],
+	}
+	deviceSig, err := matrix.SignEd25519(master.private, unsigned)
+	if err != nil {
+		t.Fatalf("signing the master key with the device: %v", err)
+	}
+	signatures, _ := object["signatures"].(matrix.Object)
+	byUser, _ := signatures[alice.UserID].(matrix.Object)
+	byUser["ed25519:"+alice.DeviceID] = base64.RawStdEncoding.EncodeToString(deviceSig)
+
+	challenge := server.Do(http.MethodPost, "/_matrix/client/v3/keys/device_signing/upload", alice.Token,
+		matrix.Object{"master_key": object})
+	if challenge.Status != http.StatusUnauthorized {
+		t.Fatalf("the first attempt: got %d %s, want 401", challenge.Status, challenge.Raw)
+	}
+	session := challenge.String("session")
+	if session == "" {
+		t.Fatalf("the challenge carries no session: %s", challenge.Raw)
+	}
+
+	// A wrong password keeps the same session and the same flow list, which is
+	// what lets the client show the field again instead of giving up.
+	wrong := server.Do(http.MethodPost, "/_matrix/client/v3/keys/device_signing/upload", alice.Token,
+		matrix.Object{
+			"master_key": object,
+			"auth": matrix.Object{
+				"type":       "m.login.password",
+				"identifier": matrix.Object{"type": "m.id.user", "user": alice.UserID},
+				"password":   "not-it",
+				"session":    session,
+			},
+		})
+	if wrong.Status != http.StatusUnauthorized {
+		t.Fatalf("a wrong password: got %d %s, want 401", wrong.Status, wrong.Raw)
+	}
+	if again := wrong.String("session"); again != session {
+		t.Errorf("a refused stage changed the session from %q to %q", session, again)
+	}
+	if completed, ok := wrong.Body["completed"].([]any); ok && len(completed) != 0 {
+		t.Errorf("a refused stage was marked completed: %v", wrong.Body["completed"])
+	}
+
+	// Element sends no legacy "user" field and no client_secret; the identifier
+	// object alone has to identify the account.
+	accepted := server.Do(http.MethodPost, "/_matrix/client/v3/keys/device_signing/upload", alice.Token,
+		matrix.Object{
+			"master_key": object,
+			"auth": matrix.Object{
+				"type":       "m.login.password",
+				"identifier": matrix.Object{"type": "m.id.user", "user": alice.UserID},
+				"password":   "wonderland",
+				"session":    session,
+			},
+		})
+	if accepted.Status != http.StatusOK {
+		t.Fatalf("the retry with an identifier object: got %d %s", accepted.Status, accepted.Raw)
+	}
+	// A spent session id does not lock the client out: the session is a handle for
+	// the exchange, not a capability. Knowing the password is the gate, so a client
+	// that retries with a stale id and valid credentials still gets through - and
+	// one without them does not.
+	stale := server.Do(http.MethodPost, "/_matrix/client/v3/keys/device_signing/upload", alice.Token,
+		matrix.Object{
+			"master_key": object,
+			"auth": matrix.Object{
+				"type":       "m.login.password",
+				"identifier": matrix.Object{"type": "m.id.user", "user": alice.UserID},
+				"password":   "wonderland",
+				"session":    "not-a-session-any-more",
+			},
+		})
+	if stale.Status != http.StatusOK {
+		t.Errorf("a retry with a stale session id: got %d %s, want 200", stale.Status, stale.Raw)
+	}
+	guessed := server.Do(http.MethodPost, "/_matrix/client/v3/keys/device_signing/upload", alice.Token,
+		matrix.Object{
+			"master_key": object,
+			"auth": matrix.Object{
+				"type":       "m.login.password",
+				"identifier": matrix.Object{"type": "m.id.user", "user": alice.UserID},
+				"password":   "letmein",
+				"session":    "not-a-session-any-more",
+			},
+		})
+	if guessed.Status == http.StatusOK {
+		t.Errorf("a guessed password through a stale session id was accepted: %s", guessed.Raw)
+	}
+	queried := server.MustDo(http.MethodPost, "/_matrix/client/v3/keys/query", alice.Token,
+		matrix.Object{"device_keys": map[string][]string{alice.UserID: nil}}, http.StatusOK)
+	stored := crossSigningFromQuery(queried)[master.id]
+	if stored == nil {
+		t.Fatalf("the accepted upload stored nothing: %s", queried.Raw)
+	}
+	kept, _ := stored["signatures"].(map[string]any)
+	bySigner, _ := kept[alice.UserID].(map[string]any)
+	for _, keyID := range []string{master.id, "ed25519:" + alice.DeviceID} {
+		if _, ok := bySigner[keyID]; !ok {
+			t.Errorf("the stored master key lost the signature under %s: %v", keyID, bySigner)
+		}
+	}
+}

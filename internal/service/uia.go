@@ -3,7 +3,10 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -205,14 +208,48 @@ func (s *Service) authParams() matrix.Object {
 // carries the flows, the session id and the stages already done, which is what
 // clients need to keep the exchange going.
 func (s *Service) authChallenge(session *authSession, format string, args ...any) *matrix.Error {
+	reason := ""
+	if len(args) == 0 {
+		reason = format
+	} else {
+		reason = fmt.Sprintf(format, args...)
+	}
+	flows, completed := session.snapshot()
+	// A client that cannot set up encryption usually stopped at one of these
+	// challenges. Logging the stage names and the session makes the difference
+	// visible in the server log: whether the client ever came back with
+	// credentials, and whether it was working on the session that was offered.
+	log.Printf("interactive auth: asking for %s (session %s, completed %v, stages %s)",
+		reason, session.id, completed, authFlowNames(flows))
 	info := s.authInfo(session)
-	err := matrix.ErrUnauthorized(format, args...)
+	err := matrix.ErrUnauthorized("%s", reason)
 	return err.WithExtra(matrix.Object{
 		"flows":     info.Flows,
 		"params":    info.Params,
 		"session":   info.Session,
 		"completed": info.Completed,
 	})
+}
+
+// authFlowNames renders the offered flows for the log, joining the stages of one
+// flow with a plus: "m.login.password", or "m.login.password+m.login.token".
+func authFlowNames(flows []AuthFlow) []string {
+	out := make([]string, 0, len(flows))
+	for _, flow := range flows {
+		out = append(out, strings.Join(flow.Stages, "+"))
+	}
+	return out
+}
+
+// logAuthStage records how one stage attempt ended. The rejection of credentials
+// is worth a line because it is both the common cause of a client giving up on
+// an encrypted setup and a sign that someone is guessing passwords.
+func logAuthStage(userID, stage string, err error) {
+	if err != nil {
+		log.Printf("interactive auth: the %s stage for %s was refused: %v", stage, userID, err)
+		return
+	}
+	log.Printf("interactive auth: %s completed the %s stage", userID, stage)
 }
 
 // expireAuthSessions drops sessions nobody finished and returns how many went
@@ -309,6 +346,7 @@ func (s *Service) authorizeRegistration(params RegisterParams) error {
 			return s.authChallenge(session, "session does not support authentication protocol %s", stage)
 		}
 		if err := s.checkPasswordAuth(params.Auth, params.Username); err != nil {
+			logAuthStage(params.Username, StagePassword, err)
 			var merr *matrix.Error
 			if errors.As(err, &merr) && merr.HTTPStatus() == http.StatusForbidden {
 				// A wrong password is not fatal: the client gets the flow list
@@ -324,6 +362,7 @@ func (s *Service) authorizeRegistration(params RegisterParams) error {
 	default:
 		return s.authChallenge(session, "session does not support authentication protocol %s", stage)
 	}
+	logAuthStage(params.Username, stage, nil)
 	session.complete(stage)
 	return nil
 }
