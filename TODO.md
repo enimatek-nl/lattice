@@ -632,8 +632,50 @@ through Element exposed: the async media upload flow was half-implemented (no
 never finished and the avatar silently never changed), and the third-party
 identifier endpoints were unrouted (which Element renders as "Unable to load
 email addresses and phone numbers"). Coverage is 149/234 indexed endpoints with
-26 extra routes and 89 compatibility tests. Pick the next chunk from the list
+26 extra routes and 91 compatibility tests. Pick the next chunk from the list
 below.
+
+### Open thread: Element still says "unable to set up keys"
+
+Everything Element sends during key setup is answered correctly as far as the
+tests can prove, and the failure is still not located. What is known, in order:
+
+* `POST /keys/device_signing/upload` with no `auth` dict answers 401 with
+  `{"flows":[{"stages":["m.login.password"]}]. …}`. That is the specification
+  behaviour, and the payload Element logs at that moment has no `auth` field, so
+  it is the *first* attempt, not a rejected one. Verified against the published
+  spec: this endpoint has no reset flag or reset stage; the only extra auth type
+  it defines is `m.oauth` (for OAuth homeservers), and
+  `org.matrix.cross_signing_reset` is an OAuth *account management action* name.
+* Element's `CreateCrossSigning.ts::uiAuthCallback` turns that 401 into
+  `InteractiveAuthDialog`, whose password entry sends
+  `{"type":"m.login.password","identifier":{"type":"m.id.user","user":…},
+  "password":…,"session":…}`. `TestCrossSigningAuthShapes` replays exactly that
+  (identifier object, same session after a refused attempt, a master key signed
+  both by itself and by the uploading device) and the server accepts all of it
+  and keeps both signatures.
+* So the missing observation is whether Element ever sends that second request.
+  Every interactive auth exchange now logs two lines - the challenge (reason,
+  session, completed stages, stages on offer) and the outcome of the stage the
+  client sent (`… completed the m.login.password stage`, or `the m.login.password
+  stage for … was refused`). Next session, start with the log from one click on
+  "Set up encryption":
+  * only the challenge line → Element never came back with credentials; the next
+    question is the Element console line right after the 401 (a cancelled dialog
+    throws "Cross-signing key upload auth canceled");
+  * a refused line → the password in the dialog was wrong;
+  * both lines → the upload was accepted and the failure is further along: secret
+    storage (`m.secret_storage.key.*`, `m.cross_signing.*` account data) or key
+    backup (`GET/PUT /room_keys/version`, `PUT /room_keys/keys?version=…`).
+* A second, cheaper reproduction that skips Element entirely: POST the endpoint
+  with `{}` to get a session, then resend with the auth dict above. See the
+  "Operational notes" section of README for the two curl calls.
+* Everything else Element reported in the last round is fixed and pushed: `PUT
+  /room_keys/version` is routed, `POST /keys/signatures/upload` accepts
+  `signed_keys`, cross-signing keys are reported in `master_keys` /
+  `self_signing_keys` / `user_signing_keys` instead of inside `device_keys`,
+  deleting a key backup no longer blocks recreating one, and replacing a
+  cross-signing identity no longer needs a flag no client sends.
 
 The endpoint index in `SPECS.md` points at a spec corpus that is **not** in this
 workspace (there is no `references/` directory), so specification wording cannot
