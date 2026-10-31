@@ -156,11 +156,15 @@ func TestElementKeySetupChain(t *testing.T) {
 		matrix.Object{"device_keys": map[string][]string{alice.UserID: nil}}, http.StatusOK)
 	byEntity, _ := queried.Body["device_keys"].(map[string]any)
 	mine, _ := byEntity[alice.UserID].(map[string]any)
+	cross := crossSigningFromQuery(queried)
 	for _, key := range []keyPair{master, selfSigningKey, userSigningKey} {
-		stored, ok := mine[key.id].(map[string]any)
+		stored, ok := cross[key.id]
 		if !ok {
 			t.Errorf("the query response has no cross-signing key %s: %s", key.id, queried.Raw)
 			continue
+		}
+		if _, inside := mine[key.id]; inside {
+			t.Errorf("the cross-signing key %s is also reported as a device: %s", key.id, queried.Raw)
 		}
 		if stored["user_id"] != alice.UserID {
 			t.Errorf("the stored cross-signing key %s has user_id %v", key.id, stored["user_id"])

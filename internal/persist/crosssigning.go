@@ -102,6 +102,9 @@ func (r *CrossSigningRepoImpl) ByUsage(userID, usage string) (*CrossSigningKey, 
 
 // DeleteAll implements [CrossSigningRepo].
 func (r *CrossSigningRepoImpl) DeleteAll(userID string) (int64, error) {
-	result := r.db.Where("user_id = ?", userID).Delete(&CrossSigningKey{})
+	// Removed for real, not flagged: a key that is only marked as deleted still
+	// holds its place in the unique index over (user_id, key_id), and the next
+	// upload of that id would then update a row no read can see.
+	result := r.db.Unscoped().Where("user_id = ?", userID).Delete(&CrossSigningKey{})
 	return result.RowsAffected, result.Error
 }

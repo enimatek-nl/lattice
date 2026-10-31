@@ -446,9 +446,12 @@ updated: it is the hand-off point after context compaction. Read
   row** together with `ErrRecordNotFound`. Branch on the error
   (`persist.IsNotFound(err)`), never on `x == nil`.
 * Deletes that free a unique index must be hard deletes (`Unscoped()`): push
-  rules, pushers, room memberships (forget), aliases, profile fields, devices
-  and sessions. A soft delete keeps the indexed values, so the next
-  `ON CONFLICT` upsert updates the invisible row and the record stays missing.
+  rules, pushers, room memberships (forget), aliases, profile fields, devices,
+  sessions, key backup versions and their stored sessions, and cross-signing
+  keys. A soft delete keeps the indexed values, so the next
+  `ON CONFLICT` upsert updates the invisible row and the record stays missing -
+  or the next insert of that value fails with a duplicate key, which is what a
+  client recreating a deleted key backup hit.
 * `tests/compat/maintenance_test.go` shows how to test time-dependent
   behaviour: `newClockServer` starts a server with a mutex-protected clock the
   test advances, and the token service needs a long TTL there because session
@@ -686,7 +689,25 @@ fetched first.
      keys without the reset flag` and nowhere to go. Answering the interactive auth
      challenge is the authorisation; the replacement now goes through, deletes the
      keys it replaces, and removes the signatures those keys made on the user's
-     devices so no client is left holding a signature it cannot resolve.
+     devices so no client is left holding a signature it cannot resolve. Checked
+     against the published specification: `org.matrix.cross_signing_reset` appears
+     there only as an *account management action* name (an OAuth thing), and the
+     one extra auth type this endpoint defines is `m.oauth` for OAuth homeservers.
+   * `POST /keys/query` reported cross-signing keys inside `device_keys`, keyed by
+     their key id. A device entry has to have a `device_id`, so a client parsing
+     that map either rejects the response or invents a device that does not exist;
+     the specification puts those keys in the separate `master_keys`,
+     `self_signing_keys` and `user_signing_keys` maps, which is what the Rust
+     crypto reads. `user_signing_keys` is answered only for the requester, as the
+     specification asks.
+   * Deleting a key backup only marked the row as deleted (GORM's soft delete),
+     while the unique index over (user, version) kept counting it. Element's reset
+     path deletes the backup and creates a new one, which then took the same number
+     and failed to insert: `M_UNKNOWN: internal server error: duplicated key not
+     allowed`, twice in the log, once per click. Deletes of key backups and
+     cross-signing keys are hard deletes now, and the next version number is chosen
+     over rows an older Lattice left behind so an existing database recovers on its
+     own.
    The sequence has now been replayed by a test; a browser still has to click it.
 3. Loose ends spotted while doing history, relations, the user script, the gap
    chunk, the search/spaces chunk and the reports chunk:

@@ -69,7 +69,7 @@ func (a *App) handleKeysQuery(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, r, err)
 		return
 	}
-	result, err := a.svc.QueryKeys(r.Context(), body.DeviceKeys)
+	result, err := a.svc.QueryKeys(r.Context(), auth.GetUserID(r), body.DeviceKeys)
 	if err != nil {
 		a.writeError(w, r, err)
 		return

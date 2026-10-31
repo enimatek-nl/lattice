@@ -106,12 +106,17 @@ including the async create → upload → commit flow Element uses, the profile 
 third-party-identifier endpoints (the 3PID listing is real and empty; linking an
 address refuses with a reason, because no verification mail or text is ever sent),
 profiles, filters, account data, redaction, device management (`/devices`),
-device keys (`/keys/upload`, `/keys/query`, `/keys/claim`, `/keys/changes` and
+device keys (`/keys/upload`, `/keys/query` - which answers cross-signing keys in
+the `master_keys`, `self_signing_keys` and `user_signing_keys` maps the
+specification names, never among the device entries a client parses as a device -
+`/keys/claim`, `/keys/changes` and
 the key sections of `/sync`, including unused fallback keys named under the
 algorithm they were uploaded under), cross-signing (`/keys/device_signing/upload`,
+whose only extra spec-defined auth type is `m.oauth` for OAuth homeservers,
 `/keys/signatures/upload` in both request shapes the spec has had) and
 server-side room key backup (`/room_keys/*`, versions created with `PUT` and named
-as strings), the admin routes, abuse reports, and
+as strings, deleted for real so a recreated backup cannot collide with the number
+of the one that went away), the admin routes, abuse reports, and
 `/.well-known/matrix/{client,server,support}`. Endpoints that are not implemented
 answer `404 M_UNRECOGNIZED` rather than a bare HTTP 404, so a client can name the
 endpoint that is missing.

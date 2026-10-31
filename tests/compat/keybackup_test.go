@@ -252,3 +252,76 @@ func TestKeyBackupSessionsAreOpaque(t *testing.T) {
 		t.Errorf("the stored blob lost a field the server does not know: %s", got.Raw)
 	}
 }
+
+// TestKeyBackupRecreatedAfterDeletion covers the sequence a client takes when it
+// throws a backup away and starts a new one, which is what Element does when the
+// user resets encryption. A deleted version has to really go away: if the row
+// only stops being visible while keeping its place in the unique index over
+// (user, version), the next version gets the same number and the create fails
+// with a duplicate key - and a client that cannot create a backup says only that
+// it could not set up keys.
+func TestKeyBackupRecreatedAfterDeletion(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+
+	body := func(key string) map[string]any {
+		return map[string]any{
+			"algorithm": "m.megolm_backup.v1.curve25519-aes-sha2",
+			"auth_data": map[string]any{"public_key": key, "signatures": map[string]any{}},
+		}
+	}
+	first := server.MustDo(http.MethodPut, "/_matrix/client/v3/room_keys/version", alice.Token,
+		body("aW52YWxpZCBwdWJsaWMga2V5"), http.StatusOK)
+	version := first.String("version")
+	if version == "" {
+		t.Fatalf("the first backup has no version: %s", first.Raw)
+	}
+	session := map[string]any{
+		"first_message_index": 0,
+		"forwarded_count":     0,
+		"is_verified":         false,
+		"session_data":        map[string]any{"ephemeral": "opaque", "mac": "opaque", "ciphertext": "opaque"},
+	}
+	stored := map[string]any{"rooms": map[string]any{
+		"!room:test.server": map[string]any{"sessions": map[string]any{"sessionOne": session}},
+	}}
+	server.MustDo(http.MethodPut, "/_matrix/client/v3/room_keys/keys?version="+version, alice.Token,
+		stored, http.StatusOK)
+	if resp := server.Do(http.MethodDelete, "/_matrix/client/v3/room_keys/version/"+version, alice.Token, nil); resp.Status != http.StatusOK {
+		t.Fatalf("deleting the backup: got %d %s", resp.Status, resp.Raw)
+	}
+	if resp := server.Do(http.MethodGet, "/_matrix/client/v3/room_keys/version", alice.Token, nil); resp.Status != http.StatusNotFound {
+		t.Fatalf("the version after the delete: got %d %s, want 404", resp.Status, resp.Raw)
+	}
+
+	// Both spellings a client may use for creating the replacement have to work,
+	// and neither may collide with the version that was just deleted. The deleted
+	// version is gone for real, so its number may be handed out again - what must
+	// not happen is a create that fails because an invisible row still holds the
+	// slot, and no session of the old backup may still be readable.
+	for _, method := range []string{http.MethodPut, http.MethodPost} {
+		created := server.Do(method, "/_matrix/client/v3/room_keys/version", alice.Token, body("bmV3ZXIga2V5"))
+		if created.Status != http.StatusOK {
+			t.Fatalf("%s /room_keys/version after the delete: got %d %s", method, created.Status, created.Raw)
+		}
+		next := created.String("version")
+		if next == "" {
+			t.Fatalf("%s created a backup with no version: %s", method, created.Raw)
+		}
+		empty := server.Do(http.MethodGet, "/_matrix/client/v3/room_keys/keys", alice.Token, nil)
+		if empty.Status != http.StatusOK {
+			t.Fatalf("reading the sessions of the new backup: got %d %s", empty.Status, empty.Raw)
+		}
+		if rooms, ok := empty.Body["rooms"].(map[string]any); ok && len(rooms) > 0 {
+			t.Errorf("the new backup still holds sessions of the deleted one: %s", empty.Raw)
+		}
+		// The sessions of a fresh backup can be written under the new number,
+		// including the same session id the old backup held.
+		if resp := server.Do(http.MethodPut, "/_matrix/client/v3/room_keys/keys?version="+next, alice.Token, stored); resp.Status != http.StatusOK {
+			t.Errorf("storing a session under version %s: got %d %s", next, resp.Status, resp.Raw)
+		}
+		if resp := server.Do(http.MethodDelete, "/_matrix/client/v3/room_keys/version/"+next, alice.Token, nil); resp.Status != http.StatusOK {
+			t.Fatalf("deleting version %s: got %d %s", next, resp.Status, resp.Raw)
+		}
+	}
+}

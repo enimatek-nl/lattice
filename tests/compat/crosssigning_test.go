@@ -38,6 +38,28 @@ func signingKeyObject(t *testing.T, userID string, public ed25519.PublicKey, usa
 	return object
 }
 
+// crossSigningFromQuery gathers the cross-signing keys of a POST /keys/query
+// response by key id. They arrive in the three maps the specification names for
+// them - master_keys, self_signing_keys, user_signing_keys - and not among the
+// device keys, which is a shape a client parses as a device.
+func crossSigningFromQuery(resp Response) map[string]map[string]any {
+	out := map[string]map[string]any{}
+	for _, section := range []string{"master_keys", "self_signing_keys", "user_signing_keys"} {
+		byUser, _ := resp.Body[section].(map[string]any)
+		for _, object := range byUser {
+			entry, _ := object.(map[string]any)
+			if entry == nil {
+				continue
+			}
+			keys, _ := entry["keys"].(map[string]any)
+			for keyID := range keys {
+				out[keyID] = entry
+			}
+		}
+	}
+	return out
+}
+
 // keyPair is one generated ed25519 key with the id it is published under.
 type keyPair struct {
 	public  ed25519.PublicKey
@@ -149,14 +171,22 @@ func TestCrossSigning(t *testing.T) {
 		map[string]any{"device_keys": map[string]any{alice.UserID: []string{}}}, http.StatusOK)
 	byEntity, _ := queried.Body["device_keys"].(map[string]any)
 	mine, _ := byEntity[alice.UserID].(map[string]any)
+	cross := crossSigningFromQuery(queried)
 	for _, keyID := range []string{master.id, selfSigning.id, userSigning.id} {
-		entry, ok := mine[keyID].(map[string]any)
+		entry, ok := cross[keyID]
 		if !ok {
 			t.Errorf("POST /keys/query does not report the key %s: %s", keyID, queried.Raw)
 			continue
 		}
 		if entry["user_id"] != alice.UserID {
 			t.Errorf("the key %s belongs to %v", keyID, entry["user_id"])
+		}
+	}
+	// The cross-signing keys stay out of the device map: an entry there is read as
+	// a device, and a cross-signing object has no device_id to parse.
+	for keyID := range cross {
+		if _, ok := mine[keyID]; ok {
+			t.Errorf("the cross-signing key %s also appears as a device: %s", keyID, queried.Raw)
 		}
 	}
 
@@ -184,18 +214,17 @@ func TestCrossSigning(t *testing.T) {
 	}
 	afterReset := server.MustDo(http.MethodPost, "/_matrix/client/v3/keys/query", alice.Token,
 		map[string]any{"device_keys": map[string]any{alice.UserID: []string{}}}, http.StatusOK)
-	byEntity, _ = afterReset.Body["device_keys"].(map[string]any)
-	mine, _ = byEntity[alice.UserID].(map[string]any)
-	if _, ok := mine[replacement.id]; !ok {
+	cross = crossSigningFromQuery(afterReset)
+	if _, ok := cross[replacement.id]; !ok {
 		t.Errorf("the replacement did not store the new master key: %s", afterReset.Raw)
 	}
-	if _, ok := mine[master.id]; ok {
+	if _, ok := cross[master.id]; ok {
 		t.Errorf("the replacement left the old master key behind: %s", afterReset.Raw)
 	}
 	// The keys the old master signed are gone with it: a client would otherwise
 	// keep offering self-signing and user-signing keys no master key vouches for.
 	for _, keyID := range []string{selfSigning.id, userSigning.id} {
-		if _, ok := mine[keyID]; ok {
+		if _, ok := cross[keyID]; ok {
 			t.Errorf("the replacement left the key %s of the old set behind: %s", keyID, afterReset.Raw)
 		}
 	}
@@ -286,7 +315,7 @@ func TestCrossSigning(t *testing.T) {
 			t.Errorf("a replaced key still signs the device: %v", byUser)
 		}
 	}
-	if _, ok := mine[second.id]; !ok {
+	if _, ok := crossSigningFromQuery(cleared)[second.id]; !ok {
 		t.Errorf("the second replacement did not store its master key: %s", cleared.Raw)
 	}
 }
@@ -539,9 +568,7 @@ func TestCrossSigningUsageSpellings(t *testing.T) {
 	// change what its own signature covers, and the client verifies that signature.
 	queried := server.MustDo(http.MethodPost, "/_matrix/client/v3/keys/query", alice.Token,
 		matrix.Object{"device_keys": map[string][]string{alice.UserID: nil}}, http.StatusOK)
-	devices, _ := queried.Body["device_keys"].(map[string]any)
-	published, _ := devices[alice.UserID].(map[string]any)
-	stored, _ := published[selfSigning.id].(map[string]any)
+	stored := crossSigningFromQuery(queried)[selfSigning.id]
 	usage, _ := stored["usage"].([]any)
 	if len(usage) != 1 || usage[0] != "self_signing" {
 		t.Errorf("the stored key lost the spelling it arrived with: %v (body %s)", stored["usage"], queried.Raw)

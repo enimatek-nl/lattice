@@ -311,33 +311,6 @@ func (s *Service) authorizeCrossSigning(userID string, auth matrix.Object) error
 	return nil
 }
 
-// CrossSigningKeys returns the cross-signing keys of the listed users, keyed by
-// user id and then by key id. POST /keys/query reports them in the same map as
-// the device keys, because that is where clients look for them.
-func (s *Service) CrossSigningKeys(ctx context.Context, userIDs ...string) (map[string]map[string]matrix.Object, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	out := map[string]map[string]matrix.Object{}
-	for _, userID := range userIDs {
-		rows, err := s.db.CrossSigningRepo.List(userID)
-		if err != nil {
-			return nil, matrix.ErrInternal(err)
-		}
-		for _, row := range rows {
-			var object matrix.Object
-			if err := json.Unmarshal([]byte(row.Data), &object); err != nil {
-				return nil, matrix.ErrInternal(err)
-			}
-			if out[userID] == nil {
-				out[userID] = map[string]matrix.Object{}
-			}
-			out[userID][row.KeyID] = object
-		}
-	}
-	return out, nil
-}
-
 // SignatureUpload is the body of POST /keys/signatures/upload.
 //
 // Two shapes arrive here and both have to work. The current one is signed_keys:

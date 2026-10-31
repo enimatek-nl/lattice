@@ -176,11 +176,23 @@ func normaliseKey(algorithm string, key matrix.Object) matrix.Object {
 type KeyQueryResult struct {
 	DeviceKeys map[string]map[string]matrix.Object `json:"device_keys"`
 	Failures   matrix.Object                       `json:"failures"`
+	// MasterKeys, SelfSigningKeys and UserSigningKeys hold the cross-signing keys,
+	// one map per usage. They are separate from DeviceKeys because they are not
+	// devices: a cross-signing object has no device_id, and a client that parses a
+	// device entry expects one. A response that mixes the two is rejected by the
+	// Rust crypto stack, which then reports that keys could not be set up.
+	MasterKeys      map[string]matrix.Object `json:"master_keys,omitempty"`
+	SelfSigningKeys map[string]matrix.Object `json:"self_signing_keys,omitempty"`
+	// UserSigningKeys only carries the requesting user's own key, as the
+	// specification asks: another user's user-signing key is not needed to decide
+	// whether their devices are trusted.
+	UserSigningKeys map[string]matrix.Object `json:"user_signing_keys,omitempty"`
 }
 
 // QueryKeys returns the published device keys of the requested users. An empty
-// device list for a user asks for every device of that user.
-func (s *Service) QueryKeys(ctx context.Context, wanted map[string][]string) (*KeyQueryResult, error) {
+// device list for a user asks for every device of that user. The requester is
+// needed because their own user-signing key is the only one reported.
+func (s *Service) QueryKeys(ctx context.Context, requester string, wanted map[string][]string) (*KeyQueryResult, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -213,20 +225,42 @@ func (s *Service) QueryKeys(ctx context.Context, wanted map[string][]string) (*K
 		result.DeviceKeys[key.UserID][key.DeviceID] = object
 	}
 
-	// The cross-signing keys of a user live in the same map, named by their key
-	// id instead of a device id. That is where clients look for them, and it is
-	// how they learn who this user's identity vouches for.
-	crossSigning, err := s.CrossSigningKeys(ctx, userIDs...)
-	if err != nil {
-		return nil, err
+	// The cross-signing keys go into the maps the specification names for them.
+	result.MasterKeys = map[string]matrix.Object{}
+	result.SelfSigningKeys = map[string]matrix.Object{}
+	result.UserSigningKeys = map[string]matrix.Object{}
+	for _, userID := range userIDs {
+		rows, err := s.db.CrossSigningRepo.List(userID)
+		if err != nil {
+			return nil, matrix.ErrInternal(err)
+		}
+		for _, row := range rows {
+			object, err := decodeJSONObject(row.Data)
+			if err != nil {
+				return nil, err
+			}
+			switch row.Usage {
+			case CrossSigningMaster:
+				result.MasterKeys[userID] = object
+			case CrossSigningSelfSigning:
+				result.SelfSigningKeys[userID] = object
+			case CrossSigningUserSigning:
+				if userID == requester {
+					result.UserSigningKeys[userID] = object
+				}
+			}
+		}
 	}
-	for userID, byKey := range crossSigning {
-		if result.DeviceKeys[userID] == nil {
-			result.DeviceKeys[userID] = map[string]matrix.Object{}
-		}
-		for keyID, object := range byKey {
-			result.DeviceKeys[userID][keyID] = object
-		}
+	// A section a client has nothing to read is left out entirely rather than
+	// shipped as an empty map.
+	if len(result.MasterKeys) == 0 {
+		result.MasterKeys = nil
+	}
+	if len(result.SelfSigningKeys) == 0 {
+		result.SelfSigningKeys = nil
+	}
+	if len(result.UserSigningKeys) == 0 {
+		result.UserSigningKeys = nil
 	}
 	return result, nil
 }

@@ -114,10 +114,13 @@ func (r *KeyBackupRepoImpl) GetVersion(userID string, version int64) (*KeyBackup
 	return &row, nil
 }
 
-// HighestVersionNumber implements [KeyBackupRepo].
+// HighestVersionNumber implements [KeyBackupRepo]. The search covers rows that
+// an older version of Lattice marked as deleted without removing them, because
+// the unique index over (user_id, version) still counts those rows: picking a
+// number they already hold fails with a duplicate key.
 func (r *KeyBackupRepoImpl) HighestVersionNumber(userID string) (int64, error) {
 	var version KeyBackupVersion
-	err := r.db.Where("user_id = ?", userID).Order("version desc").First(&version).Error
+	err := r.db.Unscoped().Where("user_id = ?", userID).Order("version desc").First(&version).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return 0, nil
 	}
@@ -141,20 +144,24 @@ func (r *KeyBackupRepoImpl) UpdateVersion(version *KeyBackupVersion) error {
 
 // DeleteVersion implements [KeyBackupRepo].
 func (r *KeyBackupRepoImpl) DeleteVersion(userID string, version int64) (int64, error) {
-	if err := r.db.Where("user_id = ? AND version = ?", userID, version).
+	// The rows are removed for real. A backup version that is only marked as
+	// deleted still occupies its slot in the unique index over (user_id, version),
+	// so the next backup would be handed a number that cannot be inserted, and a
+	// client recreating its backup would be told the version already exists.
+	if err := r.db.Unscoped().Where("user_id = ? AND version = ?", userID, version).
 		Delete(&KeyBackupVersion{}).Error; err != nil {
 		return 0, err
 	}
-	result := r.db.Where("user_id = ? AND version = ?", userID, version).Delete(&BackupRoomKey{})
+	result := r.db.Unscoped().Where("user_id = ? AND version = ?", userID, version).Delete(&BackupRoomKey{})
 	return result.RowsAffected, result.Error
 }
 
 // DeleteAll implements [KeyBackupRepo].
 func (r *KeyBackupRepoImpl) DeleteAll(userID string) (int64, error) {
-	if err := r.db.Where("user_id = ?", userID).Delete(&KeyBackupVersion{}).Error; err != nil {
+	if err := r.db.Unscoped().Where("user_id = ?", userID).Delete(&KeyBackupVersion{}).Error; err != nil {
 		return 0, err
 	}
-	result := r.db.Where("user_id = ?", userID).Delete(&BackupRoomKey{})
+	result := r.db.Unscoped().Where("user_id = ?", userID).Delete(&BackupRoomKey{})
 	return result.RowsAffected, result.Error
 }
 
@@ -211,7 +218,7 @@ func (r *KeyBackupRepoImpl) CountKeys(userID string, version int64, roomID strin
 
 // DeleteKeys implements [KeyBackupRepo].
 func (r *KeyBackupRepoImpl) DeleteKeys(userID string, version int64, roomID, sessionID string) (int64, error) {
-	query := r.db.Where("user_id = ? AND version = ?", userID, version)
+	query := r.db.Unscoped().Where("user_id = ? AND version = ?", userID, version)
 	if roomID != "" {
 		query = query.Where("room_id = ?", roomID)
 	}
