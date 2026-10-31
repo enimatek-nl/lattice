@@ -1,0 +1,94 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="400" viewBox="0 0 1200 400" role="img">
+  <title>Lattice — a tiny Matrix homeserver written in Go</title>
+
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#143442"/>
+      <stop offset="1" stop-color="#0a2028"/>
+    </linearGradient>
+    <pattern id="net" width="56" height="56" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+      <path d="M56 0H0V56" fill="none" stroke="#58c98d" stroke-opacity="0.12" stroke-width="2"/>
+      <circle cx="0" cy="0" r="3" fill="#7fe3b0" fill-opacity="0.2"/>
+    </pattern>
+    <g id="spark">
+      <path d="M0,-16 C2,-5 5,-2 16,0 C5,2 2,5 0,16 C-2,5 -5,2 -16,0 C-5,-2 -2,-5 0,-16 Z"/>
+    </g>
+  </defs>
+
+  <!-- background -->
+  <rect width="1200" height="400" rx="28" fill="url(#bg)"/>
+  <rect width="1200" height="400" rx="28" fill="url(#net)"/>
+  <rect x="1.5" y="1.5" width="1197" height="397" rx="27" fill="none" stroke="#7fe3b0" stroke-opacity="0.28" stroke-width="2"/>
+
+  <!-- ground shadow -->
+  <ellipse cx="245" cy="332" rx="130" ry="16" fill="#000000" opacity="0.25"/>
+
+  <!-- mascot: a friendly lattice grid -->
+  <g stroke-linecap="round" stroke-linejoin="round">
+    <!-- antenna -->
+    <line x1="245" y1="120" x2="245" y2="90" stroke="#13303d" stroke-width="7"/>
+    <circle cx="245" cy="80" r="10" fill="#f7cf5f" stroke="#13303d" stroke-width="5"/>
+
+    <!-- waving arm (left) and pointing arm (right) -->
+    <path d="M150 196 Q 108 172 112 130" fill="none" stroke="#13303d" stroke-width="9"/>
+    <circle cx="112" cy="124" r="13" fill="#edf8f0" stroke="#13303d" stroke-width="6"/>
+    <path d="M340 250 Q 378 258 386 236" fill="none" stroke="#13303d" stroke-width="9"/>
+    <circle cx="388" cy="230" r="13" fill="#edf8f0" stroke="#13303d" stroke-width="6"/>
+
+    <!-- feet -->
+    <ellipse cx="210" cy="316" rx="22" ry="10" fill="#13303d"/>
+    <ellipse cx="280" cy="316" rx="22" ry="10" fill="#13303d"/>
+
+    <!-- body -->
+    <rect x="150" y="120" width="190" height="190" rx="30" fill="#edf8f0" stroke="#13303d" stroke-width="10"/>
+
+    <!-- the lattice net on the body -->
+    <line x1="213" y1="124" x2="213" y2="306" stroke="#57bd8f" stroke-width="8"/>
+    <line x1="277" y1="124" x2="277" y2="306" stroke="#57bd8f" stroke-width="8"/>
+    <line x1="154" y1="183" x2="336" y2="183" stroke="#57bd8f" stroke-width="8"/>
+    <line x1="154" y1="247" x2="336" y2="247" stroke="#57bd8f" stroke-width="8"/>
+
+    <!-- nodes at the intersections -->
+    <circle cx="213" cy="183" r="6" fill="#13303d" stroke="none"/>
+    <circle cx="277" cy="183" r="6" fill="#13303d" stroke="none"/>
+    <circle cx="213" cy="247" r="6" fill="#13303d" stroke="none"/>
+    <circle cx="277" cy="247" r="6" fill="#13303d" stroke="none"/>
+
+    <!-- face -->
+    <circle cx="212" cy="188" r="21" fill="#ffffff" stroke="#13303d" stroke-width="5"/>
+    <circle cx="278" cy="188" r="21" fill="#ffffff" stroke="#13303d" stroke-width="5"/>
+    <circle cx="219" cy="191" r="9" fill="#13303d" stroke="none"/>
+    <circle cx="285" cy="191" r="9" fill="#13303d" stroke="none"/>
+    <circle cx="180" cy="232" r="11" fill="#ff9d6f" opacity="0.7" stroke="none"/>
+    <circle cx="310" cy="232" r="11" fill="#ff9d6f" opacity="0.7" stroke="none"/>
+    <path d="M216 244 Q 245 266 274 244" fill="none" stroke="#13303d" stroke-width="7"/>
+  </g>
+
+  <!-- chat bubble -->
+  <g stroke="#13303d" stroke-width="6" stroke-linejoin="round">
+    <polygon points="366,112 350,140 396,112" fill="#ffffff"/>
+    <rect x="350" y="58" width="94" height="56" rx="16" fill="#ffffff"/>
+  </g>
+  <circle cx="367" cy="86" r="6" fill="#13303d"/>
+  <circle cx="397" cy="86" r="6" fill="#13303d"/>
+  <circle cx="427" cy="86" r="6" fill="#13303d"/>
+
+  <!-- wordmark with a soft drop shadow -->
+  <g transform="translate(444,236)" font-family="'Chalkboard SE','Comic Sans MS','Trebuchet MS',Verdana,sans-serif" font-size="128" font-weight="bold">
+    <text fill="#0c2530" transform="translate(5,6)">
+      <tspan>L</tspan><tspan dy="-10">a</tspan><tspan dy="10">t</tspan><tspan dy="-10">t</tspan><tspan dy="10">i</tspan><tspan dy="-10">c</tspan><tspan dy="10">e</tspan>
+    </text>
+    <text fill="#7fe3b0" stroke="#0c2530" stroke-width="10" paint-order="stroke" stroke-linejoin="round">
+      <tspan>L</tspan><tspan dy="-10" fill="#ffc46b">a</tspan><tspan dy="10">t</tspan><tspan dy="-10" fill="#ff9d6f">t</tspan><tspan dy="10">i</tspan><tspan dy="-10">c</tspan><tspan dy="10" fill="#ffc46b">e</tspan>
+    </text>
+  </g>
+
+  <!-- taglines -->
+  <text x="450" y="292" font-family="'Trebuchet MS',Verdana,sans-serif" font-size="30" fill="#cfe9d8" opacity="0.95">a tiny Matrix homeserver written in Go</text>
+  <text x="450" y="330" font-family="'Trebuchet MS',Verdana,sans-serif" font-size="21" fill="#9fc3b4" opacity="0.85">one SQLite file &#183; every user on one happy server</text>
+
+  <!-- sparkles -->
+  <use href="#spark" transform="translate(1105,120) scale(1.15)" fill="#f7cf5f"/>
+  <use href="#spark" transform="translate(1148,236) scale(0.6)" fill="#7fe3b0"/>
+  <use href="#spark" transform="translate(640,66) scale(0.7)" fill="#ff9d6f"/>
+</svg>

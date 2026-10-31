@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/lattice-banner.svg" alt="Lattice — a tiny Matrix homeserver written in Go" width="100%">
+</p>
+
 # Lattice
 
 A minimal [Matrix](https://spec.matrix.org/latest/) homeserver written in Go:
@@ -72,24 +76,24 @@ registrations.
 
 ### Flags
 
-| Flag | Default | Meaning |
-| --- | --- | --- |
-| `-addr` | `:8008` | listen address |
-| `-server-name` | `localhost` | homeserver name; user and room IDs end with it |
-| `-base-url` | `https://<-server-name>` | URL published in `/.well-known/matrix/client`; set it when a proxy or tunnel fronts the server |
-| `-db` | `lattice.db` | SQLite database file |
-| `-jwt-secret` | *(empty)* | secret used to sign access tokens; **set it** — an empty value generates a fresh one per boot and logs every client out on restart |
-| `-token-ttl` | `24h` | access token lifetime |
-| `-max-upload-size` | `10 MiB` | maximum media upload size |
-| `-media-reservation-window` | `24h` | how long a media id from `POST /_matrix/media/v3/create` waits for its bytes before maintenance drops it |
-| `-allow-guests` | `true` | allow guest account creation |
-| `-disable-registration` | `false` | turn off self-service registration |
-| `-registration-secret` | *(empty)* | comma separated registration tokens; when set, registering requires one and the open `m.login.dummy` flow disappears |
-| `-cors-origin` | `*` | allowed CORS origin, or a comma separated list |
-| `-support-email`, `-support-matrix-id` | *(empty)* | published in `/.well-known/matrix/support` |
-| `-media` | `true` | enable the media endpoints |
-| `-maintenance-interval` | `service.MaintenancePeriod` | how often to prune to-device messages, transaction ids and typing rows; `0` disables |
-| `-version` | `false` | print the version and exit |
+| Flag                                   | Default                     | Meaning                                                                                                                            |
+| -------------------------------------- | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `-addr`                                | `:8008`                     | listen address                                                                                                                     |
+| `-server-name`                         | `localhost`                 | homeserver name; user and room IDs end with it                                                                                     |
+| `-base-url`                            | `https://<-server-name>`    | URL published in `/.well-known/matrix/client`; set it when a proxy or tunnel fronts the server                                     |
+| `-db`                                  | `lattice.db`                | SQLite database file                                                                                                               |
+| `-jwt-secret`                          | _(empty)_                   | secret used to sign access tokens; **set it** — an empty value generates a fresh one per boot and logs every client out on restart |
+| `-token-ttl`                           | `24h`                       | access token lifetime                                                                                                              |
+| `-max-upload-size`                     | `10 MiB`                    | maximum media upload size                                                                                                          |
+| `-media-reservation-window`            | `24h`                       | how long a media id from `POST /_matrix/media/v3/create` waits for its bytes before maintenance drops it                           |
+| `-allow-guests`                        | `true`                      | allow guest account creation                                                                                                       |
+| `-disable-registration`                | `false`                     | turn off self-service registration                                                                                                 |
+| `-registration-secret`                 | _(empty)_                   | comma separated registration tokens; when set, registering requires one and the open `m.login.dummy` flow disappears               |
+| `-cors-origin`                         | `*`                         | allowed CORS origin, or a comma separated list                                                                                     |
+| `-support-email`, `-support-matrix-id` | _(empty)_                   | published in `/.well-known/matrix/support`                                                                                         |
+| `-media`                               | `true`                      | enable the media endpoints                                                                                                         |
+| `-maintenance-interval`                | `service.MaintenancePeriod` | how often to prune to-device messages, transaction ids and typing rows; `0` disables                                               |
+| `-version`                             | `false`                     | print the version and exit                                                                                                         |
 
 ## What works today
 
@@ -134,7 +138,7 @@ endpoint that is missing.
 
 ## What does not work yet
 
-* **End-to-end encryption is client-side, and the server does not read it.**
+- **End-to-end encryption is client-side, and the server does not read it.**
   Device keys, one-time keys, fallback keys and backed up room keys are stored as
   the opaque JSON a client uploaded, so two clients can establish Olm sessions,
   exchange `m.room.encrypted` events, verify each other and restore old messages
@@ -151,33 +155,33 @@ endpoint that is missing.
   leaves open: a device key signature is only checked when Lattice holds the key
   that made it, and none of this has been run against a real
   client test suite.
-* **No federation** — nothing under `/_matrix/federation/v1/*`. Users can only
+- **No federation** — nothing under `/_matrix/federation/v1/*`. Users can only
   reach users on this server.
-* **No calls** (`/voip/turnServer` publishes no TURN relay), **no SSO** or
+- **No calls** (`/voip/turnServer` publishes no TURN relay), **no SSO** or
   `m.login.token`, **no 3PID / email recovery**, **no application services**,
   **no bridges** (`/thirdparty/protocols` is empty).
-* **No rate limiting** — `M_LIMIT_EXCEEDED` and `retry_after_ms` exist in the
+- **No rate limiting** — `M_LIMIT_EXCEEDED` and `retry_after_ms` exist in the
   error types but nothing raises them.
-* Search is a `LIKE` scan over serialised event content: no word index, no
+- Search is a `LIKE` scan over serialised event content: no word index, no
   stemming, no relevance ranking.
 
 ## Operational notes
 
-* The server speaks plain HTTP; terminate TLS in a reverse proxy. Publish the
+- The server speaks plain HTTP; terminate TLS in a reverse proxy. Publish the
   public URL with `-base-url`, otherwise `/.well-known/matrix/client` points
   clients at `https://<-server-name>` and discovery from a hosted client (for
   example app.element.io) resolves to the wrong address.
-* A client that is handed a server name it has no URL for goes looking for one at
+- A client that is handed a server name it has no URL for goes looking for one at
   `https://<server-name>/.well-known/matrix/client`. With `-server-name localhost`
   that is a connection to a local HTTPS server that does not exist, which shows up
   in the browser console as a failed request even though the session works. Set
   `-server-name` to the name clients should dial and `-base-url` to the URL they
   should call; a client that signed in through that URL stops probing.
-* A long poll the client gives up on is not treated as an error. Element restarts
+- A long poll the client gives up on is not treated as an error. Element restarts
   its sync loop whenever crypto setup or a filter changes; for those requests
   Lattice writes no body and logs nothing, so the faults worth reading stay
   visible instead of burying the log in `context canceled`.
-* Every User-Interactive Auth exchange leaves two lines in the log: the challenge
+- Every User-Interactive Auth exchange leaves two lines in the log: the challenge
   (what it was for, the session id, the stages already done and the ones on
   offer) and the outcome of the stage the client sent. That is how to tell the
   difference between a client that never came back with credentials, one that
@@ -187,16 +191,17 @@ endpoint that is missing.
   change an identity the account already has; publishing the first set of keys
   needs no exchange at all):
 
-  ```text
-  interactive auth: asking for additional authentication is required to upload
-    cross-signing keys (session 4hQx…, completed [], stages [m.login.password])
-  interactive auth: @tim:localhost completed the m.login.password stage
-  ```
-* Everything — events, state, accounts, and uploaded media — lives in one SQLite
+    ```text
+    interactive auth: asking for additional authentication is required to upload
+      cross-signing keys (session 4hQx…, completed [], stages [m.login.password])
+    interactive auth: @tim:localhost completed the m.login.password stage
+    ```
+
+- Everything — events, state, accounts, and uploaded media — lives in one SQLite
   file. Backing up means copying that file; `-max-upload-size` bounds its growth.
-* Always pass `-jwt-secret`. Sessions are stored server-side, so deleting a
+- Always pass `-jwt-secret`. Sessions are stored server-side, so deleting a
   session revokes its token; logout really stops a token from working.
-* The **first** registered account is the administrator (`/_synapse/admin/*` and
+- The **first** registered account is the administrator (`/_synapse/admin/*` and
   `/_matrix/client/v1/admin/*` require it).
 
 ## Layout
@@ -249,9 +254,9 @@ key backup formats) needs the corpus fetched first.
 
 ## House rules
 
-* Handlers stay thin: decode → `service` call → `writeJSON`; errors go through
+- Handlers stay thin: decode → `service` call → `writeJSON`; errors go through
   `a.writeError` (which uses `matrix.ErrAs`).
-* New endpoint: add the route in `internal/api/routes.go`, add a case in
+- New endpoint: add the route in `internal/api/routes.go`, add a case in
   `tests/compat`, re-run the coverage tool.
-* Package names short and lowercase; tests are table-driven; context is the
+- Package names short and lowercase; tests are table-driven; context is the
   first parameter of anything that does I/O.
