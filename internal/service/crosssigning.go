@@ -49,9 +49,6 @@ type CrossSigningUpload struct {
 	MasterKey      matrix.Object
 	SelfSigningKey matrix.Object
 	UserSigningKey matrix.Object
-	// Reset is the org.matrix.cross_signing_reset flag: the user agreed to throw
-	// the old keys away, which is the only way to replace a master key.
-	Reset bool
 }
 
 // verifiedKey is a cross-signing key that passed verification: the object as the
@@ -113,15 +110,29 @@ func (s *Service) UploadCrossSigningKeys(ctx context.Context, userID string, upl
 		return err
 	}
 
+	// A client may replace the whole cross-signing set, which is what Element does
+	// when the user says they cannot verify their existing identity. Answering the
+	// interactive auth challenge is the authorisation for that; there is no second
+	// "reset flag" a client can send - org.matrix.cross_signing_reset is an OAuth
+	// action URL in the OAuth world and nothing at all here - so refusing a
+	// replacement without one leaves the user on a 409 they can never answer.
 	if existing != nil && master != nil && existing.KeyID != master.id {
-		if !upload.Reset {
-			// Element expects this exact shape of refusal: it offers the user a
-			// reset and sends the flag when they agree.
-			return matrix.NewError(matrix.ErrCodeForbidden, http.StatusConflict,
-				"attempted to replace existing cross-signing keys without the reset flag")
+		old, err := s.db.CrossSigningRepo.List(userID)
+		if err != nil {
+			return matrix.ErrInternal(err)
+		}
+		dropped := make([]string, 0, len(old))
+		for _, key := range old {
+			dropped = append(dropped, key.KeyID)
 		}
 		if _, err := s.db.CrossSigningRepo.DeleteAll(userID); err != nil {
 			return matrix.ErrInternal(err)
+		}
+		// Signatures the replaced keys made are meaningless once those keys are
+		// gone, and a client that cannot resolve the signer keeps showing the
+		// device as unverified, so the entries are removed along with the keys.
+		if err := s.dropSignaturesBy(ctx, userID, dropped); err != nil {
+			return err
 		}
 	}
 
@@ -437,6 +448,14 @@ func (s *Service) mergeSignatures(ctx context.Context, requester, userID, entity
 				continue
 			}
 			public, found := s.lookupPublicKey(ctx, signer, keyID)
+			if !found && signer == requester {
+				// The requester attributes a signature to a key of their own that
+				// Lattice has never been given - a cross-signing key that was replaced
+				// and deleted, or a device that is gone. Keeping such an entry leaves a
+				// signature no client can ever verify, and a device that looks
+				// permanently unverified.
+				return matrix.ErrInvalidParam("%s has no key %s to sign with", signer, keyID)
+			}
 			if found {
 				probe := matrix.Object{"signatures": matrix.Object{signer: matrix.Object{keyID: signature}}}
 				if err := matrix.VerifyEd25519Signature(mergeForProbe(stored, probe), signer, keyID, public); err != nil {
@@ -524,6 +543,61 @@ func (s *Service) storeKeyObject(ctx context.Context, userID, entityID string, o
 	}
 	device.KeyJSON = string(encoded)
 	return s.db.DeviceKeyRepo.Store(device)
+}
+
+// dropSignaturesBy removes the signatures made by the given key ids from the
+// keys of a user. It runs after a cross-signing set is replaced: the new keys
+// know nothing about the old ones, a client cannot verify a signature whose
+// signer it cannot resolve, and the devices signed by the old self-signing key
+// would stay red forever.
+func (s *Service) dropSignaturesBy(ctx context.Context, userID string, keyIDs []string) error {
+	if len(keyIDs) == 0 {
+		return nil
+	}
+	wanted := make(map[string]bool, len(keyIDs))
+	for _, keyID := range keyIDs {
+		wanted[keyID] = true
+	}
+	devices, err := s.db.DeviceKeyRepo.List(userID)
+	if err != nil {
+		return matrix.ErrInternal(err)
+	}
+	for _, device := range devices {
+		object, err := decodeJSONObject(device.KeyJSON)
+		if err != nil {
+			// A key Lattice cannot read is not going to gain a signature back.
+			continue
+		}
+		signatures, _ := object["signatures"].(matrix.Object)
+		if len(signatures) == 0 {
+			continue
+		}
+		changed := false
+		for signer, byKey := range signatures {
+			entries, ok := byKey.(matrix.Object)
+			if !ok {
+				continue
+			}
+			for keyID := range entries {
+				if wanted[keyID] {
+					delete(entries, keyID)
+					changed = true
+				}
+			}
+			if len(entries) == 0 {
+				delete(signatures, signer)
+				changed = true
+			}
+		}
+		if !changed {
+			continue
+		}
+		object["signatures"] = signatures
+		if err := s.storeKeyObject(ctx, userID, device.DeviceID, object); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // lookupPublicKey returns the public key a signature claims to come from, when

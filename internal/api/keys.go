@@ -162,9 +162,6 @@ func (a *App) handleCrossSigningUpload(w http.ResponseWriter, r *http.Request) {
 		MasterKey      matrix.Object `json:"master_key"`
 		SelfSigningKey matrix.Object `json:"self_signing_key"`
 		UserSigningKey matrix.Object `json:"user_signing_key"`
-		// Reset is the flag a client sets once the user agreed to lose the old
-		// cross-signing keys; without it a master key cannot be replaced.
-		Reset bool `json:"org.matrix.cross_signing_reset"`
 	}
 	if err := decodeBody(r, &body); err != nil {
 		a.writeError(w, r, err)
@@ -175,7 +172,6 @@ func (a *App) handleCrossSigningUpload(w http.ResponseWriter, r *http.Request) {
 		MasterKey:      body.MasterKey,
 		SelfSigningKey: body.SelfSigningKey,
 		UserSigningKey: body.UserSigningKey,
-		Reset:          body.Reset,
 	}); err != nil {
 		a.writeError(w, r, err)
 		return

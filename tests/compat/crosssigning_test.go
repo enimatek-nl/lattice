@@ -170,42 +170,124 @@ func TestCrossSigning(t *testing.T) {
 		t.Errorf("re-uploading the same master key: got %d %s", again.Status, again.Raw)
 	}
 
-	// A different master key without the reset flag is refused with a 409, which
-	// is what makes a client offer the user a reset and then send the flag.
+	// A different master key replaces the set. This is the path Element takes when
+	// the user says they cannot verify their existing identity, and answering the
+	// interactive auth challenge is the authorisation for it: no client can send a
+	// separate reset flag, so a refusal here is a dead end for the user.
 	replacement := newKeyPair(t)
 	replaced := upload(matrix.Object{
 		"auth":       passwordAuth(alice.UserID, "wonderland"),
 		"master_key": signingKeyObject(t, alice.UserID, replacement.public, "master", replacement.private, replacement.id),
 	})
-	if replaced.Status != http.StatusConflict || replaced.ErrCode() != "M_FORBIDDEN" {
-		t.Errorf("replacing a master key without the reset flag: got %d %s", replaced.Status, replaced.Raw)
-	}
-	// The stored keys survived that refusal.
-	afterRefusal := server.MustDo(http.MethodPost, "/_matrix/client/v3/keys/query", alice.Token,
-		map[string]any{"device_keys": map[string]any{alice.UserID: []string{}}}, http.StatusOK)
-	byEntity, _ = afterRefusal.Body["device_keys"].(map[string]any)
-	mine, _ = byEntity[alice.UserID].(map[string]any)
-	if _, ok := mine[master.id]; !ok {
-		t.Errorf("the refused upload changed the stored keys anyway: %s", afterRefusal.Raw)
-	}
-
-	reset := upload(matrix.Object{
-		"auth":                           passwordAuth(alice.UserID, "wonderland"),
-		"master_key":                     signingKeyObject(t, alice.UserID, replacement.public, "master", replacement.private, replacement.id),
-		"org.matrix.cross_signing_reset": true,
-	})
-	if reset.Status != http.StatusOK {
-		t.Fatalf("resetting the cross-signing keys: got %d %s", reset.Status, reset.Raw)
+	if replaced.Status != http.StatusOK {
+		t.Fatalf("replacing the cross-signing keys: got %d %s", replaced.Status, replaced.Raw)
 	}
 	afterReset := server.MustDo(http.MethodPost, "/_matrix/client/v3/keys/query", alice.Token,
 		map[string]any{"device_keys": map[string]any{alice.UserID: []string{}}}, http.StatusOK)
 	byEntity, _ = afterReset.Body["device_keys"].(map[string]any)
 	mine, _ = byEntity[alice.UserID].(map[string]any)
 	if _, ok := mine[replacement.id]; !ok {
-		t.Errorf("the reset did not store the new master key: %s", afterReset.Raw)
+		t.Errorf("the replacement did not store the new master key: %s", afterReset.Raw)
 	}
 	if _, ok := mine[master.id]; ok {
-		t.Errorf("the reset left the old master key behind: %s", afterReset.Raw)
+		t.Errorf("the replacement left the old master key behind: %s", afterReset.Raw)
+	}
+	// The keys the old master signed are gone with it: a client would otherwise
+	// keep offering self-signing and user-signing keys no master key vouches for.
+	for _, keyID := range []string{selfSigning.id, userSigning.id} {
+		if _, ok := mine[keyID]; ok {
+			t.Errorf("the replacement left the key %s of the old set behind: %s", keyID, afterReset.Raw)
+		}
+	}
+
+	// A signature the replaced keys made on a device is dropped as well, because a
+	// client that cannot resolve the signer shows that device as unverified for
+	// good. The device is signed by the old self-signing key first, then the set is
+	// replaced again.
+	device := newKeyPair(t)
+	deviceCurve := newKeyPair(t)
+	deviceKey := matrix.Object{
+		"user_id":    alice.UserID,
+		"device_id":  alice.DeviceID,
+		"algorithms": []string{"m.olm.v1.curve25519-aes-sha2", "m.megolm.v1.aes-sha2"},
+		"keys": matrix.Object{
+			"curve25519:" + alice.DeviceID: base64.RawStdEncoding.EncodeToString(deviceCurve.public),
+			"ed25519:" + alice.DeviceID:    base64.RawStdEncoding.EncodeToString(device.public),
+		},
+	}
+	server.MustDo(http.MethodPost, "/_matrix/client/v3/keys/upload", alice.Token,
+		matrix.Object{"device_id": alice.DeviceID, "device_key": deviceKey}, http.StatusOK)
+	signedDevice := matrix.Object{
+		"user_id":    alice.UserID,
+		"device_id":  alice.DeviceID,
+		"algorithms": deviceKey["algorithms"],
+		"keys":       deviceKey["keys"],
+	}
+
+	// The self-signing key of the set that is current right now signs the device.
+	current := newKeyPair(t)
+	if resp := upload(matrix.Object{
+		"auth":             passwordAuth(alice.UserID, "wonderland"),
+		"master_key":       signingKeyObject(t, alice.UserID, replacement.public, "master", replacement.private, replacement.id),
+		"self_signing_key": signingKeyObject(t, alice.UserID, current.public, "self_signing", replacement.private, replacement.id),
+	}); resp.Status != http.StatusOK {
+		t.Fatalf("adding a self-signing key to the replaced set: got %d %s", resp.Status, resp.Raw)
+	}
+	signature, err := matrix.SignEd25519(current.private, signedDevice)
+	if err != nil {
+		t.Fatalf("signing the device with the current self-signing key: %v", err)
+	}
+	signedDevice["signatures"] = matrix.Object{
+		alice.UserID: matrix.Object{current.id: base64.RawStdEncoding.EncodeToString(signature)},
+	}
+	server.MustDo(http.MethodPost, "/_matrix/client/v3/keys/signatures/upload", alice.Token,
+		matrix.Object{"signed_users": map[string]any{alice.UserID: map[string]any{alice.DeviceID: signedDevice}}},
+		http.StatusOK)
+
+	// A key that was already replaced cannot sign anything: Lattice has no such key
+	// for this user any more, and storing the entry would leave a signature no
+	// client can resolve.
+	staleSignature, err := matrix.SignEd25519(selfSigning.private, signedDevice)
+	if err != nil {
+		t.Fatalf("signing the device with the replaced key: %v", err)
+	}
+	stale := matrix.Object{
+		"user_id":    alice.UserID,
+		"device_id":  alice.DeviceID,
+		"algorithms": deviceKey["algorithms"],
+		"keys":       deviceKey["keys"],
+		"signatures": matrix.Object{
+			alice.UserID: matrix.Object{selfSigning.id: base64.RawStdEncoding.EncodeToString(staleSignature)},
+		},
+	}
+	if resp := server.Do(http.MethodPost, "/_matrix/client/v3/keys/signatures/upload", alice.Token,
+		matrix.Object{"signed_users": map[string]any{alice.UserID: map[string]any{alice.DeviceID: stale}}}); resp.Status != http.StatusBadRequest {
+		t.Errorf("signing with a replaced key: got %d %s, want 400", resp.Status, resp.Raw)
+	}
+
+	second := newKeyPair(t)
+	if resp := upload(matrix.Object{
+		"auth":       passwordAuth(alice.UserID, "wonderland"),
+		"master_key": signingKeyObject(t, alice.UserID, second.public, "master", second.private, second.id),
+	}); resp.Status != http.StatusOK {
+		t.Fatalf("replacing the cross-signing keys a second time: got %d %s", resp.Status, resp.Raw)
+	}
+	cleared := server.MustDo(http.MethodPost, "/_matrix/client/v3/keys/query", alice.Token,
+		map[string]any{"device_keys": map[string]any{alice.UserID: []string{alice.DeviceID}}}, http.StatusOK)
+	byEntity, _ = cleared.Body["device_keys"].(map[string]any)
+	mine, _ = byEntity[alice.UserID].(map[string]any)
+	entry, _ := mine[alice.DeviceID].(map[string]any)
+	if entry == nil {
+		t.Fatalf("the device disappeared from the query response: %s", cleared.Raw)
+	}
+	signatures, _ := entry["signatures"].(map[string]any)
+	if byUser, ok := signatures[alice.UserID].(map[string]any); ok {
+		if _, stale := byUser[current.id]; stale {
+			t.Errorf("a replaced key still signs the device: %v", byUser)
+		}
+	}
+	if _, ok := mine[second.id]; !ok {
+		t.Errorf("the second replacement did not store its master key: %s", cleared.Raw)
 	}
 }
 

@@ -190,9 +190,14 @@ updated: it is the hand-off point after context compaction. Read
     must be signed by the master key, over the object without `signatures` and
     `unsigned`. A key id must match its key material, the usage must match the
     field it arrived in, and `user_id` must be the requester. Uploading a
-    different master key without `org.matrix.cross_signing_reset` is a **409
-    `M_FORBIDDEN`**, which is the shape that makes a client offer the user a reset;
-    the endpoint sits behind a `m.login.password` interactive auth stage. Verified
+    different master key **replaces the set**: answering the interactive auth
+    challenge is the authorisation, because no client can send a separate reset
+    flag and a refusal there is a dead end for the user (Element's "I can't
+    verify" path replaces the keys). The replaced keys' ids are deleted along with
+    the signatures they made on the user's devices, and a signature attributed to
+    one of the requester's own keys that Lattice has never been given is refused
+    with `M_INVALID_PARAM`. The endpoint sits behind a `m.login.password`
+    interactive auth stage. Verified
     keys are reported by `POST /keys/query` in the same map as the device keys,
     named by their key id, which is where clients look for them, and an upload is
     a device list change so the user's other devices pick it up.
@@ -616,9 +621,9 @@ end-to-end layer and the bug underneath half of Element's complaints:
 **state events now carry `state_key` even when it is empty** (which is why room
 renames and topics never reached a client, and why a client thought the room was
 version 1), plus cross-signing key upload and key signatures (verified over
-canonical JSON, behind a `m.login.password` stage, 409 without the reset flag,
-reported through `/keys/query`) and server-side room key backup across the
-fourteen `/room_keys/*` routes. The newest chunk fixed what a second click
+canonical JSON, behind a `m.login.password` stage, replacement allowed once that
+stage is answered, reported through `/keys/query`) and server-side room key
+backup across the fourteen `/room_keys/*` routes. The newest chunk fixed what a second click
 through Element exposed: the async media upload flow was half-implemented (no
 `POST /_matrix/media/v3/commit`, so the upload Element makes for a room avatar
 never finished and the avatar silently never changed), and the third-party
@@ -673,6 +678,15 @@ fetched first.
      the id they arrived with (`fallback_curve25519`), so the section was always
      empty. Key backup versions also travelled as numbers rather than the strings
      the spec and the clients use.
+   * Replacing cross-signing keys was refused with a 409 unless the request carried
+     an `org.matrix.cross_signing_reset` flag that **no client sends** - the name
+     exists in Element only as an OAuth action URL, not as a field in this request.
+     So the user who answers "I can't verify" and lets the client start a new
+     identity got `MatrixError: [409] attempted to replace existing cross-signing
+     keys without the reset flag` and nowhere to go. Answering the interactive auth
+     challenge is the authorisation; the replacement now goes through, deletes the
+     keys it replaces, and removes the signatures those keys made on the user's
+     devices so no client is left holding a signature it cannot resolve.
    The sequence has now been replayed by a test; a browser still has to click it.
 3. Loose ends spotted while doing history, relations, the user script, the gap
    chunk, the search/spaces chunk and the reports chunk:
