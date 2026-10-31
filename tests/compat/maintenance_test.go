@@ -91,6 +91,11 @@ func TestMaintenance(t *testing.T) {
 	if eventID == "" {
 		t.Fatal("sending the message failed")
 	}
+	// A media id that was promised bytes it never received. POST /create advertises
+	// a deadline for the upload, so the row is expected to go away afterwards.
+	reserved := server.MustDo(http.MethodPost, "/_matrix/media/v3/create", alice.Token,
+		map[string]any{"name": "never-came.txt", "type": "text/plain", "size": 4}, http.StatusOK)
+	reservedID := mustMediaID(t, reserved.String("content_uri"))
 	if resp := server.sendToDevice(alice, "m.room_key", "keep-td", map[string]map[string]any{
 		bob.UserID: {"*": map[string]any{"key": "expired"}},
 	}); resp.Status != http.StatusOK {
@@ -102,6 +107,12 @@ func TestMaintenance(t *testing.T) {
 	if count := report.Int("to_device_removed"); count != 0 {
 		t.Errorf("to_device_removed = %d before the retention window passed", count)
 	}
+	if count := report.Int("media_reservations_dropped"); count != 0 {
+		t.Errorf("media_reservations_dropped = %d before the reservation window passed", count)
+	}
+	if resp := server.Do(http.MethodGet, "/_matrix/media/v3/download/test.server/"+reservedID, alice.Token, nil); resp.Status != http.StatusNotFound {
+		t.Errorf("a reservation with no bytes should not be served: %d %s", resp.Status, resp.Raw)
+	}
 
 	// A day and an hour later every piece of ephemeral data is out of date.
 	c.advance(25 * time.Hour)
@@ -110,6 +121,13 @@ func TestMaintenance(t *testing.T) {
 		if report.Int(field) < 1 {
 			t.Errorf("%s = %d, want at least one removed row in %s", field, report.Int(field), report.Raw)
 		}
+	}
+	if count := report.Int("media_reservations_dropped"); count < 1 {
+		t.Errorf("media_reservations_dropped = %d, want the abandoned reservation gone in %s",
+			count, report.Raw)
+	}
+	if resp := server.Do(http.MethodGet, "/_matrix/media/v3/download/test.server/"+reservedID, alice.Token, nil); resp.Status != http.StatusNotFound {
+		t.Errorf("the abandoned reservation is still served: %d %s", resp.Status, resp.Raw)
 	}
 
 	// The to-device message is gone rather than delivered late.

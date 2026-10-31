@@ -13,6 +13,15 @@ type Object = map[string]any
 // Array is an arbitrary JSON array.
 type Array = []any
 
+// ThreePID is one third-party identifier - an email address or a phone number -
+// linked to a Matrix account. medium is "email" or "msisdn".
+type ThreePID struct {
+	Medium      string `json:"medium"`
+	Address     string `json:"address"`
+	AddedAt     int64  `json:"added_at,omitempty"`
+	ValidatedAt int64  `json:"validated_at,omitempty"`
+}
+
 // MustParseObject decodes raw into a generic object, returning an empty object
 // for invalid or empty input.
 func MustParseObject(raw []byte) Object {

@@ -9,6 +9,7 @@ import (
 	"image/png"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/enimatek-nl/lattice/internal/matrix"
 	"github.com/enimatek-nl/lattice/internal/persist"
@@ -16,6 +17,13 @@ import (
 
 // DefaultMaxUploadSize is the media upload limit (10 MiB).
 const DefaultMaxUploadSize = 10 * 1024 * 1024
+
+// DefaultMediaReservationWindow is how long a media id minted by
+// POST /_matrix/media/v3/create waits for the bytes that were promised for it.
+// The specification gives this 24 hours; a shorter window makes abandoned uploads
+// (a client that crashed mid-upload) disappear sooner, a longer one keeps a
+// client able to resume.
+const DefaultMediaReservationWindow = 24 * time.Hour
 
 // MaxUploadSize is the largest upload this server accepts. It is configured
 // through the server options.
@@ -61,8 +69,12 @@ func (s *Service) UploadMedia(ctx context.Context, userID, filename, contentType
 	return mediaID, nil
 }
 
-// ReserveMedia handles POST /_matrix/media/v1/create, which mints a media id
-// and MXC URI before the client uploads the bytes.
+// ReserveMedia handles POST /_matrix/media/v3/create, which mints a media id
+// and MXC URI before the client uploads the bytes. The response also carries the
+// URL to upload to and when the reservation expires, both of which the
+// specification asks for: Element and matrix-js-sdk use this async flow for
+// every upload, including the room avatar, so a reservation without a promised
+// upload URL and deadline is a client left guessing.
 func (s *Service) ReserveMedia(ctx context.Context, userID, filename, contentType string, size int64) (matrix.Object, error) {
 	if size > s.maxUploadSize {
 		return nil, matrix.NewError(matrix.ErrCodeLimit, 413,
@@ -72,9 +84,52 @@ func (s *Service) ReserveMedia(ctx context.Context, userID, filename, contentTyp
 	if err != nil {
 		return nil, err
 	}
+	expires := s.NowMS() + s.reservationWindow.Milliseconds()
 	return matrix.Object{
 		"content_uri": "mxc://" + s.serverName + "/" + mediaID,
+		// The same path the authenticated upload uses: Lattice has no unauthenticated
+		// media writes, so a client that follows this URL sends its token like always.
+		"upload_url":    "/_matrix/media/v3/upload/" + s.serverName + "/" + mediaID,
+		"expires_ms":    s.reservationWindow.Milliseconds(),
+		"expires_at_ts": expires,
 	}, nil
+}
+
+// CommitMedia finishes an async upload: POST /_matrix/media/v3/commit/{server}
+// /{mediaId} tells the server the bytes have been sent, and a client that gets
+// there first may wait up to timeout for the PUT to arrive.
+//
+// There is no "uploaded" flag to flip. A media row either holds bytes or it is a
+// reservation, so committing means confirming that content arrived; if it has
+// not, this waits for it and then reports the reservation as unknown, which is
+// also what a download of a content-less media id says.
+func (s *Service) CommitMedia(ctx context.Context, userID, mediaID string, timeout time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		media, err := s.db.MediaRepo.Get(s.serverName, mediaID)
+		switch {
+		case err != nil && !persist.IsNotFound(err):
+			return matrix.ErrInternal(err)
+		case err == nil && (media.Size > 0 || len(media.Blob) > 0):
+			if media.UserID != "" && media.UserID != userID {
+				return matrix.ErrForbidden("media %s belongs to another user", mediaID)
+			}
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return matrix.ErrNotFound("no content was uploaded for media id %s", mediaID)
+		case <-ticker.C:
+		}
+	}
 }
 
 // UploadToReservedMedia stores bytes against a media id created by
@@ -122,6 +177,12 @@ func (s *Service) Media(ctx context.Context, origin, mediaID string) (*persist.M
 			return nil, matrix.ErrNotFound("no such media id")
 		}
 		return nil, matrix.ErrInternal(err)
+	}
+	if media.Size == 0 && len(media.Blob) == 0 {
+		// A media id minted by POST /create whose bytes never arrived. There is
+		// nothing to serve, and saying so is truer than an empty 200 that a client
+		// renders as a broken image.
+		return nil, matrix.ErrNotFound("media %s has no content yet", mediaID)
 	}
 	return media, nil
 }

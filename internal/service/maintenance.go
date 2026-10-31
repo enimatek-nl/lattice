@@ -32,12 +32,14 @@ type MaintenanceReport struct {
 	AuthSessionsDropped  int64 `json:"auth_sessions_dropped"`
 	KeysRemoved          int64 `json:"one_time_keys_removed"`
 	DeviceChangesRemoved int64 `json:"device_list_changes_removed"`
+	ReservationsDropped  int64 `json:"media_reservations_dropped"`
 }
 
 // empty reports whether the pass had nothing to do.
 func (r MaintenanceReport) empty() bool {
 	return r.ToDeviceRemoved == 0 && r.TxnsRemoved == 0 && r.TypingRemoved == 0 &&
-		r.AuthSessionsDropped == 0 && r.KeysRemoved == 0 && r.DeviceChangesRemoved == 0
+		r.AuthSessionsDropped == 0 && r.KeysRemoved == 0 && r.DeviceChangesRemoved == 0 &&
+		r.ReservationsDropped == 0
 }
 
 // RunMaintenance prunes expired to-device messages, forgotten transaction ids
@@ -82,6 +84,15 @@ func (s *Service) RunMaintenance(ctx context.Context) (MaintenanceReport, error)
 		return report, matrix.ErrInternal(err)
 	}
 	report.DeviceChangesRemoved = expired
+
+	// Media ids promised to a client that never sent the bytes. The create response
+	// advertises a deadline, so dropping them after it keeps a promise rather than
+	// breaking one.
+	expired, err = s.db.MediaRepo.DeleteReservationsBefore(now - s.reservationWindow.Milliseconds())
+	if err != nil {
+		return report, matrix.ErrInternal(err)
+	}
+	report.ReservationsDropped = expired
 
 	return report, nil
 }

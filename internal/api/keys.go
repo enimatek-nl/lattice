@@ -196,13 +196,14 @@ func (a *App) handleCrossSigningUpload(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleSignatureUpload(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		SignedUsers map[string]map[string]matrix.Object `json:"signed_users"`
+		SignedKeys  []matrix.Object                     `json:"signed_keys"`
 	}
 	if err := decodeBody(r, &body); err != nil {
 		a.writeError(w, r, err)
 		return
 	}
 	if err := a.svc.UploadKeySignatures(r.Context(), auth.GetUserID(r),
-		service.SignatureUpload{SignedUsers: body.SignedUsers}); err != nil {
+		service.SignatureUpload{SignedUsers: body.SignedUsers, SignedKeys: body.SignedKeys}); err != nil {
 		a.writeError(w, r, err)
 		return
 	}

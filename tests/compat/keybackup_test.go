@@ -26,8 +26,8 @@ func TestKeyBackup(t *testing.T) {
 			"algorithm": "m.megolm_backup.v1.curve25519-aes-sha2",
 			"auth_data": map[string]any{"public_key": "aW52YWxpZCBwdWJsaWMga2V5", "signatures": map[string]any{}},
 		}, http.StatusOK)
-	if version, _ := first.Body["version"].(float64); version != 1 {
-		t.Fatalf("first backup version = %v (%s), want 1", first.Body["version"], first.Raw)
+	if version, _ := first.Body["version"].(string); version != "1" {
+		t.Fatalf("first backup version = %v (%s), want \"1\"", first.Body["version"], first.Raw)
 	}
 	// A second setup counts up rather than replacing the first, which is how a
 	// client can restore an old backup while building a new one.
@@ -36,13 +36,13 @@ func TestKeyBackup(t *testing.T) {
 			"algorithm": "m.megolm_backup.v1.curve25519-aes-sha2",
 			"auth_data": map[string]any{"public_key": "bmV3ZXIga2V5", "signatures": map[string]any{}},
 		}, http.StatusOK)
-	if version, _ := second.Body["version"].(float64); version != 2 {
-		t.Errorf("second backup version = %v (%s), want 2", second.Body["version"], second.Raw)
+	if version, _ := second.Body["version"].(string); version != "2" {
+		t.Errorf("second backup version = %v (%s), want \"2\"", second.Body["version"], second.Raw)
 	}
 
 	latest := server.MustDo(http.MethodGet, "/_matrix/client/v3/room_keys/version", alice.Token, nil, http.StatusOK)
-	if version, _ := latest.Body["version"].(float64); version != 2 {
-		t.Errorf("the latest backup version = %v, want 2 (%s)", latest.Body["version"], latest.Raw)
+	if version, _ := latest.Body["version"].(string); version != "2" {
+		t.Errorf("the latest backup version = %v, want \"2\" (%s)", latest.Body["version"], latest.Raw)
 	}
 	if latest.String("algorithm") != "m.megolm_backup.v1.curve25519-aes-sha2" {
 		t.Errorf("backup algorithm = %q", latest.String("algorithm"))

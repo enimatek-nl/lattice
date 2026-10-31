@@ -707,13 +707,35 @@ func TestMediaUploadAndDownload(t *testing.T) {
 		t.Errorf("the media config has no upload size: %s", config.Raw)
 	}
 
-	// Reserved uploads: create mints an id, the PUT stores the bytes.
+	// Reserved uploads: create mints an id, the PUT stores the bytes. Element and
+	// matrix-js-sdk use this flow for every upload, including the room avatar, so
+	// the create response has to promise where to send the bytes and for how long
+	// the id waits for them.
 	created := server.MustDo(http.MethodPost, "/_matrix/media/v3/create", alice.Token,
 		map[string]any{"name": "note.txt", "type": "text/plain", "size": len(payload)}, http.StatusOK)
 	reserved := mustMediaID(t, created.String("content_uri"))
+	if created.String("upload_url") == "" {
+		t.Errorf("the reservation does not say where to upload: %s", created.Raw)
+	}
+	if expires, ok := created.Body["expires_ms"].(float64); !ok || expires <= 0 {
+		t.Errorf("the reservation has no expiry: %s", created.Raw)
+	}
+
+	// Committing before the bytes arrive waits for the upload, then reports the id
+	// as unknown rather than hanging on a client that never shows up.
+	tooEarly := server.Do(http.MethodPost,
+		"/_matrix/media/v3/commit/test.server/"+reserved+"?timeout=250", alice.Token, map[string]any{})
+	if tooEarly.Status != http.StatusNotFound {
+		t.Errorf("committing an empty reservation: got %d %s, want 404", tooEarly.Status, tooEarly.Raw)
+	}
+
 	if resp := server.DoRaw(http.MethodPut, "/_matrix/media/v3/upload/test.server/"+reserved, alice.Token,
 		"text/plain", payload); resp.Status != http.StatusOK {
 		t.Fatalf("the reserved upload failed: %d %s", resp.Status, resp.Raw)
+	}
+	if resp := server.Do(http.MethodPost, "/_matrix/media/v3/commit/test.server/"+reserved, alice.Token,
+		map[string]any{}); resp.Status != http.StatusOK {
+		t.Errorf("committing the upload: got %d %s, want 200", resp.Status, resp.Raw)
 	}
 	stored := server.Do(http.MethodGet, "/_matrix/media/v3/download/test.server/"+reserved, "", nil)
 	if !bytes.Equal(stored.Raw, payload) {
@@ -722,6 +744,33 @@ func TestMediaUploadAndDownload(t *testing.T) {
 	if resp := server.DoRaw(http.MethodPut, "/_matrix/media/v3/upload/test.server/"+reserved, alice.Token,
 		"text/plain", payload); resp.Status != http.StatusConflict {
 		t.Errorf("reusing a media id: %d %s, want 409", resp.Status, resp.Raw)
+	}
+	// A reservation may not be committed by another user once it has content.
+	bob := server.Register("bob", "rubberduck")
+	other := server.MustDo(http.MethodPost, "/_matrix/media/v3/create", bob.Token,
+		map[string]any{"name": "other.txt", "type": "text/plain", "size": 3}, http.StatusOK)
+	otherID := mustMediaID(t, other.String("content_uri"))
+	if resp := server.Do(http.MethodPost, "/_matrix/media/v3/commit/test.server/"+otherID, alice.Token,
+		map[string]any{}); resp.Status != http.StatusNotFound {
+		t.Errorf("committing a reservation with no content: got %d %s, want 404", resp.Status, resp.Raw)
+	}
+	if resp := server.DoRaw(http.MethodPut, "/_matrix/media/v3/upload/test.server/"+otherID, bob.Token,
+		"text/plain", []byte("abc")); resp.Status != http.StatusOK {
+		t.Fatalf("bob's reserved upload failed: %d %s", resp.Status, resp.Raw)
+	}
+	if resp := server.Do(http.MethodPost, "/_matrix/media/v3/commit/test.server/"+otherID, alice.Token,
+		map[string]any{}); resp.Status != http.StatusForbidden {
+		t.Errorf("committing another user's upload: got %d %s, want 403", resp.Status, resp.Raw)
+	}
+	if resp := server.Do(http.MethodPost, "/_matrix/media/v3/commit/test.server/"+otherID, bob.Token,
+		map[string]any{}); resp.Status != http.StatusOK {
+		t.Errorf("bob committing his own upload: got %d %s, want 200", resp.Status, resp.Raw)
+	}
+	// A size beyond the limit is refused before an id is minted.
+	if resp := server.Do(http.MethodPost, "/_matrix/media/v3/create", alice.Token,
+		map[string]any{"name": "huge.bin", "type": "application/octet-stream",
+			"size": 1 << 40}); resp.Status != http.StatusRequestEntityTooLarge {
+		t.Errorf("reserving more than the limit: got %d %s, want 413", resp.Status, resp.Raw)
 	}
 }
 
@@ -941,5 +990,59 @@ func TestReceiptsDoNotMoveBackwards(t *testing.T) {
 	}
 	if _, ok := read["m.read"].(map[string]any)[bob.UserID]; !ok {
 		t.Errorf("the surviving receipt lost its user: %v", read)
+	}
+}
+
+// TestAccount3PIDs covers the third-party identifier endpoints. Lattice keeps no
+// email addresses or phone numbers, so the listing is empty and everything that
+// would change it refuses with a reason. Routing them matters anyway: Element
+// shows "Unable to load email addresses and phone numbers" for an endpoint it
+// cannot reach, where an empty settings row belongs.
+func TestAccount3PIDs(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+
+	listed := server.MustDo(http.MethodGet, "/_matrix/client/v3/account/3pid", alice.Token, nil, http.StatusOK)
+	raw, ok := listed.Body["threepids"]
+	if !ok {
+		t.Fatalf("the listing has no threepids key: %s", listed.Raw)
+	}
+	ids, ok := raw.([]any)
+	if !ok || len(ids) != 0 {
+		t.Errorf("the listing is not an empty list: %s", listed.Raw)
+	}
+
+	cases := []struct {
+		path string
+		want int
+	}{
+		{"/_matrix/client/v3/account/3pid", http.StatusForbidden},
+		{"/_matrix/client/v3/account/3pid/add", http.StatusForbidden},
+		{"/_matrix/client/v3/account/3pid/bind", http.StatusForbidden},
+		{"/_matrix/client/v3/account/3pid/unbind", http.StatusForbidden},
+		{"/_matrix/client/v3/account/3pid/delete", http.StatusNotFound},
+		{"/_matrix/client/v3/account/3pid/email/requestToken", http.StatusForbidden},
+		{"/_matrix/client/v3/account/3pid/msisdn/requestToken", http.StatusForbidden},
+	}
+	for _, tc := range cases {
+		resp := server.Do(http.MethodPost, tc.path, alice.Token,
+			map[string]any{"medium": "email", "address": "alice@example.org",
+				"client_secret": "s3cr3t", "send_attempt": 1})
+		if resp.Status != tc.want {
+			t.Errorf("%s: got %d %s, want %d", tc.path, resp.Status, resp.Raw, tc.want)
+		}
+		if resp.ErrCode() == "" {
+			t.Errorf("%s: the refusal carries no error code: %s", tc.path, resp.Raw)
+		}
+		if !strings.Contains(resp.String("error"), "third-party") &&
+			!strings.Contains(resp.String("error"), "verification") &&
+			!strings.Contains(resp.String("error"), "third-party identifiers") {
+			t.Errorf("%s: the refusal does not say why: %s", tc.path, resp.Raw)
+		}
+	}
+
+	// The endpoints belong to the account the token was issued for.
+	if resp := server.Do(http.MethodGet, "/_matrix/client/v3/account/3pid", "", nil); resp.Status != http.StatusUnauthorized {
+		t.Errorf("listing third-party identifiers without a token: got %d %s", resp.Status, resp.Raw)
 	}
 }

@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/enimatek-nl/lattice/internal/auth"
 	"github.com/enimatek-nl/lattice/internal/matrix"
@@ -280,6 +281,84 @@ func (a *App) handleWhoami(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"user_id": userID, "device_id": auth.GetDeviceID(r)})
+}
+
+// handleThreePIDs implements GET /_matrix/client/v3/account/3pid.
+//
+// Lattice stores no contact addresses, so the list is always empty - but the
+// endpoint answers, which is what turns Element's "Unable to load email
+// addresses and phone numbers" into an empty settings row.
+//
+//	@Summary	List third-party identifiers
+//	@Tags		account
+//	@Produce	json
+//	@Success	200	{object}	map[string][]matrix.ThreePID
+//	@Router		/_matrix/client/v3/account/3pid [get]
+func (a *App) handleThreePIDs(w http.ResponseWriter, r *http.Request) {
+	ids, err := a.svc.ThirdPartyIDs(r.Context(), auth.GetUserID(r))
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string][]matrix.ThreePID{"threepids": ids})
+}
+
+// handleThreePIDAdd implements POST /_matrix/client/v3/account/3pid and its /add
+// form: linking an address to an account means proving the requester controls
+// it, which this server cannot do.
+//
+//	@Summary	Add a third-party identifier
+//	@Tags		account
+//	@Accept		json
+//	@Produce	json
+//	@Failure	403	{object}	matrix.Error
+//	@Router		/_matrix/client/v3/account/3pid/add [post]
+func (a *App) handleThreePIDAdd(w http.ResponseWriter, r *http.Request) {
+	a.writeError(w, r, service.ThirdPartyLinkRefusal)
+}
+
+// handleThreePIDDelete implements POST /_matrix/client/v3/account/3pid/delete.
+//
+//	@Summary	Remove a third-party identifier
+//	@Tags		account
+//	@Accept		json
+//	@Produce	json
+//	@Failure	404	{object}	matrix.Error
+//	@Router		/_matrix/client/v3/account/3pid/delete [post]
+func (a *App) handleThreePIDDelete(w http.ResponseWriter, r *http.Request) {
+	a.writeError(w, r, service.ThirdPartyRemoveRefusal)
+}
+
+// handleThreePIDBind implements POST /_matrix/client/v3/account/3pid/bind and
+// /unbind: an address is never linked here, so there is nothing to bind a
+// session to or unbind it from.
+//
+//	@Summary	Unbind a third-party identifier
+//	@Tags		account
+//	@Accept		json
+//	@Produce	json
+//	@Failure	403	{object}	matrix.Error
+//	@Router		/_matrix/client/v3/account/3pid/unbind [post]
+func (a *App) handleThreePIDBind(w http.ResponseWriter, r *http.Request) {
+	a.writeError(w, r, service.ThirdPartyLinkRefusal)
+}
+
+// handleThreePIDRequestToken implements the email and msisdn requestToken
+// endpoints. Sending a verification message is out of scope for this server, so
+// the refusal says so instead of pretending the address is wrong.
+//
+//	@Summary	Request a validation token
+//	@Tags		account
+//	@Accept		json
+//	@Produce	json
+//	@Failure	403	{object}	matrix.Error
+//	@Router		/_matrix/client/v3/account/3pid/email/requestToken [post]
+func (a *App) handleThreePIDRequestToken(w http.ResponseWriter, r *http.Request) {
+	medium := "email"
+	if strings.Contains(r.URL.Path, "msisdn") {
+		medium = "msisdn"
+	}
+	a.writeError(w, r, service.ThirdPartyTokenRefusal(medium))
 }
 
 // handleChangePassword implements POST /_matrix/client/v3/account/password.

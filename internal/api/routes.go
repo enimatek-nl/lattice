@@ -46,6 +46,19 @@ func (a *App) registerAccountRoutes() {
 	a.authenticated("GET /_matrix/client/v3/account/whoami", a.handleWhoami)
 	a.authenticated("POST /_matrix/client/v3/account/password", a.handleChangePassword)
 	a.authenticated("POST /_matrix/client/v3/account/deactivate", a.handleDeactivate)
+
+	// Third-party identifiers: Lattice keeps no contact addresses, so the listing
+	// is real and empty while everything that would change it refuses with a reason
+	// (see internal/service/threepid.go). They are routed because a client that
+	// cannot ask shows an error panel where an empty row belongs.
+	a.authenticated("GET /_matrix/client/v3/account/3pid", a.handleThreePIDs)
+	a.authenticated("POST /_matrix/client/v3/account/3pid", a.handleThreePIDAdd)
+	a.authenticated("POST /_matrix/client/v3/account/3pid/add", a.handleThreePIDAdd)
+	a.authenticated("POST /_matrix/client/v3/account/3pid/delete", a.handleThreePIDDelete)
+	a.authenticated("POST /_matrix/client/v3/account/3pid/bind", a.handleThreePIDBind)
+	a.authenticated("POST /_matrix/client/v3/account/3pid/unbind", a.handleThreePIDBind)
+	a.authenticated("POST /_matrix/client/v3/account/3pid/email/requestToken", a.handleThreePIDRequestToken)
+	a.authenticated("POST /_matrix/client/v3/account/3pid/msisdn/requestToken", a.handleThreePIDRequestToken)
 }
 
 // registerRoomRoutes serves room creation, membership and the room directory.
@@ -183,6 +196,7 @@ func (a *App) registerMediaRoutes() {
 	a.authenticated("POST /_matrix/media/v3/upload", a.handleMediaUpload)
 	a.authenticated("PUT /_matrix/media/v3/upload/{serverName}/{mediaId}", a.handleMediaUpload)
 	a.authenticated("POST /_matrix/media/v3/create", a.handleMediaCreate)
+	a.authenticated("POST /_matrix/media/v3/commit/{serverName}/{mediaId}", a.handleMediaCommit)
 	a.handle("GET /_matrix/media/v3/download/{serverName}/{mediaId}", a.handleMediaDownload)
 	a.handle("GET /_matrix/media/v3/thumbnail/{serverName}/{mediaId}", a.handleMediaThumbnail)
 	a.authenticated("GET /_matrix/client/v1/media/download/{serverName}/{mediaId}", a.handleMediaDownload)
@@ -215,6 +229,10 @@ func (a *App) registerKeysRoutes() {
 // and return opaque blobs.
 func (a *App) registerKeyBackupRoutes() {
 	a.authenticated("GET /_matrix/client/v3/room_keys/version", a.handleKeyBackupVersion)
+	// PUT is how current clients create a backup version; POST is the deprecated
+	// spelling both are accepted under. Element sends PUT, so without it the key
+	// backup setup dies with a 405 and the client says it could not set up keys.
+	a.authenticated("PUT /_matrix/client/v3/room_keys/version", a.handleCreateKeyBackup)
 	a.authenticated("POST /_matrix/client/v3/room_keys/version", a.handleCreateKeyBackup)
 	// The version-scoped forms are deprecated in favour of the version query
 	// parameter, but plenty of clients still call them.

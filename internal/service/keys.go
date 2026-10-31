@@ -327,9 +327,13 @@ func (s *Service) OneTimeKeyCounts(ctx context.Context, userID, deviceID string)
 	for _, algorithm := range []string{KeyAlgorithmCurve25519, KeyAlgorithmSignedCurve25519, KeyAlgorithmFallbackCurve25519} {
 		out[algorithm] = counts[algorithm]
 	}
-	// MSC3288: tell the client it still has a usable fallback key per algorithm.
+	// MSC3288: tell the client it still has a usable fallback key. The name in
+	// device_unused_fallback_key_types is the algorithm the key id was uploaded
+	// under, so a key sent as fallback_curve25519:... is reported under that name.
+	// Looking only for plain curve25519 - or only for the name Element uses -
+	// leaves the section empty and the client never learns it has a fallback key.
 	var fallback []string
-	for _, algorithm := range []string{KeyAlgorithmSignedCurve25519, KeyAlgorithmCurve25519} {
+	for _, algorithm := range []string{KeyAlgorithmFallbackCurve25519, KeyAlgorithmSignedCurve25519} {
 		available, err := s.db.OneTimeKeyRepo.Available(userID, deviceID, algorithm, true, 1)
 		if err != nil {
 			return nil, nil, matrix.ErrInternal(err)

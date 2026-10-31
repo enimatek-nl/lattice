@@ -1,6 +1,8 @@
 package persist
 
 import (
+	"time"
+
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -25,6 +27,7 @@ type MediaRepo interface {
 	Save(media *Media) error
 	Get(origin, mediaID string) (*Media, error)
 	Count() (int64, error)
+	DeleteReservationsBefore(createdBefore int64) (int64, error)
 }
 
 // MediaRepoImpl is the GORM backed MediaRepo.
@@ -60,6 +63,17 @@ func (r *MediaRepoImpl) Count() (int64, error) {
 	var n int64
 	err := r.db.Model(&Media{}).Count(&n).Error
 	return n, err
+}
+
+// DeleteReservationsBefore removes media ids that were reserved by
+// POST /_matrix/media/v3/create but never received content, when the reservation
+// is older than the given Unix millisecond cutoff. A reservation is a row with
+// no bytes in it; clients are expected to commit within the window the create
+// response advertises, and after that the id is only taking up space.
+func (r *MediaRepoImpl) DeleteReservationsBefore(createdBefore int64) (int64, error) {
+	result := r.db.Where("size = 0 AND (blob IS NULL OR length(blob) = 0) AND created_at < ?",
+		time.UnixMilli(createdBefore)).Delete(&Media{})
+	return result.RowsAffected, result.Error
 }
 
 // NewMediaRepo returns the MediaRepo implementation for db.

@@ -35,7 +35,9 @@ func (a *App) handleKeyBackupVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, matrix.Object{
-		"version":   info.Version,
+		// The version travels as a string: the spec calls it an opaque string and
+		// clients pass it back verbatim in a query parameter.
+		"version":   strconv.FormatInt(info.Version, 10),
 		"algorithm": info.Algorithm,
 		"auth_data": info.AuthData,
 		"count":     a.backupKeyCount(r, info.Version),
@@ -65,7 +67,7 @@ func (a *App) handleCreateKeyBackup(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]int64{"version": version})
+	writeJSON(w, http.StatusOK, map[string]string{"version": strconv.FormatInt(version, 10)})
 }
 
 // handleUpdateKeyBackup implements PUT /_matrix/client/v3/room_keys/version/{version},

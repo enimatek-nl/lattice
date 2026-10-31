@@ -50,8 +50,9 @@ updated: it is the hand-off point after context compaction. Read
     `Allow` that net/http gives up when a catch-all is registered, by matching
     the request path against `app.Registered()`).
   * `cmd/server` – flags: `-addr -server-name -base-url -db -jwt-secret -token-ttl
-    -max-upload-size -allow-guests -disable-registration -registration-secret
-    -cors-origin -support-email -support-matrix-id -media -maintenance-interval -version`.
+    -max-upload-size -media-reservation-window -allow-guests -disable-registration
+    -registration-secret -cors-origin -support-email -support-matrix-id -media
+    -maintenance-interval -version`.
   * `cmd/endpoints` – coverage report: `go run ./cmd/endpoints -out ENDPOINTS.md`.
   * `tests/compat` – black-box compatibility suite (`harness.go` + tests).
 * Spec/behaviour details already handled (don't "fix" them again):
@@ -92,6 +93,32 @@ updated: it is the hand-off point after context compaction. Read
     them. Refusing a correctly signed key over a hyphen leaves the user unable to
     set up encryption. The object is stored exactly as it arrived, because
     rewriting the field would change what its own signature covers.
+  * Media uploads have **two flows and both must be complete**. Element and
+    matrix-js-sdk use the async one for every upload, including the room avatar:
+    `POST /create` mints an id, `PUT /upload/{server}/{id}` sends the bytes to the
+    `upload_url` from that response, and `POST /commit/{server}/{id}` says they are
+    all there - with an optional `timeout` for a client that arrives first. A
+    missing commit endpoint is a silent failure in the client: the upload looks
+    fine, the `mxc://` URI is used, and the avatar never appears. A reservation is
+    a media row with no bytes; it is not served (404, not an empty 200 that renders
+    as a broken image) and maintenance drops it once the window the create response
+    advertised has passed (`-media-reservation-window`, 24 h by default). There is
+    no "uploaded" flag to set and no schema column for one: adding a boolean would
+    have made every existing media row unreadable.
+  * Endpoints the server cannot really serve are still **routed, and refuse with a
+    reason**. The third-party identifiers (email, phone) are the clear case: Lattice
+    has no identity server integration and stores no addresses, so `GET
+    /account/3pid` answers a real empty list and everything that would change it
+    answers `M_FORBIDDEN`/`M_NOT_FOUND` with the reason in the body. An unrouted
+    path is not a smaller problem - Element shows the user "Unable to load email
+    addresses and phone numbers", where an empty settings row belongs.
+  * Answers that are **correct and should not be "fixed"**, collected because they
+    look like failures in a browser's network panel: `GET /room_keys/version` is
+    `404 M_NOT_FOUND` until the user has a backup; the first `POST
+    /keys/device_signing/upload` is a `401 M_UNAUTHORIZED` with the flow list, which
+    is the interactive auth exchange the client answers with its password; and `GET
+    /v1/auth_metadata` is `404` because this server does not use OAuth 2.0. Element
+    logs all three and moves on.
   * Two state events are **fixed once written**: `m.room.create` (it is the root of
     the room and carries its version) and `m.room.encryption`. The specification
     never describes re-encrypting a room, and a room whose algorithm changes cannot
@@ -591,8 +618,14 @@ renames and topics never reached a client, and why a client thought the room was
 version 1), plus cross-signing key upload and key signatures (verified over
 canonical JSON, behind a `m.login.password` stage, 409 without the reset flag,
 reported through `/keys/query`) and server-side room key backup across the
-fourteen `/room_keys/*` routes. Coverage is 141/234 indexed endpoints with 24
-extra routes and 87 compatibility tests. Pick the next chunk from the list below.
+fourteen `/room_keys/*` routes. The newest chunk fixed what a second click
+through Element exposed: the async media upload flow was half-implemented (no
+`POST /_matrix/media/v3/commit`, so the upload Element makes for a room avatar
+never finished and the avatar silently never changed), and the third-party
+identifier endpoints were unrouted (which Element renders as "Unable to load
+email addresses and phone numbers"). Coverage is 149/234 indexed endpoints with
+26 extra routes and 89 compatibility tests. Pick the next chunk from the list
+below.
 
 The endpoint index in `SPECS.md` points at a spec corpus that is **not** in this
 workspace (there is no `references/` directory), so specification wording cannot
@@ -624,6 +657,23 @@ fetched first.
    back to the device that caused them, and abandoned long polls logged as internal
    errors. Whether Element still queries keys in a loop after that is unconfirmed:
    it needs a click through the client, and the log should then stay quiet.
+   A chain test that replays what Element does when it sets up encryption
+   (`TestElementKeySetupChain`) then found three bugs no per-endpoint test could
+   see, because every endpoint worked and only the sequence did:
+   * `PUT /room_keys/version` was never routed. The spec moved key backup version
+     creation from POST to PUT; Lattice had the deprecated POST, Element sent the
+     current verb, and the setup died with a 405 whose only symptom was "unable to
+     set up keys".
+   * `POST /keys/signatures/upload` read the deprecated `signed_users` map and
+     ignored the `signed_keys` list the Rust crypto sends, so Element's device
+     signatures were thrown away and no device was ever marked as belonging to its
+     user. Both shapes are accepted now.
+   * `device_unused_fallback_key_types` looked for stored fallback keys under
+     `curve25519`/`signed_curve25519` while they are filed under the algorithm of
+     the id they arrived with (`fallback_curve25519`), so the section was always
+     empty. Key backup versions also travelled as numbers rather than the strings
+     the spec and the clients use.
+   The sequence has now been replayed by a test; a browser still has to click it.
 3. Loose ends spotted while doing history, relations, the user script, the gap
    chunk, the search/spaces chunk and the reports chunk:
    * Seeded push rules are only installed at registration; there is no rule

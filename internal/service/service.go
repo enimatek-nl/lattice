@@ -29,6 +29,9 @@ type Service struct {
 	stream atomic.Uint64
 	// maxUploadSize limits media uploads in bytes.
 	maxUploadSize int64
+	// reservationWindow is how long a media id minted by POST /_matrix/media/v3/create
+	// waits for its content before maintenance drops it.
+	reservationWindow time.Duration
 	// registrationSecrets are the tokens the m.login.registration_token stage
 	// accepts. An empty list means registration is open to anyone.
 	registrationSecrets []string
@@ -57,6 +60,16 @@ func WithMaxUploadSize(size int64) Option {
 	return func(s *Service) { s.maxUploadSize = size }
 }
 
+// WithMediaReservationWindow sets how long POST /_matrix/media/v3/create keeps a
+// media id that has not received its bytes yet.
+func WithMediaReservationWindow(window time.Duration) Option {
+	return func(s *Service) {
+		if window > 0 {
+			s.reservationWindow = window
+		}
+	}
+}
+
 // WithRegistrationSecrets restricts self-service registration to clients that
 // present one of these tokens, which turns the server into an invitation only
 // one and replaces the open m.login.dummy registration flow.
@@ -79,13 +92,14 @@ func WithPublicBaseURL(url string) Option {
 // New builds a service for the given database and server name.
 func New(db *persist.Database, serverName string, tokens *auth.TokenService, opts ...Option) (*Service, error) {
 	s := &Service{
-		db:            db,
-		serverName:    serverName,
-		hub:           realtime.NewHub(),
-		tokens:        tokens,
-		now:           time.Now,
-		maxUploadSize: DefaultMaxUploadSize,
-		uiaSessions:   map[string]*authSession{},
+		db:                db,
+		serverName:        serverName,
+		hub:               realtime.NewHub(),
+		tokens:            tokens,
+		now:               time.Now,
+		maxUploadSize:     DefaultMaxUploadSize,
+		reservationWindow: DefaultMediaReservationWindow,
+		uiaSessions:       map[string]*authSession{},
 	}
 	for _, opt := range opts {
 		opt(s)

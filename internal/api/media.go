@@ -76,6 +76,32 @@ func (a *App) handleMediaCreate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, reservation)
 }
 
+// handleMediaCommit implements POST /_matrix/media/v3/commit/{serverName}/{mediaId},
+// which finishes the async upload flow: create reserves the id, the client PUTs
+// the bytes, commit says they are all there.
+//
+//	@Summary	Commit an uploaded file
+//	@Tags		media
+//	@Accept		json
+//	@Produce	json
+//	@Param		serverName	path		string	true	"Media origin"
+//	@Param		mediaId		path		string	true	"Media ID"
+//	@Param		timeout		query		int		false	"Milliseconds to wait for the upload"
+//	@Success	200	{object}	matrix.Object
+//	@Router		/_matrix/media/v3/commit/{serverName}/{mediaId} [post]
+func (a *App) handleMediaCommit(w http.ResponseWriter, r *http.Request) {
+	timeout, err := queryDurationMS(r, "timeout", 0)
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	if err := a.svc.CommitMedia(r.Context(), auth.GetUserID(r), r.PathValue("mediaId"), timeout); err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, matrix.Object{})
+}
+
 // handleMediaDownload implements GET /_matrix/media/v3/download/{serverName}/{mediaId}
 // and the authenticated /_matrix/client/v1/media variant.
 //

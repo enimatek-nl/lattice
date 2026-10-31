@@ -51,7 +51,7 @@ func TestUnknownEndpoint(t *testing.T) {
 	server := NewServer(t)
 
 	cases := []string{
-		"/_matrix/client/v3/account/3pid",
+		"/_matrix/client/v3/account/3pid/unreachable",
 		"/_matrix/client/v3/login/sso/redirect",
 		"/nothing-at-all",
 	}

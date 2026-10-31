@@ -33,6 +33,8 @@ func main() {
 		jwtSecret         = flag.String("jwt-secret", "", "secret used to sign access tokens; generated when empty")
 		tokenTTL          = flag.Duration("token-ttl", 24*time.Hour, "access token lifetime")
 		maxUpload         = flag.Int64("max-upload-size", service.DefaultMaxUploadSize, "maximum media upload size in bytes")
+		reservationWindow = flag.Duration("media-reservation-window", service.DefaultMediaReservationWindow,
+			"how long a media id created by POST /_matrix/media/v3/create waits for its bytes")
 		allowGuests       = flag.Bool("allow-guests", true, "allow guest account creation")
 		disableReg        = flag.Bool("disable-registration", false, "disable self-service registration")
 		corsOrigin        = flag.String("cors-origin", "*", "allowed CORS origin, or a comma separated list")
@@ -68,6 +70,7 @@ func main() {
 	tokens := auth.NewTokenService(secret, auth.WithTTL(*tokenTTL))
 	svc, err := service.New(db, *serverName, tokens,
 		service.WithMaxUploadSize(*maxUpload),
+		service.WithMediaReservationWindow(*reservationWindow),
 		service.WithRegistrationSecrets(splitList(*registrationSecrets)...),
 		service.WithPublicBaseURL(*publicBaseURL),
 	)

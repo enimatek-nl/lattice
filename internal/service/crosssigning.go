@@ -328,10 +328,63 @@ func (s *Service) CrossSigningKeys(ctx context.Context, userIDs ...string) (map[
 }
 
 // SignatureUpload is the body of POST /keys/signatures/upload.
+//
+// Two shapes arrive here and both have to work. The current one is signed_keys:
+// a flat list of key objects, each naming its own user and carrying its own
+// signatures. The deprecated one is signed_users: a map of user id to a map of
+// entity id to object. matrix-js-sdk and the Rust crypto inside Element send
+// signed_keys, so accepting only the old shape quietly throws away a client's
+// device signatures and nothing ever trusts the device.
 type SignatureUpload struct {
 	// SignedUsers maps the user whose keys are signed to the entity (a device id
 	// or a cross-signing key id) and the object holding its new signatures.
 	SignedUsers map[string]map[string]matrix.Object
+	// SignedKeys holds key objects in the order a client sent them.
+	SignedKeys []matrix.Object
+}
+
+// entities returns the user id, entity id and object triples either shape of the
+// request describes.
+func (u SignatureUpload) entities(requester string) []signatureTarget {
+	out := make([]signatureTarget, 0, len(u.SignedUsers)+len(u.SignedKeys))
+	for userID, objects := range u.SignedUsers {
+		for entityID, object := range objects {
+			out = append(out, signatureTarget{UserID: userID, EntityID: entityID, Object: object})
+		}
+	}
+	for _, object := range u.SignedKeys {
+		userID, _ := object["user_id"].(string)
+		if userID == "" {
+			userID = requester
+		}
+		entityID := signatureEntityID(object)
+		if entityID == "" {
+			continue
+		}
+		out = append(out, signatureTarget{UserID: userID, EntityID: entityID, Object: object})
+	}
+	return out
+}
+
+// signatureEntityID names the key a signed_keys object describes: the device id
+// for a device key, and the single key id for a cross-signing key (which carries
+// no device id).
+func signatureEntityID(object matrix.Object) string {
+	if deviceID, ok := object["device_id"].(string); ok && deviceID != "" {
+		return deviceID
+	}
+	keys, _ := object["keys"].(map[string]any)
+	for keyID := range keys {
+		return keyID
+	}
+	return ""
+}
+
+// signatureTarget is one key whose signatures are being extended.
+type signatureTarget struct {
+	UserID   string
+	EntityID string
+	Object   matrix.Object
 }
 
 // UploadKeySignatures merges signatures into stored device and cross-signing
@@ -346,11 +399,9 @@ func (s *Service) UploadKeySignatures(ctx context.Context, requester string, upl
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	for userID, entities := range upload.SignedUsers {
-		for entityID, incoming := range entities {
-			if err := s.mergeSignatures(ctx, requester, userID, entityID, incoming); err != nil {
-				return err
-			}
+	for _, target := range upload.entities(requester) {
+		if err := s.mergeSignatures(ctx, requester, target.UserID, target.EntityID, target.Object); err != nil {
+			return err
 		}
 	}
 	return s.recordDeviceListChange(ctx, persist.DeviceListChanged, requester)

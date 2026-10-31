@@ -11,7 +11,7 @@ being able to read any of it.
 **Status:** working single-server homeserver; the cryptography stays on the
 clients. **141 of
 the 234** endpoints indexed in [SPECS.md](SPECS.md) are implemented, plus 24
-extra routes (see [ENDPOINTS.md](ENDPOINTS.md)). 87 black-box compatibility tests
+extra routes (see [ENDPOINTS.md](ENDPOINTS.md)). 88 black-box compatibility tests
 are green. `go build ./... && go vet ./...` clean. Implementation version `0.1.0`
 (reported by `GET /_matrix/client/versions` as `Lattice/0.1.0`).
 
@@ -81,6 +81,7 @@ registrations.
 | `-jwt-secret` | *(empty)* | secret used to sign access tokens; **set it** — an empty value generates a fresh one per boot and logs every client out on restart |
 | `-token-ttl` | `24h` | access token lifetime |
 | `-max-upload-size` | `10 MiB` | maximum media upload size |
+| `-media-reservation-window` | `24h` | how long a media id from `POST /_matrix/media/v3/create` waits for its bytes before maintenance drops it |
 | `-allow-guests` | `true` | allow guest account creation |
 | `-disable-registration` | `false` | turn off self-service registration |
 | `-registration-secret` | *(empty)* | comma separated registration tokens; when set, registering requires one and the open `m.login.dummy` flow disappears |
@@ -100,12 +101,17 @@ read markers, typing, push rules and pushers, search (both request forms),
 spaces and `/hierarchy`, threads and relations, room versions 1-11 (11 by
 default, all advertised as stable in `/v1/capabilities`, `POST /rooms/{id}/upgrade`
 included, which requires a version, copies the transferable state, locks the power
-levels of the old room and closes it to further events), media upload/download/thumbnail,
+levels of the old room and closes it to further events), media upload/download/thumbnail
+including the async create → upload → commit flow Element uses, the profile and
+third-party-identifier endpoints (the 3PID listing is real and empty; linking an
+address refuses with a reason, because no verification mail or text is ever sent),
 profiles, filters, account data, redaction, device management (`/devices`),
 device keys (`/keys/upload`, `/keys/query`, `/keys/claim`, `/keys/changes` and
-the key sections of `/sync`), cross-signing (`/keys/device_signing/upload`,
-`/keys/signatures/upload`) and server-side room key backup (`/room_keys/*`),
-the admin routes, abuse reports, and
+the key sections of `/sync`, including unused fallback keys named under the
+algorithm they were uploaded under), cross-signing (`/keys/device_signing/upload`,
+`/keys/signatures/upload` in both request shapes the spec has had) and
+server-side room key backup (`/room_keys/*`, versions created with `PUT` and named
+as strings), the admin routes, abuse reports, and
 `/.well-known/matrix/{client,server,support}`. Endpoints that are not implemented
 answer `404 M_UNRECOGNIZED` rather than a bare HTTP 404, so a client can name the
 endpoint that is missing.
