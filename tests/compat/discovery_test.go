@@ -2,6 +2,7 @@ package compat
 
 import (
 	"net/http"
+	"reflect"
 	"testing"
 
 	"github.com/enimatek-nl/lattice/internal/api"
@@ -50,11 +51,12 @@ func TestUnknownEndpoint(t *testing.T) {
 	server := NewServer(t)
 
 	cases := []string{
-		"/_matrix/client/v3/room_keys/version",
-		"/_matrix/client/v3/keys/device_signing/upload",
+		"/_matrix/client/v3/account/3pid",
 		"/_matrix/client/v3/login/sso/redirect",
 		"/nothing-at-all",
 	}
+	// This list has to hold paths Lattice really does not route: an example that
+	// gets implemented turns this test red, which is the point.
 	for _, path := range cases {
 		t.Run(path, func(t *testing.T) {
 			resp := server.Do(http.MethodGet, path, "", nil)
@@ -132,5 +134,63 @@ func TestVersions(t *testing.T) {
 	}
 	if _, ok := resp.Body["unstable_features"].(map[string]any); !ok {
 		t.Errorf("unstable_features is missing: %s", resp.Raw)
+	}
+}
+
+// TestCapabilities covers GET /v1/capabilities (and its v3 alias), which is how
+// a client learns which room versions the server offers. The versions are
+// advertised as "stable"/"unstable": a client treats a version it cannot match
+// to a stable entry as one that has to be upgraded, and warns the user.
+func TestCapabilities(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+
+	resp := server.MustDo(http.MethodGet, "/_matrix/client/v1/capabilities", alice.Token, nil, http.StatusOK)
+	caps, _ := resp.Body["capabilities"].(map[string]any)
+	if caps == nil {
+		t.Fatalf("no capabilities object: %s", resp.Raw)
+	}
+	versions, _ := caps["m.room_versions"].(map[string]any)
+	if versions == nil {
+		t.Fatalf("no m.room_versions: %s", resp.Raw)
+	}
+	def, _ := versions["default"].(string)
+	if def == "" {
+		t.Fatalf("m.room_versions has no default: %s", resp.Raw)
+	}
+	available, _ := versions["available"].(map[string]any)
+	if len(available) == 0 {
+		t.Fatalf("m.room_versions advertises no version: %s", resp.Raw)
+	}
+	for version, stability := range available {
+		if stability != "stable" && stability != "unstable" {
+			t.Errorf("room version %s is advertised as %v, want stable or unstable", version, stability)
+		}
+	}
+	if available[def] != "stable" {
+		t.Errorf("the default version %s is advertised as %v, want stable", def, available[def])
+	}
+	for _, version := range []string{"1", "10", "11"} {
+		if available[version] != "stable" {
+			t.Errorf("room version %s = %v, want stable", version, available[version])
+		}
+	}
+	for _, capability := range []string{"m.change_password", "m.set_avatar_url", "m.whoami"} {
+		entry, ok := caps[capability].(map[string]any)
+		if !ok || entry["enabled"] != true {
+			t.Errorf("%s = %v, want its enabled flag to be true", capability, caps[capability])
+		}
+	}
+
+	// The v3 alias of the endpoint offers the same room versions.
+	again := server.MustDo(http.MethodGet, "/_matrix/client/v3/capabilities", alice.Token, nil, http.StatusOK)
+	againCaps, _ := again.Body["capabilities"].(map[string]any)
+	againVersions, _ := againCaps["m.room_versions"].(map[string]any)
+	if againVersions["default"] != def || !reflect.DeepEqual(againVersions["available"], versions["available"]) {
+		t.Errorf("the v3 capabilities differ from v1: %s", again.Raw)
+	}
+
+	if resp := server.Do(http.MethodGet, "/_matrix/client/v1/capabilities", "", nil); resp.Status != http.StatusUnauthorized {
+		t.Errorf("unauthenticated capabilities: got %d, want 401", resp.Status)
 	}
 }

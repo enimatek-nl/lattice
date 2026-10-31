@@ -108,12 +108,12 @@ func (s *Service) buildSync(ctx context.Context, params SyncParams, filter *Sync
 		changed = changed || roomChanged
 	}
 	for _, roomID := range invited {
-		room, err := s.invitedRoomSync(ctx, roomID)
+		room, inviteChanged, err := s.invitedRoomSync(ctx, userID, roomID, since)
 		if err != nil {
 			return nil, false, err
 		}
 		response.Rooms.Invite[roomID] = room
-		changed = true
+		changed = changed || inviteChanged
 	}
 	for _, roomID := range left {
 		room, roomChanged, err := s.leftRoomSync(ctx, userID, roomID, since, params.Limit)
@@ -228,7 +228,7 @@ func (s *Service) joinedRoomSync(ctx context.Context, userID, roomID string, sin
 
 	// Clients need the room state when they first see a room, and when they
 	// joined after the sync token; later syncs only carry state deltas.
-	if since == 0 || s.joinedAfter(roomID, userID, since) {
+	if since == 0 || s.membershipAfter(roomID, userID, since) {
 		state, err := s.stateEvents(ctx, roomID, since, filter)
 		if err != nil {
 			return nil, false, err
@@ -288,8 +288,9 @@ func (s *Service) joinedRoomSync(ctx context.Context, userID, roomID string, sin
 	return room, len(events) > 0 || len(typing) > 0 || len(accountData) > 0, nil
 }
 
-// joinedAfter reports whether the user's join happened after a position.
-func (s *Service) joinedAfter(roomID, userID string, since uint64) bool {
+// membershipAfter reports whether the stored membership event of a user in a
+// room was written after a position.
+func (s *Service) membershipAfter(roomID, userID string, since uint64) bool {
 	row, err := s.db.MembershipRepo.Get(roomID, userID)
 	if err != nil {
 		return true

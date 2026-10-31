@@ -17,6 +17,7 @@ const (
 	TypeRedaction        = "m.room.redaction"
 	TypeMessage          = "m.room.message"
 	TypeEncrypted        = "m.room.encrypted"
+	TypeEncryption       = "m.room.encryption"
 	TypeReaction         = "m.reaction"
 	TypeSticker          = "m.sticker"
 	TypeTyping           = "m.typing"

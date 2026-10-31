@@ -132,11 +132,14 @@ func (s *Service) stateDelta(roomID string, since uint64) ([]matrix.Event, error
 	return events, nil
 }
 
-// strippedState returns the state a non-joined user may see for a room.
+// strippedState returns the state a non-joined user may see for a room. The
+// m.room.create event is part of it because it carries the room version: a
+// client that cannot find it assumes version 1 and warns about an upgrade.
 func (s *Service) strippedState(ctx context.Context, roomID string) []matrix.Event {
 	types := []string{
 		matrix.TypeCreate, matrix.TypeName, matrix.TypeTopic, matrix.TypeAvatar,
 		matrix.TypeCanonicalAlias, matrix.TypeJoinRules, matrix.TypeMember,
+		matrix.TypeEncryption,
 	}
 	out := make([]matrix.Event, 0, 8)
 	for _, typ := range types {
@@ -159,10 +162,17 @@ func (s *Service) strippedState(ctx context.Context, roomID string) []matrix.Eve
 }
 
 // invitedRoomSync renders the invite section of a sync response.
-func (s *Service) invitedRoomSync(ctx context.Context, roomID string) (*matrix.InvitedRoom, error) {
+//
+// An invitation is membership state rather than an event stream, so it is
+// reported on every sync until it is accepted or withdrawn. Only an invitation
+// that arrived after the token counts as new data: treating every outstanding
+// invitation as new makes the long poll return at once, forever, which a client
+// reads as an endless stream of updates and answers with a request per sync.
+func (s *Service) invitedRoomSync(ctx context.Context, userID, roomID string,
+	since uint64) (*matrix.InvitedRoom, bool, error) {
 	return &matrix.InvitedRoom{
 		InviteState: matrix.State{Events: s.strippedState(ctx, roomID)},
-	}, nil
+	}, s.membershipAfter(roomID, userID, since), nil
 }
 
 // leftRoomSync renders the leave section of a sync response. A room is only

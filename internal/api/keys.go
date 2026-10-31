@@ -146,3 +146,65 @@ func (a *App) tokenParam(r *http.Request, key string) (uint64, error) {
 	}
 	return pos, nil
 }
+
+// handleCrossSigningUpload implements
+// POST /_matrix/client/v3/keys/device_signing/upload.
+//
+//	@Summary	Upload cross-signing keys
+//	@Tags		e2ee
+//	@Accept		json
+//	@Produce	json
+//	@Success	200	{object}	map[string]any
+//	@Router		/_matrix/client/v3/keys/device_signing/upload [post]
+func (a *App) handleCrossSigningUpload(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Auth           matrix.Object `json:"auth"`
+		MasterKey      matrix.Object `json:"master_key"`
+		SelfSigningKey matrix.Object `json:"self_signing_key"`
+		UserSigningKey matrix.Object `json:"user_signing_key"`
+		// Reset is the flag a client sets once the user agreed to lose the old
+		// cross-signing keys; without it a master key cannot be replaced.
+		Reset bool `json:"org.matrix.cross_signing_reset"`
+	}
+	if err := decodeBody(r, &body); err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	if err := a.svc.UploadCrossSigningKeys(r.Context(), auth.GetUserID(r), service.CrossSigningUpload{
+		Auth:           body.Auth,
+		MasterKey:      body.MasterKey,
+		SelfSigningKey: body.SelfSigningKey,
+		UserSigningKey: body.UserSigningKey,
+		Reset:          body.Reset,
+	}); err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	// The specification answers with an empty object: what was uploaded is what
+	// a client reads back through POST /keys/query.
+	writeJSON(w, http.StatusOK, matrix.Object{})
+}
+
+// handleSignatureUpload implements POST /_matrix/client/v3/keys/signatures/upload.
+//
+//	@Summary	Upload key signatures
+//	@Tags		e2ee
+//	@Accept		json
+//	@Produce	json
+//	@Success	200	{object}	map[string]any
+//	@Router		/_matrix/client/v3/keys/signatures/upload [post]
+func (a *App) handleSignatureUpload(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		SignedUsers map[string]map[string]matrix.Object `json:"signed_users"`
+	}
+	if err := decodeBody(r, &body); err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	if err := a.svc.UploadKeySignatures(r.Context(), auth.GetUserID(r),
+		service.SignatureUpload{SignedUsers: body.SignedUsers}); err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, matrix.Object{})
+}

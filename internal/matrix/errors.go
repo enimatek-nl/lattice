@@ -41,6 +41,7 @@ const (
 	ErrCodeIncompatibleRoomVer  ErrorCode = "M_INCOMPATIBLE_ROOM_VERSION"
 	ErrCodeThreepidNotFound     ErrorCode = "M_THREEPID_NOT_FOUND"
 	ErrCodeThreepidInUse        ErrorCode = "M_THREEPID_IN_USE"
+	ErrCodeWrongKeyVersion      ErrorCode = "M_WRONG_KEY_VERSION"
 )
 
 // Error is a Matrix API error. It carries the HTTP status that should be used

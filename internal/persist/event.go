@@ -15,9 +15,15 @@ type Event struct {
 	RoomID  string `json:"room_id" gorm:"index:idx_event_room_stream,priority:1;size:255"`
 	// StreamPos is a globally monotonic position used for sync tokens and
 	// pagination.
-	StreamPos       uint64 `json:"stream_pos" gorm:"uniqueIndex;index:idx_event_room_stream,priority:2"`
-	Type            string `json:"type" gorm:"index:idx_event_room_stream,priority:3;size:128"`
-	StateKey        string `json:"state_key,omitempty" gorm:"size:255"`
+	StreamPos uint64 `json:"stream_pos" gorm:"uniqueIndex;index:idx_event_room_stream,priority:2"`
+	Type      string `json:"type" gorm:"index:idx_event_room_stream,priority:3;size:128"`
+	StateKey  string `json:"state_key,omitempty" gorm:"size:255"`
+	// IsState records that the event is a state event. It cannot be derived from
+	// StateKey, because the state key of m.room.name, m.room.topic, m.room.create
+	// and friends is the empty string: without this flag a client cannot tell a
+	// state event from a message, ignores the room name change, and cannot find
+	// the room version any more.
+	IsState         bool   `json:"is_state"`
 	Sender          string `json:"sender" gorm:"size:255"`
 	OriginServerTS  int64  `json:"origin_server_ts"`
 	Content         string `json:"content" gorm:"type:text"`
@@ -51,7 +57,10 @@ func (e *Event) Matrix() matrix.Event {
 		Content:        content,
 		Depth:          e.Depth,
 	}
-	if e.StateKey != "" {
+	// A state event carries state_key even when the key is the empty string.
+	// Rows written before the IsState column existed are recognised by their
+	// non-empty key, which is all that can be recovered about them.
+	if e.IsState || e.StateKey != "" {
 		key := e.StateKey
 		ev.StateKey = &key
 	}

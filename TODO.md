@@ -69,19 +69,73 @@ updated: it is the hand-off point after context compaction. Read
     `change`; the spec reserves `left` for users who stopped sharing a room, which
     Lattice derives from membership state).
   * `POST /logout/all` keeps the calling token valid (spec).
+  * Sync wake-up: an outstanding invitation is membership state, so it is
+    reported on every sync, but it is **not** new data — only an invitation whose
+    event was written after the token may end a long poll. Treating every
+    invitation as new makes the long poll answer instantly, forever, and the
+    client (Element) turns that into one `/keys/query` per pass.
+  * `m.room_versions` in `/v1/capabilities` uses the words `stable`/`unstable`
+    as the spec asks, not the `"1"` some early servers sent: a client builds its
+    list of stable versions from those values, and an empty list makes it demand
+    an upgrade of every room whose version differs from the default (the
+    "room version 1 … marked as unstable" dialog). Default `11`, versions 1-11
+    advertised; Lattice applies one set of state and redaction rules to all of
+    them rather than varying them per version.
+  * `m.room.tombstone` carries `replacement_room` (a client follows that field,
+    `predecessor` alone is not enough), and the successor's `m.room.create`
+    carries `predecessor`.
+  * Stripped state (the `invite_state` of a sync, and the `knock` variants) must
+    include `m.room.create`: it holds the room version, and a client that cannot
+    find it assumes version 1.
   * Duplicate alias → 409 `M_ALIAS_EXISTS`; alias creator must be joined.
   * `GET /login` advertises `m.login.password` only; no SSO, no 3PID, no OAuth
     (`/_matrix/client/v1/auth_metadata` → 404 on purpose).
-  * End-to-end keys are **opaque**: the JSON a client uploads is the JSON another
-    client gets back, and no signature is ever verified server-side (the clients
-    do that). Consequences that are deliberate: the algorithm of a key is the part
-    before the `:` of its key id; a key uploaded under the field name `key` is
-    rewritten to the algorithm field; an ordinary one-time key is handed out once
-    (`Claim` is a conditional update, so concurrent claims cannot both win) while a
-    fallback key (MSC3288) is handed out repeatedly and never counted in
-    `one_time_key_counts`; a device re-uploading its keys does not lose the ones
+  * Every state event carries `state_key` on the wire, **including the ones whose
+    key is the empty string** (m.room.name, m.room.topic, m.room.create,
+    m.room.power_levels, …). A client decides whether an event is state by looking
+    for that field, so omitting it makes a room rename invisible, and the client
+    falls back to room version 1 because it cannot find m.room.create. Since the
+    empty state key is indistinguishable from a timeline event in the row,
+    `Event.IsState` records it explicitly; `NewDatabase` backfills the marker for
+    databases written before it existed (a superseded empty-key state event cannot
+    be recognised any more, which only means an old room name arrives as a plain
+    timeline event).
+  * End-to-end device keys are **opaque**: the JSON a client uploads is the JSON
+    another client gets back, and no signature is verified server-side (the
+    clients do that). Consequences that are deliberate: the algorithm of a key is
+    the part before the `:` of its key id; a key uploaded under the field name
+    `key` is rewritten to the algorithm field; an ordinary one-time key is handed
+    out once (`Claim` is a conditional update, so concurrent claims cannot both
+    win) while a fallback key (MSC3288) is handed out repeatedly and never counted
+    in `one_time_key_counts`; a device re-uploading its keys does not lose the ones
     that were never claimed; keys and prekeys are deleted with their device and on
     account deactivation.
+  * Cross-signing keys are the **one piece of key material Lattice verifies**, and
+    it does not read the spec wording off a client's bytes: `internal/matrix/
+    canonical.go` builds canonical JSON (Go's `json.Marshal` is not canonical — it
+    escapes `<`, `>` and `&`, sorts nothing, and turns numbers into float64), and
+    the master key must sign itself while the self-signing and user-signing keys
+    must be signed by the master key, over the object without `signatures` and
+    `unsigned`. A key id must match its key material, the usage must match the
+    field it arrived in, and `user_id` must be the requester. Uploading a
+    different master key without `org.matrix.cross_signing_reset` is a **409
+    `M_FORBIDDEN`**, which is the shape that makes a client offer the user a reset;
+    the endpoint sits behind a `m.login.password` interactive auth stage. Verified
+    keys are reported by `POST /keys/query` in the same map as the device keys,
+    named by their key id, which is where clients look for them, and an upload is
+    a device list change so the user's other devices pick it up.
+  * `POST /keys/signatures/upload` merges signature blocks into the stored device
+    or cross-signing key. A signature made with a key Lattice holds is verified;
+    one made by a key it does not have is stored as it came, because the clients
+    that read it hold the key. An entity nobody has is skipped rather than an
+    error: signing a device that was deleted is not a client bug.
+  * Key backup (`/room_keys/*`) stores opaque encrypted sessions. Versions count
+    up from 1 per user; writes are only accepted for the latest version
+    (**400 `M_WRONG_KEY_VERSION`** otherwise), an unknown version is a 404
+    `M_NOT_FOUND`, deleting a version takes its sessions with it, and the three
+    granularities (all rooms, one room, one session) each have their own body
+    shape. `m.room.encryption`, the backup auth_data and the sessions are never
+    interpreted.
   * `POST /register` with no `auth` dict (and `GET /register`) answers **401
     `M_UNAUTHORIZED`** with `flows`/`params`/`session`/`completed` — that is the
     only way clients such as Element discover that registration is possible; a
@@ -458,13 +512,13 @@ a **single-server, unencrypted** homeserver:
   (`/keys/upload` `/keys/query` `/keys/claim` `/keys/changes` + the key sections
   of sync), the admin routes, abuse reports, and
   `/.well-known/matrix/{client,server,support}`.
-* Missing, so a client will trip over them: cross-signing
-  (`/keys/device_signing/upload`, `/keys/signatures/upload`), server-side key
-  backup (`/room_keys/*`) and therefore interactive verification (**no end-to-end
-  trust layer**: sessions work but are unverified), everything under
+* Missing, so a client will trip over them: everything under
   `/_matrix/federation/v1/*` (**no federation**: users can only reach users on
-  this server), SSO, 3PID/email recovery, `m.login.token`, and rate limiting
-  (`ErrLimitExceeded`/`retry_after_ms` exist but nothing calls them).
+  this server), `account/3pid/*` and the identity `requestToken` endpoints,
+  SSO and `m.login.token`, application services, the deprecated
+  `initialSync`/`GET /events`, and rate limiting (`ErrLimitExceeded`/
+  `retry_after_ms` exist but nothing calls them). The end-to-end trust layer —
+  cross-signing, key signatures and server-side key backup — is implemented.
 * Operational facts worth repeating to whoever deploys it: `-jwt-secret` should
   always be set — an empty one generates a fresh secret per boot, which logs out
   every client on restart; the binary serves plain HTTP, so TLS terminates in a
@@ -480,16 +534,20 @@ green (the race run takes ~3 minutes because of the long-poll tests, and
 latest chunks added the housekeeping pass for ephemeral data plus the abuse
 report store, and closed small loose ends (long poll timing is now pinned by a
 test, `third_party_signed` invites are refused, notification ordering is fixed
-by a test). The newest chunk put registration behind a User-Interactive Auth
-exchange (401 + flow list instead of `M_INVALID_USERNAME`), added
-`m.login.registration_token` support behind `-registration-secret`, fixed the
-well-known client document shape and added `-base-url`, honoured
-`initial_device_display_name` on `/register` and `/login`, added the end-to-end
-device key API (`/keys/upload`, `/keys/query`, `/keys/claim`, `/keys/changes`, the
-key sections of `/sync`, keys removed with their device), answered the third-party
-and TURN endpoints instead of 404-ing them, and made unrouted paths answer
-`404 M_UNRECOGNIZED`. Coverage is 125/234 indexed endpoints with 24 extra routes.
-Pick the next chunk from the list below.
+by a test). The chunk before that made unrouted paths answer
+`404 M_UNRECOGNIZED`, and a follow-up fixed what Element tripped over
+afterwards: an outstanding invitation no longer spins the sync loop (it used to
+answer every long poll at once, which the client answered with a `/keys/query`
+every few milliseconds), `/v1/capabilities` advertises room versions as `stable`,
+and a tombstone names its replacement room. The newest chunk finished the
+end-to-end layer and the bug underneath half of Element's complaints:
+**state events now carry `state_key` even when it is empty** (which is why room
+renames and topics never reached a client, and why a client thought the room was
+version 1), plus cross-signing key upload and key signatures (verified over
+canonical JSON, behind a `m.login.password` stage, 409 without the reset flag,
+reported through `/keys/query`) and server-side room key backup across the
+fourteen `/room_keys/*` routes. Coverage is 141/234 indexed endpoints with 24
+extra routes and 82 compatibility tests. Pick the next chunk from the list below.
 
 The endpoint index in `SPECS.md` points at a spec corpus that is **not** in this
 workspace (there is no `references/` directory), so specification wording cannot
@@ -501,17 +559,21 @@ fetched first.
 ## Next steps (pick one at a time)
 
 1. The largest missing groups of client endpoints (`go run ./cmd/endpoints -all`
-   lists them): the end-to-end **trust layer** on top of the keys that already
-   work — `/keys/device_signing/upload` (cross-signing master/self-signing keys;
-   needs Ed25519 verification over canonical JSON, both available in the stdlib
-   plus a ~40 line canonical-JSON encoder), `/keys/signatures/upload` (merge
-   signature objects into the stored device key), and server-side key backup
-   (`/room_keys/*`, nine routes, opaque encrypted blobs like the keys above).
-   Then: `account/3pid/*` plus the identity `requestToken` endpoints,
+   lists them): `account/3pid/*` plus the identity `requestToken` endpoints,
    `/login/sso/redirect`, the appservice APIs (`/appservice/*/ping`,
    `directory/list/appservice/*`) and the deprecated `initialSync`/`GET /events`.
-   `GET /v3/voip/turnServer` is done (it publishes no relay).
-2. Loose ends spotted while doing history, relations, the user script, the gap
+   `GET /v3/voip/turnServer` is done (it publishes no relay), and so is the
+   end-to-end trust layer: `/keys/device_signing/upload`,
+   `/keys/signatures/upload` and `/room_keys/*`.
+2. Small correctness gaps found while following a real client: `m.room.encryption`
+   can be rewritten through `PUT /state`, which the specification forbids once set;
+   a room with a tombstone still accepts new events, which it must not; stripped
+   state carries every `m.room.member` rather than only the inviter and the
+   invitee; `POST /rooms/{id}/upgrade` accepts a missing `new_version` instead of
+   rejecting it; and a device key signature is only checked at
+   `/keys/signatures/upload`, never at `/keys/upload`, so an unverified device key
+   is stored as uploaded (deliberate, but worth stating in the client-facing docs).
+3. Loose ends spotted while doing history, relations, the user script, the gap
    chunk, the search/spaces chunk and the reports chunk:
    * Seeded push rules are only installed at registration; there is no rule
      version/migration, so accounts created before `.m.rule.message` existed
@@ -543,14 +605,15 @@ fetched first.
    * The search categories of the JSON request form are all folded into
      `room_events`; a request naming another category is refused rather than
      ignored.
-3. Phase 3 chunk: E2EE key endpoints (`/keys/upload`, `/keys/query`,
-   `/keys/claim`, `/keys/changes`, `/keys/device_signing/upload`,
-   `/keys/signatures/upload`) and room key backup (`/room_keys/*`).
-4. Unit tests in `tests/unit/` (separate dir, same convention as compat):
+4. The rest of the Phase 3 E2EE chunk is done: device key distribution,
+   cross-signing, key signatures and room key backup all exist. What is left in
+   that area is verifying it against a real client suite rather than against
+   Lattice's own tests.
+5. Unit tests in `tests/unit/` (separate dir, same convention as compat):
    identifier helpers, error mapping, glob matching + push rule matching,
    power level maths, stream token parsing, endpoints coverage matcher
    (`cmd/endpoints` compare logic deserves a table test).
-5. Docs and tooling:
+6. Docs and tooling:
    * `README.md`: what this is, how to run (`make run`), flags, what is
      unsupported (federation, E2EE key storage, SSO, 3PID, URL previews) and
      the phase status. It should also carry the deployment warnings from the
@@ -562,7 +625,7 @@ fetched first.
      not installed offline, so don't commit generated files).
    * Add the coverage number to README and keep ENDPOINTS.md regenerated by
      `make endpoints`.
-6. Phase 3 candidates after tests: federation (probably out of scope — record
+7. Phase 3 candidates after tests: federation (probably out of scope — record
    the decision), application services, SSO/login token flow, `m.login.token`,
    rate limiting (`M_LIMIT_EXCEEDED` + `retry_after_ms` helper exists),
    presence/typing fan-out through sync ephemeral for other rooms.

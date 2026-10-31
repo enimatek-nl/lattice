@@ -22,11 +22,13 @@ type Database struct {
 
 	AliasRepo        AliasRepo
 	AccountDataRepo  AccountDataRepo
+	CrossSigningRepo CrossSigningRepo
 	DeviceRepo       DeviceRepo
 	DeviceKeyRepo    DeviceKeyRepo
 	DeviceListRepo   DeviceListRepo
 	EventRepo        EventRepo
 	FilterRepo       FilterRepo
+	KeyBackupRepo    KeyBackupRepo
 	MediaRepo        MediaRepo
 	MembershipRepo   MembershipRepo
 	MetaRepo         MetaRepo
@@ -80,6 +82,9 @@ func models() []any {
 		&DeviceKey{},
 		&OneTimeKey{},
 		&DeviceListChange{},
+		&CrossSigningKey{},
+		&KeyBackupVersion{},
+		&BackupRoomKey{},
 	}
 }
 
@@ -112,7 +117,29 @@ func NewDatabase(path string) (*Database, error) {
 	if err := gdb.AutoMigrate(models()...); err != nil {
 		return nil, fmt.Errorf("migrate database: %w", err)
 	}
+	if err := backfillStateFlags(gdb); err != nil {
+		return nil, fmt.Errorf("backfill state event markers: %w", err)
+	}
 	return NewFromGORM(gdb), nil
+}
+
+// backfillStateFlags marks stored events as state events.
+//
+// Event.IsState exists because the state key of m.room.name, m.room.topic,
+// m.room.create and the other empty-key state events is the empty string, which
+// is the same value a timeline event has: without the marker those events reach a
+// client without state_key, and a client reads them as messages. Databases written
+// before the column existed carry no marker, so every event the current state of a
+// room points at is marked, as is every event with a non-empty state key. A
+// superseded empty-key state event cannot be recognised any more; it is delivered
+// as a plain timeline event, which is how it always was.
+
+func backfillStateFlags(gdb *gorm.DB) error {
+	if err := gdb.Exec(`UPDATE events SET is_state = 1 WHERE is_state = 0 AND state_key <> ''`).Error; err != nil {
+		return err
+	}
+	return gdb.Exec(`UPDATE events SET is_state = 1
+		WHERE is_state = 0 AND event_id IN (SELECT event_id FROM room_states WHERE event_id <> '')`).Error
 }
 
 // NewFromGORM wires the repositories around an already opened and migrated
@@ -122,11 +149,13 @@ func NewFromGORM(gdb *gorm.DB) *Database {
 		gorm:             gdb,
 		AliasRepo:        NewAliasRepo(gdb),
 		AccountDataRepo:  NewAccountDataRepo(gdb),
+		CrossSigningRepo: NewCrossSigningRepo(gdb),
 		DeviceRepo:       NewDeviceRepo(gdb),
 		DeviceKeyRepo:    NewDeviceKeyRepo(gdb),
 		DeviceListRepo:   NewDeviceListRepo(gdb),
 		EventRepo:        NewEventRepo(gdb),
 		FilterRepo:       NewFilterRepo(gdb),
+		KeyBackupRepo:    NewKeyBackupRepo(gdb),
 		MediaRepo:        NewMediaRepo(gdb),
 		MembershipRepo:   NewMembershipRepo(gdb),
 		MetaRepo:         NewMetaRepo(gdb),

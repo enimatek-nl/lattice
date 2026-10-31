@@ -167,7 +167,15 @@ func (s *Service) DeactivateAccount(ctx context.Context, userID string, auth mat
 	}
 	// The key material of a deactivated account goes with it: nobody should be
 	// able to start an end-to-end session with an account that no longer exists.
+	// That includes the cross-signing keys, which would otherwise keep vouching
+	// for a user who is gone, and the backed up room keys.
 	if err := s.DropDeviceKeys(ctx, userID); err != nil {
+		return nil, err
+	}
+	if err := s.DropCrossSigning(ctx, userID); err != nil {
+		return nil, err
+	}
+	if err := s.DropKeyBackups(ctx, userID); err != nil {
 		return nil, err
 	}
 	rooms, err := s.db.MembershipRepo.RoomsFor(userID)

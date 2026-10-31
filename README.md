@@ -3,11 +3,15 @@
 A minimal [Matrix](https://spec.matrix.org/latest/) homeserver written in Go:
 the client-server HTTP API, a business layer, and a single SQLite file for
 storage. The goal is a drop-in homeserver for clients that speak the standard
-client API — no federation, no end-to-end encryption, no external services.
+client API — no federation, no external services. End-to-end encryption happens
+in the clients; Lattice relays the key material, verifies the cross-signing keys
+that decide what a client trusts, and stores encrypted room-key backups without
+being able to read any of it.
 
-**Status:** working single-server, unencrypted-to-the-server homeserver. **125 of
+**Status:** working single-server homeserver; the cryptography stays on the
+clients. **141 of
 the 234** endpoints indexed in [SPECS.md](SPECS.md) are implemented, plus 24
-extra routes (see [ENDPOINTS.md](ENDPOINTS.md)). 73 black-box compatibility tests
+extra routes (see [ENDPOINTS.md](ENDPOINTS.md)). 82 black-box compatibility tests
 are green. `go build ./... && go vet ./...` clean. Implementation version `0.1.0`
 (reported by `GET /_matrix/client/versions` as `Lattice/0.1.0`).
 
@@ -93,23 +97,30 @@ aliases and the public room directory, invite / join / knock / leave / ban /
 kick / forget, sending and reading events (`/send`, `/messages`, `/context`,
 state), long-polling sync with unread and notification counts, receipts and
 read markers, typing, push rules and pushers, search (both request forms),
-spaces and `/hierarchy`, threads and relations, media upload/download/thumbnail,
+spaces and `/hierarchy`, threads and relations, room versions 1-11 (11 by
+default, all advertised as stable in `/v1/capabilities`, `POST /rooms/{id}/upgrade`
+included), media upload/download/thumbnail,
 profiles, filters, account data, redaction, device management (`/devices`),
 device keys (`/keys/upload`, `/keys/query`, `/keys/claim`, `/keys/changes` and
-the key sections of `/sync`), the admin routes, abuse reports, and
+the key sections of `/sync`), cross-signing (`/keys/device_signing/upload`,
+`/keys/signatures/upload`) and server-side room key backup (`/room_keys/*`),
+the admin routes, abuse reports, and
 `/.well-known/matrix/{client,server,support}`. Endpoints that are not implemented
 answer `404 M_UNRECOGNIZED` rather than a bare HTTP 404, so a client can name the
 endpoint that is missing.
 
 ## What does not work yet
 
-* **No end-to-end verification or key backup.** The server stores and hands out
-  the key material clients upload — device keys, one-time keys, fallback keys —
-  without ever reading it, so two clients can establish Olm sessions and exchange
-  `m.room.encrypted` events through Lattice today. What is missing is the trust
-  layer: `/keys/device_signing/upload` and `/keys/signatures/upload`
-  (cross-signing and device verification) and `/room_keys/*` (server-side key
-  backup). Every session is therefore unverified and clients warn about it.
+* **End-to-end encryption is client-side, and the server does not read it.**
+  Device keys, one-time keys, fallback keys and backed up room keys are stored as
+  the opaque JSON a client uploaded, so two clients can establish Olm sessions,
+  exchange `m.room.encrypted` events, verify each other and restore old messages
+  from a backup. The cross-signing keys are the exception: those are verified
+  here, because everything else in the trust layer rests on them. What that still
+  leaves open: a device key signature is only checked when Lattice holds the key
+  that made it, `m.room.encryption` can be rewritten through `PUT /state` (the
+  spec forbids that once set), and none of this has been run against a real
+  client test suite.
 * **No federation** — nothing under `/_matrix/federation/v1/*`. Users can only
   reach users on this server.
 * **No calls** (`/voip/turnServer` publishes no TURN relay), **no SSO** or
@@ -126,6 +137,12 @@ endpoint that is missing.
   public URL with `-base-url`, otherwise `/.well-known/matrix/client` points
   clients at `https://<-server-name>` and discovery from a hosted client (for
   example app.element.io) resolves to the wrong address.
+* A client that is handed a server name it has no URL for goes looking for one at
+  `https://<server-name>/.well-known/matrix/client`. With `-server-name localhost`
+  that is a connection to a local HTTPS server that does not exist, which shows up
+  in the browser console as a failed request even though the session works. Set
+  `-server-name` to the name clients should dial and `-base-url` to the URL they
+  should call; a client that signed in through that URL stops probing.
 * Everything — events, state, accounts, and uploaded media — lives in one SQLite
   file. Backing up means copying that file; `-max-upload-size` bounds its growth.
 * Always pass `-jwt-secret`. Sessions are stored server-side, so deleting a
@@ -171,11 +188,11 @@ working hand-off document (verified facts, done list, in-flight notes, next
 chunk), [SPECS.md](SPECS.md) is the full endpoint index from the spec, and
 [ENDPOINTS.md](ENDPOINTS.md) is the generated implemented/missing table.
 
-Phase 1 (bare POC) and phase 2 (the everyday client endpoints) are done. The
-next chunks queued in [TODO.md](TODO.md) are the device key / E2EE APIs,
-server-side key backup, `account/3pid/*`, SSO, appservice APIs, unit tests in
-`tests/unit/`, a Makefile and OpenAPI generation. Federation is probably out of
-scope — that decision is not recorded yet.
+Phase 1 (bare POC) and phase 2 (the everyday client endpoints) are done, and so
+is the E2EE key layer: device keys, cross-signing and server-side key backup. The
+next chunks queued in [TODO.md](TODO.md) are `account/3pid/*`, SSO, appservice
+APIs, unit tests in `tests/unit/`, a Makefile and OpenAPI generation. Federation
+is probably out of scope — that decision is not recorded yet.
 
 Note: `SPECS.md` references a spec corpus that is not in this repo, so anything
 depending on exact spec wording (the default push rule set, `/threads` ordering,

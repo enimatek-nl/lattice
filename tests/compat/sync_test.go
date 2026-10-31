@@ -181,6 +181,84 @@ func TestSyncLongPollTimeout(t *testing.T) {
 	}
 }
 
+// TestSyncInviteIdle checks that an outstanding invitation does not keep waking
+// the long poll. An invitation is membership state, so it is reported on every
+// sync until it is dealt with, but only one that arrived after the token is new
+// data. A client that is handed an update every few milliseconds loops: it
+// re-processes the room and, for an invited room, re-downloads the device keys
+// of its members on every pass.
+func TestSyncInviteIdle(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	bob := server.Register("bob", "rubberduck")
+	roomID := server.CreateRoom(alice, map[string]any{
+		"preset": "trusted_private_chat",
+		"name":   "a DM",
+		"invite": []string{bob.UserID},
+	})
+
+	first, resp := server.Sync(bob, "?timeout=0")
+	invited, ok := first.Rooms.Invite[roomID]
+	if !ok {
+		t.Fatalf("bob sees no invitation: %s", resp.Raw)
+	}
+	// The stripped state has to carry m.room.create: a client that cannot find
+	// the room_version in it assumes version 1 and warns about an upgrade.
+	var version any
+	for _, event := range invited.InviteState.Events {
+		if event.Type == "m.room.create" {
+			var content map[string]any
+			if err := json.Unmarshal(event.Content, &content); err != nil {
+				t.Fatalf("decoding the stripped m.room.create: %v", err)
+			}
+			version = content["room_version"]
+		}
+	}
+	if version == nil || version == "" {
+		t.Errorf("the stripped state of %s carries no room_version: %s", roomID, resp.Raw)
+	}
+
+	bob.NextBatch = first.NextBatch
+	start := time.Now()
+	idle, resp := server.SyncSince(bob, 2500)
+	elapsed := time.Since(start)
+	if resp.Status != http.StatusOK {
+		t.Fatalf("idle sync: %d %s", resp.Status, resp.Raw)
+	}
+	if elapsed < 2*time.Second {
+		t.Errorf("an idle sync with an outstanding invitation answered after %v; it should wait for the timeout", elapsed)
+	}
+	if _, ok := idle.Rooms.Invite[roomID]; !ok {
+		t.Errorf("the invitation vanished from the idle sync: %s", resp.Raw)
+	}
+
+	// A second invitation is new data and does wake the sync.
+	done := make(chan Response, 1)
+	go func() {
+		_, resp := server.SyncSince(bob, 8000)
+		done <- resp
+	}()
+	time.Sleep(150 * time.Millisecond)
+	start = time.Now()
+	other := server.CreateRoom(alice, map[string]any{"name": "another DM", "invite": []string{bob.UserID}})
+
+	select {
+	case resp := <-done:
+		if elapsed := time.Since(start); elapsed > 5*time.Second {
+			t.Errorf("the invitation took %v to wake the sync", elapsed)
+		}
+		var woken matrix.SyncResponse
+		if err := json.Unmarshal(resp.Raw, &woken); err != nil {
+			t.Fatalf("decoding the woken sync: %v (%s)", err, resp.Raw)
+		}
+		if _, ok := woken.Rooms.Invite[other]; !ok {
+			t.Errorf("the woken sync does not invite bob to %s: %s", other, resp.Raw)
+		}
+	case <-time.After(9 * time.Second):
+		t.Fatal("a new invitation never woke the sync")
+	}
+}
+
 // TestSyncFilters covers inline and stored sync filters.
 func TestSyncFilters(t *testing.T) {
 	server := NewServer(t)

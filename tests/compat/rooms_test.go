@@ -143,6 +143,75 @@ func TestJoinByAlias(t *testing.T) {
 	}
 }
 
+// TestRoomUpgrade covers POST /rooms/{roomId}/upgrade: the old room ends up with
+// a tombstone that names its successor, and the successor carries the
+// predecessor and the requested room version.
+func TestRoomUpgrade(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	bob := server.Register("bob", "rubberduck")
+	roomID := server.CreateRoom(alice, map[string]any{
+		"room_version": "1",
+		"name":         "the old one",
+		"invite":       []string{bob.UserID},
+	})
+	server.MustDo(http.MethodPost, "/_matrix/client/v3/join/"+roomID, bob.Token, map[string]any{}, http.StatusOK)
+
+	resp := server.MustDo(http.MethodPost, "/_matrix/client/v3/rooms/"+roomID+"/upgrade", alice.Token,
+		map[string]any{"new_version": "11", "reason": "modernise"}, http.StatusOK)
+	successor, _ := resp.Body["replacement_room"].(string)
+	if successor == "" || successor == roomID {
+		t.Fatalf("replacement_room = %q (%s)", successor, resp.Raw)
+	}
+
+	tombstone := server.MustDo(http.MethodGet, "/_matrix/client/v3/rooms/"+roomID+"/state/m.room.tombstone",
+		alice.Token, nil, http.StatusOK)
+	if tombstone.String("replacement_room") != successor {
+		t.Errorf("the tombstone names %v as its replacement, want %s (%s)",
+			tombstone.Body["replacement_room"], successor, tombstone.Raw)
+	}
+	if tombstone.String("reason") != "modernise" {
+		t.Errorf("tombstone reason = %q, want modernise", tombstone.String("reason"))
+	}
+
+	create := server.MustDo(http.MethodGet, "/_matrix/client/v3/rooms/"+successor+"/state/m.room.create",
+		alice.Token, nil, http.StatusOK)
+	if create.String("room_version") != "11" {
+		t.Errorf("the successor is room version %q, want 11 (%s)", create.String("room_version"), create.Raw)
+	}
+	predecessor, _ := create.Body["predecessor"].(map[string]any)
+	if predecessor == nil || predecessor["room_id"] != roomID {
+		t.Errorf("the successor has no predecessor pointing at %s: %s", roomID, create.Raw)
+	}
+
+	// Ordinary state is carried over. Membership is not: the client invites the
+	// members of the old room into the new one.
+	name := server.MustDo(http.MethodGet, "/_matrix/client/v3/rooms/"+successor+"/state/m.room.name",
+		alice.Token, nil, http.StatusOK)
+	if name.String("name") != "the old one" {
+		t.Errorf("the successor is named %q", name.String("name"))
+	}
+	members := server.MustDo(http.MethodGet, "/_matrix/client/v3/rooms/"+successor+"/members", alice.Token,
+		nil, http.StatusOK)
+	chunk, _ := members.Body["chunk"].([]any)
+	if len(chunk) != 1 {
+		t.Errorf("the successor starts with %d members, want only the creator: %s", len(chunk), members.Raw)
+	}
+
+	// A version this server does not know is refused.
+	bad := server.Do(http.MethodPost, "/_matrix/client/v3/rooms/"+roomID+"/upgrade", alice.Token,
+		map[string]any{"new_version": "com.example.version"})
+	if bad.Status != http.StatusBadRequest || bad.ErrCode() != "M_INCOMPATIBLE_ROOM_VERSION" {
+		t.Errorf("upgrading to an unknown version: got %d %s", bad.Status, bad.Raw)
+	}
+
+	// A plain member may not upgrade a room they do not manage.
+	if resp := server.Do(http.MethodPost, "/_matrix/client/v3/rooms/"+roomID+"/upgrade", bob.Token,
+		map[string]any{"new_version": "11"}); resp.Status != http.StatusForbidden {
+		t.Errorf("bob upgraded a room he does not manage: %d %s", resp.Status, resp.Raw)
+	}
+}
+
 // keys returns the keys of a set, for failure messages.
 func keys(set map[string]bool) []string {
 	out := make([]string, 0, len(set))

@@ -341,7 +341,11 @@ func (s *Service) UpgradeRoom(ctx context.Context, roomID, requester, newVersion
 	if err != nil {
 		return "", err
 	}
-	tombstone := matrix.Object{"body": "This room has been replaced", "predecessor": creation["predecessor"]}
+	tombstone := matrix.Object{
+		"body":             "This room has been replaced",
+		"predecessor":      creation["predecessor"],
+		"replacement_room": newRoom.ID,
+	}
 	if reason != "" {
 		tombstone["reason"] = reason
 	}

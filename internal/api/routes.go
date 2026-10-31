@@ -14,6 +14,7 @@ func (a *App) registerRoutes() {
 	a.registerDeviceRoutes()
 	a.registerMediaRoutes()
 	a.registerKeysRoutes()
+	a.registerKeyBackupRoutes()
 	a.registerThirdPartyRoutes()
 }
 
@@ -202,6 +203,33 @@ func (a *App) registerKeysRoutes() {
 	a.authenticated("POST /_matrix/client/v3/keys/query", a.handleKeysQuery)
 	a.authenticated("POST /_matrix/client/v3/keys/claim", a.handleKeysClaim)
 	a.authenticated("GET /_matrix/client/v3/keys/changes", a.handleKeysChanges)
+	// The cross-signing endpoints sit in front of the trust layer: the keys that
+	// decide what a client believes are the only key material Lattice verifies
+	// itself.
+	a.authenticated("POST /_matrix/client/v3/keys/device_signing/upload", a.handleCrossSigningUpload)
+	a.authenticated("POST /_matrix/client/v3/keys/signatures/upload", a.handleSignatureUpload)
+}
+
+// registerKeyBackupRoutes serves the server-side room key backup. A client
+// encrypts the sessions with a key Lattice never sees, so these endpoints store
+// and return opaque blobs.
+func (a *App) registerKeyBackupRoutes() {
+	a.authenticated("GET /_matrix/client/v3/room_keys/version", a.handleKeyBackupVersion)
+	a.authenticated("POST /_matrix/client/v3/room_keys/version", a.handleCreateKeyBackup)
+	// The version-scoped forms are deprecated in favour of the version query
+	// parameter, but plenty of clients still call them.
+	a.authenticated("GET /_matrix/client/v3/room_keys/version/{version}", a.handleKeyBackupVersion)
+	a.authenticated("PUT /_matrix/client/v3/room_keys/version/{version}", a.handleUpdateKeyBackup)
+	a.authenticated("DELETE /_matrix/client/v3/room_keys/version/{version}", a.handleDeleteKeyBackup)
+	a.authenticated("GET /_matrix/client/v3/room_keys/keys", a.handleGetBackupKeys)
+	a.authenticated("PUT /_matrix/client/v3/room_keys/keys", a.handleStoreBackupKeys)
+	a.authenticated("DELETE /_matrix/client/v3/room_keys/keys", a.handleDeleteBackupKeys)
+	a.authenticated("GET /_matrix/client/v3/room_keys/keys/{roomId}", a.handleGetBackupRoom)
+	a.authenticated("PUT /_matrix/client/v3/room_keys/keys/{roomId}", a.handleStoreBackupRoom)
+	a.authenticated("DELETE /_matrix/client/v3/room_keys/keys/{roomId}", a.handleDeleteBackupRoom)
+	a.authenticated("GET /_matrix/client/v3/room_keys/keys/{roomId}/{sessionId}", a.handleGetBackupSession)
+	a.authenticated("PUT /_matrix/client/v3/room_keys/keys/{roomId}/{sessionId}", a.handleStoreBackupSession)
+	a.authenticated("DELETE /_matrix/client/v3/room_keys/keys/{roomId}/{sessionId}", a.handleDeleteBackupSession)
 }
 
 // registerThirdPartyRoutes serves the third-party identifier lookups and the

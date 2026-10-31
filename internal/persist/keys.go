@@ -1,6 +1,8 @@
 package persist
 
 import (
+	"errors"
+
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -23,6 +25,7 @@ type DeviceKey struct {
 type DeviceKeyRepo interface {
 	// Store inserts or replaces the identity key of a device.
 	Store(key *DeviceKey) error
+	// Get returns the key of one device, or ErrNoKey when it has none.
 	Get(userID, deviceID string) (*DeviceKey, error)
 	// List returns the keys of the given users (every device of every user when
 	// no user is named).
@@ -51,7 +54,13 @@ func (r *DeviceKeyRepoImpl) Store(key *DeviceKey) error {
 func (r *DeviceKeyRepoImpl) Get(userID, deviceID string) (*DeviceKey, error) {
 	var key DeviceKey
 	err := r.db.Where("user_id = ? AND device_id = ?", userID, deviceID).First(&key).Error
-	return &key, err
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNoKey
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &key, nil
 }
 
 // List implements [DeviceKeyRepo].

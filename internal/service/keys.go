@@ -212,6 +212,22 @@ func (s *Service) QueryKeys(ctx context.Context, wanted map[string][]string) (*K
 		}
 		result.DeviceKeys[key.UserID][key.DeviceID] = object
 	}
+
+	// The cross-signing keys of a user live in the same map, named by their key
+	// id instead of a device id. That is where clients look for them, and it is
+	// how they learn who this user's identity vouches for.
+	crossSigning, err := s.CrossSigningKeys(ctx, userIDs...)
+	if err != nil {
+		return nil, err
+	}
+	for userID, byKey := range crossSigning {
+		if result.DeviceKeys[userID] == nil {
+			result.DeviceKeys[userID] = map[string]matrix.Object{}
+		}
+		for keyID, object := range byKey {
+			result.DeviceKeys[userID][keyID] = object
+		}
+	}
 	return result, nil
 }
 

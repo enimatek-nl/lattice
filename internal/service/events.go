@@ -93,6 +93,7 @@ func (s *Service) AppendEvent(ctx context.Context, draft *EventDraft) (*persist.
 		}
 		if draft.StateKey != nil {
 			event.StateKey = *draft.StateKey
+			event.IsState = true
 		}
 		event.RelatesTo, event.RelType = relationOf(content)
 		if err := events.Create(event); err != nil {
