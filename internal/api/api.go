@@ -4,6 +4,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -200,7 +201,15 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 }
 
 // writeError converts any error into a Matrix error response.
+//
+// A request whose context has finished is answered with nothing at all: a long
+// poll the client gave up on - Element restarting its sync loop, a browser tab
+// closing - is not a server fault, there is nobody left to read a body, and
+// logging it as an internal error buries the faults that matter.
 func (a *App) writeError(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, context.Canceled) || r.Context().Err() != nil {
+		return
+	}
 	merr := matrix.ErrAs(err, isNotFound)
 	if merr.HTTPStatus() >= 500 {
 		log.Printf("%s %s: %v", r.Method, r.URL.Path, merr)

@@ -115,13 +115,40 @@ func (s *Service) RequireJoined(ctx context.Context, roomID, userID string) erro
 }
 
 // RequireSend rejects requests that may not send events into a room, either
-// because the sender is not joined or because its power level is too low.
+// because the sender is not joined, because the room has been replaced, or
+// because its power level is too low.
 func (s *Service) RequireSend(ctx context.Context, roomID, userID string) error {
 	if err := s.RequireJoined(ctx, roomID, userID); err != nil {
 		return err
 	}
+	if replacement := s.roomReplacement(ctx, roomID); replacement != "" {
+		// A tombstone says the room "is not intended to be used any further". The
+		// specification also asks servers to raise the old room's power levels, which
+		// this server does when upgrading; this is the part of the rule that holds
+		// even for the room's administrators. Membership changes go through their own
+		// endpoints, so people can still leave a room that has been closed.
+		return matrix.ErrForbidden("this room has been replaced by %s and no longer accepts events",
+			replacement)
+	}
 	levels := s.powerLevels(ctx, roomID)
 	return s.requireLevel(ctx, levels, roomID, userID, "", false, levels.SendDefault)
+}
+
+// roomReplacement returns the room a tombstone points at, or the empty string
+// when the room has not been replaced. A state read that fails is read as "no
+// tombstone", the way the power level read treats a missing or broken event: the
+// request then falls through to the ordinary permission checks, which still
+// decide it.
+func (s *Service) roomReplacement(ctx context.Context, roomID string) string {
+	raw, err := s.db.StateRepo.Content(roomID, matrix.TypeTombstone, "")
+	if err != nil {
+		return ""
+	}
+	var content matrix.TombstoneContent
+	if err := matrix.DecodeContent(raw, &content); err != nil {
+		return ""
+	}
+	return content.ReplacementRoom
 }
 
 // RequireState rejects requests that may not set a specific state type.

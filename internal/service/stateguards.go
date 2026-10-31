@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/enimatek-nl/lattice/internal/matrix"
+	"github.com/enimatek-nl/lattice/internal/persist"
 )
 
 // validateStateEvent rejects state updates that the state endpoints may not
@@ -12,6 +13,16 @@ func (s *Service) validateStateEvent(ctx context.Context, roomID, sender, typ, s
 	switch typ {
 	case matrix.TypeCreate:
 		return matrix.ErrForbidden("the m.room.create event cannot be replaced")
+	case matrix.TypeEncryption:
+		// The specification never says a room may be re-encrypted with a different
+		// algorithm, and a room whose encryption changes cannot decrypt what came
+		// before it: clients treat the first m.room.encryption as final and would
+		// silently keep sending under settings nobody agreed to. Once set, it stays.
+		if _, err := s.db.StateRepo.Get(roomID, matrix.TypeEncryption, ""); err == nil {
+			return matrix.ErrForbidden("a room's encryption settings cannot be changed once set")
+		} else if !persist.IsNotFound(err) {
+			return matrix.ErrInternal(err)
+		}
 	case matrix.TypeMember:
 		if stateKey != sender {
 			return matrix.ErrForbidden("you cannot change the membership of another user this way")

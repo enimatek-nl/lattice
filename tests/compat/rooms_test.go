@@ -210,6 +210,62 @@ func TestRoomUpgrade(t *testing.T) {
 		map[string]any{"new_version": "11"}); resp.Status != http.StatusForbidden {
 		t.Errorf("bob upgraded a room he does not manage: %d %s", resp.Status, resp.Raw)
 	}
+
+	// The new version is required. Defaulting it to the room's own version would
+	// quietly make a copy of the room under a name nobody asked for.
+	missing := server.Do(http.MethodPost, "/_matrix/client/v3/rooms/"+successor+"/upgrade", alice.Token,
+		map[string]any{})
+	if missing.Status != http.StatusBadRequest || missing.ErrCode() != "M_INVALID_PARAM" {
+		t.Errorf("upgrading without a version: got %d %s, want 400 M_INVALID_PARAM",
+			missing.Status, missing.Raw)
+	}
+	// The same room cannot be replaced twice.
+	double := server.Do(http.MethodPost, "/_matrix/client/v3/rooms/"+roomID+"/upgrade", alice.Token,
+		map[string]any{"new_version": "11"})
+	if double.Status != http.StatusForbidden {
+		t.Errorf("upgrading an already replaced room: got %d %s, want 403", double.Status, double.Raw)
+	}
+
+	// A replaced room is closed. The specification asks the server to raise the
+	// power levels of the old room as part of the upgrade, so the lock is visible
+	// in the state and survives into whatever reads it next.
+	levels := server.MustDo(http.MethodGet, "/_matrix/client/v3/rooms/"+roomID+"/state/m.room.power_levels",
+		alice.Token, nil, http.StatusOK)
+	if numberValue(levels.Body["events_default"]) < 50 || numberValue(levels.Body["invite"]) < 50 {
+		t.Errorf("the old room still lets members send and invite: %s", levels.Raw)
+	}
+
+	// Events are refused even for the room's creator: the tombstone says the room
+	// is not intended to be used any further.
+	closed := server.Do(http.MethodPut,
+		"/_matrix/client/v3/rooms/"+roomID+"/send/m.room.message/after-close", alice.Token,
+		map[string]any{"msgtype": "m.text", "body": "still talking here?"})
+	if closed.Status != http.StatusForbidden || closed.ErrCode() != "M_FORBIDDEN" {
+		t.Errorf("sending to a replaced room: got %d %s, want 403 M_FORBIDDEN", closed.Status, closed.Raw)
+	}
+	state := server.Do(http.MethodPut, "/_matrix/client/v3/rooms/"+roomID+"/state/m.room.topic/",
+		alice.Token, map[string]any{"topic": "renamed after the upgrade"})
+	if state.Status != http.StatusForbidden {
+		t.Errorf("changing state in a replaced room: got %d %s, want 403", state.Status, state.Raw)
+	}
+	// Membership is a different path, so people can still leave a room that has
+	// been closed.
+	if resp := server.MustDo(http.MethodPost, "/_matrix/client/v3/rooms/"+roomID+"/leave", bob.Token,
+		map[string]any{}, http.StatusOK); resp.Status != http.StatusOK {
+		t.Errorf("leaving a replaced room: %d %s", resp.Status, resp.Raw)
+	}
+	// The replacement room is open as normal.
+	if id := server.Send(alice, successor, "in-the-new-room", "talking here now"); id == "" {
+		t.Errorf("the replacement room refuses messages")
+	}
+}
+
+// numberValue reads a JSON number that arrived as any.
+func numberValue(value any) float64 {
+	if number, ok := value.(float64); ok {
+		return number
+	}
+	return 0
 }
 
 // keys returns the keys of a set, for failure messages.

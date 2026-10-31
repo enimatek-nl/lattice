@@ -14,6 +14,7 @@ const (
 	TypeHistoryVis       = "m.room.history_visibility"
 	TypeGuestAccess      = "m.room.guest_access"
 	TypeCanonicalAlias   = "m.room.canonical_alias"
+	TypeTombstone        = "m.room.tombstone"
 	TypeRedaction        = "m.room.redaction"
 	TypeMessage          = "m.room.message"
 	TypeEncrypted        = "m.room.encrypted"
@@ -168,6 +169,14 @@ type PowerLevelsContent struct {
 	Events        map[string]int64 `json:"events,omitempty"`
 	Users         map[string]int64 `json:"users,omitempty"`
 	Notifications map[string]int64 `json:"notifications,omitempty"`
+}
+
+// TombstoneContent is the content of an m.room.tombstone event: the marker that
+// a room has been replaced, and where to go instead.
+type TombstoneContent struct {
+	Body            string `json:"body"`
+	ReplacementRoom string `json:"replacement_room"`
+	Reason          string `json:"reason,omitempty"`
 }
 
 // RedactionContent is the content of an m.room.redaction event.

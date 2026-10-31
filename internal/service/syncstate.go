@@ -135,11 +135,15 @@ func (s *Service) stateDelta(roomID string, since uint64) ([]matrix.Event, error
 // strippedState returns the state a non-joined user may see for a room. The
 // m.room.create event is part of it because it carries the room version: a
 // client that cannot find it assumes version 1 and warns about an upgrade.
-func (s *Service) strippedState(ctx context.Context, roomID string) []matrix.Event {
+//
+// Membership is limited to the two people the invitation is between. The
+// specification lists the m.room.member events of the inviter and the invitee;
+// carrying every member of the room hands a stranger the full guest list before
+// they have done anything but receive an invitation.
+func (s *Service) strippedState(ctx context.Context, roomID, invitee string) []matrix.Event {
 	types := []string{
 		matrix.TypeCreate, matrix.TypeName, matrix.TypeTopic, matrix.TypeAvatar,
-		matrix.TypeCanonicalAlias, matrix.TypeJoinRules, matrix.TypeMember,
-		matrix.TypeEncryption,
+		matrix.TypeCanonicalAlias, matrix.TypeJoinRules, matrix.TypeEncryption,
 	}
 	out := make([]matrix.Event, 0, 8)
 	for _, typ := range types {
@@ -148,17 +152,41 @@ func (s *Service) strippedState(ctx context.Context, roomID string) []matrix.Eve
 			continue
 		}
 		for _, row := range rows {
-			event, err := s.db.EventRepo.Get(row.EventID)
-			if err != nil {
-				continue
-			}
-			ev := event.Matrix()
-			// Stripped state carries no origin server timestamps per spec.
-			ev.OriginServerTS = 0
-			out = append(out, ev)
+			out = append(out, s.strippedEvent(row))
 		}
 	}
+	members, err := s.db.StateRepo.List(roomID, []string{matrix.TypeMember}, "")
+	if err != nil {
+		return out
+	}
+	// The invitation event names the inviter in its sender; that is the only other
+	// membership a client needs, to show who invited the user.
+	inviter := ""
+	for _, row := range members {
+		if row.StateKey == invitee {
+			inviter = row.Sender
+			break
+		}
+	}
+	for _, row := range members {
+		if row.StateKey != invitee && row.StateKey != inviter {
+			continue
+		}
+		out = append(out, s.strippedEvent(row))
+	}
 	return out
+}
+
+// strippedEvent renders a state row for stripped state, which per the
+// specification carries no origin server timestamp.
+func (s *Service) strippedEvent(row *persist.RoomState) matrix.Event {
+	event, err := s.db.EventRepo.Get(row.EventID)
+	if err != nil {
+		return matrix.Event{Type: row.Type, StateKey: StateKeyOf(row.StateKey), Sender: row.Sender}
+	}
+	ev := event.Matrix()
+	ev.OriginServerTS = 0
+	return ev
 }
 
 // invitedRoomSync renders the invite section of a sync response.
@@ -171,7 +199,7 @@ func (s *Service) strippedState(ctx context.Context, roomID string) []matrix.Eve
 func (s *Service) invitedRoomSync(ctx context.Context, userID, roomID string,
 	since uint64) (*matrix.InvitedRoom, bool, error) {
 	return &matrix.InvitedRoom{
-		InviteState: matrix.State{Events: s.strippedState(ctx, roomID)},
+		InviteState: matrix.State{Events: s.strippedState(ctx, roomID, userID)},
 	}, s.membershipAfter(roomID, userID, since), nil
 }
 

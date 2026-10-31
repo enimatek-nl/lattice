@@ -11,13 +11,33 @@ import (
 	"github.com/enimatek-nl/lattice/internal/persist"
 )
 
-// The usages a cross-signing key can have, as clients write them in the usage
-// field of the key object.
+// The usages a cross-signing key can have, as the specification spells them.
 const (
 	CrossSigningMaster      = "master"
 	CrossSigningSelfSigning = "self-signing"
 	CrossSigningUserSigning = "user-signing"
 )
+
+// usageSpellings maps every usage spelling seen in the wild onto the usage
+// Lattice records. The specification writes self-signing and user-signing with a
+// hyphen; the Rust crypto stack that Element uses writes self_signing and
+// user_signing with an underscore. Both name the same key, and rejecting a
+// correctly signed key over a hyphen leaves a client unable to set up
+// encryption at all, so both are accepted. The object is stored exactly as it
+// arrived: rewriting a signed object would break the signature that covers it.
+var usageSpellings = map[string]string{
+	"master":       CrossSigningMaster,
+	"self-signing": CrossSigningSelfSigning,
+	"self_signing": CrossSigningSelfSigning,
+	"user-signing": CrossSigningUserSigning,
+	"user_signing": CrossSigningUserSigning,
+}
+
+// usageOfName returns the canonical usage a spelling names.
+func usageOfName(name string) (string, bool) {
+	canonical, ok := usageSpellings[name]
+	return canonical, ok
+}
 
 // CrossSigningUpload is the body of POST /keys/device_signing/upload.
 type CrossSigningUpload struct {
@@ -162,7 +182,8 @@ func verifyCrossSigningKey(object matrix.Object, userID, usage string, master *v
 		return nil, matrix.ErrInvalidParam("the id of the %s key does not match its key material", usage)
 	}
 	if !hasUsage(object["usage"], usage) {
-		return nil, matrix.ErrInvalidParam("the %s key does not declare the %s usage", usage, usage)
+		return nil, matrix.ErrInvalidParam(
+			"the usage of the %s key is %v, which does not name that key", usage, object["usage"])
 	}
 
 	if usage == CrossSigningMaster {
@@ -188,21 +209,39 @@ func verifyCrossSigningKey(object matrix.Object, userID, usage string, master *v
 	return &verifiedKey{object: object, id: id, usage: usage, public: public, keyJSON: string(encodedObject)}, nil
 }
 
-// hasUsage reports whether the usage field of a key object names a usage.
-func hasUsage(value any, usage string) bool {
+// hasUsage reports whether the usage field of a key object names the usage want,
+// under any of its accepted spellings.
+func hasUsage(value any, want string) bool {
+	matches := func(name string) bool {
+		canonical, ok := usageOfName(name)
+		return ok && canonical == want
+	}
 	switch typed := value.(type) {
 	case []string:
-		return containsString(typed, usage)
-	case []any:
-		for _, item := range typed {
-			if name, ok := item.(string); ok && name == usage {
-				return true
+		if len(typed) == 0 {
+			return false
+		}
+		for _, name := range typed {
+			if !matches(name) {
+				return false
 			}
 		}
+		return true
+	case []any:
+		if len(typed) == 0 {
+			return false
+		}
+		for _, item := range typed {
+			name, ok := item.(string)
+			if !ok || !matches(name) {
+				return false
+			}
+		}
+		return true
 	}
 	// A single string is what some clients write; accept it.
 	if name, ok := value.(string); ok {
-		return name == usage
+		return matches(name)
 	}
 	return false
 }

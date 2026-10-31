@@ -160,7 +160,7 @@ func (s *Service) buildSync(ctx context.Context, params SyncParams, filter *Sync
 	// Device list changes only make sense relative to an earlier position; a
 	// first sync gets the whole key set from POST /keys/query instead.
 	if since > 0 {
-		lists, err := s.DeviceListChanges(ctx, userID, since, pos)
+		lists, err := s.DeviceListChanges(ctx, userID, since, pos, params.DeviceID)
 		if err != nil {
 			return nil, false, err
 		}

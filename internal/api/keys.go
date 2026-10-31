@@ -123,7 +123,7 @@ func (a *App) handleKeysChanges(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, r, err)
 		return
 	}
-	lists, err := a.svc.DeviceListChanges(r.Context(), auth.GetUserID(r), from, to)
+	lists, err := a.svc.DeviceListChanges(r.Context(), auth.GetUserID(r), from, to, auth.GetDeviceID(r))
 	if err != nil {
 		a.writeError(w, r, err)
 		return

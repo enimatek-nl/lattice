@@ -133,3 +133,65 @@ func hasStateEvent(events []matrix.Event, typ, stateKey string) bool {
 	}
 	return false
 }
+
+// TestEncryptionStaysPut checks that a room's encryption settings cannot be
+// changed once they are set. The specification never describes re-encrypting a
+// room, and a room whose algorithm changes cannot decrypt its own history: the
+// clients in use treat the first m.room.encryption as final, so accepting a
+// second one would leave them sending under settings nobody in the room agreed
+// to. m.room.create is checked in the same place: it is the root of the room and
+// carries its version, so rewriting it rewrites history.
+func TestEncryptionStaysPut(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	bob := server.Register("bob", "rubberduck")
+	roomID := server.CreateRoom(alice, map[string]any{"preset": "private_chat", "invite": []string{bob.UserID}})
+	server.MustDo(http.MethodPost, "/_matrix/client/v3/join/"+roomID, bob.Token, map[string]any{}, http.StatusOK)
+	path := "/_matrix/client/v3/rooms/" + url.QueryEscape(roomID)
+
+	encryption := func(body map[string]any, txn ...string) Response {
+		target := path + "/state/m.room.encryption/"
+		if len(txn) > 0 {
+			target += txn[0]
+		}
+		return server.Do(http.MethodPut, target, alice.Token, body)
+	}
+	first := encryption(map[string]any{"algorithm": "m.megolm.v1.aes-sha2"})
+	if first.Status != http.StatusOK {
+		t.Fatalf("enabling encryption: got %d %s", first.Status, first.Raw)
+	}
+
+	cases := []struct {
+		name string
+		body map[string]any
+		txn  string
+	}{
+		{"a different algorithm", map[string]any{"algorithm": "m.megolm.v1.aes-sha2", "rotation_period_ms": 1}, ""},
+		{"the same settings again", map[string]any{"algorithm": "m.megolm.v1.aes-sha2"}, ""},
+		{"the algorithm removed", map[string]any{}, ""},
+	}
+	for _, tc := range cases {
+		resp := encryption(tc.body, func() []string {
+			if tc.txn == "" {
+				return nil
+			}
+			return []string{tc.txn}
+		}()...)
+		if resp.Status != http.StatusForbidden || resp.ErrCode() != "M_FORBIDDEN" {
+			t.Errorf("rewriting encryption (%s): got %d %s, want 403 M_FORBIDDEN", tc.name, resp.Status, resp.Raw)
+		}
+	}
+
+	// The room still works with encryption set: ordinary messages are unaffected.
+	if id := server.Send(alice, roomID, "encrypted-room", "hello over encryption"); id == "" {
+		t.Errorf("sending a message in an encrypted room failed")
+	}
+
+	// m.room.create cannot be rewritten, because it is the root of the room and
+	// carries its version.
+	rewrite := server.Do(http.MethodPut, path+"/state/m.room.create/", alice.Token,
+		map[string]any{"room_version": "11", "creator": alice.UserID})
+	if rewrite.Status != http.StatusForbidden {
+		t.Errorf("rewriting m.room.create: got %d %s, want 403", rewrite.Status, rewrite.Raw)
+	}
+}

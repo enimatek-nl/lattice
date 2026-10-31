@@ -11,7 +11,7 @@ being able to read any of it.
 **Status:** working single-server homeserver; the cryptography stays on the
 clients. **141 of
 the 234** endpoints indexed in [SPECS.md](SPECS.md) are implemented, plus 24
-extra routes (see [ENDPOINTS.md](ENDPOINTS.md)). 82 black-box compatibility tests
+extra routes (see [ENDPOINTS.md](ENDPOINTS.md)). 87 black-box compatibility tests
 are green. `go build ./... && go vet ./...` clean. Implementation version `0.1.0`
 (reported by `GET /_matrix/client/versions` as `Lattice/0.1.0`).
 
@@ -99,7 +99,8 @@ state), long-polling sync with unread and notification counts, receipts and
 read markers, typing, push rules and pushers, search (both request forms),
 spaces and `/hierarchy`, threads and relations, room versions 1-11 (11 by
 default, all advertised as stable in `/v1/capabilities`, `POST /rooms/{id}/upgrade`
-included), media upload/download/thumbnail,
+included, which requires a version, copies the transferable state, locks the power
+levels of the old room and closes it to further events), media upload/download/thumbnail,
 profiles, filters, account data, redaction, device management (`/devices`),
 device keys (`/keys/upload`, `/keys/query`, `/keys/claim`, `/keys/changes` and
 the key sections of `/sync`), cross-signing (`/keys/device_signing/upload`,
@@ -116,10 +117,17 @@ endpoint that is missing.
   the opaque JSON a client uploaded, so two clients can establish Olm sessions,
   exchange `m.room.encrypted` events, verify each other and restore old messages
   from a backup. The cross-signing keys are the exception: those are verified
-  here, because everything else in the trust layer rests on them. What that still
+  here, because everything else in the trust layer rests on them - and verified
+  without being rewritten, including the `usage` field, which is accepted under
+  either spelling in use (the specification writes `self-signing`, the Rust crypto
+  stack Element ships writes `self_signing`, and refusing a correctly signed key
+  over a hyphen leaves a user unable to set up encryption at all). A device is also
+  never told about a device list change it caused itself: uploading an identity key
+  records one so the user's other devices and the people in their rooms re-query,
+  and echoed back to the uploader that same record makes a client fetch its own
+  keys, over and over. What that still
   leaves open: a device key signature is only checked when Lattice holds the key
-  that made it, `m.room.encryption` can be rewritten through `PUT /state` (the
-  spec forbids that once set), and none of this has been run against a real
+  that made it, and none of this has been run against a real
   client test suite.
 * **No federation** — nothing under `/_matrix/federation/v1/*`. Users can only
   reach users on this server.
@@ -143,6 +151,10 @@ endpoint that is missing.
   in the browser console as a failed request even though the session works. Set
   `-server-name` to the name clients should dial and `-base-url` to the URL they
   should call; a client that signed in through that URL stops probing.
+* A long poll the client gives up on is not treated as an error. Element restarts
+  its sync loop whenever crypto setup or a filter changes; for those requests
+  Lattice writes no body and logs nothing, so the faults worth reading stay
+  visible instead of burying the log in `context canceled`.
 * Everything — events, state, accounts, and uploaded media — lives in one SQLite
   file. Backing up means copying that file; `-max-upload-size` bounds its growth.
 * Always pass `-jwt-secret`. Sessions are stored server-side, so deleting a

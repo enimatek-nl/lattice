@@ -74,6 +74,51 @@ updated: it is the hand-off point after context compaction. Read
     event was written after the token may end a long poll. Treating every
     invitation as new makes the long poll answer instantly, forever, and the
     client (Element) turns that into one `/keys/query` per pass.
+  * A device list change is **not reported back to the device that caused it**
+    (`DeviceListChanges` takes the asking device id). Uploading an identity key
+    records a change so the user's other devices and the people who share a room
+    re-query; echoed to the uploader, the client fetches its own keys and — if it
+    re-uploads keys after fetching them — queries keys in a loop. Changes with no
+    device behind them (a cross-signing upload) are still sent to that user's other
+    devices, which do want the new keys.
+  * A long poll whose request context finished is answered with **nothing at all**:
+    no body, no log line. Element restarts its sync loop constantly (crypto setup,
+    a filter change, a tab closing), and every abandoned poll logged as
+    `M_UNKNOWN: internal server error: context canceled` hides the faults that
+    matter.
+  * A cross-signing key's `usage` is accepted under **either spelling in use**:
+    `self-signing`/`user-signing` as the specification writes them, and
+    `self_signing`/`user_signing` as the Rust crypto stack Element ships sends
+    them. Refusing a correctly signed key over a hyphen leaves the user unable to
+    set up encryption. The object is stored exactly as it arrived, because
+    rewriting the field would change what its own signature covers.
+  * Two state events are **fixed once written**: `m.room.create` (it is the root of
+    the room and carries its version) and `m.room.encryption`. The specification
+    never describes re-encrypting a room, and a room whose algorithm changes cannot
+    decrypt its own history - the clients in use treat the first `m.room.encryption`
+    as final, so accepting a second one leaves them sending under settings nobody
+    agreed to. A retry of the *same* transaction id still replays the original event,
+    because the transaction store is consulted before these guards run.
+  * A room with a tombstone **rejects events** (`RequireSend`, which covers messages,
+    state and redactions) even for its creator, and cannot be upgraded a second time.
+    Membership goes through its own endpoints, so people can still leave a room that
+    has been closed. The upgrade also raises `events_default` and `invite` in the old
+    room to `max(50, users_default + 1)`, which is what the specification asks for
+    ("the power levels in the old room should also be modified to prevent sending of
+    events and inviting new users") and makes the lock visible in state rather than
+    only in this server's behaviour.
+  * Stripped state carries the **membership events of the inviter and the invitee
+    only**. The specification names exactly those two; carrying every member hands a
+    stranger the guest list the moment an invitation lands. `m.room.create`, the join
+    rules and the aesthetics (name, topic, avatar, canonical alias) and
+    `m.room.encryption` are all still included - without `m.room.create` a client
+    assumes room version 1.
+  * `POST /rooms/{id}/upgrade` **requires** `new_version` (the spec marks it
+    required; defaulting it to the room's own version would make a copy nobody asked
+    for). Not routed and not planned: the `PUT /state/{type}/{stateKey}/{txnId}`
+    transaction form, because Go's mux cleans request paths and an empty state key
+    (`/state/m.room.name//txn`) cannot survive that; matrix-js-sdk uses the
+    two-segment form for empty state keys, which is routed.
   * `m.room_versions` in `/v1/capabilities` uses the words `stable`/`unstable`
     as the spec asks, not the `"1"` some early servers sent: a client builds its
     list of stable versions from those values, and an empty list makes it demand
@@ -547,7 +592,7 @@ version 1), plus cross-signing key upload and key signatures (verified over
 canonical JSON, behind a `m.login.password` stage, 409 without the reset flag,
 reported through `/keys/query`) and server-side room key backup across the
 fourteen `/room_keys/*` routes. Coverage is 141/234 indexed endpoints with 24
-extra routes and 82 compatibility tests. Pick the next chunk from the list below.
+extra routes and 87 compatibility tests. Pick the next chunk from the list below.
 
 The endpoint index in `SPECS.md` points at a spec corpus that is **not** in this
 workspace (there is no `references/` directory), so specification wording cannot
@@ -565,14 +610,20 @@ fetched first.
    `GET /v3/voip/turnServer` is done (it publishes no relay), and so is the
    end-to-end trust layer: `/keys/device_signing/upload`,
    `/keys/signatures/upload` and `/room_keys/*`.
-2. Small correctness gaps found while following a real client: `m.room.encryption`
-   can be rewritten through `PUT /state`, which the specification forbids once set;
-   a room with a tombstone still accepts new events, which it must not; stripped
-   state carries every `m.room.member` rather than only the inviter and the
-   invitee; `POST /rooms/{id}/upgrade` accepts a missing `new_version` instead of
-   rejecting it; and a device key signature is only checked at
+2. Small correctness gaps found while following a real client. Closed by the newest
+   chunk: `m.room.encryption` can no longer be rewritten once set, a room with a
+   tombstone rejects events and its power levels are raised by the upgrade, stripped
+   state carries only the inviter and the invitee, and `POST /rooms/{id}/upgrade`
+   rejects a missing `new_version` and a second upgrade of the same room. What is
+   left of that list: a device key signature is only checked at
    `/keys/signatures/upload`, never at `/keys/upload`, so an unverified device key
    is stored as uploaded (deliberate, but worth stating in the client-facing docs).
+   A second pass through Element fixed three things it tripped over: cross-signing
+   keys whose `usage` is spelled with an underscore (Element's Rust crypto sends
+   those, so key setup failed with `M_INVALID_PARAM`), device list changes echoed
+   back to the device that caused them, and abandoned long polls logged as internal
+   errors. Whether Element still queries keys in a loop after that is unconfirmed:
+   it needs a click through the client, and the log should then stay quiet.
 3. Loose ends spotted while doing history, relations, the user script, the gap
    chunk, the search/spaces chunk and the reports chunk:
    * Seeded push rules are only installed at registration; there is no rule

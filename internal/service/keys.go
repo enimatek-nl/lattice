@@ -345,10 +345,17 @@ func (s *Service) OneTimeKeyCounts(ctx context.Context, userID, deviceID string)
 // positions, limited to the people the viewer shares a room with. Both the
 // /keys/changes endpoint and the device_lists section of a sync use it.
 //
+// excludeDevice is the device asking. A change that device caused itself - every
+// upload of its own keys records one - is left out: told that its own device list
+// changed, a client goes and fetches its own keys back, and a client that uploads
+// keys when it does that ends up querying keys over and over. Changes with no
+// device behind them (a cross-signing upload) are kept, because a device does
+// want to learn about new cross-signing keys for its own user.
+//
 // A removed device is reported as a change: the specification reserves "left"
 // for users who stopped sharing a room, which Lattice derives from membership
 // state instead of from this log.
-func (s *Service) DeviceListChanges(ctx context.Context, viewer string, from, to uint64) (*matrix.DeviceLists, error) {
+func (s *Service) DeviceListChanges(ctx context.Context, viewer string, from, to uint64, excludeDevice string) (*matrix.DeviceLists, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -363,6 +370,9 @@ func (s *Service) DeviceListChanges(ctx context.Context, viewer string, from, to
 			continue
 		}
 		seen[change.UserID] = true
+		if change.UserID == viewer && change.DeviceID != "" && change.DeviceID == excludeDevice {
+			continue
+		}
 		if change.UserID != viewer {
 			rooms, err := s.db.MembershipRepo.MutualRooms(viewer, change.UserID)
 			if err != nil {

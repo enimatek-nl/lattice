@@ -425,3 +425,43 @@ func TestKeySignatures(t *testing.T) {
 func bobToken(server *Server) string {
 	return server.Register("bob", "rubberduck").Token
 }
+
+// TestCrossSigningUsageSpellings checks that a cross-signing key whose usage
+// field spells the kind with an underscore is accepted. The specification writes
+// self-signing and user-signing with a hyphen; the Rust crypto stack Element
+// ships writes them with an underscore, and refusing a correctly signed key over
+// that difference leaves the user unable to set up encryption at all.
+func TestCrossSigningUsageSpellings(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	master := newKeyPair(t)
+	selfSigning := newKeyPair(t)
+
+	upload := func(body matrix.Object) Response {
+		return server.Do(http.MethodPost, "/_matrix/client/v3/keys/device_signing/upload", alice.Token, body)
+	}
+	challenge := upload(matrix.Object{})
+	if challenge.Status != http.StatusUnauthorized {
+		t.Fatalf("challenge without auth: got %d %s, want 401", challenge.Status, challenge.Raw)
+	}
+	accepted := upload(matrix.Object{
+		"auth":             passwordAuth(alice.UserID, "wonderland", challenge.String("session")),
+		"master_key":       signingKeyObject(t, alice.UserID, master.public, "master", master.private, master.id),
+		"self_signing_key": signingKeyObject(t, alice.UserID, selfSigning.public, "self_signing", master.private, master.id),
+	})
+	if accepted.Status != http.StatusOK {
+		t.Fatalf("uploading keys with the underscore spellings: got %d %s", accepted.Status, accepted.Raw)
+	}
+
+	// The object comes back exactly as it arrived: rewriting the usage field would
+	// change what its own signature covers, and the client verifies that signature.
+	queried := server.MustDo(http.MethodPost, "/_matrix/client/v3/keys/query", alice.Token,
+		matrix.Object{"device_keys": map[string][]string{alice.UserID: nil}}, http.StatusOK)
+	devices, _ := queried.Body["device_keys"].(map[string]any)
+	published, _ := devices[alice.UserID].(map[string]any)
+	stored, _ := published[selfSigning.id].(map[string]any)
+	usage, _ := stored["usage"].([]any)
+	if len(usage) != 1 || usage[0] != "self_signing" {
+		t.Errorf("the stored key lost the spelling it arrived with: %v (body %s)", stored["usage"], queried.Raw)
+	}
+}

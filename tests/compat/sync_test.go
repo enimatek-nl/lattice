@@ -1,7 +1,9 @@
 package compat
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"testing"
@@ -358,4 +360,106 @@ func messageBodies(t *testing.T, events []matrix.Event) []string {
 		bodies = append(bodies, content.Body)
 	}
 	return bodies
+}
+
+// TestSyncCancelledLongPoll checks that a client hanging up on a long poll stays
+// a non-event. Element restarts its sync loop whenever crypto setup or a filter
+// changes; if the server turns every abandoned poll into a logged internal error,
+// the faults that matter disappear into the noise.
+func TestSyncCancelledLongPoll(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	first, firstResp := server.Sync(alice, "?timeout=0")
+	if firstResp.Status != http.StatusOK {
+		t.Fatalf("initial sync: %d %s", firstResp.Status, firstResp.Raw)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, buildErr := http.NewRequestWithContext(ctx, http.MethodGet,
+		server.URL()+"/_matrix/client/v3/sync?since="+first.NextBatch+"&timeout=30000", nil)
+	if buildErr != nil {
+		t.Fatalf("building the request: %v", buildErr)
+	}
+	req.Header.Set("Authorization", "Bearer "+alice.Token)
+	done := make(chan error, 1)
+	go func() {
+		resp, err := (&http.Client{}).Do(req)
+		if err != nil {
+			done <- err
+			return
+		}
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			done <- closeErr
+			return
+		}
+		done <- nil
+	}()
+	time.Sleep(300 * time.Millisecond)
+	cancel()
+
+	if err := <-done; err == nil || !errors.Is(err, context.Canceled) {
+		t.Errorf("hanging up on a long poll: got %v, want a cancelled request", err)
+	}
+	// The server is unbothered: the next sync works as if nothing happened.
+	if _, after := server.SyncSince(alice, 0); after.Status != http.StatusOK {
+		t.Errorf("syncing after an abandoned long poll: %d %s", after.Status, after.Raw)
+	}
+}
+
+// TestInviteStateCarriesOnlyTheTwoPeople checks the membership part of the
+// stripped state of an invitation. The specification lists the m.room.member
+// events of the inviter and the invitee; carrying every member of the room hands
+// a stranger the full guest list at the moment an invitation lands, before they
+// have done anything at all.
+func TestInviteStateCarriesOnlyTheTwoPeople(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	carol := server.Register("carol", "candlemaker")
+	roomID := server.CreateRoom(alice, map[string]any{
+		"name":   "a room with a crowd",
+		"topic":  "three people already in it",
+		"invite": []string{carol.UserID},
+	})
+	server.MustDo(http.MethodPost, "/_matrix/client/v3/join/"+roomID, carol.Token, map[string]any{}, http.StatusOK)
+	// Two more members, so the room has people the invitation is not between.
+	for _, localpart := range []string{"bob", "dave"} {
+		member := server.Register(localpart, "wonderland")
+		server.MustDo(http.MethodPost, "/_matrix/client/v3/rooms/"+roomID+"/invite", alice.Token,
+			map[string]any{"user_id": member.UserID, "reason": "join us"}, http.StatusOK)
+		server.MustDo(http.MethodPost, "/_matrix/client/v3/join/"+roomID, member.Token, map[string]any{}, http.StatusOK)
+	}
+	eve := server.Register("eve", "eavesdropper")
+	server.MustDo(http.MethodPost, "/_matrix/client/v3/rooms/"+roomID+"/invite", alice.Token,
+		map[string]any{"user_id": eve.UserID, "reason": "one more"}, http.StatusOK)
+
+	synced, resp := server.Sync(eve, "?timeout=0")
+	invited, ok := synced.Rooms.Invite[roomID]
+	if !ok {
+		t.Fatalf("eve was never invited: %s", resp.Raw)
+	}
+	var members, others []string
+	for _, event := range invited.InviteState.Events {
+		if event.Type == matrix.TypeMember {
+			key := ""
+			if event.StateKey != nil {
+				key = *event.StateKey
+			}
+			members = append(members, key)
+			continue
+		}
+		others = append(others, event.Type)
+	}
+	// The inviter and the invitee, and nobody else.
+	if len(members) != 2 || !contains(members, eve.UserID) || !contains(members, alice.UserID) {
+		t.Errorf("the invite state carries membership for %v, want %s and %s (%s)",
+			members, alice.UserID, eve.UserID, resp.Raw)
+	}
+	// The rest of the stripped state is still there: without m.room.create a client
+	// assumes version 1, and without the aesthetics it cannot describe the room.
+	for _, want := range []string{matrix.TypeCreate, matrix.TypeName, matrix.TypeTopic, matrix.TypeJoinRules} {
+		if !contains(others, want) {
+			t.Errorf("the invite state has no %s, only %v", want, others)
+		}
+	}
 }

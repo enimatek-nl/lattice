@@ -431,3 +431,47 @@ func containsStringOf(list []any, needle string) bool {
 	}
 	return false
 }
+
+// TestKeyDeviceListEcho checks that a device is not told about the device list
+// changes it caused itself. Every key upload records such a change so the user's
+// other devices learn about it, but echoed back to the device that made it the
+// client fetches its own keys, and a client that re-uploads keys after fetching
+// them queries keys over and over.
+func TestKeyDeviceListEcho(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	bob := server.Register("bob", "rubberduck")
+	roomID := server.CreateRoom(alice, map[string]any{"invite": []string{bob.UserID}})
+	server.MustDo(http.MethodPost, "/_matrix/client/v3/rooms/"+roomID+"/join", bob.Token, map[string]any{}, http.StatusOK)
+
+	// A second device of the same user, and the other user in the room, both exist
+	// before the upload and both start from a token that already covers the change
+	// which made the second device appear.
+	watcher := server.Login("alice", "wonderland")
+	for _, session := range []*Session{alice, watcher, bob} {
+		started, _ := server.Sync(session, "?timeout=0")
+		session.NextBatch = started.NextBatch
+	}
+
+	uploaded := server.Do(http.MethodPost, "/_matrix/client/v3/keys/upload", alice.Token, map[string]any{
+		"device_id":     alice.DeviceID,
+		"device_key":    fakeDeviceKey(alice.UserID, alice.DeviceID, "curve-alice"),
+		"one_time_keys": oneTimeKeys("ECHO", 1),
+	})
+	if uploaded.Status != http.StatusOK {
+		t.Fatalf("uploading keys: %d %s", uploaded.Status, uploaded.Raw)
+	}
+
+	own, _ := server.SyncSince(alice, 0)
+	if own.DeviceLists != nil && contains(own.DeviceLists.Changed, alice.UserID) {
+		t.Errorf("alice was told about her own key upload: %v", own.DeviceLists.Changed)
+	}
+	watchSync, _ := server.SyncSince(watcher, 0)
+	if watchSync.DeviceLists == nil || !contains(watchSync.DeviceLists.Changed, alice.UserID) {
+		t.Errorf("alice's other device was not told about the upload: %+v", watchSync.DeviceLists)
+	}
+	bobSync, _ := server.SyncSince(bob, 0)
+	if bobSync.DeviceLists == nil || !contains(bobSync.DeviceLists.Changed, alice.UserID) {
+		t.Errorf("the other user was not told about the upload: %+v", bobSync.DeviceLists)
+	}
+}

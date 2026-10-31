@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"strconv"
-	"strings"
 
 	"github.com/enimatek-nl/lattice/internal/matrix"
 	"github.com/enimatek-nl/lattice/internal/persist"
@@ -302,12 +301,15 @@ func (s *Service) UpgradeRoom(ctx context.Context, roomID, requester, newVersion
 	if !s.Allow(ctx, roomID, requester, "ban", 50) && room.Creator != requester {
 		return "", matrix.ErrForbidden("you do not have permission to upgrade this room")
 	}
-	if newVersion != "" && !versionSupported(newVersion) {
+	if newVersion == "" {
+		return "", matrix.ErrInvalidParam("a new room version is required")
+	}
+	if !versionSupported(newVersion) {
 		return "", matrix.NewError(matrix.ErrCodeIncompatibleRoomVer, 400,
 			"this room cannot be upgraded to version "+newVersion)
 	}
-	if newVersion == "" {
-		newVersion = room.RoomVersion
+	if replacement := s.roomReplacement(ctx, roomID); replacement != "" {
+		return "", matrix.ErrForbidden("this room has already been replaced by %s", replacement)
 	}
 
 	predecessor := matrix.Predecessor{RoomID: room.ID, EventID: s.lastCreateEventID(roomID)}
@@ -328,7 +330,7 @@ func (s *Service) UpgradeRoom(ctx context.Context, roomID, requester, newVersion
 	}
 	for _, state := range states {
 		if state.Type == matrix.TypeCreate || state.Type == matrix.TypeMember ||
-			strings.HasPrefix(state.Type, "m.room.tombstone") {
+			state.Type == matrix.TypeTombstone {
 			continue
 		}
 		params.InitialStates = append(params.InitialStates, matrix.Event{
@@ -349,10 +351,50 @@ func (s *Service) UpgradeRoom(ctx context.Context, roomID, requester, newVersion
 	if reason != "" {
 		tombstone["reason"] = reason
 	}
-	if err := s.appendState(ctx, room.ID, requester, "m.room.tombstone", tombstone); err != nil {
+	if err := s.appendState(ctx, room.ID, requester, matrix.TypeTombstone, tombstone); err != nil {
+		return "", err
+	}
+	if err := s.closeRoomPowerLevels(ctx, room.ID, requester); err != nil {
 		return "", err
 	}
 	return newRoom.ID, nil
+}
+
+// closeRoomPowerLevels raises the levels needed to send events and to invite in a
+// room that has just been replaced, following the upgrade section of the
+// specification: "If possible, the power levels in the old room should also be
+// modified to prevent sending of events and inviting new users. For example,
+// setting events_default and invite to the greater of 50 and users_default + 1."
+//
+// This is the part of closing a room that a client can see and correct: the
+// levels come along in the state, so a room locked this way stays locked for
+// every server that reads it. Lattice refuses events in a replaced room as well.
+func (s *Service) closeRoomPowerLevels(ctx context.Context, roomID, requester string) error {
+	raw, err := s.db.StateRepo.Content(roomID, matrix.TypePowerLevels, "")
+	if err != nil {
+		if persist.IsNotFound(err) {
+			return nil
+		}
+		return matrix.ErrInternal(err)
+	}
+	var levels matrix.PowerLevelsContent
+	if err := matrix.DecodeContent(raw, &levels); err != nil {
+		return matrix.ErrInternal(err)
+	}
+	closed := levels.UsersDefault + 1
+	if closed < 50 {
+		closed = 50
+	}
+	if levels.SendDefault >= closed && levels.Invite >= closed {
+		return nil
+	}
+	content := matrix.MustParseObject(raw)
+	content["events_default"] = closed
+	content["invite"] = closed
+	if err := s.appendState(ctx, roomID, requester, matrix.TypePowerLevels, content); err != nil {
+		return err
+	}
+	return nil
 }
 
 // mustJoinRule returns the join rule of a room, tolerating read failures.
