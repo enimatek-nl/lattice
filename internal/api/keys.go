@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 
 	"github.com/enimatek-nl/lattice/internal/auth"
@@ -24,7 +25,13 @@ import (
 //	@Router		/_matrix/client/v3/keys/upload [post]
 func (a *App) handleKeysUpload(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		DeviceID     string                   `json:"device_id"`
+		DeviceID string `json:"device_id"`
+		// DeviceKeys is what the specification names the identity key of the
+		// device, and is what the Rust crypto stack Element uses sends. DeviceKey
+		// is the older spelling some clients write. Reading only the second one
+		// answers a spec-shaped upload with 200 while storing nothing, which leaves
+		// the device absent from /keys/query and its signatures unresolvable.
+		DeviceKeys   matrix.Object            `json:"device_keys"`
 		DeviceKey    matrix.Object            `json:"device_key"`
 		OneTimeKeys  map[string]matrix.Object `json:"one_time_keys"`
 		FallbackKeys map[string]matrix.Object `json:"fallback_keys"`
@@ -38,10 +45,14 @@ func (a *App) handleKeysUpload(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, r, matrix.ErrInvalidParam("the device_id in the request does not match the access token"))
 		return
 	}
+	deviceKey := body.DeviceKeys
+	if len(deviceKey) == 0 {
+		deviceKey = body.DeviceKey
+	}
 	result, err := a.svc.UploadKeys(r.Context(), service.KeyUploadParams{
 		UserID:       auth.GetUserID(r),
 		DeviceID:     deviceID,
-		DeviceKey:    body.DeviceKey,
+		DeviceKey:    deviceKey,
 		OneTimeKeys:  body.OneTimeKeys,
 		FallbackKeys: body.FallbackKeys,
 	})
@@ -150,6 +161,11 @@ func (a *App) tokenParam(r *http.Request, key string) (uint64, error) {
 // handleCrossSigningUpload implements
 // POST /_matrix/client/v3/keys/device_signing/upload.
 //
+// The interactive auth exchange stands in front of the request only when it
+// would change an identity that is already stored: a new account publishes its
+// first set of keys, and a client may repeat the stored set, without an auth
+// dict.
+//
 //	@Summary	Upload cross-signing keys
 //	@Tags		e2ee
 //	@Accept		json
@@ -190,16 +206,48 @@ func (a *App) handleCrossSigningUpload(w http.ResponseWriter, r *http.Request) {
 //	@Success	200	{object}	map[string]any
 //	@Router		/_matrix/client/v3/keys/signatures/upload [post]
 func (a *App) handleSignatureUpload(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		SignedUsers map[string]map[string]matrix.Object `json:"signed_users"`
-		SignedKeys  []matrix.Object                     `json:"signed_keys"`
-	}
-	if err := decodeBody(r, &body); err != nil {
+	// Three shapes reach this endpoint. The specification's body is a bare map of
+	// user ID to key ID to signed object with no wrapper at all, and that is what
+	// ruma - the types behind the Rust crypto stack Element ships - and
+	// matrix-js-sdk both send. The wrapped "signed_users" and "signed_keys"
+	// shapes are what Lattice has taken from the start and keeps accepting.
+	// Reading only the wrappers answers a real client's upload with 200 while
+	// storing nothing: the self-signing key's signature on the device never
+	// lands, and that session stays unverified for good - which is what left
+	// Element asking a brand-new account to verify itself.
+	var members map[string]json.RawMessage
+	if err := decodeBody(r, &members); err != nil {
 		a.writeError(w, r, err)
 		return
 	}
-	if err := a.svc.UploadKeySignatures(r.Context(), auth.GetUserID(r),
-		service.SignatureUpload{SignedUsers: body.SignedUsers, SignedKeys: body.SignedKeys}); err != nil {
+	upload := service.SignatureUpload{}
+	if raw, ok := members["signed_users"]; ok {
+		if err := json.Unmarshal(raw, &upload.SignedUsers); err != nil {
+			a.writeError(w, r, matrix.ErrBadJSON(err))
+			return
+		}
+	}
+	if raw, ok := members["signed_keys"]; ok {
+		if err := json.Unmarshal(raw, &upload.SignedKeys); err != nil {
+			a.writeError(w, r, matrix.ErrBadJSON(err))
+			return
+		}
+	}
+	if _, wrapped := members["signed_users"]; !wrapped {
+		if _, alsoWrapped := members["signed_keys"]; !alsoWrapped {
+			// Neither wrapper: the body itself is the specification's map.
+			upload.SignedUsers = make(map[string]map[string]matrix.Object, len(members))
+			for userID, raw := range members {
+				byEntity := map[string]matrix.Object{}
+				if err := json.Unmarshal(raw, &byEntity); err != nil {
+					a.writeError(w, r, matrix.ErrBadJSON(err))
+					return
+				}
+				upload.SignedUsers[userID] = byEntity
+			}
+		}
+	}
+	if err := a.svc.UploadKeySignatures(r.Context(), auth.GetUserID(r), upload); err != nil {
 		a.writeError(w, r, err)
 		return
 	}

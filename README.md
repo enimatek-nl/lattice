@@ -106,14 +106,25 @@ including the async create → upload → commit flow Element uses, the profile 
 third-party-identifier endpoints (the 3PID listing is real and empty; linking an
 address refuses with a reason, because no verification mail or text is ever sent),
 profiles, filters, account data, redaction, device management (`/devices`),
-device keys (`/keys/upload`, `/keys/query` - which answers cross-signing keys in
-the `master_keys`, `self_signing_keys` and `user_signing_keys` maps the
-specification names, never among the device entries a client parses as a device -
+device keys (`/keys/upload` - whose identity key is read under either name a
+client writes it, the specification's `device_keys` that the Rust crypto stack
+Element ships sends and the older `device_key` - and `/keys/query`, which answers
+cross-signing keys in the `master_keys`, `self_signing_keys` and
+`user_signing_keys` maps the specification names, never among the device entries
+a client parses as a device -
 `/keys/claim`, `/keys/changes` and
 the key sections of `/sync`, including unused fallback keys named under the
-algorithm they were uploaded under), cross-signing (`/keys/device_signing/upload`,
-whose only extra spec-defined auth type is `m.oauth` for OAuth homeservers,
-`/keys/signatures/upload` in both request shapes the spec has had) and
+algorithm they were uploaded under), cross-signing (`/keys/device_signing/upload`
+behind the interactive auth exchange only when a request would change an
+identity that already exists - the first set of keys of a new account, and a
+repeat of the stored set, are accepted without one, as the specification has
+required since v1.11 and as Element relies on while it creates a user; whose
+only extra spec-defined auth type is `m.oauth` for OAuth homeservers;
+`/keys/signatures/upload`, whose body is read in all three shapes a client
+may send it in - the specification's own bare map of user ID to key ID to
+signed object (what ruma, the Rust crypto stack Element ships, and
+matrix-js-sdk send), and the wrapped `signed_users` and `signed_keys` forms
+Lattice has taken from the start) and
 server-side room key backup (`/room_keys/*`, versions created with `PUT` and named
 as strings, deleted for real so a recreated backup cannot collide with the number
 of the one that went away), the admin routes, abuse reports, and
@@ -171,7 +182,10 @@ endpoint that is missing.
   offer) and the outcome of the stage the client sent. That is how to tell the
   difference between a client that never came back with credentials, one that
   came back with the wrong ones, and one whose request was accepted - which is
-  the question a client-side "unable to set up keys" leaves open:
+  the question a client-side "unable to set up keys" leaves open. (The
+  cross-signing challenge below only stands in front of a request that would
+  change an identity the account already has; publishing the first set of keys
+  needs no exchange at all):
 
   ```text
   interactive auth: asking for additional authentication is required to upload

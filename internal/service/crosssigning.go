@@ -71,17 +71,17 @@ type verifiedKey struct {
 // valid over the canonical form of the object. A client that uploaded a key
 // somebody else signed would otherwise hand out a key nobody can verify, and
 // every conversation protected by it would be quietly worthless.
+//
+// The keys are verified before the interactive auth exchange runs because two
+// of the ways an upload can skip that exchange (see crossSigningAuthRequired)
+// can only be decided once the request itself is known.
 func (s *Service) UploadCrossSigningKeys(ctx context.Context, userID string, upload CrossSigningUpload) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := s.authorizeCrossSigning(userID, upload.Auth); err != nil {
+	stored, err := s.storedCrossSigningKeys(userID)
+	if err != nil {
 		return err
-	}
-
-	existing, err := s.db.CrossSigningRepo.ByUsage(userID, CrossSigningMaster)
-	if err != nil && !errors.Is(err, persist.ErrNoKey) {
-		return matrix.ErrInternal(err)
 	}
 
 	var master *verifiedKey
@@ -92,6 +92,7 @@ func (s *Service) UploadCrossSigningKeys(ctx context.Context, userID string, upl
 		}
 	} else {
 		// Without a new master key the stored one signs the rest.
+		existing := stored[CrossSigningMaster]
 		if existing == nil {
 			return matrix.ErrInvalidParam("a master key is required to sign the other cross-signing keys")
 		}
@@ -110,13 +111,25 @@ func (s *Service) UploadCrossSigningKeys(ctx context.Context, userID string, upl
 		return err
 	}
 
+	// The interactive auth exchange guards the thing that cannot be undone
+	// quietly: changing an identity other clients already trust. An auth dict on
+	// a request that does not need one is ignored, because the access token
+	// already said who the requester is.
+	changed := crossSigningChanges(stored, master, selfSigning, userSigning)
+	if crossSigningAuthRequired(stored, master, selfSigning, userSigning) {
+		if err := s.authorizeCrossSigning(userID, upload.Auth); err != nil {
+			return err
+		}
+	}
+
 	// A client may replace the whole cross-signing set, which is what Element does
 	// when the user says they cannot verify their existing identity. Answering the
 	// interactive auth challenge is the authorisation for that; there is no second
 	// "reset flag" a client can send - org.matrix.cross_signing_reset is an OAuth
 	// action URL in the OAuth world and nothing at all here - so refusing a
 	// replacement without one leaves the user on a 409 they can never answer.
-	if existing != nil && master != nil && existing.KeyID != master.id {
+	existing := stored[CrossSigningMaster]
+	if existing != nil && existing.KeyID != master.id {
 		old, err := s.db.CrossSigningRepo.List(userID)
 		if err != nil {
 			return matrix.ErrInternal(err)
@@ -151,7 +164,12 @@ func (s *Service) UploadCrossSigningKeys(ctx context.Context, userID string, upl
 		}
 	}
 	// Other devices have to learn that the picture of this user changed, which
-	// is what the device list change in a sync is for.
+	// is what the device list change in a sync is for. A request that repeats the
+	// keys already stored changed nothing, so it wakes nobody: that is the
+	// idempotent retry the specification wants the endpoint to survive.
+	if !changed {
+		return nil
+	}
 	return s.recordDeviceListChange(ctx, persist.DeviceListChanged, userID)
 }
 
@@ -258,7 +276,9 @@ func hasUsage(value any, want string) bool {
 }
 
 // storedCrossSigningKey rebuilds a verified key from storage, so a stored master
-// key can sign keys uploaded later.
+// key can sign keys uploaded later. The stored bytes travel along as the object
+// of the rebuilt key: the upload writes every key it holds back to storage, and
+// an empty object there would blank the identity of the user.
 func storedCrossSigningKey(row *persist.CrossSigningKey) (*verifiedKey, error) {
 	object, err := matrix.DecodeCanonical([]byte(row.Data))
 	if err != nil {
@@ -273,13 +293,65 @@ func storedCrossSigningKey(row *persist.CrossSigningKey) (*verifiedKey, error) {
 	if err != nil {
 		return nil, matrix.ErrInvalidParam("the stored %s key is not an ed25519 key: %v", row.Usage, err)
 	}
-	return &verifiedKey{object: typed, id: row.KeyID, usage: row.Usage, public: public}, nil
+	return &verifiedKey{object: typed, id: row.KeyID, usage: row.Usage, public: public, keyJSON: row.Data}, nil
+}
+
+// storedCrossSigningKeys returns the cross-signing keys of a user indexed by
+// their canonical usage, which is what lets an upload compare itself against
+// what the server already holds.
+func (s *Service) storedCrossSigningKeys(userID string) (map[string]*persist.CrossSigningKey, error) {
+	rows, err := s.db.CrossSigningRepo.List(userID)
+	if err != nil {
+		return nil, matrix.ErrInternal(err)
+	}
+	byUsage := make(map[string]*persist.CrossSigningKey, len(rows))
+	for _, row := range rows {
+		byUsage[row.Usage] = row
+	}
+	return byUsage, nil
+}
+
+// crossSigningChanges reports whether the request carries a key the server does
+// not already hold in exactly that form. The keys of a user who has none yet
+// always count as new, which is what makes the first set of keys of an account
+// a change even though no exchange stands in front of it.
+func crossSigningChanges(stored map[string]*persist.CrossSigningKey, keys ...*verifiedKey) bool {
+	for _, key := range keys {
+		if key == nil {
+			continue
+		}
+		previous := stored[key.usage]
+		if previous == nil || previous.Data != key.keyJSON {
+			return true
+		}
+	}
+	return false
+}
+
+// crossSigningAuthRequired reports whether an upload has to answer the
+// interactive auth exchange. The specification (since v1.11) exempts the two
+// uploads that cannot weaken an identity other clients already trust: a user
+// with no master key yet, who is publishing the first set of keys, and a
+// request that repeats exactly the keys the server stores, which is what makes
+// the endpoint idempotent when a response is lost and the client retries.
+//
+// Element relies on the first exemption: it publishes the cross-signing keys of
+// a new account while that account is being created, and a challenge there is
+// what shows up in the web client as "unable to set up keys".
+//
+// A stored key whose signatures grew since it arrived counts as different, so
+// re-publishing the older copy asks for the exchange again rather than quietly
+// dropping the signatures that were added since.
+func crossSigningAuthRequired(stored map[string]*persist.CrossSigningKey, keys ...*verifiedKey) bool {
+	return stored[CrossSigningMaster] != nil && crossSigningChanges(stored, keys...)
 }
 
 // authorizeCrossSigning runs the interactive auth exchange in front of a
-// cross-signing upload. Only a stage that proves the user controls the account
-// is enough here: the keys decide what other clients trust, so an attacker who
-// can reach a logged-in session must not be able to replace them.
+// cross-signing upload that changes an identity, which is the only kind of
+// upload the specification asks one for (see crossSigningAuthRequired). Only a
+// stage that proves the user controls the account is enough here: the keys
+// decide what other clients trust, so an attacker who can reach a logged-in
+// session must not be able to replace them.
 func (s *Service) authorizeCrossSigning(userID string, auth matrix.Object) error {
 	flows := []AuthFlow{{Stages: []string{StagePassword}}}
 	session := s.beginAuthSession(flows, authString(auth, "session"))
@@ -315,15 +387,19 @@ func (s *Service) authorizeCrossSigning(userID string, auth matrix.Object) error
 
 // SignatureUpload is the body of POST /keys/signatures/upload.
 //
-// Two shapes arrive here and both have to work. The current one is signed_keys:
-// a flat list of key objects, each naming its own user and carrying its own
-// signatures. The deprecated one is signed_users: a map of user id to a map of
-// entity id to object. matrix-js-sdk and the Rust crypto inside Element send
-// signed_keys, so accepting only the old shape quietly throws away a client's
-// device signatures and nothing ever trusts the device.
+// Three shapes arrive here and all three have to work. The specification's body
+// is a bare map of user id to a map of entity id (a device id or a cross-signing
+// key id) to the object carrying its new signatures, with no wrapper at all -
+// that is what ruma, and so the Rust crypto stack Element ships, and
+// matrix-js-sdk send. "signed_users" is that same map under a wrapper key, and
+// "signed_keys" a flat list of key objects; Lattice has taken both from the
+// start and keeps accepting them. Reading only the wrappers quietly throws away
+// a real client's device signatures, and nothing ever trusts the device.
 type SignatureUpload struct {
 	// SignedUsers maps the user whose keys are signed to the entity (a device id
-	// or a cross-signing key id) and the object holding its new signatures.
+	// or a cross-signing key id) and the object holding its new signatures. It
+	// carries the specification's bare map as well as the wrapped shape of that
+	// same name.
 	SignedUsers map[string]map[string]matrix.Object
 	// SignedKeys holds key objects in the order a client sent them.
 	SignedKeys []matrix.Object

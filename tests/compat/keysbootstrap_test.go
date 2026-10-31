@@ -11,7 +11,8 @@ import (
 // TestElementKeySetupChain walks the exact sequence Element web performs when it
 // sets up encryption for a freshly registered account, with the payload shapes
 // that client sends rather than the ones Lattice's other tests happen to use:
-// the device key signing itself, the interactive auth answered with the legacy
+// the device key signing itself, the first cross-signing upload accepted
+// without a second authentication, the interactive auth answered with the legacy
 // "user" field instead of an "identifier", the key backup created with PUT, and
 // the sessions stored one room at a time. A chain test catches the in-between
 // problems that per-endpoint tests miss - a stage that works on its own but not
@@ -45,8 +46,10 @@ func TestElementKeySetupChain(t *testing.T) {
 	}
 	uploaded := server.MustDo(http.MethodPost, "/_matrix/client/v3/keys/upload", alice.Token,
 		matrix.Object{
-			"device_id":  alice.DeviceID,
-			"device_key": deviceKey,
+			"device_id": alice.DeviceID,
+			// The Rust crypto sends the identity key under the name the
+			// specification gives it, not the older "device_key".
+			"device_keys": deviceKey,
 			// The Rust crypto keeps one fallback key around and reuses it, so the
 			// upload carries it separately from the one-time keys.
 			"fallback_keys": matrix.Object{
@@ -61,16 +64,30 @@ func TestElementKeySetupChain(t *testing.T) {
 		t.Fatalf("the upload response has no one-time key counts: %s", uploaded.Raw)
 	}
 
-	// 2. Cross-signing needs a second authentication. Element answers the first
-	// attempt with the interactive auth dialog, whose password entry sends the
-	// account name in the legacy "user" field with no "identifier" beside it.
+	// 2. Cross-signing. Element starts by publishing only the master key, and the
+	// specification lets a new account do that without a second authentication:
+	// there is no stored master key to protect. The keys that follow are new next
+	// to that master key, so the exchange does stand in front of them, and Element
+	// answers the challenge with its interactive auth dialog, whose password entry
+	// sends the account name in the legacy "user" field with no "identifier".
 	master := newKeyPair(t)
 	selfSigningKey := newKeyPair(t)
 	userSigningKey := newKeyPair(t)
-	attempt := server.Do(http.MethodPost, "/_matrix/client/v3/keys/device_signing/upload", alice.Token,
+	first := server.Do(http.MethodPost, "/_matrix/client/v3/keys/device_signing/upload", alice.Token,
 		matrix.Object{"master_key": signingKeyObject(t, alice.UserID, master.public, "master", master.private, master.id)})
+	if first.Status != http.StatusOK {
+		t.Fatalf("the first cross-signing upload of a new account: got %d %s, want 200",
+			first.Status, first.Raw)
+	}
+	attempt := server.Do(http.MethodPost, "/_matrix/client/v3/keys/device_signing/upload", alice.Token,
+		matrix.Object{
+			"master_key":       signingKeyObject(t, alice.UserID, master.public, "master", master.private, master.id),
+			"self_signing_key": signingKeyObject(t, alice.UserID, selfSigningKey.public, "self_signing", master.private, master.id),
+			"user_signing_key": signingKeyObject(t, alice.UserID, userSigningKey.public, "user_signing", master.private, master.id),
+		})
 	if attempt.Status != http.StatusUnauthorized {
-		t.Fatalf("the first cross-signing upload: got %d %s, want 401", attempt.Status, attempt.Raw)
+		t.Fatalf("adding the other cross-signing keys without auth: got %d %s, want 401",
+			attempt.Status, attempt.Raw)
 	}
 	session := attempt.String("session")
 	if session == "" {
@@ -114,8 +131,10 @@ func TestElementKeySetupChain(t *testing.T) {
 			selfSigningKey.id: base64.RawStdEncoding.EncodeToString(deviceSignature),
 		},
 	}
+	// The signature travels in the shape the Rust crypto actually sends: the
+	// specification's bare map of user ID to key ID to object, no wrapper.
 	if resp := server.Do(http.MethodPost, "/_matrix/client/v3/keys/signatures/upload", alice.Token,
-		matrix.Object{"signed_keys": []any{signedDevice}}); resp.Status != http.StatusOK {
+		matrix.Object{alice.UserID: matrix.Object{alice.DeviceID: signedDevice}}); resp.Status != http.StatusOK {
 		t.Fatalf("uploading the device signature: got %d %s", resp.Status, resp.Raw)
 	}
 

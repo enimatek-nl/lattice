@@ -114,11 +114,16 @@ updated: it is the hand-off point after context compaction. Read
     addresses and phone numbers", where an empty settings row belongs.
   * Answers that are **correct and should not be "fixed"**, collected because they
     look like failures in a browser's network panel: `GET /room_keys/version` is
-    `404 M_NOT_FOUND` until the user has a backup; the first `POST
-    /keys/device_signing/upload` is a `401 M_UNAUTHORIZED` with the flow list, which
-    is the interactive auth exchange the client answers with its password; and `GET
-    /v1/auth_metadata` is `404` because this server does not use OAuth 2.0. Element
-    logs all three and moves on.
+    `404 M_NOT_FOUND` until the user has a backup; a `POST
+    /keys/device_signing/upload` that would **replace an identity that already
+    exists** is a `401 M_UNAUTHORIZED` with the flow list, which is the
+    interactive auth exchange the client answers with its password (a request
+    publishing the *first* set of keys, or repeating the stored set, is accepted
+    without that exchange: since v1.11 the specification asks for the exchange
+    only when an existing key would change, and Element creates a new account's
+    identity expecting no challenge); and `GET /v1/auth_metadata` is `404`
+    because this server does not use OAuth 2.0. Element logs the ones that stay
+    and moves on.
   * Two state events are **fixed once written**: `m.room.create` (it is the root of
     the room and carries its version) and `m.room.encryption`. The specification
     never describes re-encrypting a room, and a room whose algorithm changes cannot
@@ -632,50 +637,87 @@ through Element exposed: the async media upload flow was half-implemented (no
 never finished and the avatar silently never changed), and the third-party
 identifier endpoints were unrouted (which Element renders as "Unable to load
 email addresses and phone numbers"). Coverage is 149/234 indexed endpoints with
-26 extra routes and 91 compatibility tests. Pick the next chunk from the list
-below.
+26 extra routes and 94 compatibility tests. The chunk after that closed the
+Element key-setup thread: `POST /keys/device_signing/upload` now asks for the
+interactive auth exchange only when a request would change an identity that
+already exists, and a partial upload no longer blanks the stored master key.
+The same thread had one more bug hiding behind a still-correct 401, and it is
+closed too: `POST /keys/upload` read the identity key of the device from
+`device_key` while the specification names the field `device_keys`.
+Pick the next chunk from the list below.
 
-### Open thread: Element still says "unable to set up keys"
+### Closed thread: Element's "unable to set up keys" was the server
 
-Everything Element sends during key setup is answered correctly as far as the
-tests can prove, and the failure is still not located. What is known, in order:
+The challenge on the **first** upload was the bug, not the client. Since v1.11
+the specification requires User-Interactive Auth for
+`POST /keys/device_signing/upload` except in two cases: the user has no master
+key yet - the account being created, which is exactly where Element hit it - or
+the request repeats the keys the server already stores, which is what keeps the
+endpoint idempotent when a response is lost. Lattice demanded
+`m.login.password` every time, and Element's rust crypto does not answer an
+exchange it did not expect during a first setup, so the new account stopped at
+"unable to set up keys" with the payload in the network panel looking correct.
+The spec corpus is not in this workspace; the wording was taken from
+`data/api/client-server/cross_signing.yaml` at the v1.19 tag of matrix-spec.
 
-* `POST /keys/device_signing/upload` with no `auth` dict answers 401 with
-  `{"flows":[{"stages":["m.login.password"]}]. …}`. That is the specification
-  behaviour, and the payload Element logs at that moment has no `auth` field, so
-  it is the *first* attempt, not a rejected one. Verified against the published
-  spec: this endpoint has no reset flag or reset stage; the only extra auth type
-  it defines is `m.oauth` (for OAuth homeservers), and
-  `org.matrix.cross_signing_reset` is an OAuth *account management action* name.
-* Element's `CreateCrossSigning.ts::uiAuthCallback` turns that 401 into
-  `InteractiveAuthDialog`, whose password entry sends
-  `{"type":"m.login.password","identifier":{"type":"m.id.user","user":…},
-  "password":…,"session":…}`. `TestCrossSigningAuthShapes` replays exactly that
-  (identifier object, same session after a refused attempt, a master key signed
-  both by itself and by the uploading device) and the server accepts all of it
-  and keeps both signatures.
-* So the missing observation is whether Element ever sends that second request.
-  Every interactive auth exchange now logs two lines - the challenge (reason,
-  session, completed stages, stages on offer) and the outcome of the stage the
-  client sent (`… completed the m.login.password stage`, or `the m.login.password
-  stage for … was refused`). Next session, start with the log from one click on
-  "Set up encryption":
-  * only the challenge line → Element never came back with credentials; the next
-    question is the Element console line right after the 401 (a cancelled dialog
-    throws "Cross-signing key upload auth canceled");
-  * a refused line → the password in the dialog was wrong;
-  * both lines → the upload was accepted and the failure is further along: secret
-    storage (`m.secret_storage.key.*`, `m.cross_signing.*` account data) or key
-    backup (`GET/PUT /room_keys/version`, `PUT /room_keys/keys?version=…`).
-* A second, cheaper reproduction that skips Element entirely: POST the endpoint
-  with `{}` to get a session, then resend with the auth dict above. See the
-  "Operational notes" section of README for the two curl calls.
-* Everything else Element reported in the last round is fixed and pushed: `PUT
-  /room_keys/version` is routed, `POST /keys/signatures/upload` accepts
-  `signed_keys`, cross-signing keys are reported in `master_keys` /
-  `self_signing_keys` / `user_signing_keys` instead of inside `device_keys`,
-  deleting a key backup no longer blocks recreating one, and replacing a
-  cross-signing identity no longer needs a flag no client sends.
+`UploadCrossSigningKeys` now verifies the keys first - the two exemptions can
+only be decided once the request is known - and runs `authorizeCrossSigning`
+only when the request changes a stored identity. Replacing a master key, and
+adding a self-signing or user-signing key next to a stored master key, still
+run the exchange, which is the path Element takes when the user resets their
+identity; an auth dict on a request that needs none is ignored. A request that
+repeats the stored keys stores nothing new and records no device list change.
+`TestElementKeySetupChain` walks the new-account sequence end to end without an
+auth dict, and answers the exchange for the keys that follow.
+
+A second bug sat in the same path and went with it: an upload carrying only the
+self-signing or user-signing key rebuilt the stored master key without its
+object, and the store at the end of the function wrote that empty object over
+the stored identity. `storedCrossSigningKey` now carries the stored bytes along,
+and `TestCrossSigningPartialUpload` pins both halves.
+
+Element still complained afterwards, with the same 401 in the network panel -
+and that 401 was the specification working. The account already had an identity
+by the time the user reached "I don't have a recovery key", so Element generates
+a fresh set and the exchange stands in front of the replacement; the database
+shows the client answering it and the new set landing. A changed upload against
+an account that has an identity will always be challenged - the first-upload
+path without an exchange can only be seen with a fresh account or a fresh
+database.
+
+The bug behind the complaint moved to another endpoint: `POST /keys/upload` read
+the identity key of the device from `device_key`, while the specification -
+Synapse, and the Rust crypto stack Element ships - write it as `device_keys`.
+Every rust-crypto upload was answered with 200 while its identity key was
+dropped, so the device never appeared in `/keys/query`, the device signature on
+its master key could be resolved by nobody, and the signature the self-signing
+key makes on the device merged into nothing, because there was no stored device
+object to merge into. The handler now reads `device_keys` first and `device_key`
+after it; `TestKeyUploadIdentityFieldNames` pins both spellings, and
+`TestElementKeySetupChain` uploads the identity key the way Element does.
+
+Even with the device published, the session stayed unverified, because the next
+endpoint swallowed the signature that verifies it. The specification's body for
+`POST /keys/signatures/upload` is a **bare map** of user ID to key ID to signed
+object with no wrapper - that is what ruma, and so the Rust crypto inside
+Element, and matrix-js-sdk send - but Lattice read only the wrapped
+`signed_users` and `signed_keys` shapes its own tests had been using. Every real
+signature upload (the self-signing key signing the device, interactive
+verification, cross-signing another user) came back 200 and was thrown away, so
+no device ever turned into a verified session and Element kept asking a
+brand-new account to verify itself. `handleSignatureUpload` now decodes the
+three shapes - the bare map first - and `TestKeySignaturesRequestShapes` pins
+all three, each on its own device so no case can mask another;
+`TestKeySignatures` and `TestElementKeySetupChain` now sign the way real clients
+do. The spec wording came from `cross_signing.yaml` at the v1.19 tag of
+matrix-spec, ruma's `upload_signatures::v3::Request` (which puts the map in the
+body with no wrapper) and matrix-js-sdk's `KeySignatures` type; Synapse passes
+the whole body to its handler, which confirms the shape.
+
+What that leaves for the next session, if Element still complains: the log lines
+from one click on "Set up encryption" (see the operational notes in README), and
+the secret-storage account data (`m.secret_storage.key.*`, `m.cross_signing.*`)
+that follows a successful upload.
 
 The endpoint index in `SPECS.md` points at a spec corpus that is **not** in this
 workspace (there is no `references/` directory), so specification wording cannot

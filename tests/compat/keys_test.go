@@ -185,6 +185,67 @@ func TestKeyUploadQueryClaim(t *testing.T) {
 	}
 }
 
+// TestKeyUploadIdentityFieldNames checks that the identity key of a device is
+// stored under either name a client may send it under. The specification calls
+// the field device_keys - which is what the Rust crypto stack Element uses
+// sends - while older clients write device_key. A server that reads only one of
+// the two answers the other's upload with 200 and stores nothing, which leaves
+// the device out of /keys/query and every signature it makes unresolvable.
+func TestKeyUploadIdentityFieldNames(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+
+	cases := []struct {
+		name  string
+		body  map[string]any
+		curve string
+	}{
+		{
+			name:  "the spec name device_keys",
+			body:  map[string]any{"device_keys": fakeDeviceKey(alice.UserID, alice.DeviceID, "curve-spec")},
+			curve: "curve-spec",
+		},
+		{
+			name:  "the legacy name device_key",
+			body:  map[string]any{"device_key": fakeDeviceKey(alice.UserID, alice.DeviceID, "curve-legacy")},
+			curve: "curve-legacy",
+		},
+		{
+			name: "both names at once, the spec one decides",
+			body: map[string]any{
+				"device_keys": fakeDeviceKey(alice.UserID, alice.DeviceID, "curve-both"),
+				"device_key":  fakeDeviceKey(alice.UserID, alice.DeviceID, "curve-ignored"),
+			},
+			curve: "curve-both",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := map[string]any{"device_id": alice.DeviceID}
+			for field, value := range tc.body {
+				body[field] = value
+			}
+			if resp := server.Do(http.MethodPost, "/_matrix/client/v3/keys/upload", alice.Token, body); resp.Status != http.StatusOK {
+				t.Fatalf("uploading an identity key: got %d %s, want 200", resp.Status, resp.Raw)
+			}
+			query := server.MustDo(http.MethodPost, "/_matrix/client/v3/keys/query", alice.Token, map[string]any{
+				"device_keys": map[string]any{alice.UserID: []string{}},
+			}, http.StatusOK)
+			devices, _ := query.Body["device_keys"].(map[string]any)
+			mine, _ := devices[alice.UserID].(map[string]any)
+			published, ok := mine[alice.DeviceID].(map[string]any)
+			if !ok {
+				t.Fatalf("%s published no identity key after an upload under %s: %s",
+					alice.DeviceID, tc.name, query.Raw)
+			}
+			keys, _ := published["keys"].(map[string]any)
+			if keys["curve25519"] != tc.curve {
+				t.Errorf("the published curve25519 key is %v, want %s (%s)", keys["curve25519"], tc.curve, query.Raw)
+			}
+		})
+	}
+}
+
 // sameKey reports whether two claim responses granted the same key id.
 func sameKey(a, b map[string]any) bool {
 	for _, byUser := range a {

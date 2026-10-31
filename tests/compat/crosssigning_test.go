@@ -92,9 +92,11 @@ func passwordAuth(userID, password string, session ...string) matrix.Object {
 	return auth
 }
 
-// TestCrossSigning covers POST /keys/device_signing/upload: the interactive auth
-// exchange in front of it, the verification of the keys, the refusal to replace a
-// master key without a reset, and the keys showing up in POST /keys/query.
+// TestCrossSigning covers POST /keys/device_signing/upload: the first set of
+// keys of a new account arriving without an interactive auth exchange, that
+// exchange in front of changing an identity that exists, the verification of the
+// keys, the replacement of a master key, and the keys showing up in POST
+// /keys/query.
 func TestCrossSigning(t *testing.T) {
 	server := NewServer(t)
 	alice := server.Register("alice", "wonderland")
@@ -107,46 +109,25 @@ func TestCrossSigning(t *testing.T) {
 		return server.Do(http.MethodPost, "/_matrix/client/v3/keys/device_signing/upload", alice.Token, body)
 	}
 
-	// Without credentials the endpoint describes how to authenticate, which is how
-	// a client knows to ask for the password.
-	challenge := upload(matrix.Object{})
-	if challenge.Status != http.StatusUnauthorized {
-		t.Fatalf("cross-signing upload without auth: got %d %s, want 401", challenge.Status, challenge.Raw)
-	}
-	flows, _ := challenge.Body["flows"].([]any)
-	if len(flows) == 0 {
-		t.Fatalf("the challenge carries no flows: %s", challenge.Raw)
-	}
-	session, _ := challenge.Body["session"].(string)
-	if session == "" {
-		t.Fatalf("the challenge carries no session: %s", challenge.Raw)
-	}
-
-	// The wrong password is not fatal: the client gets the flow list back.
-	wrong := upload(matrix.Object{
-		"auth":       passwordAuth(alice.UserID, "wrong password", session),
-		"master_key": signingKeyObject(t, alice.UserID, master.public, "master", master.private, master.id),
-	})
-	if wrong.Status != http.StatusUnauthorized {
-		t.Errorf("cross-signing upload with a wrong password: got %d %s", wrong.Status, wrong.Raw)
-	}
-
-	// The keys themselves: the master key signs itself, the other two are signed
-	// by it.
 	// A second device of the same user is watching. The upload has to reach it as
 	// a device list change, which is what makes that device fetch the new keys.
 	watcher := server.Login("alice", "wonderland")
 	watched, _ := server.Sync(watcher, "?timeout=0")
 	watcher.NextBatch = watched.NextBatch
 
+	// The first set of keys of a new account is accepted without an interactive
+	// auth exchange: the specification exempts it since v1.11, and Element relies
+	// on that exemption when it sets up encryption while the account is being
+	// created. Challenging that upload is what leaves the web client unable to set
+	// up keys. The master key signs itself, the other two are signed by it.
 	accepted := upload(matrix.Object{
-		"auth":             passwordAuth(alice.UserID, "wonderland", session),
 		"master_key":       signingKeyObject(t, alice.UserID, master.public, "master", master.private, master.id),
 		"self_signing_key": signingKeyObject(t, alice.UserID, selfSigning.public, "self-signing", master.private, master.id),
 		"user_signing_key": signingKeyObject(t, alice.UserID, userSigning.public, "user-signing", master.private, master.id),
 	})
 	if accepted.Status != http.StatusOK {
-		t.Fatalf("uploading valid cross-signing keys: got %d %s", accepted.Status, accepted.Raw)
+		t.Fatalf("uploading the first cross-signing keys without auth: got %d %s, want 200",
+			accepted.Status, accepted.Raw)
 	}
 	if len(accepted.Body) != 0 {
 		t.Errorf("the upload returned a body: %s", accepted.Raw)
@@ -190,24 +171,53 @@ func TestCrossSigning(t *testing.T) {
 		}
 	}
 
-	// Re-uploading the same keys is allowed: a client that restarts publishes them
-	// again.
+	// Re-uploading the same keys asks for nothing either: the request holds no new
+	// key, which is what makes a retry after a lost response work instead of
+	// landing the client on a challenge it has no reason to answer.
 	again := upload(matrix.Object{
-		"auth":       passwordAuth(alice.UserID, "wonderland"),
-		"master_key": signingKeyObject(t, alice.UserID, master.public, "master", master.private, master.id),
+		"master_key":       signingKeyObject(t, alice.UserID, master.public, "master", master.private, master.id),
+		"self_signing_key": signingKeyObject(t, alice.UserID, selfSigning.public, "self-signing", master.private, master.id),
+		"user_signing_key": signingKeyObject(t, alice.UserID, userSigning.public, "user-signing", master.private, master.id),
 	})
 	if again.Status != http.StatusOK {
-		t.Errorf("re-uploading the same master key: got %d %s", again.Status, again.Raw)
+		t.Errorf("re-uploading the same cross-signing keys without auth: got %d %s", again.Status, again.Raw)
 	}
 
-	// A different master key replaces the set. This is the path Element takes when
+	// An identity that exists is protected: without credentials a request that
+	// would change it only describes how to authenticate, which is how a client
+	// knows to ask for the password.
+	replacement := newKeyPair(t)
+	newMaster := signingKeyObject(t, alice.UserID, replacement.public, "master", replacement.private, replacement.id)
+	challenge := upload(matrix.Object{"master_key": newMaster})
+	if challenge.Status != http.StatusUnauthorized {
+		t.Fatalf("replacing the cross-signing keys without auth: got %d %s, want 401",
+			challenge.Status, challenge.Raw)
+	}
+	flows, _ := challenge.Body["flows"].([]any)
+	if len(flows) == 0 {
+		t.Fatalf("the challenge carries no flows: %s", challenge.Raw)
+	}
+	session, _ := challenge.Body["session"].(string)
+	if session == "" {
+		t.Fatalf("the challenge carries no session: %s", challenge.Raw)
+	}
+
+	// The wrong password is not fatal: the client gets the flow list back.
+	wrong := upload(matrix.Object{
+		"auth":       passwordAuth(alice.UserID, "wrong password", session),
+		"master_key": newMaster,
+	})
+	if wrong.Status != http.StatusUnauthorized {
+		t.Errorf("cross-signing upload with a wrong password: got %d %s", wrong.Status, wrong.Raw)
+	}
+
+	// Answering the challenge replaces the set. This is the path Element takes when
 	// the user says they cannot verify their existing identity, and answering the
 	// interactive auth challenge is the authorisation for it: no client can send a
 	// separate reset flag, so a refusal here is a dead end for the user.
-	replacement := newKeyPair(t)
 	replaced := upload(matrix.Object{
-		"auth":       passwordAuth(alice.UserID, "wonderland"),
-		"master_key": signingKeyObject(t, alice.UserID, replacement.public, "master", replacement.private, replacement.id),
+		"auth":       passwordAuth(alice.UserID, "wonderland", session),
+		"master_key": newMaster,
 	})
 	if replaced.Status != http.StatusOK {
 		t.Fatalf("replacing the cross-signing keys: got %d %s", replaced.Status, replaced.Raw)
@@ -320,6 +330,61 @@ func TestCrossSigning(t *testing.T) {
 	}
 }
 
+// TestCrossSigningPartialUpload checks an upload that carries only the
+// self-signing key: the stored master key signs it, and has to survive it. The
+// upload writes every key it holds back to storage, so a rebuilt master key
+// without its object would blank the identity of the user.
+func TestCrossSigningPartialUpload(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	upload := func(body matrix.Object) Response {
+		return server.Do(http.MethodPost, "/_matrix/client/v3/keys/device_signing/upload", alice.Token, body)
+	}
+
+	master := newKeyPair(t)
+	if resp := upload(matrix.Object{
+		"master_key": signingKeyObject(t, alice.UserID, master.public, "master", master.private, master.id),
+	}); resp.Status != http.StatusOK {
+		t.Fatalf("storing the first master key: got %d %s", resp.Status, resp.Raw)
+	}
+
+	// A new self-signing key next to an existing master key is a new key, so the
+	// exchange still stands in front of it.
+	selfSigning := newKeyPair(t)
+	selfObject := signingKeyObject(t, alice.UserID, selfSigning.public, "self-signing", master.private, master.id)
+	challenge := upload(matrix.Object{"self_signing_key": selfObject})
+	if challenge.Status != http.StatusUnauthorized {
+		t.Fatalf("a self-signing key without auth: got %d %s, want 401", challenge.Status, challenge.Raw)
+	}
+	if accepted := upload(matrix.Object{
+		"auth":             passwordAuth(alice.UserID, "wonderland", challenge.String("session")),
+		"self_signing_key": selfObject,
+	}); accepted.Status != http.StatusOK {
+		t.Fatalf("a self-signing key answered by the password stage: got %d %s", accepted.Status, accepted.Raw)
+	}
+
+	// Both keys are still reported, each with the object that was uploaded: the
+	// master key has to keep the material a client reads to know who to trust.
+	queried := server.MustDo(http.MethodPost, "/_matrix/client/v3/keys/query", alice.Token,
+		matrix.Object{"device_keys": map[string][]string{alice.UserID: nil}}, http.StatusOK)
+	cross := crossSigningFromQuery(queried)
+	for _, keyID := range []string{master.id, selfSigning.id} {
+		entry, ok := cross[keyID]
+		if !ok {
+			t.Errorf("POST /keys/query does not report the key %s: %s", keyID, queried.Raw)
+			continue
+		}
+		if keys, _ := entry["keys"].(map[string]any); len(keys) == 0 {
+			t.Errorf("the stored key %s lost its key material: %v", keyID, entry)
+		}
+	}
+
+	// Re-uploading that same self-signing key alone needs nothing again.
+	if again := upload(matrix.Object{"self_signing_key": selfObject}); again.Status != http.StatusOK {
+		t.Errorf("re-uploading the self-signing key without auth: got %d %s", again.Status, again.Raw)
+	}
+}
+
 // TestCrossSigningRejectsBadKeys checks the ways a key object can be wrong, and
 // that every one of them is refused rather than stored.
 func TestCrossSigningRejectsBadKeys(t *testing.T) {
@@ -384,9 +449,21 @@ func TestCrossSigningRejectsBadKeys(t *testing.T) {
 		}
 	})
 	t.Run("a stage this endpoint does not offer", func(t *testing.T) {
-		resp := server.Do(http.MethodPost, "/_matrix/client/v3/keys/device_signing/upload", alice.Token,
+		// The exchange only stands in front of a request that would change an
+		// existing identity, so the user first gets a key set the way a new account
+		// does it, and then meets the challenge when the replacement names a stage
+		// this endpoint has never offered.
+		carol := server.Register("carol", "dustbunny")
+		first := newKeyPair(t)
+		if resp := server.Do(http.MethodPost, "/_matrix/client/v3/keys/device_signing/upload", carol.Token,
+			matrix.Object{"master_key": signingKeyObject(t, carol.UserID, first.public, "master", first.private, first.id)}); resp.Status != http.StatusOK {
+			t.Fatalf("storing the first key set: got %d %s", resp.Status, resp.Raw)
+		}
+		next := newKeyPair(t)
+		resp := server.Do(http.MethodPost, "/_matrix/client/v3/keys/device_signing/upload", carol.Token,
 			matrix.Object{
-				"auth": matrix.Object{"type": "m.login.dummy"},
+				"auth":       matrix.Object{"type": "m.login.dummy"},
+				"master_key": signingKeyObject(t, carol.UserID, next.public, "master", next.private, next.id),
 			})
 		if resp.Status != http.StatusUnauthorized {
 			t.Errorf("got %d %s, want 401", resp.Status, resp.Raw)
@@ -452,8 +529,10 @@ func TestKeySignatures(t *testing.T) {
 	signed["signatures"] = matrix.Object{
 		alice.UserID: matrix.Object{master.id: base64.RawStdEncoding.EncodeToString(signature)},
 	}
+	// The signature arrives in the specification's own shape: a bare map of user
+	// ID to key ID to object, which is what ruma and matrix-js-sdk send.
 	if resp := server.MustDo(http.MethodPost, "/_matrix/client/v3/keys/signatures/upload", alice.Token,
-		matrix.Object{"signed_users": map[string]any{alice.UserID: map[string]any{alice.DeviceID: signed}}},
+		matrix.Object{alice.UserID: matrix.Object{alice.DeviceID: signed}},
 		http.StatusOK); len(resp.Body) != 0 {
 		t.Errorf("the signature upload returned a body: %s", resp.Raw)
 	}
@@ -537,6 +616,103 @@ func bobToken(server *Server) string {
 	return server.Register("bob", "rubberduck").Token
 }
 
+// TestKeySignaturesRequestShapes checks that a signature is stored whichever
+// shape the request arrives in. The specification's body is a bare map of user
+// ID to key ID to signed object - what ruma, the types behind the Rust crypto
+// stack Element ships, and matrix-js-sdk both send - while "signed_users" and
+// "signed_keys" are the wrapped shapes Lattice has taken from the start. A
+// server that reads only the wrappers answers a real client's upload with 200
+// and stores nothing, and the session that upload was meant to verify stays
+// unverified for good: this is how Element ended up asking a brand-new account
+// to verify itself forever. Each case signs its own device, so no earlier case
+// can mask a later one.
+func TestKeySignaturesRequestShapes(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+
+	// One master key signs the devices of every case; the first set of keys of a
+	// new account asks for no interactive auth exchange.
+	master := newKeyPair(t)
+	server.MustDo(http.MethodPost, "/_matrix/client/v3/keys/device_signing/upload", alice.Token,
+		matrix.Object{"master_key": signingKeyObject(t, alice.UserID, master.public, "master", master.private, master.id)},
+		http.StatusOK)
+
+	cases := []struct {
+		name  string
+		shape func(deviceID string, signed matrix.Object) matrix.Object
+	}{
+		{
+			name: "the specification's bare map",
+			shape: func(deviceID string, signed matrix.Object) matrix.Object {
+				return matrix.Object{alice.UserID: matrix.Object{deviceID: signed}}
+			},
+		},
+		{
+			name: "the signed_users wrapper",
+			shape: func(deviceID string, signed matrix.Object) matrix.Object {
+				return matrix.Object{"signed_users": map[string]any{alice.UserID: map[string]any{deviceID: signed}}}
+			},
+		},
+		{
+			name: "the signed_keys list",
+			shape: func(_ string, signed matrix.Object) matrix.Object {
+				return matrix.Object{"signed_keys": []any{signed}}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// A fresh device signs in, publishes its identity key, and is signed
+			// with the master key through this case's shape.
+			session := server.Login("alice", "wonderland")
+			signing := newKeyPair(t)
+			deviceKey := matrix.Object{
+				"user_id":    alice.UserID,
+				"device_id":  session.DeviceID,
+				"algorithms": []string{"m.olm.v1.curve25519-aes-sha2", "m.megolm.v1.aes-sha2"},
+				"keys": matrix.Object{
+					"curve25519:" + session.DeviceID: base64.RawStdEncoding.EncodeToString(signing.public),
+					"ed25519:" + session.DeviceID:    base64.RawStdEncoding.EncodeToString(signing.public),
+				},
+			}
+			server.MustDo(http.MethodPost, "/_matrix/client/v3/keys/upload", session.Token,
+				matrix.Object{"device_id": session.DeviceID, "device_keys": deviceKey}, http.StatusOK)
+
+			signed := matrix.Object{
+				"user_id":    alice.UserID,
+				"device_id":  session.DeviceID,
+				"algorithms": deviceKey["algorithms"],
+				"keys":       deviceKey["keys"],
+			}
+			signature, err := matrix.SignEd25519(master.private, signed)
+			if err != nil {
+				t.Fatalf("signing the device key: %v", err)
+			}
+			signed["signatures"] = matrix.Object{
+				alice.UserID: matrix.Object{master.id: base64.RawStdEncoding.EncodeToString(signature)},
+			}
+
+			if resp := server.Do(http.MethodPost, "/_matrix/client/v3/keys/signatures/upload", alice.Token,
+				tc.shape(session.DeviceID, signed)); resp.Status != http.StatusOK {
+				t.Fatalf("uploading the signature: got %d %s, want 200", resp.Status, resp.Raw)
+			}
+			queried := server.MustDo(http.MethodPost, "/_matrix/client/v3/keys/query", alice.Token,
+				matrix.Object{"device_keys": map[string][]string{alice.UserID: nil}}, http.StatusOK)
+			byEntity, _ := queried.Body["device_keys"].(map[string]any)
+			mine, _ := byEntity[alice.UserID].(map[string]any)
+			stored, ok := mine[session.DeviceID].(map[string]any)
+			if !ok {
+				t.Fatalf("the device published no keys: %s", queried.Raw)
+			}
+			signatures, _ := stored["signatures"].(map[string]any)
+			byKey, _ := signatures[alice.UserID].(map[string]any)
+			if byKey[master.id] == nil {
+				t.Errorf("the signature sent as %s never reached the stored device key: %s", tc.name, queried.Raw)
+			}
+		})
+	}
+}
+
 // TestCrossSigningUsageSpellings checks that a cross-signing key whose usage
 // field spells the kind with an underscore is accepted. The specification writes
 // self-signing and user-signing with a hyphen; the Rust crypto stack Element
@@ -551,12 +727,9 @@ func TestCrossSigningUsageSpellings(t *testing.T) {
 	upload := func(body matrix.Object) Response {
 		return server.Do(http.MethodPost, "/_matrix/client/v3/keys/device_signing/upload", alice.Token, body)
 	}
-	challenge := upload(matrix.Object{})
-	if challenge.Status != http.StatusUnauthorized {
-		t.Fatalf("challenge without auth: got %d %s, want 401", challenge.Status, challenge.Raw)
-	}
+	// A new account publishes its first set without the interactive auth
+	// exchange, so the spellings are all this test has to answer for.
 	accepted := upload(matrix.Object{
-		"auth":             passwordAuth(alice.UserID, "wonderland", challenge.String("session")),
 		"master_key":       signingKeyObject(t, alice.UserID, master.public, "master", master.private, master.id),
 		"self_signing_key": signingKeyObject(t, alice.UserID, selfSigning.public, "self_signing", master.private, master.id),
 	})
@@ -583,6 +756,15 @@ func TestCrossSigningUsageSpellings(t *testing.T) {
 func TestCrossSigningAuthShapes(t *testing.T) {
 	server := NewServer(t)
 	alice := server.Register("alice", "wonderland")
+
+	// The exchange stands in front of changing an identity, so one has to exist:
+	// the first key set of a new account arrives without it.
+	first := newKeyPair(t)
+	if resp := server.Do(http.MethodPost, "/_matrix/client/v3/keys/device_signing/upload", alice.Token,
+		matrix.Object{"master_key": signingKeyObject(t, alice.UserID, first.public, "master", first.private, first.id)}); resp.Status != http.StatusOK {
+		t.Fatalf("storing the first master key: got %d %s", resp.Status, resp.Raw)
+	}
+
 	master := newKeyPair(t)
 	object := signingKeyObject(t, alice.UserID, master.public, "master", master.private, master.id)
 
@@ -661,36 +843,9 @@ func TestCrossSigningAuthShapes(t *testing.T) {
 	if accepted.Status != http.StatusOK {
 		t.Fatalf("the retry with an identifier object: got %d %s", accepted.Status, accepted.Raw)
 	}
-	// A spent session id does not lock the client out: the session is a handle for
-	// the exchange, not a capability. Knowing the password is the gate, so a client
-	// that retries with a stale id and valid credentials still gets through - and
-	// one without them does not.
-	stale := server.Do(http.MethodPost, "/_matrix/client/v3/keys/device_signing/upload", alice.Token,
-		matrix.Object{
-			"master_key": object,
-			"auth": matrix.Object{
-				"type":       "m.login.password",
-				"identifier": matrix.Object{"type": "m.id.user", "user": alice.UserID},
-				"password":   "wonderland",
-				"session":    "not-a-session-any-more",
-			},
-		})
-	if stale.Status != http.StatusOK {
-		t.Errorf("a retry with a stale session id: got %d %s, want 200", stale.Status, stale.Raw)
-	}
-	guessed := server.Do(http.MethodPost, "/_matrix/client/v3/keys/device_signing/upload", alice.Token,
-		matrix.Object{
-			"master_key": object,
-			"auth": matrix.Object{
-				"type":       "m.login.password",
-				"identifier": matrix.Object{"type": "m.id.user", "user": alice.UserID},
-				"password":   "letmein",
-				"session":    "not-a-session-any-more",
-			},
-		})
-	if guessed.Status == http.StatusOK {
-		t.Errorf("a guessed password through a stale session id was accepted: %s", guessed.Raw)
-	}
+	// The stored object keeps both signatures: the one the master key made over
+	// itself, and the one the uploading device made, which is the link between an
+	// identity and the device that published it.
 	queried := server.MustDo(http.MethodPost, "/_matrix/client/v3/keys/query", alice.Token,
 		matrix.Object{"device_keys": map[string][]string{alice.UserID: nil}}, http.StatusOK)
 	stored := crossSigningFromQuery(queried)[master.id]
@@ -703,5 +858,39 @@ func TestCrossSigningAuthShapes(t *testing.T) {
 		if _, ok := bySigner[keyID]; !ok {
 			t.Errorf("the stored master key lost the signature under %s: %v", keyID, bySigner)
 		}
+	}
+
+	// A spent session id does not lock the client out: the session is a handle for
+	// the exchange, not a capability. Knowing the password is the gate, so a client
+	// that retries with a stale id and valid credentials still gets through - and
+	// one without them does not. Both attempts carry a fresh master key, because
+	// only a request that would change the stored identity runs the exchange.
+	next := newKeyPair(t)
+	nextMaster := signingKeyObject(t, alice.UserID, next.public, "master", next.private, next.id)
+	guessed := server.Do(http.MethodPost, "/_matrix/client/v3/keys/device_signing/upload", alice.Token,
+		matrix.Object{
+			"master_key": nextMaster,
+			"auth": matrix.Object{
+				"type":       "m.login.password",
+				"identifier": matrix.Object{"type": "m.id.user", "user": alice.UserID},
+				"password":   "letmein",
+				"session":    "not-a-session-any-more",
+			},
+		})
+	if guessed.Status == http.StatusOK {
+		t.Errorf("a guessed password through a stale session id was accepted: %s", guessed.Raw)
+	}
+	stale := server.Do(http.MethodPost, "/_matrix/client/v3/keys/device_signing/upload", alice.Token,
+		matrix.Object{
+			"master_key": nextMaster,
+			"auth": matrix.Object{
+				"type":       "m.login.password",
+				"identifier": matrix.Object{"type": "m.id.user", "user": alice.UserID},
+				"password":   "wonderland",
+				"session":    "not-a-session-any-more",
+			},
+		})
+	if stale.Status != http.StatusOK {
+		t.Errorf("a retry with a stale session id: got %d %s, want 200", stale.Status, stale.Raw)
 	}
 }
