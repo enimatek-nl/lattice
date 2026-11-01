@@ -242,13 +242,9 @@ func (s *Service) RoomSummary(ctx context.Context, idOrAlias, requester string) 
 	if err != nil {
 		return nil, matrix.ErrInternal(err)
 	}
-	heroes := make([]string, 0, 5)
+	heroes := pickHeroes(members, requester,
+		s.heroActivity(room.ID, members, syncHeroCount), syncHeroCount)
 	invited := 0
-	for _, member := range members {
-		if member.UserID != requester && len(heroes) < 5 {
-			heroes = append(heroes, member.UserID)
-		}
-	}
 	if invitedRows, err := s.db.MembershipRepo.Members(room.ID, matrix.MembershipInvite); err == nil {
 		invited = len(invitedRows)
 	}

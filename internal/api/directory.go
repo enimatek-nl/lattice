@@ -165,9 +165,7 @@ func (a *App) handleMembers(w http.ResponseWriter, r *http.Request) {
 	notMembership := queryValue(r, "not_membership", "")
 	var filters []string
 	if membership != "" {
-		for _, part := range splitList(membership) {
-			filters = append(filters, part)
-		}
+		filters = append(filters, splitList(membership)...)
 	}
 	members, err := a.svc.Members(r.Context(), roomID, filters, notMembership)
 	if err != nil {

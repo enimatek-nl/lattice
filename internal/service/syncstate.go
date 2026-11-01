@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"sort"
 
 	"github.com/enimatek-nl/lattice/internal/matrix"
 	"github.com/enimatek-nl/lattice/internal/persist"
@@ -92,24 +93,43 @@ func (f *SyncFilter) allowedByFilter(typ, sender string) bool {
 	return true
 }
 
+// stateEventsWire renders state rows as events. The events a room's state points
+// at are read in one query: rendering row by row turns a state block into a
+// query per state key, which is the hot path of an initial sync.
+func (s *Service) stateEventsWire(rows []*persist.RoomState, keep func(*persist.RoomState) bool) ([]matrix.Event, error) {
+	ids := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if keep != nil && !keep(row) {
+			continue
+		}
+		ids = append(ids, row.EventID)
+	}
+	if len(ids) == 0 {
+		return []matrix.Event{}, nil
+	}
+	events, err := s.db.EventRepo.GetByIDs(ids)
+	if err != nil {
+		return nil, matrix.ErrInternal(err)
+	}
+	out := make([]matrix.Event, 0, len(ids))
+	for _, row := range rows {
+		// A row whose event is gone (or that the filter dropped) has no entry.
+		if event, ok := events[row.EventID]; ok {
+			out = append(out, event.Matrix())
+		}
+	}
+	return out, nil
+}
+
 // stateEvents returns the full current state of a room.
 func (s *Service) stateEvents(ctx context.Context, roomID string, since uint64, filter *SyncFilter) ([]matrix.Event, error) {
 	rows, err := s.db.StateRepo.List(roomID, nil, "")
 	if err != nil {
 		return nil, matrix.ErrInternal(err)
 	}
-	events := make([]matrix.Event, 0, len(rows))
-	for _, row := range rows {
-		if !filter.allowedByFilter(row.Type, row.Sender) {
-			continue
-		}
-		event, err := s.db.EventRepo.Get(row.EventID)
-		if err != nil {
-			continue
-		}
-		events = append(events, event.Matrix())
-	}
-	return events, nil
+	return s.stateEventsWire(rows, func(row *persist.RoomState) bool {
+		return filter.allowedByFilter(row.Type, row.Sender)
+	})
 }
 
 // stateDelta returns state events of a room that changed after a position.
@@ -118,18 +138,9 @@ func (s *Service) stateDelta(roomID string, since uint64) ([]matrix.Event, error
 	if err != nil {
 		return nil, matrix.ErrInternal(err)
 	}
-	events := make([]matrix.Event, 0)
-	for _, row := range rows {
-		if row.StreamPos <= since {
-			continue
-		}
-		event, err := s.db.EventRepo.Get(row.EventID)
-		if err != nil {
-			continue
-		}
-		events = append(events, event.Matrix())
-	}
-	return events, nil
+	return s.stateEventsWire(rows, func(row *persist.RoomState) bool {
+		return row.StreamPos > since
+	})
 }
 
 // strippedState returns the state a non-joined user may see for a room. The
@@ -145,48 +156,69 @@ func (s *Service) strippedState(ctx context.Context, roomID, invitee string) []m
 		matrix.TypeCreate, matrix.TypeName, matrix.TypeTopic, matrix.TypeAvatar,
 		matrix.TypeCanonicalAlias, matrix.TypeJoinRules, matrix.TypeEncryption,
 	}
-	out := make([]matrix.Event, 0, 8)
-	for _, typ := range types {
-		rows, err := s.db.StateRepo.List(roomID, []string{typ}, "")
-		if err != nil {
-			continue
-		}
-		for _, row := range rows {
-			out = append(out, s.strippedEvent(row))
-		}
-	}
-	members, err := s.db.StateRepo.List(roomID, []string{matrix.TypeMember}, "")
+	// One state read covers the whole block: listing a type at a time was a query
+	// per type. The fetched rows are grouped by type so the block keeps the order
+	// clients have come to expect, create first.
+	rows, err := s.db.StateRepo.List(roomID, append(append([]string{}, types...), matrix.TypeMember), "")
 	if err != nil {
-		return out
+		return nil
+	}
+	byType := map[string][]*persist.RoomState{}
+	for _, row := range rows {
+		byType[row.Type] = append(byType[row.Type], row)
+	}
+	keep := make([]*persist.RoomState, 0, len(types)+2)
+	for _, typ := range types {
+		keep = append(keep, byType[typ]...)
 	}
 	// The invitation event names the inviter in its sender; that is the only other
 	// membership a client needs, to show who invited the user.
 	inviter := ""
-	for _, row := range members {
+	for _, row := range byType[matrix.TypeMember] {
 		if row.StateKey == invitee {
 			inviter = row.Sender
 			break
 		}
 	}
-	for _, row := range members {
-		if row.StateKey != invitee && row.StateKey != inviter {
-			continue
+	for _, row := range byType[matrix.TypeMember] {
+		if row.StateKey == invitee || (inviter != "" && row.StateKey == inviter) {
+			keep = append(keep, row)
 		}
-		out = append(out, s.strippedEvent(row))
+	}
+	out, err := s.strippedEvents(ctx, keep)
+	if err != nil {
+		return nil
 	}
 	return out
 }
 
-// strippedEvent renders a state row for stripped state, which per the
-// specification carries no origin server timestamp.
-func (s *Service) strippedEvent(row *persist.RoomState) matrix.Event {
-	event, err := s.db.EventRepo.Get(row.EventID)
-	if err != nil {
-		return matrix.Event{Type: row.Type, StateKey: StateKeyOf(row.StateKey), Sender: row.Sender}
+// strippedEvents renders state rows for stripped state, which per the
+// specification carries no origin server timestamp. A row whose event has gone
+// is rendered from the row itself, as the specification allows.
+func (s *Service) strippedEvents(ctx context.Context, rows []*persist.RoomState) ([]matrix.Event, error) {
+	ids := make([]string, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.EventID)
 	}
-	ev := event.Matrix()
-	ev.OriginServerTS = 0
-	return ev
+	if len(ids) == 0 {
+		return []matrix.Event{}, nil
+	}
+	events, err := s.db.EventRepo.GetByIDs(ids)
+	if err != nil {
+		return nil, matrix.ErrInternal(err)
+	}
+	out := make([]matrix.Event, 0, len(rows))
+	for _, row := range rows {
+		event, ok := events[row.EventID]
+		if !ok {
+			out = append(out, matrix.Event{Type: row.Type, StateKey: StateKeyOf(row.StateKey), Sender: row.Sender})
+			continue
+		}
+		ev := event.Matrix()
+		ev.OriginServerTS = 0
+		out = append(out, ev)
+	}
+	return out, nil
 }
 
 // invitedRoomSync renders the invite section of a sync response.
@@ -305,6 +337,56 @@ func (s *Service) receiptEventsForUser(userID string, since uint64) (map[string]
 // syncHeroCount is how many member ids the sync room summary names.
 const syncHeroCount = 5
 
+// pickHeroes names the members a room summary should show. The specification
+// leaves the choice to the server and only fixes the maximum, so Lattice orders
+// by recent activity in the room: whoever spoke most recently is the person the
+// other members are most likely to be looking for. Members that never sent an
+// event fall back to their membership row, so a freshly invited crowd still
+// shows up in a stable order, and equal positions break by user id so two syncs
+// of the same room agree.
+func pickHeroes(members []*persist.RoomMembership, requester string, activity map[string]uint64, limit int) []string {
+	candidates := make([]*persist.RoomMembership, 0, len(members))
+	for _, member := range members {
+		if member.UserID != requester {
+			candidates = append(candidates, member)
+		}
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		posI, posJ := activity[candidates[i].UserID], activity[candidates[j].UserID]
+		if posI != posJ {
+			return posI > posJ
+		}
+		if candidates[i].SentTS != candidates[j].SentTS {
+			return candidates[i].SentTS > candidates[j].SentTS
+		}
+		return candidates[i].UserID < candidates[j].UserID
+	})
+	if len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	heroes := make([]string, 0, len(candidates))
+	for _, member := range candidates {
+		heroes = append(heroes, member.UserID)
+	}
+	return heroes
+}
+
+// heroActivity returns the recency map pickHeroes needs, but only after checking
+// that the room is big enough to need one. Small rooms and DMs show every member
+// anyway, and skipping the scan keeps that query off the sync hot path.
+func (s *Service) heroActivity(roomID string, members []*persist.RoomMembership, limit int) map[string]uint64 {
+	if len(members) <= limit+1 {
+		return nil
+	}
+	activity, err := s.db.EventRepo.LatestActivity(roomID)
+	if err != nil {
+		// Falling back to the membership timestamps is better than failing a sync
+		// over a summary nicety.
+		return nil
+	}
+	return activity
+}
+
 // syncRoomSummary returns the summary fields every member sees in a joined
 // room: up to five relevant members (excluding the requester) and the member
 // counts. It mirrors the room summary endpoint but stays cheap on purpose.
@@ -314,16 +396,7 @@ func (s *Service) syncRoomSummary(roomID, userID string) (heroes []string, joine
 		return nil, 0, 0, matrix.ErrInternal(err)
 	}
 	joined = int64(len(members))
-	heroes = make([]string, 0, syncHeroCount)
-	for _, member := range members {
-		if member.UserID == userID {
-			continue
-		}
-		if len(heroes) >= syncHeroCount {
-			break
-		}
-		heroes = append(heroes, member.UserID)
-	}
+	heroes = pickHeroes(members, userID, s.heroActivity(roomID, members, syncHeroCount), syncHeroCount)
 	invitedRows, err := s.db.MembershipRepo.Members(roomID, matrix.MembershipInvite)
 	if err != nil {
 		return nil, 0, 0, matrix.ErrInternal(err)

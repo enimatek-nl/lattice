@@ -6,10 +6,12 @@ import (
 
 	"github.com/enimatek-nl/lattice/internal/matrix"
 	"github.com/enimatek-nl/lattice/internal/persist"
+	"github.com/enimatek-nl/lattice/internal/push"
 )
 
-// Push rule kinds in evaluation order.
-var PushRuleKinds = []string{"override", "content", "room", "sender", "underride"}
+// PushRuleKinds are the push rule kinds in evaluation order; the list belongs to
+// the rule engine in internal/push, which is also what sorts rules by it.
+var PushRuleKinds = push.Kinds
 
 // defaultPushRules are the server default rules seeded for every new account.
 // They follow the "Default Ruleset" of the specification.

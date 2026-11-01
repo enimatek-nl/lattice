@@ -12,7 +12,7 @@ import (
 // columns below so history can be queried without decoding JSON blobs.
 type Event struct {
 	EventID string `json:"event_id" gorm:"uniqueIndex;size:255"`
-	RoomID  string `json:"room_id" gorm:"index:idx_event_room_stream,priority:1;size:255"`
+	RoomID  string `json:"room_id" gorm:"index:idx_event_room_stream,priority:1;index:idx_event_room_rel,priority:1;size:255"`
 	// StreamPos is a globally monotonic position used for sync tokens and
 	// pagination.
 	StreamPos uint64 `json:"stream_pos" gorm:"uniqueIndex;index:idx_event_room_stream,priority:2"`
@@ -34,9 +34,12 @@ type Event struct {
 	// this event, which clients receive as unsigned.redacted_because.
 	RedactionEvent string `json:"-" gorm:"type:text"`
 	// RelatesTo and RelType denormalise the m.relates_to relation of an event
-	// content so relation queries do not have to decode JSON.
-	RelatesTo string `json:"-" gorm:"index:idx_event_relates,priority:1;size:255"`
-	RelType   string `json:"-" gorm:"index:idx_event_relates,priority:2;size:64"`
+	// content so relation queries do not have to decode JSON. The room-scoped
+	// index is what /threads and the per-room /relations listings read: both ask
+	// for one room and one relation type, and the thread aggregation groups by the
+	// root on top of it.
+	RelatesTo string `json:"-" gorm:"index:idx_event_relates,priority:1;index:idx_event_room_rel,priority:3;size:255"`
+	RelType   string `json:"-" gorm:"index:idx_event_relates,priority:2;index:idx_event_room_rel,priority:2;size:64"`
 
 	gorm.Model
 }
@@ -98,6 +101,13 @@ type EventRepo interface {
 	Create(event *Event) error
 	Get(eventID string) (*Event, error)
 	GetInRoom(roomID, eventID string) (*Event, error)
+	// GetByIDs loads many events in one query, keyed by event id. A caller that
+	// asks for an id the database does not have simply finds no entry for it.
+	GetByIDs(ids []string) (map[string]*Event, error)
+	// ByPositions loads the events of one room that sit at the given stream
+	// positions, keyed by position: one query for the newest reply of every thread
+	// in a listing.
+	ByPositions(roomID string, positions []uint64) (map[uint64]*Event, error)
 	ListByIDs(ids []string) ([]*Event, error)
 	// History returns events of a room ordered by stream position, descending
 	// when dir is "b" (backwards) and ascending when dir is "f". from is the
@@ -123,13 +133,19 @@ type EventRepo interface {
 	// HistoryByTimestamp finds events around an origin_server_ts; "b" searches
 	// backwards in time, "f" forwards.
 	HistoryByTimestamp(roomID string, ts int64, dir string, limit int) ([]*Event, error)
-	// Relations lists events that relate to a target event.
-	Relations(roomID, eventID, relType, eventType string, limit int, from, to uint64) ([]*Event, error)
-	// Threads lists the events that participate in threads, oldest first.
-	Threads(roomID string) ([]*Event, error)
+	// Relations lists the unredacted events that relate to a target event.
+	Relations(query RelationQuery) ([]*Event, error)
+	// LatestActivity returns the stream position of the most recent event each
+	// sender wrote in a room; room summaries use it to pick the members a client
+	// is most likely to care about.
+	LatestActivity(roomID string) (map[string]uint64, error)
 	// ThreadsFor lists the m.thread relations of a room whose root is one of
 	// the given event ids, oldest first.
 	ThreadsFor(roomID string, rootIDs []string) ([]*Event, error)
+	// ThreadStats aggregates the unredacted m.thread replies of a room per root,
+	// which is what the threads listing needs: counting them in SQL instead of
+	// loading every reply of every thread.
+	ThreadStats(roomID, userID string) ([]ThreadStat, error)
 	// CountBefore counts events of a room before a stream position.
 	CountBefore(roomID string, pos uint64) (int64, error)
 	// Search lists unredacted events whose content mentions every term, newest
@@ -176,6 +192,21 @@ func (r *EventRepoImpl) GetInRoom(roomID, eventID string) (*Event, error) {
 	err := r.db.Where("room_id = ? AND event_id = ?", roomID, eventID).
 		First(&event).Error
 	return &event, err
+}
+
+// GetByIDs implements [EventRepo]. One SELECT covers every id, which is the
+// point: the sync and history paths hydrate state blocks and notification lists
+// from id columns, and doing that one row at a time is an N+1 on the hot path.
+func (r *EventRepoImpl) GetByIDs(ids []string) (map[string]*Event, error) {
+	events, err := r.ListByIDs(ids)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]*Event, len(events))
+	for _, event := range events {
+		out[event.EventID] = event
+	}
+	return out, nil
 }
 
 // ListByIDs implements [EventRepo].
@@ -310,44 +341,138 @@ func (r *EventRepoImpl) HistoryByTimestamp(roomID string, ts int64, dir string, 
 	return events, err
 }
 
+// RelationQuery narrows [EventRepo.Relations].
+type RelationQuery struct {
+	RoomID  string
+	EventID string
+	// RelType and EventType narrow the listing; an empty string matches all.
+	RelType   string
+	EventType string
+	Limit     int
+	// From and To are stream positions. Which one bounds the start depends on
+	// the direction: forward reads above From and below To, backwards reads
+	// below From and above To.
+	From uint64
+	To   uint64
+	// Forward reads oldest first; the zero value walks newest first.
+	Forward bool
+}
+
 // Relations implements [EventRepo].
-func (r *EventRepoImpl) Relations(roomID, eventID, relType, eventType string, limit int, from, to uint64) ([]*Event, error) {
+//
+// Redacted relations are never listed. MSC2675 (merged; the "Redactions" part
+// of "Event relationships" in the v1.19 client-server spec) says redacted
+// relations "should not be taken into consideration in bundled aggregations, nor
+// should they be returned from /relations". The target of the relation is not
+// covered by that rule: the same MSC states that requesting /relations on a
+// redacted event still returns its relations, in line with /context and
+// /messages.
+func (r *EventRepoImpl) Relations(query RelationQuery) ([]*Event, error) {
 	var events []*Event
-	q := r.db.Where("room_id = ? AND relates_to = ?", roomID, eventID)
-	if relType != "" {
-		q = q.Where("rel_type = ?", relType)
+	q := r.db.Where("room_id = ? AND relates_to = ? AND redacted = ?",
+		query.RoomID, query.EventID, false)
+	if query.RelType != "" {
+		q = q.Where("rel_type = ?", query.RelType)
 	}
-	if eventType != "" {
-		q = q.Where("type = ?", eventType)
+	if query.EventType != "" {
+		q = q.Where("type = ?", query.EventType)
 	}
-	if from > 0 {
-		q = q.Where("stream_pos > ?", from)
+	if query.Forward {
+		if query.From > 0 {
+			q = q.Where("stream_pos > ?", query.From)
+		}
+		if query.To > 0 {
+			q = q.Where("stream_pos < ?", query.To)
+		}
+	} else {
+		if query.From > 0 {
+			q = q.Where("stream_pos < ?", query.From)
+		}
+		if query.To > 0 {
+			q = q.Where("stream_pos > ?", query.To)
+		}
 	}
-	if to > 0 {
-		q = q.Where("stream_pos < ?", to)
+	if query.Limit > 0 {
+		q = q.Limit(query.Limit)
 	}
-	if limit > 0 {
-		q = q.Limit(limit)
+	order := "stream_pos desc"
+	if query.Forward {
+		order = "stream_pos asc"
 	}
-	err := q.Order("stream_pos asc").Find(&events).Error
+	err := q.Order(order).Find(&events).Error
 	return events, err
 }
 
-// Threads implements [EventRepo].
-func (r *EventRepoImpl) Threads(roomID string) ([]*Event, error) {
+// ByPositions implements [EventRepo]. Stream positions are unique; the room
+// filter keeps a position from another room out of the answer.
+func (r *EventRepoImpl) ByPositions(roomID string, positions []uint64) (map[uint64]*Event, error) {
+	out := map[uint64]*Event{}
+	if len(positions) == 0 {
+		return out, nil
+	}
 	var events []*Event
-	err := r.db.Where("room_id = ? AND rel_type = ?", roomID, "m.thread").
-		Order("stream_pos asc").Find(&events).Error
-	return events, err
+	if err := r.db.Where("room_id = ? AND stream_pos IN ?", roomID, positions).
+		Find(&events).Error; err != nil {
+		return nil, err
+	}
+	for _, event := range events {
+		out[event.StreamPos] = event
+	}
+	return out, nil
 }
 
-// ThreadsFor implements [EventRepo].
+// LatestActivity implements [EventRepo]. It scans the events of one room, which
+// is why callers only ask when a room has more members than they need.
+func (r *EventRepoImpl) LatestActivity(roomID string) (map[string]uint64, error) {
+	var rows []struct {
+		Sender string
+		Pos    uint64
+	}
+	err := r.db.Model(&Event{}).Where("room_id = ?", roomID).
+		Select("sender, max(stream_pos) as pos").Group("sender").Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]uint64, len(rows))
+	for _, row := range rows {
+		out[row.Sender] = row.Pos
+	}
+	return out, nil
+}
+
+// ThreadStat is one aggregated thread: the root it hangs under and how big it
+// has grown.
+type ThreadStat struct {
+	RootID    string
+	Replies   int64
+	LatestPos uint64
+	// Mine counts the replies the requester sent, the input of
+	// current_user_participated.
+	Mine int64
+}
+
+// ThreadStats implements [EventRepo]. Redacted replies stay out of the numbers,
+// which is MSC2675's rule for bundled aggregations.
+func (r *EventRepoImpl) ThreadStats(roomID, userID string) ([]ThreadStat, error) {
+	var stats []ThreadStat
+	err := r.db.Model(&Event{}).
+		Where("room_id = ? AND rel_type = ? AND relates_to <> ? AND redacted = ?",
+			roomID, "m.thread", "", false).
+		Select("relates_to AS root_id, COUNT(*) AS replies, MAX(stream_pos) AS latest_pos, "+
+			"SUM(CASE WHEN sender = ? THEN 1 ELSE 0 END) AS mine", userID).
+		Group("relates_to").Scan(&stats).Error
+	return stats, err
+}
+
+// ThreadsFor implements [EventRepo], with the same redaction rule as the thread
+// aggregation.
 func (r *EventRepoImpl) ThreadsFor(roomID string, rootIDs []string) ([]*Event, error) {
 	if len(rootIDs) == 0 {
 		return nil, nil
 	}
 	var events []*Event
-	err := r.db.Where("room_id = ? AND rel_type = ? AND relates_to IN ?", roomID, "m.thread", rootIDs).
+	err := r.db.Where("room_id = ? AND rel_type = ? AND relates_to IN ? AND redacted = ?",
+		roomID, "m.thread", rootIDs, false).
 		Order("stream_pos asc").Find(&events).Error
 	return events, err
 }

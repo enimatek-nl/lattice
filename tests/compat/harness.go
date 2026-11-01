@@ -180,7 +180,7 @@ func (s *Server) roundTrip(req *http.Request) Response {
 	if err != nil {
 		s.t.Fatalf("%s %s: %v", req.Method, req.URL.Path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
 		s.t.Fatalf("reading the response of %s %s: %v", req.Method, req.URL.Path, err)

@@ -13,10 +13,12 @@ that decide what a client trusts, and stores encrypted room-key backups without
 being able to read any of it.
 
 **Status:** working single-server homeserver; the cryptography stays on the
-clients. **141 of
-the 234** endpoints indexed in [SPECS.md](SPECS.md) are implemented, plus 24
-extra routes (see [ENDPOINTS.md](ENDPOINTS.md)). 88 black-box compatibility tests
-are green. `go build ./... && go vet ./...` clean. Implementation version `0.1.0`
+clients. **149 of
+the 234** endpoints indexed in [SPECS.md](SPECS.md) are implemented, plus 26
+extra routes (see [ENDPOINTS.md](ENDPOINTS.md)). 103 black-box compatibility tests
+and 31 offline unit tests are green. `make build vet lint` clean (golangci-lint
+reports 0 issues).
+Implementation version `0.1.0`
 (reported by `GET /_matrix/client/versions` as `Lattice/0.1.0`).
 
 ## Quick start
@@ -85,6 +87,10 @@ registrations.
 | `-jwt-secret`                          | _(empty)_                   | secret used to sign access tokens; **set it** — an empty value generates a fresh one per boot and logs every client out on restart |
 | `-token-ttl`                           | `24h`                       | access token lifetime                                                                                                              |
 | `-max-upload-size`                     | `10 MiB`                    | maximum media upload size                                                                                                          |
+| `-no-rate-limit`                       | `false`                     | turn off request rate limiting entirely                                                                                             |
+| `-rate-limit-write-burst`, `-rate-limit-write-rate`     | `100`, `30`               | requests per device before `M_LIMIT_EXCEEDED` on `/send`, `/createRoom`, `/join`, `/invite`, and the sustained requests per second    |
+| `-rate-limit-auth-burst`, `-rate-limit-auth-rate`       | `20`, `2`                 | the same for `POST /login`, `/register` and `/refresh`, counted per address                                                          |
+| `-rate-limit-upload-burst`, `-rate-limit-upload-rate`   | `20`, `5`                 | the same for media uploads, counted per device                                                                                       |
 | `-media-reservation-window`            | `24h`                       | how long a media id from `POST /_matrix/media/v3/create` waits for its bytes before maintenance drops it                           |
 | `-allow-guests`                        | `true`                      | allow guest account creation                                                                                                       |
 | `-disable-registration`                | `false`                     | turn off self-service registration                                                                                                 |
@@ -160,8 +166,14 @@ endpoint that is missing.
 - **No calls** (`/voip/turnServer` publishes no TURN relay), **no SSO** or
   `m.login.token`, **no 3PID / email recovery**, **no application services**,
   **no bridges** (`/thirdparty/protocols` is empty).
-- **No rate limiting** — `M_LIMIT_EXCEEDED` and `retry_after_ms` exist in the
-  error types but nothing raises them.
+- Rate limiting is in-process only: a token bucket per device on the expensive
+  writes (`/send`, `/createRoom`, `/join`, `/invite`), per device on uploads and
+  per address on `POST /login`, `/register` and `/refresh`, answered with
+  `M_LIMIT_EXCEEDED` and `retry_after_ms`. Buckets live in memory, so they reset
+  on restart, and they are keyed on the peer address — behind a reverse proxy
+  every client shares one bucket until proxy support lands. Tune the budgets with
+  `-rate-limit-write-burst` and friends, or switch the whole thing off with
+  `-no-rate-limit`.
 - Search is a `LIKE` scan over serialised event content: no word index, no
   stemming, no relevance ranking.
 
@@ -213,27 +225,47 @@ internal/matrix   Matrix identifiers, event types, error shapes, sync structs
 internal/persist  GORM + gormlite (pure-Go SQLite) models and repositories
 internal/auth     JWT tokens, auth middleware, context getters
 internal/realtime hub that wakes long-polling syncs
+internal/coverage route-to-spec matcher the ENDPOINTS.md numbers come from
+internal/power    power level arithmetic (which level a user has, what an action asks for)
+internal/push     push rule engine: rule precedence, pattern and count matching
 internal/service  business logic (one file per feature area)
 internal/api      HTTP handlers and the route table (routes.go)
 tests/compat      black-box compatibility suite: HTTP against a running server
+tests/unit        offline unit tests: pure functions, tables, no server
 ```
 
 Functional tests live in `tests/` only, never next to the implementation — that
-is what makes "which endpoint is already covered?" answerable.
+is what makes "which endpoint is already covered?" answerable. The pure rules
+federation will reuse (identifiers, errors, power levels, push rules, tokens,
+endpoint matching) are additionally pinned in `tests/unit`, where a wrong answer
+is a readable table diff rather than a confusing HTTP response.
 
 ## Commands
 
 ```sh
+make help                                # list the targets, one line each
+make build                               # bin/lattice
+make test                                # unit + compatibility suite
+make race                                # the same under -race
+make vet lint fmt                        # go vet, golangci-lint, gofmt -s
+make endpoints                           # regenerate ENDPOINTS.md
+make run                                 # dev server on 127.0.0.1:8008
+make swagger                             # OpenAPI docs, docs/swagger/ (not committed)
+make clean                               # drop bin/ and docs/swagger/
+
 go build ./... && go vet ./...
-go test ./tests/compat/ -race              # ~3 min because of the long-poll tests
-go test ./tests/compat/                    # ~27 s
+go test ./tests/unit/                      # the offline unit tables, milliseconds
+go test ./tests/compat/ -race              # ~5 min because of the long-poll tests
+go test ./tests/compat/                    # ~50 s
 go run ./cmd/endpoints                     # coverage summary
 go run ./cmd/endpoints -all                # every implemented / missing route
 go run ./cmd/endpoints -out ENDPOINTS.md   # regenerate the coverage report
 ```
 
 `ENDPOINTS.md` is generated — regenerate it after adding a route instead of
-editing it.
+editing it. `docs/swagger/` is generated too and gitignored: `make swagger`
+fetched swag on demand, so the repository carries the annotations but not the
+OpenAPI document, and no Swagger UI route is mounted.
 
 ## Where development stands
 
@@ -244,10 +276,10 @@ chunk), [SPECS.md](SPECS.md) is the full endpoint index from the spec, and
 
 Phase 1 (bare POC) and phase 2 (the everyday client endpoints) are done, and so
 is the E2EE key layer: device keys, cross-signing and server-side key backup. The
-next chunks queued in [TODO.md](TODO.md) are `account/3pid/*`, SSO, appservice
-APIs, unit tests in `tests/unit/`, a Makefile and OpenAPI generation. Federation
-is decided in scope as phase 3, gated behind a `-federation` flag — the decision
-and the full plan are recorded in [TODO.md](TODO.md).
+release plan in [TODO.md](TODO.md) works step by step: rate limiting, the client
+API correctness tails, batch reads, unit tests in `tests/unit/`, then federation
+(steps 6–12) behind a `-federation` flag — the decision and the full plan are
+recorded there.
 
 Note: `SPECS.md` references a spec corpus that is not in this repo, so anything
 depending on exact spec wording (the default push rule set, `/threads` ordering,

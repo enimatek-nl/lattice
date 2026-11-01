@@ -255,17 +255,32 @@ func (s *Service) Presence(ctx context.Context, targetUserID, requester string) 
 
 // NotificationEntry is one row of the /notifications list.
 type NotificationEntry struct {
-	RoomID     string       `json:"room_id"`
-	Event      matrix.Event `json:"event"`
-	TS         int64        `json:"ts"`
-	Actions    matrix.Array `json:"actions,omitempty"`
-	ThumbImage string       `json:"thumb_image,omitempty"`
+	RoomID  string       `json:"room_id"`
+	Event   matrix.Event `json:"event"`
+	TS      int64        `json:"ts"`
+	Actions matrix.Array `json:"actions,omitempty"`
+	// Read reports whether the requester has caught up with the notification:
+	// their read receipt or fully read marker in that room has reached it. The
+	// specification makes this field mandatory, so it is always serialised.
+	Read       bool   `json:"read"`
+	ThumbImage string `json:"thumb_image,omitempty"`
 }
 
-// Notifications lists the notifications of a user, paginated by row id.
-func (s *Service) Notifications(ctx context.Context, userID, from string, limit int) ([]NotificationEntry, string, error) {
+// Notifications lists the notifications of a user, oldest first, paginated by
+// row id. Lattice keeps the store in arrival order and pages forward from a
+// token, which is what the "pagination token to continue from" in the
+// specification describes; the ordering is pinned by
+// TestNotificationsOrder in the compatibility suite.
+func (s *Service) Notifications(ctx context.Context, userID, from, only string, limit int) ([]NotificationEntry, string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
 	if limit <= 0 || limit > 100 {
 		limit = 20
+	}
+	if only != "" && only != persist.NotificationOnlyHighlight {
+		return nil, "", matrix.ErrInvalidParam("only must be %q, got %q",
+			persist.NotificationOnlyHighlight, only)
 	}
 	fromPos := int64(0)
 	if from != "" {
@@ -275,22 +290,42 @@ func (s *Service) Notifications(ctx context.Context, userID, from string, limit 
 		}
 		fromPos = parsed
 	}
-	rows, next, err := s.db.NotificationRepo.List(userID, fromPos, limit)
+	rows, next, err := s.db.NotificationRepo.List(persist.NotificationQuery{
+		UserID: userID,
+		From:   fromPos,
+		Limit:  limit,
+		Only:   only,
+	})
 	if err != nil {
 		return nil, "", matrix.ErrInternal(err)
 	}
+	// One lookup for every event of the page, and one per room for how far the
+	// requester has read: a page of notifications must not turn into a query per
+	// row.
+	ids := make([]string, 0, len(rows))
+	roomIDs := make([]string, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.EventID)
+		roomIDs = append(roomIDs, row.RoomID)
+	}
+	events, err := s.db.EventRepo.GetByIDs(ids)
+	if err != nil {
+		return nil, "", matrix.ErrInternal(err)
+	}
+	readUpTo := s.readPositions(ctx, userID, roomIDs)
+
 	out := make([]NotificationEntry, 0, len(rows))
 	for _, row := range rows {
-		event, err := s.db.EventRepo.Get(row.EventID)
-		if err != nil {
+		event, ok := events[row.EventID]
+		if !ok {
 			continue
 		}
-		actions := notificationActions(row)
 		out = append(out, NotificationEntry{
 			RoomID:  row.RoomID,
 			Event:   event.Matrix(),
 			TS:      row.TS,
-			Actions: actions,
+			Actions: notificationActions(row),
+			Read:    row.StreamPos <= readUpTo[row.RoomID],
 		})
 	}
 	token := ""
@@ -298,4 +333,52 @@ func (s *Service) Notifications(ctx context.Context, userID, from string, limit 
 		token = strconv.FormatInt(next, 10)
 	}
 	return out, token, nil
+}
+
+// readPositions returns, per room, the stream position the requester has read
+// up to. Three things record that: an m.read receipt, an m.read.private receipt
+// and the fully read marker, each of which points at an event, so the answer is
+// the furthest of those events. Rooms the requester never read are absent, which
+// reads as position zero.
+func (s *Service) readPositions(ctx context.Context, userID string, roomIDs []string) map[string]uint64 {
+	positions := map[string]uint64{}
+	anchors := map[string][]string{}
+	seen := map[string]bool{}
+	for _, roomID := range roomIDs {
+		if roomID == "" || seen[roomID] {
+			continue
+		}
+		seen[roomID] = true
+		for _, receiptType := range []string{ReceiptRead, ReceiptReadPrivate} {
+			if receipt, err := s.db.ReceiptRepo.LatestForUser(userID, roomID, receiptType); err == nil &&
+				receipt.EventID != "" {
+				anchors[roomID] = append(anchors[roomID], receipt.EventID)
+			}
+		}
+		if marker, err := s.db.ReadMarkerRepo.Get(userID, roomID); err == nil && marker.FullyReadEventID != "" {
+			anchors[roomID] = append(anchors[roomID], marker.FullyReadEventID)
+		}
+	}
+	ids := make([]string, 0, len(anchors))
+	for _, list := range anchors {
+		ids = append(ids, list...)
+	}
+	if len(ids) == 0 {
+		return positions
+	}
+	// The stored stream position of a receipt row is the position of the receipt
+	// update, not of the event it points at, so the anchor events are looked up
+	// here - in one query for the whole page.
+	events, err := s.db.EventRepo.GetByIDs(ids)
+	if err != nil {
+		return positions
+	}
+	for roomID, list := range anchors {
+		for _, eventID := range list {
+			if event, ok := events[eventID]; ok && event.StreamPos > positions[roomID] {
+				positions[roomID] = event.StreamPos
+			}
+		}
+	}
+	return positions
 }

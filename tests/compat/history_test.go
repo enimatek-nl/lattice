@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -170,6 +171,9 @@ func TestRelations(t *testing.T) {
 	server.MustDo(http.MethodPost, "/_matrix/client/v3/join/"+roomID, bob.Token, nil, http.StatusOK)
 
 	target := server.Send(alice, roomID, "rel-target", "post")
+	// A token from before any reaction, so the tests below can describe a window
+	// with both bounds.
+	oldestToken := server.MustSync(alice, "").NextBatch
 	react := func(session *Session, txn, key, relType string) string {
 		return server.sendTyped(session, roomID, txn, "m.reaction", map[string]any{
 			"m.relates_to": map[string]any{"rel_type": relType, "event_id": target, "key": key},
@@ -187,18 +191,33 @@ func TestRelations(t *testing.T) {
 	if len(chunk) != 2 {
 		t.Fatalf("relations = %s", list.Raw)
 	}
-	// Relations come back oldest first.
-	if chunk[0].ID != firstReaction || chunk[1].ID != secondReaction {
-		t.Errorf("relation order = %s, %s", chunk[0].ID, chunk[1].ID)
+	// The default direction is "b": the newest child first, which is what the
+	// relations endpoints promise ("ordered topologically most-recent first",
+	// relations.yaml at spec v1.19) and what dir=b means.
+	if chunk[0].ID != secondReaction || chunk[1].ID != firstReaction {
+		t.Errorf("relation order = %s, %s, want newest first", chunk[0].ID, chunk[1].ID)
 	}
-	if chunk[0].Type != "m.reaction" || chunk[0].Sender != bob.UserID {
+	if chunk[0].Type != "m.reaction" || chunk[0].Sender != alice.UserID {
 		t.Errorf("relation chunk = %s", list.Raw)
+	}
+	// dir=f walks the same window the other way round.
+	forwards := server.MustDo(http.MethodGet,
+		"/_matrix/client/v3/rooms/"+roomID+"/relations/"+target+"?dir=f", alice.Token, nil, http.StatusOK)
+	if got := eventsOf(forwards.Body["chunk"]); len(got) != 2 ||
+		got[0].ID != firstReaction || got[1].ID != secondReaction {
+		t.Errorf("dir=f = %s, want oldest first", forwards.Raw)
+	}
+	// A bogus direction is a client error, not a silent default.
+	if resp := server.Do(http.MethodGet,
+		"/_matrix/client/v3/rooms/"+roomID+"/relations/"+target+"?dir=sideways", alice.Token,
+		nil); resp.Status != http.StatusBadRequest {
+		t.Errorf("dir=sideways: got %d %s, want 400", resp.Status, resp.Raw)
 	}
 	// A page that filled up carries a token for the next one.
 	page := server.MustDo(http.MethodGet,
 		"/_matrix/client/v3/rooms/"+roomID+"/relations/"+target+"?limit=1", alice.Token, nil, http.StatusOK)
 	first := eventsOf(page.Body["chunk"])
-	if len(first) != 1 || first[0].ID != firstReaction {
+	if len(first) != 1 || first[0].ID != secondReaction {
 		t.Errorf("the first relations page = %s", page.Raw)
 	}
 	token := page.String("next_batch")
@@ -208,8 +227,29 @@ func TestRelations(t *testing.T) {
 	tail := server.MustDo(http.MethodGet,
 		fmt.Sprintf("/_matrix/client/v3/rooms/%s/relations/%s?limit=1&from=%s", roomID, target, token),
 		alice.Token, nil, http.StatusOK)
-	if rest := eventsOf(tail.Body["chunk"]); len(rest) != 1 || rest[0].ID != secondReaction {
+	if rest := eventsOf(tail.Body["chunk"]); len(rest) != 1 || rest[0].ID != firstReaction {
 		t.Errorf("the second relations page = %s", tail.Raw)
+	}
+	// to bounds the far end of the window. Walking backwards from the newest
+	// reaction down to the token taken before any of them covers the range in
+	// between.
+	if bounded := server.MustDo(http.MethodGet,
+		fmt.Sprintf("/_matrix/client/v3/rooms/%s/relations/%s?from=%s&to=%s", roomID, target, token, oldestToken),
+		alice.Token, nil, http.StatusOK); len(eventsOf(bounded.Body["chunk"])) != 1 {
+		t.Errorf("from=%s to=%s should cover one reaction: %s", token, oldestToken, bounded.Raw)
+	}
+	// The specification's note about the other way round: a from token that sits
+	// before the to token walks an empty range.
+	if reversed := server.MustDo(http.MethodGet,
+		fmt.Sprintf("/_matrix/client/v3/rooms/%s/relations/%s?from=%s&to=%s", roomID, target, oldestToken, token),
+		alice.Token, nil, http.StatusOK); len(eventsOf(reversed.Body["chunk"])) != 0 {
+		t.Errorf("from=%s to=%s should be empty: %s", oldestToken, token, reversed.Raw)
+	}
+	// The same tokens read forwards cover the range between them.
+	if rangePage := server.MustDo(http.MethodGet,
+		fmt.Sprintf("/_matrix/client/v3/rooms/%s/relations/%s?dir=f&from=%s&to=%s", roomID, target, oldestToken, token),
+		alice.Token, nil, http.StatusOK); len(eventsOf(rangePage.Body["chunk"])) != 1 {
+		t.Errorf("dir=f from=%s to=%s: %s", oldestToken, token, rangePage.Raw)
 	}
 
 	// A relation of an event nobody knows about is still listed under its own id.
@@ -363,6 +403,220 @@ func TestThreads(t *testing.T) {
 			t.Errorf("%s: got %d %s, want 400", query, resp.Status, resp.Raw)
 		}
 	}
+}
+
+// TestRelationRedactionRules pins what redaction does to relationships. MSC2675
+// (the "Redactions" part of "Event relationships" in the v1.19 client-server
+// spec) says redacted relations "should not be taken into consideration in
+// bundled aggregations, nor should they be returned from /relations", and that
+// requesting /relations on a redacted event still returns its relations. So the
+// relation is hidden and the target is not.
+func TestRelationRedactionRules(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	bob := server.Register("bob", "rubberduck")
+	roomID := server.CreateRoom(alice, map[string]any{"preset": "public_chat"})
+	server.MustDo(http.MethodPost, "/_matrix/client/v3/join/"+roomID, bob.Token, nil, http.StatusOK)
+
+	redact := func(session *Session, target, txn string) {
+		server.MustDo(http.MethodPut,
+			fmt.Sprintf("/_matrix/client/v3/rooms/%s/redact/%s/%s", roomID, target, txn),
+			session.Token, map[string]any{"reason": "tidying up"}, http.StatusOK)
+	}
+
+	target := server.Send(alice, roomID, "red-rel-target", "a post worth reacting to")
+	// The reactions relate to the target, so they are sent after it exists.
+	keep := server.sendTyped(bob, roomID, "red-rel-keep", "m.reaction", map[string]any{
+		"m.relates_to": map[string]any{"rel_type": "m.annotation", "event_id": target, "key": "👍"},
+	})
+	gone := server.sendTyped(bob, roomID, "red-rel-gone", "m.reaction", map[string]any{
+		"m.relates_to": map[string]any{"rel_type": "m.annotation", "event_id": target, "key": "🎉"},
+	})
+
+	redact(alice, gone, "red-rel-strip-reaction")
+	listed := server.MustDo(http.MethodGet, "/_matrix/client/v3/rooms/"+roomID+"/relations/"+target,
+		alice.Token, nil, http.StatusOK)
+	if got := eventsOf(listed.Body["chunk"]); len(got) != 1 || got[0].ID != keep {
+		t.Errorf("a redacted relation is still listed: %s", listed.Raw)
+	}
+	// The redacted reaction is still an event in the room, emptied rather than
+	// removed, and its relation survives in the store: it is only hidden.
+	if raw := server.MustDo(http.MethodGet, "/_matrix/client/v3/rooms/"+roomID+"/event/"+gone,
+		alice.Token, nil, http.StatusOK); !isRedacted(raw.Body) {
+		t.Errorf("the redacted reaction does not carry its redaction: %s", raw.Raw)
+	}
+
+	// Redacting the target changes nothing for its relations: the same MSC says
+	// /relations on a redacted event keeps returning them, in line with /context
+	// and /messages.
+	redact(alice, target, "red-rel-strip-target")
+	after := server.MustDo(http.MethodGet, "/_matrix/client/v3/rooms/"+roomID+"/relations/"+target,
+		alice.Token, nil, http.StatusOK)
+	if got := eventsOf(after.Body["chunk"]); len(got) != 1 || got[0].ID != keep {
+		t.Errorf("redacting the target hid its relations: %s", after.Raw)
+	}
+}
+
+// TestThreadPaginationAndRedaction covers the dir and to parameters of
+// GET /v1/rooms/{roomId}/threads, the thread summary on the single-event
+// endpoints, and MSC2675's rule that redacted relations stay out of the
+// aggregation a thread summary is built from.
+func TestThreadPaginationAndRedaction(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	bob := server.Register("bob", "rubberduck")
+	roomID := server.CreateRoom(alice, map[string]any{"preset": "public_chat"})
+	server.MustDo(http.MethodPost, "/_matrix/client/v3/join/"+roomID, bob.Token, nil, http.StatusOK)
+
+	reply := func(session *Session, txn, root, body string) string {
+		return server.sendTyped(session, roomID, txn, matrix.TypeMessage, map[string]any{
+			"msgtype": "m.text", "body": body,
+			"m.relates_to": map[string]any{
+				"rel_type": "m.thread", "event_id": root, "is_falling_back": true,
+				"m.in_reply_to": map[string]any{"event_id": root},
+			},
+		})
+	}
+	threads := func(query string) Response {
+		return server.MustDo(http.MethodGet, "/_matrix/client/v1/rooms/"+roomID+"/threads"+query,
+			alice.Token, nil, http.StatusOK)
+	}
+	rootIDs := func(resp Response) []string {
+		chunk, _ := resp.Body["chunk"].([]any)
+		out := make([]string, 0, len(chunk))
+		for _, raw := range chunk {
+			thread, _ := raw.(map[string]any)
+			id, _ := thread["event_id"].(string)
+			out = append(out, id)
+		}
+		return out
+	}
+
+	// Two threads: the older one answered first, the newer one last. Threads are
+	// ordered by their most recent activity, so the second one leads.
+	firstRoot := server.Send(alice, roomID, "page-root-1", "older thread")
+	firstReply := reply(bob, "page-reply-1", firstRoot, "answer in the older thread")
+	secondRoot := server.Send(alice, roomID, "page-root-2", "newer thread")
+	reply(bob, "page-reply-2", secondRoot, "answer in the newer thread")
+
+	// The token of the older thread's most recent activity, read off a forwards
+	// walk that stops right there.
+	firstToken := threads("?dir=f&limit=1").String("next_batch")
+	if firstToken == "" {
+		t.Fatalf("the first forwards thread page carries no next_batch")
+	}
+
+	backwards := threads("")
+	if got := rootIDs(backwards); len(got) != 2 || got[0] != secondRoot || got[1] != firstRoot {
+		t.Errorf("default thread order = %v, want newest activity first (%s, %s)", got, secondRoot, firstRoot)
+	}
+	forwards := threads("?dir=f")
+	if got := rootIDs(forwards); len(got) != 2 || got[0] != firstRoot || got[1] != secondRoot {
+		t.Errorf("dir=f = %v, want oldest activity first", got)
+	}
+	if resp := server.Do(http.MethodGet, "/_matrix/client/v1/rooms/"+roomID+"/threads?dir=up", alice.Token,
+		nil); resp.Status != http.StatusBadRequest {
+		t.Errorf("dir=up: got %d %s, want 400", resp.Status, resp.Raw)
+	}
+
+	// One thread per page, walking backwards.
+	page := threads("?limit=1")
+	if got := rootIDs(page); len(got) != 1 || got[0] != secondRoot {
+		t.Fatalf("the first thread page = %s", page.Raw)
+	}
+	token := page.String("next_batch")
+	if token == "" {
+		t.Fatalf("a full thread page carries no next_batch: %s", page.Raw)
+	}
+	if next := threads("?limit=1&from=" + token); len(rootIDs(next)) != 1 || rootIDs(next)[0] != firstRoot {
+		t.Errorf("the page after %s = %s, want the older thread", token, next.Raw)
+	}
+	// to bounds the far end of the window: the older thread sits exactly on that
+	// bound, and both bounds are exclusive.
+	bounded := server.MustDo(http.MethodGet,
+		"/_matrix/client/v1/rooms/"+roomID+"/threads?from="+token+"&to="+firstToken, alice.Token, nil,
+		http.StatusOK)
+	if len(rootIDs(bounded)) != 0 {
+		t.Errorf("from=%s to=%s should be empty: %s", token, firstToken, bounded.Raw)
+	}
+	// An empty chunk is an empty array, not null: clients read chunk as a list.
+	if !strings.Contains(string(bounded.Raw), `"chunk":[]`) {
+		t.Errorf("an empty thread listing should answer with an empty chunk: %s", bounded.Raw)
+	}
+	// relationship=latest keeps the most recently active thread whichever way the
+	// listing walks.
+	if latest := threads("?dir=f&relationship=latest"); len(rootIDs(latest)) != 1 || rootIDs(latest)[0] != secondRoot {
+		t.Errorf("dir=f relationship=latest = %s, want %s", latest.Raw, secondRoot)
+	}
+
+	// The single-event endpoints bundle the thread summary too: MSC2675 lists
+	// GET /rooms/{roomId}/event/{eventId} and GET /rooms/{roomId}/context/{eventId}
+	// among the endpoints that bundle aggregations.
+	event := server.MustDo(http.MethodGet,
+		"/_matrix/client/v3/rooms/"+roomID+"/event/"+firstRoot, alice.Token, nil, http.StatusOK)
+	summary := threadSummaryOf(t, event.Body)
+	if num, _ := summary["num_events"].(float64); num != 2 {
+		t.Errorf("GET /event: num_events = %v, want 2: %s", num, event.Raw)
+	}
+	if latest, _ := summary["latest_event"].(map[string]any); latest["event_id"] != firstReply {
+		t.Errorf("GET /event: latest_event = %v, want %s", latest["event_id"], firstReply)
+	}
+	around := server.MustDo(http.MethodGet,
+		"/_matrix/client/v3/rooms/"+roomID+"/context/"+firstRoot, alice.Token, nil, http.StatusOK)
+	centre, _ := around.Body["event"].(map[string]any)
+	centreSummary := threadSummaryOf(t, centre)
+	if num, _ := centreSummary["num_events"].(float64); num != 2 {
+		t.Errorf("/context centre num_events = %v, want 2: %s", num, around.Raw)
+	}
+
+	// Redacting a reply takes it out of the aggregation: the count drops, the
+	// latest event moves, and the listing of relations stops showing it. The event
+	// itself stays in the timeline, emptied.
+	server.MustDo(http.MethodPut,
+		fmt.Sprintf("/_matrix/client/v3/rooms/%s/redact/%s/threads-redact", roomID, firstReply),
+		alice.Token, map[string]any{"reason": "never mind"}, http.StatusOK)
+
+	remaining := threads("?dir=f")
+	chunk, _ := remaining.Body["chunk"].([]any)
+	if len(chunk) != 1 {
+		t.Fatalf("after redacting its only reply the older thread should be gone: %s", remaining.Raw)
+	}
+	thread, _ := chunk[0].(map[string]any)
+	if thread["event_id"] != secondRoot {
+		t.Errorf("remaining thread = %v, want %s", thread["event_id"], secondRoot)
+	}
+	if num, _ := thread["num_events"].(float64); num != 2 {
+		t.Errorf("num_events = %v, want 2 (root plus one reply): %s", num, remaining.Raw)
+	}
+	if relations := server.MustDo(http.MethodGet,
+		"/_matrix/client/v3/rooms/"+roomID+"/relations/"+firstRoot+"?rel_type=m.thread", alice.Token, nil,
+		http.StatusOK); len(eventsOf(relations.Body["chunk"])) != 0 {
+		t.Errorf("a redacted thread reply is still listed: %s", relations.Raw)
+	}
+	if annotated := server.MustDo(http.MethodGet,
+		"/_matrix/client/v3/rooms/"+roomID+"/event/"+firstRoot, alice.Token, nil, http.StatusOK); threadSummaryOf(t, annotated.Body) != nil {
+		t.Errorf("the thread summary survived the redaction of its only reply: %s", annotated.Raw)
+	}
+	if timeline := server.MustDo(http.MethodGet,
+		"/_matrix/client/v3/rooms/"+roomID+"/event/"+firstReply, alice.Token, nil, http.StatusOK); !isRedacted(timeline.Body) {
+		t.Errorf("the redacted reply left the timeline instead of staying emptied: %s", timeline.Raw)
+	}
+}
+
+// isRedacted reports whether a decoded event body carries unsigned.redacted_because.
+func isRedacted(body map[string]any) bool {
+	unsigned, _ := body["unsigned"].(map[string]any)
+	_, ok := unsigned["redacted_because"].(map[string]any)
+	return ok
+}
+
+// threadSummaryOf returns the unsigned.m.thread block of a decoded event body,
+// or nil when the event carries none.
+func threadSummaryOf(t *testing.T, body map[string]any) map[string]any {
+	t.Helper()
+	unsigned, _ := body["unsigned"].(map[string]any)
+	summary, _ := unsigned["m.thread"].(map[string]any)
+	return summary
 }
 
 // TestTimestampToEvent covers GET /v1/rooms/{roomId}/timestamp_to_event.

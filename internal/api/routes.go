@@ -31,7 +31,7 @@ func (a *App) registerDiscoveryRoutes() {
 
 // registerAccountRoutes serves registration, login and session endpoints.
 func (a *App) registerAccountRoutes() {
-	a.handle("POST /_matrix/client/v3/register", a.handleRegister)
+	a.anonymousLimited("POST /_matrix/client/v3/register", limitAuth, a.handleRegister)
 	// GET asks for the User-Interactive Auth flows without registering anything,
 	// which is how clients such as Element work out that registration is
 	// possible at all.
@@ -39,8 +39,8 @@ func (a *App) registerAccountRoutes() {
 	a.handle("GET /_matrix/client/v1/register/m.login.registration_token/validity", a.handleRegistrationTokenValidity)
 	a.handle("GET /_matrix/client/v3/register/available", a.handleRegisterAvailable)
 	a.handle("GET /_matrix/client/v3/login", a.handleLoginFlows)
-	a.handle("POST /_matrix/client/v3/login", a.handleLogin)
-	a.handle("POST /_matrix/client/v3/refresh", a.handleRefresh)
+	a.anonymousLimited("POST /_matrix/client/v3/login", limitAuth, a.handleLogin)
+	a.anonymousLimited("POST /_matrix/client/v3/refresh", limitAuth, a.handleRefresh)
 	a.authenticated("POST /_matrix/client/v3/logout", a.handleLogout)
 	a.authenticated("POST /_matrix/client/v3/logout/all", a.handleLogoutAll)
 	a.authenticated("GET /_matrix/client/v3/account/whoami", a.handleWhoami)
@@ -63,14 +63,14 @@ func (a *App) registerAccountRoutes() {
 
 // registerRoomRoutes serves room creation, membership and the room directory.
 func (a *App) registerRoomRoutes() {
-	a.authenticated("POST /_matrix/client/v3/createRoom", a.handleCreateRoom)
-	a.authenticated("POST /_matrix/client/v3/join/{roomIdOrAlias}", a.handleJoinRoom)
+	a.limited("POST /_matrix/client/v3/createRoom", limitWrite, a.handleCreateRoom)
+	a.limited("POST /_matrix/client/v3/join/{roomIdOrAlias}", limitWrite, a.handleJoinRoom)
 	a.authenticated("POST /_matrix/client/v3/knock/{roomIdOrAlias}", a.handleKnockRoom)
-	a.authenticated("POST /_matrix/client/v3/rooms/{roomId}/join", a.handleJoinRoomByID)
+	a.limited("POST /_matrix/client/v3/rooms/{roomId}/join", limitWrite, a.handleJoinRoomByID)
 	a.authenticated("POST /_matrix/client/v3/rooms/{roomId}/knock", a.handleKnockRoom)
 	a.authenticated("POST /_matrix/client/v3/rooms/{roomId}/leave", a.handleLeaveRoom)
 	a.authenticated("POST /_matrix/client/v3/rooms/{roomId}/forget", a.handleForgetRoom)
-	a.authenticated("POST /_matrix/client/v3/rooms/{roomId}/invite", a.handleInvite)
+	a.limited("POST /_matrix/client/v3/rooms/{roomId}/invite", limitWrite, a.handleInvite)
 	a.authenticated("POST /_matrix/client/v3/rooms/{roomId}/kick", a.handleKick)
 	a.authenticated("POST /_matrix/client/v3/rooms/{roomId}/ban", a.handleBan)
 	a.authenticated("POST /_matrix/client/v3/rooms/{roomId}/unban", a.handleUnban)
@@ -95,7 +95,7 @@ func (a *App) registerRoomRoutes() {
 
 // registerEventRoutes serves event sending, state, history and relations.
 func (a *App) registerEventRoutes() {
-	a.authenticated("PUT /_matrix/client/v3/rooms/{roomId}/send/{eventType}/{txnId}", a.handleSendEvent)
+	a.limited("PUT /_matrix/client/v3/rooms/{roomId}/send/{eventType}/{txnId}", limitWrite, a.handleSendEvent)
 	// The state endpoints accept an empty state key, which arrives as a
 	// trailing slash, so both the subtree pattern and the plain form are
 	// registered.
@@ -193,8 +193,8 @@ func (a *App) registerMediaRoutes() {
 	if !a.cfg.EnableMedia {
 		return
 	}
-	a.authenticated("POST /_matrix/media/v3/upload", a.handleMediaUpload)
-	a.authenticated("PUT /_matrix/media/v3/upload/{serverName}/{mediaId}", a.handleMediaUpload)
+	a.limited("POST /_matrix/media/v3/upload", limitUpload, a.handleMediaUpload)
+	a.limited("PUT /_matrix/media/v3/upload/{serverName}/{mediaId}", limitUpload, a.handleMediaUpload)
 	a.authenticated("POST /_matrix/media/v3/create", a.handleMediaCreate)
 	a.authenticated("POST /_matrix/media/v3/commit/{serverName}/{mediaId}", a.handleMediaCommit)
 	a.handle("GET /_matrix/media/v3/download/{serverName}/{mediaId}", a.handleMediaDownload)

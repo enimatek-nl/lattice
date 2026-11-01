@@ -1,6 +1,15 @@
 // Package api implements the Matrix client-server HTTP API. Handlers decode
 // requests, call the service layer and serialise responses; business rules live
 // in internal/service.
+//
+//	@title			Lattice
+//	@version		0.1.0
+//	@description	The Matrix client-server API implemented by Lattice, a minimal
+//	@description	single-server homeserver. Server-server (federation) endpoints
+//	@description	are only mounted when the server starts with -federation.
+//	@description	The generated document is a by-product of `make swagger` and is
+//	@description	not committed.
+//	@BasePath		/
 package api
 
 import (
@@ -40,6 +49,9 @@ type Config struct {
 	// support document.
 	SupportEmail  string
 	AdminMatrixID string
+	// RateLimits guards the expensive writes: the room writes that cost the
+	// most, media uploads, and the authentication attempts a stranger can make.
+	RateLimits RateLimits
 }
 
 // App owns the HTTP handlers and their dependencies.
@@ -50,6 +62,10 @@ type App struct {
 	mux    *http.ServeMux
 	routes []string
 	logger *log.Logger
+	// limiter holds the token buckets of the expensive endpoints.
+	limiter *limiter
+	// rejections counts rate limit rejections for the log.
+	rejections *rejections
 }
 
 // New builds the API application.
@@ -60,12 +76,15 @@ func New(svc *service.Service, store *auth.Store, cfg Config) *App {
 	if cfg.Version == "" {
 		cfg.Version = service.LatticeVersion
 	}
+	cfg.RateLimits = cfg.RateLimits.withDefaults()
 	app := &App{
-		svc:    svc,
-		auth:   store,
-		cfg:    cfg,
-		mux:    http.NewServeMux(),
-		logger: log.New(log.Writer(), "lattice: ", log.LstdFlags),
+		svc:        svc,
+		auth:       store,
+		cfg:        cfg,
+		mux:        http.NewServeMux(),
+		logger:     log.New(log.Writer(), "lattice: ", log.LstdFlags),
+		limiter:    newLimiter(cfg.RateLimits),
+		rejections: &rejections{},
 	}
 	app.registerRoutes()
 	// Anything the route table does not cover gets a Matrix error instead of the
@@ -185,6 +204,18 @@ func (a *App) adminOnly(pattern string, handler http.HandlerFunc) {
 	a.handle(pattern, a.auth.RequireAdmin(handler).ServeHTTP)
 }
 
+// limited registers a pattern behind a token bucket. Authentication runs first
+// so the bucket belongs to the device that is asking; for the endpoints without
+// a token yet (login, registration) the bucket belongs to the client address.
+func (a *App) limited(pattern string, kind limitKind, handler http.HandlerFunc) {
+	a.authenticated(pattern, a.rateLimited(kind, handler))
+}
+
+// anonymousLimited registers an unauthenticated pattern behind a token bucket.
+func (a *App) anonymousLimited(pattern string, kind limitKind, handler http.HandlerFunc) {
+	a.handle(pattern, a.rateLimited(kind, handler))
+}
+
 // Service exposes the business logic to helper functions in this package.
 func (a *App) Service() *service.Service { return a.svc }
 
@@ -272,16 +303,6 @@ func queryDurationMS(r *http.Request, key string, fallback time.Duration) (time.
 		ms = 0
 	}
 	return time.Duration(ms) * time.Millisecond, nil
-}
-
-// rawQueryObject reads a JSON object out of a query parameter, which some
-// endpoints accept instead of a body.
-func rawQueryObject(r *http.Request, key string) matrix.Object {
-	raw := r.URL.Query().Get(key)
-	if raw == "" {
-		return matrix.Object{}
-	}
-	return matrix.MustParseObject([]byte(raw))
 }
 
 // isNotFound maps storage level not-found errors onto M_NOT_FOUND.

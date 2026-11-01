@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/enimatek-nl/lattice/internal/matrix"
@@ -208,5 +209,55 @@ func TestSyncRoomSummary(t *testing.T) {
 	}
 	if crowd.JoinedMemberCount == nil || *crowd.JoinedMemberCount != int64(2+len(witnesses)) {
 		t.Errorf("joined_member_count = %v", crowd.JoinedMemberCount)
+	}
+}
+
+// TestHeroesOrderByActivity pins how the room summaries choose their heroes. The
+// specification leaves the choice to the server and only caps the number, so
+// Lattice names the members that were most recently active in the room: that is
+// what a room list wants to show. Sync and the room summary endpoint answer with
+// the same list.
+func TestHeroesOrderByActivity(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	roomID := server.CreateRoom(alice, map[string]any{"preset": "public_chat"})
+
+	witnesses := map[string]*Session{}
+	for _, localpart := range []string{"w1", "w2", "w3", "w4", "w5", "w6"} {
+		witness := server.Register(localpart, "torch")
+		server.MustDo(http.MethodPost, "/_matrix/client/v3/join/"+roomID, witness.Token, nil, http.StatusOK)
+		witnesses[localpart] = witness
+	}
+	// Three of them speak up, in this order, so the last one is the freshest.
+	server.Send(witnesses["w4"], roomID, "hero-said-4", "w4 spoke")
+	server.Send(witnesses["w5"], roomID, "hero-said-5", "w5 spoke")
+	server.Send(witnesses["w6"], roomID, "hero-said-6", "w6 spoke")
+
+	room := server.joined(t, server.advance(alice), roomID)
+	want := []string{"w6", "w5", "w4", "w3", "w2"}
+	got := make([]string, 0, len(room.Heroes))
+	for _, id := range room.Heroes {
+		got = append(got, matrix.LocalpartOf(id))
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("m.heroes = %v, want %v (most recently active first)", got, want)
+	}
+	for _, id := range room.Heroes {
+		if id == alice.UserID {
+			t.Errorf("the requester is one of her own heroes: %v", room.Heroes)
+		}
+	}
+
+	summary := server.MustDo(http.MethodGet, "/_matrix/client/v1/rooms/"+roomID+"/summary", alice.Token,
+		nil, http.StatusOK)
+	rawHeroes, _ := summary.Body["m.heroes"].([]any)
+	if len(rawHeroes) != len(want) {
+		t.Fatalf("m.heroes = %s", summary.Raw)
+	}
+	for i, raw := range rawHeroes {
+		id, _ := raw.(string)
+		if matrix.LocalpartOf(id) != want[i] {
+			t.Errorf("summary m.heroes[%d] = %v, want %s (%s)", i, id, want[i], summary.Raw)
+		}
 	}
 }

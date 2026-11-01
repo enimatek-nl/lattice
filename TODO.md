@@ -3,16 +3,21 @@
 Hand-off document for Lattice (minimal Matrix homeserver in Go). Read
 [README.md](README.md) for what the server does today, [PLAN.md](PLAN.md) for
 the goal, [ENDPOINTS.md](ENDPOINTS.md) for generated coverage. This file is
-now a **release plan: work the steps in order, one at a time**, starting at
-step 1. The history that used to fill this file lives in git; only facts a
-future session must not re-derive were kept (below the plan).
+now a **release plan: work the steps in order, one at a time**. Steps 1-5 are
+done, so the next one is **step 6**; federation is steps 6-12. The history that
+used to fill this file lives in git; only facts a future session must not
+re-derive were kept (below the plan).
 
 ## Current state (verified 2026-11-01)
 
-- A working **single-server homeserver**: `go build ./... && go vet ./...`
-  clean, `go test ./tests/compat/` green — **94** compatibility tests, ~27 s
-  (~3 min with `-race`). Coverage: **149 of the 234** indexed endpoints, 26
-  extra routes (`go run ./cmd/endpoints`).
+- A working **single-server homeserver**: `make build vet lint` clean
+  (`make lint` = golangci-lint, 0 issues), `go test ./...` green — **103**
+  compatibility tests (~48 s here, ~5½ min with `-race` on this machine) plus
+  **31** offline unit tests in `tests/unit` (milliseconds). Coverage: **149 of
+  the 234** indexed endpoints, 26 extra routes (`make endpoints`). Rate limiting
+  is in place (step 2), the client-API correctness tails of step 3 are closed,
+  the N+1 read paths of step 4 are batched, and the pure rules are pinned
+  offline (step 5) — so the plan now starts at **step 6, federation**.
 - The E2EE trust layer is done end-to-end: device keys, cross-signing
   (verified server-side over canonical JSON), key signatures, room key
   backup. The Element "unable to set up keys" thread is **closed** — pinned
@@ -27,54 +32,177 @@ future session must not re-derive were kept (below the plan).
 
 ## Release plan — pick one step at a time, top to bottom
 
-### 1. Housekeeping (small, do first)
+### 1. Housekeeping — done (2026-11-01)
 
-- [ ] Delete four functions that are verifiably dead (definition + comment
-      only, checked 2026-11-01): `api.rawQueryObject` (api.go:279),
-      `service.sessionTTL` (account.go:329), `service.userSummary` and
-      `service.roomMembersForSync` (membership.go:337/347).
-- [ ] `Makefile`: `build test race vet fmt endpoints run clean` (+ `swagger`
-      when swag is installed; do not commit generated docs).
-- [ ] Regenerate `ENDPOINTS.md` after every future step (`make endpoints`).
+- [x] Deleted the four verifiably dead functions: `api.rawQueryObject`,
+      `service.sessionTTL`, `service.userSummary`,
+      `service.roomMembersForSync`. Kept on purpose: `UserSummary` (the user
+      directory returns it), `displayName`/`avatarURL` (live callers) and
+      `StateRepo.MemberEvents`, now without callers — it stays as repo
+      contract because federation state blocks want it.
+- [x] `Makefile` with `help build test race vet fmt lint endpoints run swagger
+      clean` (`help` is the default goal; `ADDR`/`SERVER_NAME`/`DB`/
+      `JWT_SECRET`/`SPEC`/`ENDPOINTS` are overridable variables). `make lint`
+      runs golangci-lint 2.15.0 and reports **0 issues** — its first run
+      reported seven, all fixed here: a dead store in `service.newSession`
+      (the device row was never read when the device already existed),
+      `WriteString(fmt.Sprintf)` → `fmt.Fprintf` and two append spreads in
+      `cmd/endpoints`, an append spread in `api.handleMembers`, and the
+      unchecked `defer resp.Body.Close()` in the test harness.
+- [x] `make swagger` works and is honest about being generated: swag v1.16.4
+      is fetched with `go run` (not a module dependency), general API info
+      annotations live on the `package api` comment, `createRoomBody` became a
+      real type (it was an inline anonymous struct the annotation named), and
+      output is `swagger.json`/`swagger.yaml` in the gitignored
+      `docs/swagger/`. JSON/YAML only on purpose: swag's generated `docs.go`
+      imports the swaggo runtime and would break `go build ./...`. 78 paths
+      come out; there is no Swagger UI route and none is planned yet.
+- [x] `make endpoints` re-run: still **149/234** endpoints, 26 extra routes,
+      `ENDPOINTS.md` unchanged.
 
-### 2. Rate limiting — needed before the first public deployment
+Standing duty for the steps below: `make endpoints` after each one (also in
+the house rules).
 
-- [ ] Wire the existing `matrix.ErrLimitExceeded` + `retry_after_ms` (the
-      helper exists, nothing calls it). Scope for v1: a per-device token
-      bucket on the expensive writes — `/send`, `/createRoom`, `/join`,
-      `/invite`, media upload, `/login` + `/register` (brute force) — and
-      return `429` with the error body.
-- [ ] Compat tests: 429 shape, `retry_after_ms` present, window recovers.
+### 2. Rate limiting — done (2026-11-01)
 
-### 3. Client-API correctness tails (all small)
+- [x] `internal/api/ratelimit.go`: lazily refilled token buckets in three
+      kinds — `limitWrite` (`/send`, `/createRoom`, both `/join` forms,
+      `/invite`), `limitUpload` (`POST`/`PUT /_matrix/media/v3/upload`) and
+      `limitAuth` (`POST /login`, `/refresh`, `/register`). Registration
+      helpers: `a.limited(pattern, kind, handler)` (auth first, then the
+      bucket) and `a.anonymousLimited` for the endpoints without a token.
+      Subject = `auth.GetDeviceID`, or the peer address for the auth bucket;
+      `clientAddress` strips the port and reads `RemoteAddress` because there
+      is no proxy support to trust a header.
+- [x] The 429 body is `matrix.ErrLimitExceeded(retryAfterMS)` — already written,
+      never called until now — so the answer is
+      `{errcode: M_LIMIT_EXCEEDED, error, retry_after_ms}`.
+- [x] Configuration: `api.Config.RateLimits` + `api.DefaultRateLimits()`
+      (write 100 burst / 30 per second, auth 20 / 2, upload 20 / 5 — generous
+      on purpose: a single-user server never notices them) and the flags
+      `-no-rate-limit`, `-rate-limit-{write,auth,upload}-burst`,
+      `-rate-limit-{write,auth,upload}-rate`. A zero value falls back to the
+      default; `-no-rate-limit` is the off switch.
+- [x] Lifecycle: no goroutine. Buckets are pruned on the request path, at most
+      once a minute, dropping anything idle for 30 minutes; rejections are
+      logged once per bucket plus every hundredth.
+- [x] Compat tests `tests/compat/ratelimit_test.go`: 429 shape with a positive
+      `retry_after_ms`, the window recovers after the stated wait, buckets are
+      per device (a second login of the same user is unaffected), login/register
+      share one per-address budget and even the correct password waits,
+      uploads are a separate budget, and `Disabled` answers everything. The
+      suite's defaults never trip the limiter: 100 compat tests green.
 
-- [ ] Decide `GET /notifications` ordering (oldest-first today) and **pin it
-      with a test** instead of leaving the suite order-agnostic.
-- [ ] `/relations`: hide relations whose target was redacted (spec).
-- [ ] `/threads`: honour `dir` and `to` (today: only `from`, newest-first).
-- [ ] Annotate the `/context` centre event and `GET /event` with
-      `m.thread` too (`annotateThreads` already takes a slice).
-- [ ] `m.heroes` currently picks the first five members by insertion order;
-      sort by recent activity, or record the arbitrariness as intended.
+### 3. Client-API correctness tails — done (2026-11-01)
 
-### 4. Batch reads (perf, and the ground federation will walk on anyway)
+- [x] `GET /notifications` ordering decided and pinned: stored in arrival
+      order, paged forward from a row-id token, so **oldest first** and `from`
+      always continues downwards. `TestNotificationsOrderAndRead` pins it, and
+      adds the mandatory `read` flag (an m.read or m.read.private receipt, or
+      the fully read marker, reached the notification) and the `only=highlight`
+      filter, which the specification defines and Lattice did not implement.
+      `only` with another value is a 400.
+- [x] `/relations` and redaction: the TODO said "hide relations whose target
+      was redacted" — that is **upside down**. MSC2675 (the merged aggregations
+      MSC; "Redactions" under "Event relationships", spec v1.19) reads:
+      "Redacted relations should not be taken into consideration in bundled
+      aggregations, nor should they be returned from `/relations`. Requesting
+      `/relations` on a redacted event should still return any existing
+      relation events." So the *relation* is hidden and the *target* is not:
+      `EventRepo.Relations`, `Threads` and `ThreadsFor` all filter
+      `redacted = false`, which also takes redacted replies out of thread
+      counts and `unsigned.m.thread`. Pinned by `TestRelationRedactionRules`
+      and `TestThreadPaginationAndRedaction`.
+- [x] `/relations` honours `dir` and `to` (`persist.RelationQuery` carries the
+      window). **The default direction changed**: relations.yaml (v1.19) orders
+      the chunk "topologically most-recent first" and `dir` defaults to `b`, so
+      a call without tokens now answers newest first — `TestRelations` used to
+      pin oldest-first and was updated to the spec.
+- [x] `/threads` honours `dir` and `to`; both bounds are exclusive, ordering is
+      by the thread's most recent activity, and `relationship=latest` keeps the
+      newest thread whichever way the listing walks. `parseDirection` is now the
+      single place that reads `dir` (also used by `/messages` and
+      `timestamp_to_event`, whose default stays `f`).
+- [x] `GET /rooms/{roomId}/event/{eventId}` and the centre event of `/context`
+      carry `unsigned.m.thread` (MSC2675 lists both among the bundling
+      endpoints); `annotateThreads` takes a slice, so both feed it a one-element
+      one.
+- [x] `m.heroes` now sorts by recent activity: `EventRepo.LatestActivity(roomID)`
+      (max stream position per sender) feeds `pickHeroes`, ties break on the
+      membership timestamp then the user id, and the sync summary and
+      `GET /summary` share the picker. The activity query is skipped for rooms
+      with six members or fewer (all of them are heroes anyway), which keeps it
+      off the DM hot path. Pinned by `TestHeroesOrderByActivity`.
 
-- [ ] `EventRepo.GetByIDs(ids []string)` and use it to replace the per-row
-      `EventRepo.Get` hydration loops in `syncstate.stateEvents`,
-      `syncstate.stateDelta`, `hierarchy.hierarchyStateEvents`,
-      `search.searchStateEvents`, `markers.Notifications`,
-      `membership.Members` (the sync hot paths are N+1 today).
-- [ ] Batch the per-member `displayName`/`avatarURL` lookups in `Members`.
-- [ ] Index or denormalise for threads: `service.Threads` walks every
-      `m.thread` relation of a room (index on
-      `(room_id, rel_type, relates_to)` or a `total_events` column).
+### 4. Batch reads — done (2026-11-01)
 
-### 5. Unit tests in `tests/unit/` (same convention as compat)
+- [x] `EventRepo.GetByIDs(ids) []map[string]*Event` and the hydration loops are
+      gone: `syncstate.stateEvents`, `syncstate.stateDelta`,
+      `hierarchy.hierarchyStateEvents`, `search.searchStateEvents`,
+      `markers.Notifications` and `membership.Members` each render their rows
+      from one event read. `stateEventsWire(rows, keep)` is the shared renderer
+      (sync state block, hierarchy, search) — filter first, then one read, then
+      render in row order.
+- [x] `strippedState` (the invite state of a sync) listed its types one query at
+      a time and then read an event per row: now one `StateRepo.List` for all
+      eight types plus the members, grouped by type so the block keeps its
+      order, and `strippedEvents` renders it in one event read. The fallback for
+      a state row whose event is gone is unchanged.
+- [x] Profiles: `ProfileRepo.FieldsFor(userIDs, keys...)` and
+      `service.profileSummaries` replace the per-member `displayName`/`avatarURL`
+      calls in `Members`, `JoinedMembers`, `SearchUserDirectory` and
+      `notifyParticipants` (a message to a 100-member room was 200 profile
+      reads). The localpart fallback of `displayName` is preserved, so a user
+      with no profile row still gets a name. `SetProfileKey` reads the one
+      profile once instead of once per joined room.
+- [x] Threads: `EventRepo.ThreadStats(roomID, userID)` aggregates
+      `COUNT(*)`, `MAX(stream_pos)` and "how many replies did the requester send"
+      per root in one grouped query — so `include=mine` no longer needs every
+      reply loaded — and `EventRepo.ByPositions(roomID, positions)` fetches the
+      latest reply of every listed thread in one read. Backing it, `events` now
+      carries `idx_event_room_rel (room_id, rel_type, relates_to)` next to the
+      existing `idx_event_relates`. `/threads` cost grows with the number of
+      threads, not the number of replies. An empty listing now answers
+      `"chunk": []` rather than `null` (the slice was nil), pinned in
+      `TestThreadPaginationAndRedaction`.
+- [x] Still one-query-per-room by design: the per-room state and timeline reads
+      in sync. That is inherent to a per-room sync response, and federation will
+      want those per-room reads anyway.
 
-- [ ] identifier helpers, error mapping, glob matching + push-rule matching,
-      power-level maths, stream-token parsing, the `cmd/endpoints` coverage
-      matcher (table-driven).
-- [ ] These double as the offline test bed for step 7.
+### 5. Unit tests in `tests/unit/` — done (2026-11-01)
+
+- [x] `tests/unit/` (package `unit`, table-driven, no server, no database, no
+      network): **31** tests over identifiers (`Alias` validity,
+      `ValidLocalpart`, `UserMxid`, `DomainOf`/`LocalpartOf`, the shape of minted
+      IDs), error mapping (constructor → errcode + status table, JSON body shape
+      including the User-Interactive Auth `Extra` keys and the rule that an
+      internal cause never reaches the client, `matrix.ErrAs` conversion,
+      `auth.WriteError` through `httptest`), stream tokens, power levels, push
+      rules, and the endpoint matcher.
+- [x] Three pure packages were cut out of the service layer and the coverage
+      command so they can be tested offline — this is the offline test bed step 7
+      asked for: `internal/push` (rule precedence, `Matches`, glob / word /
+      count matching, action tweaks — was `service/pushnotify.go`),
+      `internal/power` (`Defaults`, `ApplyDefaults`, `Level`, `EventRequired`,
+      `ActionRequired`, `ChangeRequired` — was `service/power.go` and
+      `stateguards.go`), and `internal/coverage` (the SPECS.md matcher and report
+      — was `cmd/endpoints/main.go`, which is now a thin `main`). The service
+      keeps the storage plumbing and aliases the constants
+      (`PushRuleKinds = push.Kinds`, `PowerAdmin = power.Admin`), and
+      `ENDPOINTS.md` came out byte-identical after the move.
+- [x] Three behaviours the tables forced into the open, decided rather than left
+      fuzzy:
+      - **API revisions are not interchangeable in the coverage matcher**: a v1
+        index entry is not answered by a v3 route — `VersionEquivalent` compares
+        the revision for equality. Its comment claimed the opposite; the comment
+        now says what the code does. Making revisions interchangeable would
+        report endpoints as implemented that the older client cannot reach, so
+        this stays strict.
+      - A `room_member_count` `is` expression tolerates padding around the
+        operator (`" >= 3 "`), like Synapse's regex does; `CompareCount` trims
+        before looking for the operator.
+      - A display-name mention has to appear as it is written: a multi-word
+        display name matches as a phrase, not one word at a time.
 
 ### 6. Federation I — identity, keys, signed transport
 
@@ -239,7 +367,8 @@ future session must not re-derive were kept (below the plan).
   denormalise `RelatesTo`/`RelType` from `m.relates_to` via
   `service.relationOf` (with `m.in_reply_to` fallback → `m.in_reply_to`).
 - Repos are `db.XRepo` fields; key ones: `EventRepo` (`Relations`,
-  `Threads`, `ThreadsFor`, `Search`, `HistoryByTimestamp`), `DeviceKeyRepo`,
+  `ThreadStats`, `ThreadsFor`, `ByPositions`, `GetByIDs`, `LatestActivity`,
+  `Search`, `HistoryByTimestamp`), `DeviceKeyRepo`,
   `OneTimeKeyRepo` (conditional `Claim` → a prekey is handed out once),
   `DeviceListRepo`, `ToDeviceRepo` (`Pending(userID, deviceID, since, 100)`,
   unused `Prune`), `TxnRepo` (see `replayTxn` in `service/events.go`),
@@ -254,6 +383,17 @@ future session must not re-derive were kept (below the plan).
   `app.Registered()` feeds the coverage tool; a catch-all answers
   404 `M_UNRECOGNIZED` and restores 405+`Allow` by matching
   `app.Registered()`.
+- Pure rule packages cut out of the service layer so `tests/unit` can drive
+  them (and federation can reuse them): `internal/power` (level arithmetic —
+  `service.powerLevels` only reads the event and calls `power.ApplyDefaults`),
+  `internal/push` (rule precedence and matching — `service.PushRuleKinds` is
+  `push.Kinds`, `notifyParticipants` only gathers inputs), `internal/coverage`
+  (the SPECS.md matcher and report — `cmd/endpoints` is a thin `main`).
+  `.gitignore` used to carry `coverage.*`, which silently matched
+  `internal/coverage/coverage.go` and would have kept the package out of the
+  repository: the rule is now `coverage.out` / `coverage.html`, do not widen it
+  back. There is no file named `coverage.go` in that package for the same
+  reason.
 - Auth: JWT HS256 with per-device `jti`; `auth.Require`/`Optional`/
   `RequireAdmin`, `auth.GetUserID/GetDeviceID/GetToken/IsAdmin`,
   `api.requireSelf(w, r)` gates personal-data writes.
@@ -406,11 +546,15 @@ maintenance`. First registered account = administrator.
 ## Commands
 
 ```sh
-go build ./... && go vet ./...
+make build vet lint                       # compiles, vet, golangci-lint
+make test                                 # unit + compat suites (~45 s here)
+make race                                 # same with -race
+make endpoints                            # coverage report -> ENDPOINTS.md
+make run                                  # dev server, 127.0.0.1:8008, /tmp/lattice.db
+make swagger                              # docs/swagger/{swagger.json,swagger.yaml}
 go test ./tests/compat/ -race
-go run ./cmd/endpoints -out ENDPOINTS.md      # coverage report
-go build -o /tmp/lattice ./cmd/server && /tmp/lattice --addr 127.0.0.1:8008 \
-    --server-name localhost:8008 --db /tmp/lattice.db --jwt-secret dev
+bin/lattice --addr 127.0.0.1:8008 --server-name localhost:8008 \
+    --db /tmp/lattice.db --jwt-secret dev      # what `make run` executes
 ```
 
 Note: the compat (and future federation) suites bind loopback ports, so they
@@ -424,7 +568,12 @@ need to run outside any network sandbox.
   `tests/compat` (or `tests/federation` once steps 6+ land), then re-run
   `make endpoints`.
 - Tests live in `tests/` only — the user asked for functional tests outside
-  the implementation tree.
+  the implementation tree. `tests/compat` is black-box HTTP against a running
+  server; `tests/unit` (`package unit`) drives pure functions with tables and no
+  database. When a rule deserves a unit table but lives unexported in a service
+  file, cut it into a small pure package (`internal/power`, `internal/push`,
+  `internal/coverage`) instead of exporting it from `service`; the service keeps
+  the storage plumbing.
 - Federation code mounts only under `-federation`; with the flag off the
   binary must behave exactly as a single-server Lattice.
 - New repo convention (unchanged): model + interface + Impl + `NewXxxRepo`

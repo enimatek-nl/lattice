@@ -45,6 +45,20 @@ func main() {
 			"how often to prune expired to-device messages, transactions and typing rows; 0 disables it")
 		registrationSecrets = flag.String("registration-secret", "",
 			"comma separated registration tokens; when set, registering requires one and the open m.login.dummy flow disappears")
+		rateLimitOff = flag.Bool("no-rate-limit", false,
+			"turn off the request limits on the expensive writes, media uploads and login attempts")
+		writeBurst = flag.Int("rate-limit-write-burst", api.DefaultRateLimits().WriteBurst,
+			"how many room writes one device may send in a burst")
+		writeRate = flag.Float64("rate-limit-write-rate", api.DefaultRateLimits().WriteRate,
+			"how many room writes per second one device's budget refills to")
+		authBurst = flag.Int("rate-limit-auth-burst", api.DefaultRateLimits().AuthBurst,
+			"how many login, refresh or registration attempts one address may make in a burst")
+		authRate = flag.Float64("rate-limit-auth-rate", api.DefaultRateLimits().AuthRate,
+			"how many authentication attempts per second one address's budget refills to")
+		uploadBurst = flag.Int("rate-limit-upload-burst", api.DefaultRateLimits().UploadBurst,
+			"how many media uploads one device may start in a burst")
+		uploadRate = flag.Float64("rate-limit-upload-rate", api.DefaultRateLimits().UploadRate,
+			"how many media uploads per second one device's budget refills to")
 		showVersion = flag.Bool("version", false, "print the version and exit")
 	)
 	flag.Parse()
@@ -87,6 +101,15 @@ func main() {
 		MaxUploadSize:        *maxUpload,
 		SupportEmail:         *supportEmail,
 		AdminMatrixID:        *supportID,
+		RateLimits: api.RateLimits{
+			Disabled:    *rateLimitOff,
+			WriteBurst:  *writeBurst,
+			WriteRate:   *writeRate,
+			AuthBurst:   *authBurst,
+			AuthRate:    *authRate,
+			UploadBurst: *uploadBurst,
+			UploadRate:  *uploadRate,
+		},
 	})
 
 	handler := applyCORS(app.Handler(), *corsOrigin)

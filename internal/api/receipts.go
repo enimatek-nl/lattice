@@ -105,7 +105,8 @@ func (a *App) handleNotifications(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, r, err)
 		return
 	}
-	entries, nextToken, err := a.svc.Notifications(r.Context(), userID, queryValue(r, "from", ""), limit)
+	entries, nextToken, err := a.svc.Notifications(r.Context(), userID,
+		queryValue(r, "from", ""), queryValue(r, "only", ""), limit)
 	if err != nil {
 		a.writeError(w, r, err)
 		return

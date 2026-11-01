@@ -189,7 +189,7 @@ func (a *App) handleRelations(w http.ResponseWriter, r *http.Request) {
 	}
 	events, nextBatch, err := a.svc.Relations(r.Context(), r.PathValue("roomId"), r.PathValue("eventId"),
 		relType, eventType, auth.GetUserID(r), limit,
-		queryValue(r, "from", ""), queryValue(r, "to", ""))
+		queryValue(r, "from", ""), queryValue(r, "to", ""), queryValue(r, "dir", ""))
 	if err != nil {
 		a.writeError(w, r, err)
 		return
@@ -214,6 +214,8 @@ func (a *App) handleThreads(w http.ResponseWriter, r *http.Request) {
 		Include:      queryValue(r, "include", "all"),
 		Relationship: queryValue(r, "relationship", "all"),
 		From:         queryValue(r, "from", ""),
+		To:           queryValue(r, "to", ""),
+		Dir:          queryValue(r, "dir", ""),
 		Limit:        limit,
 	})
 	if err != nil {

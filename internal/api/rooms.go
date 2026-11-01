@@ -8,6 +8,25 @@ import (
 	"github.com/enimatek-nl/lattice/internal/service"
 )
 
+// createRoomBody is the request body of POST /_matrix/client/v3/createRoom.
+type createRoomBody struct {
+	Preset             string         `json:"preset"`
+	Name               string         `json:"name"`
+	Topic              string         `json:"topic"`
+	Type               string         `json:"type"`
+	Visibility         string         `json:"visibility"`
+	RoomAliasName      string         `json:"room_alias_name"`
+	RoomVersion        string         `json:"room_version"`
+	CreationContent    matrix.Object  `json:"creation_content,omitempty"`
+	InitialState       []matrix.Event `json:"initial_state,omitempty"`
+	PowerLevelOverride matrix.Object  `json:"power_level_content_override,omitempty"`
+	Invite             []string       `json:"invite,omitempty"`
+	IsDirect           bool           `json:"is_direct"`
+	HistoryVisibility  string         `json:"history_visibility"`
+	GuestAccess        string         `json:"guest_access"`
+	JoinRule           string         `json:"join_rules"`
+}
+
 // handleCreateRoom implements POST /_matrix/client/v3/createRoom.
 //
 //	@Summary	Create a new room
@@ -18,23 +37,7 @@ import (
 //	@Success	200		{object}	map[string]string
 //	@Router		/_matrix/client/v3/createRoom [post]
 func (a *App) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Preset             string         `json:"preset"`
-		Name               string         `json:"name"`
-		Topic              string         `json:"topic"`
-		Type               string         `json:"type"`
-		Visibility         string         `json:"visibility"`
-		RoomAliasName      string         `json:"room_alias_name"`
-		RoomVersion        string         `json:"room_version"`
-		CreationContent    matrix.Object  `json:"creation_content,omitempty"`
-		InitialState       []matrix.Event `json:"initial_state,omitempty"`
-		PowerLevelOverride matrix.Object  `json:"power_level_content_override,omitempty"`
-		Invite             []string       `json:"invite,omitempty"`
-		IsDirect           bool           `json:"is_direct"`
-		HistoryVisibility  string         `json:"history_visibility"`
-		GuestAccess        string         `json:"guest_access"`
-		JoinRule           string         `json:"join_rules"`
-	}
+	var body createRoomBody
 	if err := decodeBody(r, &body); err != nil {
 		a.writeError(w, r, err)
 		return

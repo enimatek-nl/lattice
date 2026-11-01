@@ -20,6 +20,9 @@ type ProfileField struct {
 type ProfileRepo interface {
 	Set(userID, key, value string) error
 	Get(userID, key string) (string, error)
+	// FieldsFor loads the named keys for many users in one query, keyed
+	// user ID, then key. A user without a row for a key simply has no entry.
+	FieldsFor(userIDs []string, keys ...string) (map[string]map[string]string, error)
 	All(userID string) (map[string]string, error)
 	Delete(userID, key string) error
 }
@@ -49,6 +52,31 @@ func (r *ProfileRepoImpl) Get(userID, key string) (string, error) {
 		return "", err
 	}
 	return field.Value, nil
+}
+
+// FieldsFor implements [ProfileRepo]. Membership and directory listings show a
+// name and an avatar per member, and looking those up one row at a time turns a
+// member list into a query per member.
+func (r *ProfileRepoImpl) FieldsFor(userIDs []string, keys ...string) (map[string]map[string]string, error) {
+	if len(userIDs) == 0 {
+		return map[string]map[string]string{}, nil
+	}
+	query := r.db.Where("user_id IN ?", userIDs)
+	if len(keys) > 0 {
+		query = query.Where("key IN ?", keys)
+	}
+	var fields []ProfileField
+	if err := query.Find(&fields).Error; err != nil {
+		return nil, err
+	}
+	out := make(map[string]map[string]string, len(userIDs))
+	for _, field := range fields {
+		if out[field.UserID] == nil {
+			out[field.UserID] = map[string]string{}
+		}
+		out[field.UserID][field.Key] = field.Value
+	}
+	return out, nil
 }
 
 // All implements [ProfileRepo].

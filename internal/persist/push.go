@@ -212,10 +212,27 @@ type Notification struct {
 // NotificationRepo is the contract for notification storage access.
 type NotificationRepo interface {
 	Create(notification *Notification) error
-	List(userID string, fromPos int64, limit int) ([]*Notification, int64, error)
+	// List returns one page of notifications oldest first, plus the row id a
+	// caller hands back as the next page's token.
+	List(query NotificationQuery) ([]*Notification, int64, error)
 	CountAfter(userID, roomID string, streamPos uint64) (int64, error)
 	CountHighlightedAfter(userID, roomID string, streamPos uint64) (int64, error)
 }
+
+// NotificationQuery narrows [NotificationRepo.List]. Only takes the single value
+// the specification defines for /notifications: "highlight" keeps the
+// notifications whose rule set the highlight tweak.
+type NotificationQuery struct {
+	UserID string
+	// From is a row id from a previous page, exclusive.
+	From  int64
+	Limit int
+	Only  string
+}
+
+// NotificationOnlyHighlight is the one /notifications filter the specification
+// defines.
+const NotificationOnlyHighlight = "highlight"
 
 // NotificationRepoImpl is the GORM backed NotificationRepo.
 type NotificationRepoImpl struct {
@@ -227,20 +244,19 @@ func (r *NotificationRepoImpl) Create(notification *Notification) error {
 	return r.db.Create(notification).Error
 }
 
-// List implements [NotificationRepo]. The returned string is a pagination
-// token for the next page.
-func (r *NotificationRepoImpl) List(userID string, fromPos int64, limit int) ([]*Notification, int64, error) {
+// List implements [NotificationRepo]. The returned int64 is the token for the
+// next page, or 0 when the page was empty.
+func (r *NotificationRepoImpl) List(query NotificationQuery) ([]*Notification, int64, error) {
 	var rows []*Notification
-	q := r.db.Model(&Notification{}).Where("user_id = ?", userID)
-	if fromPos > 0 {
-		q = q.Where("id > ?", fromPos)
+	q := r.db.Model(&Notification{}).Where("user_id = ?", query.UserID)
+	if query.From > 0 {
+		q = q.Where("id > ?", query.From)
 	}
-	var total int64
-	if err := q.Session(&gorm.Session{}).Count(&total).Error; err != nil {
-		return nil, 0, err
+	if query.Only == NotificationOnlyHighlight {
+		q = q.Where("highlighted = ?", true)
 	}
-	if limit > 0 {
-		q = q.Limit(limit)
+	if query.Limit > 0 {
+		q = q.Limit(query.Limit)
 	}
 	err := q.Order("id asc").Find(&rows).Error
 	if err != nil {

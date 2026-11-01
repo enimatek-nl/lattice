@@ -5,6 +5,7 @@ import (
 
 	"github.com/enimatek-nl/lattice/internal/matrix"
 	"github.com/enimatek-nl/lattice/internal/persist"
+	"github.com/enimatek-nl/lattice/internal/power"
 )
 
 // validateStateEvent rejects state updates that the state endpoints may not
@@ -52,10 +53,7 @@ func (s *Service) validatePowerLevels(ctx context.Context, roomID, sender string
 		if current == want {
 			continue
 		}
-		needed := current
-		if want > needed {
-			needed = want
-		}
+		needed := power.ChangeRequired(current, want)
 		if have < needed {
 			return matrix.ErrForbidden(
 				"changing the power level of %s requires a power level of %d, you have %d", userID, needed, have)

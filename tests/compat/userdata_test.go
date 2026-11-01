@@ -492,6 +492,125 @@ func TestNotificationsForMentions(t *testing.T) {
 	}
 }
 
+// notificationEntries decodes the notifications array of a response.
+func notificationEntries(t *testing.T, resp Response) []map[string]any {
+	t.Helper()
+	raw, _ := resp.Body["notifications"].([]any)
+	out := make([]map[string]any, 0, len(raw))
+	for _, entry := range raw {
+		if decoded, ok := entry.(map[string]any); ok {
+			out = append(out, decoded)
+		}
+	}
+	return out
+}
+
+// notificationEventID returns the event id a notification entry carries.
+func notificationEventID(entry map[string]any) string {
+	event, _ := entry["event"].(map[string]any)
+	id, _ := event["event_id"].(string)
+	return id
+}
+
+// TestNotificationsOrderAndRead pins the pagination order of /notifications.
+// The specification defines a token to continue from but not the direction, so
+// Lattice stores notifications in arrival order and pages forward from the row
+// id it hands back: oldest first, and a `from` token always continues downwards.
+// Changing this is a decision to make here, not an accident to notice later.
+// The read flag is the mandatory field the same endpoint asks for, computed from
+// how far the requester has read in that room.
+func TestNotificationsOrderAndRead(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	bob := server.Register("bob", "rubberduck")
+	roomID := server.CreateRoom(alice, map[string]any{"preset": "public_chat"})
+	server.MustDo(http.MethodPost, "/_matrix/client/v3/join/"+roomID, bob.Token, nil, http.StatusOK)
+
+	first := server.Send(alice, roomID, "order-1", "one")
+	second := server.Send(alice, roomID, "order-2", "two")
+	// A mention, so this one also carries the highlight tweak.
+	third := server.Send(alice, roomID, "order-3", "three bob")
+
+	page := server.MustDo(http.MethodGet, "/_matrix/client/v3/notifications?limit=2", bob.Token, nil, http.StatusOK)
+	entries := notificationEntries(t, page)
+	if len(entries) != 2 {
+		t.Fatalf("the first page holds %d notifications, want two: %s", len(entries), page.Raw)
+	}
+	if got := []string{notificationEventID(entries[0]), notificationEventID(entries[1])}; got[0] != first || got[1] != second {
+		t.Errorf("the first page = %v, want oldest first (%s, %s)", got, first, second)
+	}
+	// Timestamps never go backwards across a page.
+	for i := 1; i < len(entries); i++ {
+		before, _ := entries[i-1]["ts"].(float64)
+		after, _ := entries[i]["ts"].(float64)
+		if after < before {
+			t.Errorf("notifications at %d and %d are out of order: %v then %v", i-1, i, before, after)
+		}
+	}
+	token := page.String("next_token")
+	if token == "" {
+		t.Fatalf("a full page carries no next_token: %s", page.Raw)
+	}
+	tail := server.MustDo(http.MethodGet, "/_matrix/client/v3/notifications?limit=2&from="+token,
+		bob.Token, nil, http.StatusOK)
+	rest := notificationEntries(t, tail)
+	if len(rest) != 1 || notificationEventID(rest[0]) != third {
+		t.Errorf("the page after %s = %s, want only %s", token, tail.Raw, third)
+	}
+	if tail.String("next_token") != "" {
+		t.Errorf("the last page should not carry a next_token: %s", tail.Raw)
+	}
+
+	// Nothing has been read yet, and the field is present on every entry.
+	for _, entry := range entries {
+		read, ok := entry["read"].(bool)
+		if !ok {
+			t.Fatalf("a notification has no read flag: %v", entry)
+		}
+		if read {
+			t.Errorf("an unread notification says it was read: %v", entry)
+		}
+	}
+
+	// A read receipt up to the second event marks the first two as read.
+	server.MustDo(http.MethodPost, receiptPath(roomID, "m.read", second), bob.Token, nil, http.StatusOK)
+	listed := server.MustDo(http.MethodGet, "/_matrix/client/v3/notifications", bob.Token, nil, http.StatusOK)
+	flags := map[string]bool{}
+	for _, entry := range notificationEntries(t, listed) {
+		flags[notificationEventID(entry)] = entry["read"] == true
+	}
+	if !flags[first] || !flags[second] {
+		t.Errorf("the receipt did not mark the notifications it covers as read: %s", listed.Raw)
+	}
+	if flags[third] {
+		t.Errorf("the receipt marked a notification beyond it as read: %s", listed.Raw)
+	}
+
+	// The fully read marker counts too.
+	server.MustDo(http.MethodPost, "/_matrix/client/v3/rooms/"+roomID+"/read_markers", bob.Token,
+		map[string]any{"m.fully_read": third}, http.StatusOK)
+	listed = server.MustDo(http.MethodGet, "/_matrix/client/v3/notifications", bob.Token, nil, http.StatusOK)
+	for _, entry := range notificationEntries(t, listed) {
+		if entry["read"] != true {
+			t.Errorf("after the read marker %s is still unread: %s",
+				notificationEventID(entry), listed.Raw)
+		}
+	}
+
+	// only=highlight is the one filter the specification defines.
+	only := server.MustDo(http.MethodGet, "/_matrix/client/v3/notifications?only=highlight", bob.Token,
+		nil, http.StatusOK)
+	highlighted := notificationEntries(t, only)
+	if len(highlighted) != 1 || notificationEventID(highlighted[0]) != third {
+		t.Errorf("only=highlight = %s, want only the mention", only.Raw)
+	}
+	// An unknown value is a client error rather than a silently ignored filter.
+	if resp := server.Do(http.MethodGet, "/_matrix/client/v3/notifications?only=everything",
+		bob.Token, nil); resp.Status != http.StatusBadRequest {
+		t.Errorf("only=everything: got %d %s, want 400", resp.Status, resp.Raw)
+	}
+}
+
 // TestPushRuleCRUD covers the push rule endpoints, with and without the
 // deprecated "global" scope segment.
 func TestPushRuleCRUD(t *testing.T) {

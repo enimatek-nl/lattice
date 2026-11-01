@@ -69,6 +69,38 @@ func (s *Service) ProfileKey(ctx context.Context, userID, key string) (string, e
 	return value, nil
 }
 
+// profileSummaries loads what a listing shows about users: the display name,
+// which falls back to the localpart of the user id just like displayName does,
+// and the avatar URL. Listing members one profile at a time was a query per
+// member, which is what made a member list expensive.
+func (s *Service) profileSummaries(ctx context.Context, userIDs []string) (map[string]UserSummary, error) {
+	seen := make(map[string]bool, len(userIDs))
+	ids := make([]string, 0, len(userIDs))
+	for _, id := range userIDs {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return map[string]UserSummary{}, nil
+	}
+	fields, err := s.db.ProfileRepo.FieldsFor(ids, ProfileDisplayName, ProfileAvatarURL)
+	if err != nil {
+		return nil, matrix.ErrInternal(err)
+	}
+	out := make(map[string]UserSummary, len(ids))
+	for _, id := range ids {
+		name := fields[id][ProfileDisplayName]
+		if name == "" {
+			name = matrix.LocalpartOf(id)
+		}
+		out[id] = UserSummary{UserID: id, DisplayName: name, AvatarURL: fields[id][ProfileAvatarURL]}
+	}
+	return out, nil
+}
+
 // SetProfileKey writes a single profile key and mirrors display name changes
 // into the m.room.member events of rooms the user has joined.
 func (s *Service) SetProfileKey(ctx context.Context, userID, key, value string) error {
@@ -85,11 +117,13 @@ func (s *Service) SetProfileKey(ctx context.Context, userID, key, value string) 
 	if err != nil {
 		return matrix.ErrInternal(err)
 	}
+	// The profile of this one user is read once, not once per room.
+	name, avatar := s.displayName(ctx, userID), s.avatarURL(ctx, userID)
 	for _, roomID := range rooms {
 		content := matrix.MemberContent{
 			Membership:  matrix.MembershipJoin,
-			DisplayName: s.displayName(ctx, userID),
-			AvatarURL:   s.avatarURL(ctx, userID),
+			DisplayName: name,
+			AvatarURL:   avatar,
 		}
 		if err := s.appendMember(ctx, roomID, userID, userID, content); err != nil {
 			return err
@@ -126,14 +160,14 @@ func (s *Service) SearchUserDirectory(ctx context.Context, searcher, term string
 	if err != nil {
 		return nil, false, matrix.ErrInternal(err)
 	}
+	profiles, err := s.profileSummaries(ctx, userIDs)
+	if err != nil {
+		return nil, false, err
+	}
 	var out []UserSummary
 	needle := strings.ToLower(term)
 	for _, id := range userIDs {
-		summary := UserSummary{
-			UserID:      id,
-			DisplayName: s.displayName(ctx, id),
-			AvatarURL:   s.avatarURL(ctx, id),
-		}
+		summary := profiles[id]
 		if needle != "" &&
 			!strings.Contains(strings.ToLower(id), needle) &&
 			!strings.Contains(strings.ToLower(summary.DisplayName), needle) {

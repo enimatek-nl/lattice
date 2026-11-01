@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/enimatek-nl/lattice/internal/matrix"
 	"github.com/enimatek-nl/lattice/internal/persist"
@@ -178,12 +177,14 @@ func (s *Service) newSession(ctx context.Context, user *persist.User, deviceID, 
 	if deviceID == "" {
 		deviceID = matrix.NewDeviceID()
 	}
-	device, err := s.db.DeviceRepo.Get(user.ID, deviceID)
-	if err != nil {
-		if !persist.IsNotFound(err) {
-			return nil, matrix.ErrInternal(err)
-		}
-		device = &persist.Device{
+	// Only existence matters here: an existing device is reused as it is, a
+	// missing one is created and announced to the other devices.
+	_, err := s.db.DeviceRepo.Get(user.ID, deviceID)
+	if err != nil && !persist.IsNotFound(err) {
+		return nil, matrix.ErrInternal(err)
+	}
+	if persist.IsNotFound(err) {
+		device := &persist.Device{
 			DeviceID:     deviceID,
 			UserID:       user.ID,
 			DisplayName:  initialDeviceName,
@@ -192,8 +193,8 @@ func (s *Service) newSession(ctx context.Context, user *persist.User, deviceID, 
 		if err := s.db.DeviceRepo.Create(device); err != nil {
 			return nil, matrix.ErrInternal(err)
 		}
-		// Other devices have to learn this one exists, or they would never
-		// collect its end-to-end keys.
+		// Announce the new device, or the other devices would never collect
+		// its end-to-end keys.
 		if err := s.recordDeviceListChange(ctx, persist.DeviceListChanged, user.ID, deviceID); err != nil {
 			return nil, err
 		}
@@ -323,7 +324,3 @@ func (s *Service) Whoami(ctx context.Context, userID string) (string, error) {
 	}
 	return userID, nil
 }
-
-// sessionTTL is the configured access token lifetime, exposed for the
-// capabilities and versions endpoints.
-func (s *Service) sessionTTL() time.Duration { return s.tokens.TTL() }

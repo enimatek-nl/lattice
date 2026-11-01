@@ -4,32 +4,27 @@ import (
 	"context"
 
 	"github.com/enimatek-nl/lattice/internal/matrix"
+	"github.com/enimatek-nl/lattice/internal/power"
 )
 
 // Default power levels, taken from the "Power level restrictions" section of
-// the specification.
+// the specification. The arithmetic itself lives in internal/power; these names
+// are the ones the service layer uses.
 const (
-	PowerAdmin          = 100
-	PowerDefaultUser    = 0
-	PowerDefaultInvite  = 0
-	PowerDefaultKick    = 50
-	PowerDefaultBan     = 50
-	PowerDefaultRedact  = 50
-	PowerDefaultState   = 50
-	PowerDefaultMessage = 0
+	PowerAdmin          = power.Admin
+	PowerDefaultUser    = power.DefaultUser
+	PowerDefaultInvite  = power.DefaultInvite
+	PowerDefaultKick    = power.DefaultKick
+	PowerDefaultBan     = power.DefaultBan
+	PowerDefaultRedact  = power.DefaultRedact
+	PowerDefaultState   = power.DefaultState
+	PowerDefaultMessage = power.DefaultMessage
 )
 
 // powerLevels decodes the current m.room.power_levels event, falling back to
 // the specification defaults.
 func (s *Service) powerLevels(ctx context.Context, roomID string) matrix.PowerLevelsContent {
-	levels := matrix.PowerLevelsContent{
-		Invite:       PowerDefaultInvite,
-		Kick:         PowerDefaultKick,
-		Ban:          PowerDefaultBan,
-		Redact:       PowerDefaultRedact,
-		SendDefault:  PowerDefaultMessage,
-		UsersDefault: PowerDefaultUser,
-	}
+	levels := power.Defaults()
 	raw, err := s.db.StateRepo.Content(roomID, matrix.TypePowerLevels, "")
 	if err != nil {
 		return levels
@@ -37,40 +32,17 @@ func (s *Service) powerLevels(ctx context.Context, roomID string) matrix.PowerLe
 	if err := matrix.DecodeContent(raw, &levels); err != nil {
 		return levels
 	}
-	if levels.Kick == 0 {
-		levels.Kick = PowerDefaultKick
-	}
-	if levels.Ban == 0 {
-		levels.Ban = PowerDefaultBan
-	}
-	if levels.Redact == 0 {
-		levels.Redact = PowerDefaultRedact
-	}
-	return levels
+	return power.ApplyDefaults(levels)
 }
 
 // PowerLevel returns the effective power level of a user in a room.
 func (s *Service) PowerLevel(ctx context.Context, roomID, userID string) int64 {
 	levels := s.powerLevels(ctx, roomID)
-	if level, ok := levels.Users[userID]; ok {
-		return level
+	creator := ""
+	if room, err := s.db.RoomRepo.Get(roomID); err == nil {
+		creator = room.Creator
 	}
-	room, err := s.db.RoomRepo.Get(roomID)
-	if err == nil && room.Creator == userID {
-		return PowerAdmin
-	}
-	return levels.UsersDefault
-}
-
-// eventLevel returns the power level required to send a given event type.
-func eventLevel(levels matrix.PowerLevelsContent, typ string, isState bool) int64 {
-	if level, ok := levels.Events[typ]; ok {
-		return level
-	}
-	if isState {
-		return PowerDefaultState
-	}
-	return levels.SendDefault
+	return power.Level(levels, userID, creator)
 }
 
 // MembershipOf returns the current membership of a user in a room, or an empty
@@ -92,17 +64,7 @@ func (s *Service) IsJoined(ctx context.Context, roomID, userID string) bool {
 // is stored in the power levels event under the given key.
 func (s *Service) Allow(ctx context.Context, roomID, userID, action string, fallback int64) bool {
 	levels := s.powerLevels(ctx, roomID)
-	required := fallback
-	switch action {
-	case "invite":
-		required = levels.Invite
-	case "kick":
-		required = levels.Kick
-	case "ban":
-		required = levels.Ban
-	case "redact":
-		required = levels.Redact
-	}
+	required := power.ActionRequired(levels, action, fallback)
 	return s.PowerLevel(ctx, roomID, userID) >= required
 }
 
@@ -159,7 +121,7 @@ func (s *Service) RequireState(ctx context.Context, roomID, userID, typ string) 
 
 // requireLevel compares a user's power level against a required level.
 func (s *Service) requireLevel(ctx context.Context, levels matrix.PowerLevelsContent, roomID, userID, typ string, isState bool, fallback int64) error {
-	required := eventLevel(levels, typ, isState)
+	required := power.EventRequired(levels, typ, isState)
 	if required == 0 {
 		required = fallback
 	}

@@ -292,18 +292,38 @@ func (s *Service) Members(ctx context.Context, roomID string, memberships []stri
 		return nil, matrix.ErrInternal(err)
 	}
 	out := make([]Member, 0, len(rows))
-	for _, row := range rows {
+	// The rows to report are collected first so the member events and the profiles
+	// behind them can each be read in one query.
+	kept := make([]int, 0, len(rows))
+	for i, row := range rows {
 		if notMembership != "" && row.Membership == notMembership {
 			continue
 		}
+		kept = append(kept, i)
+	}
+	userIDs := make([]string, 0, len(kept))
+	eventIDs := make([]string, 0, len(kept))
+	for _, i := range kept {
+		userIDs = append(userIDs, rows[i].UserID)
+		eventIDs = append(eventIDs, rows[i].EventID)
+	}
+	profiles, err := s.profileSummaries(ctx, userIDs)
+	if err != nil {
+		return nil, err
+	}
+	events, err := s.db.EventRepo.GetByIDs(eventIDs)
+	if err != nil {
+		return nil, matrix.ErrInternal(err)
+	}
+	for _, i := range kept {
+		row := rows[i]
 		member := Member{
 			UserID:      row.UserID,
-			DisplayName: s.displayName(ctx, row.UserID),
-			AvatarURL:   s.avatarURL(ctx, row.UserID),
+			DisplayName: profiles[row.UserID].DisplayName,
+			AvatarURL:   profiles[row.UserID].AvatarURL,
 			Membership:  row.Membership,
 		}
-		event, err := s.db.EventRepo.Get(row.EventID)
-		if err == nil {
+		if event, ok := events[row.EventID]; ok {
 			ev := event.Matrix()
 			member.Event = &ev
 		}
@@ -320,38 +340,24 @@ func (s *Service) JoinedMembers(ctx context.Context, roomID string) (map[string]
 		return nil, matrix.ErrInternal(err)
 	}
 	joined := make(map[string]matrix.Object, len(rows))
+	userIDs := make([]string, 0, len(rows))
+	for _, row := range rows {
+		userIDs = append(userIDs, row.UserID)
+	}
+	profiles, err := s.profileSummaries(ctx, userIDs)
+	if err != nil {
+		return nil, err
+	}
 	for _, row := range rows {
 		entry := matrix.Object{}
-		if name := s.displayName(ctx, row.UserID); name != "" {
-			entry["display_name"] = name
+		summary := profiles[row.UserID]
+		if summary.DisplayName != "" {
+			entry["display_name"] = summary.DisplayName
 		}
-		if avatar := s.avatarURL(ctx, row.UserID); avatar != "" {
-			entry["avatar_url"] = avatar
+		if summary.AvatarURL != "" {
+			entry["avatar_url"] = summary.AvatarURL
 		}
 		joined[row.UserID] = entry
 	}
 	return joined, nil
-}
-
-// userSummary renders a profile summary for a user ID.
-func (s *Service) userSummary(ctx context.Context, userID string) UserSummary {
-	return UserSummary{
-		UserID:      userID,
-		DisplayName: s.displayName(ctx, userID),
-		AvatarURL:   s.avatarURL(ctx, userID),
-	}
-}
-
-// roomMembersForSync returns the m.room.member events to include in a sync
-// state block.
-func (s *Service) roomMembersForSync(ctx context.Context, roomID string) []matrix.Event {
-	events, err := s.db.StateRepo.MemberEvents(roomID)
-	if err != nil {
-		return nil
-	}
-	out := make([]matrix.Event, 0, len(events))
-	for _, event := range events {
-		out = append(out, event.Matrix())
-	}
-	return out
 }

@@ -226,13 +226,9 @@ func (s *Service) hierarchyStateEvents(ctx context.Context, roomID string) []mat
 	if err != nil {
 		return []matrix.Event{}
 	}
-	events := make([]matrix.Event, 0, len(rows))
-	for _, row := range rows {
-		event, err := s.db.EventRepo.Get(row.EventID)
-		if err != nil {
-			continue
-		}
-		events = append(events, event.Matrix())
+	events, err := s.stateEventsWire(rows, nil)
+	if err != nil {
+		return []matrix.Event{}
 	}
 	return events
 }

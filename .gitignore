@@ -11,10 +11,13 @@
 *.so
 *.dylib
 
-# Test and coverage output
+# Test and coverage output. Deliberately not "coverage.*": that pattern also
+# matches source files of a package named coverage, which silently keeps a
+# package out of the repository.
 *.test
 *.out
-coverage.*
+coverage.out
+coverage.html
 *.cover
 /profile/
 *.pprof
@@ -44,3 +47,6 @@ coverage.*
 *.swp
 *~
 .DS_Store
+
+# Generated OpenAPI docs (make swagger)
+/docs/swagger/

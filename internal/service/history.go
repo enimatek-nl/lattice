@@ -38,12 +38,9 @@ func (s *Service) History(ctx context.Context, params HistoryParams) (*HistoryRe
 	if err := s.RequireReadable(ctx, params.RoomID, params.UserID); err != nil {
 		return nil, err
 	}
-	dir := params.Dir
-	if dir == "" {
-		dir = "b"
-	}
-	if dir != "b" && dir != "f" {
-		return nil, matrix.ErrInvalidParam("dir must be \"f\" or \"b\", got %q", params.Dir)
+	dir, err := parseDirection(params.Dir, "b")
+	if err != nil {
+		return nil, err
 	}
 	limit := params.Limit
 	if limit <= 0 || limit > 1000 {
@@ -90,6 +87,19 @@ func (s *Service) History(ctx context.Context, params HistoryParams) (*HistoryRe
 	return result, nil
 }
 
+// parseDirection validates a pagination direction. The specification defaults
+// dir to "b" for /messages, /relations and /threads, so that is the fallback
+// here too; timestamp_to_event asks for "f" and passes its own default.
+func parseDirection(dir, fallback string) (string, error) {
+	if dir == "" {
+		return fallback, nil
+	}
+	if dir != "b" && dir != "f" {
+		return "", matrix.ErrInvalidParam("dir must be \"f\" or \"b\", got %q", dir)
+	}
+	return dir, nil
+}
+
 // RoomEvent returns a single event of a room.
 func (s *Service) RoomEvent(ctx context.Context, roomID, eventID, userID string) (*matrix.Event, error) {
 	if err := s.RequireReadable(ctx, roomID, userID); err != nil {
@@ -103,7 +113,14 @@ func (s *Service) RoomEvent(ctx context.Context, roomID, eventID, userID string)
 		return nil, matrix.ErrInternal(err)
 	}
 	wire := event.Matrix()
-	return &wire, nil
+	// MSC2675 lists GET /rooms/{roomId}/event/{eventId} among the endpoints that
+	// bundle a thread's summary, so a client opening one event sees the same
+	// unsigned.m.thread block it gets from /messages or /sync.
+	annotated := []matrix.Event{wire}
+	if err := s.annotateThreads(roomID, userID, annotated); err != nil {
+		return nil, err
+	}
+	return &annotated[0], nil
 }
 
 // EventContextResult is the payload of /context/{eventId}.
@@ -149,6 +166,13 @@ func (s *Service) EventContext(ctx context.Context, roomID, eventID, userID stri
 		EventsAfter:  toWire(after),
 		State:        state,
 	}
+	// The centre event goes through the same helper the neighbour blocks use, so
+	// /context carries unsigned.m.thread for the event it is about as well.
+	centre := []matrix.Event{result.Event}
+	if err := s.annotateThreads(roomID, userID, centre); err != nil {
+		return nil, err
+	}
+	result.Event = centre[0]
 	if err := s.annotateThreads(roomID, userID, result.EventsBefore); err != nil {
 		return nil, err
 	}
@@ -174,11 +198,9 @@ func (s *Service) EventByTimestamp(ctx context.Context, roomID, userID string, t
 	if err := s.RequireReadable(ctx, roomID, userID); err != nil {
 		return nil, err
 	}
-	if dir == "" {
-		dir = "f"
-	}
-	if dir != "f" && dir != "b" {
-		return nil, matrix.ErrInvalidParam("dir must be \"f\" or \"b\", got %q", dir)
+	dir, err := parseDirection(dir, "f")
+	if err != nil {
+		return nil, err
 	}
 	if ts <= 0 {
 		return nil, matrix.ErrInvalidParam("ts must be a unix timestamp in milliseconds")
@@ -197,13 +219,19 @@ func (s *Service) EventByTimestamp(ctx context.Context, roomID, userID string, t
 	return &wire, nil
 }
 
-// Relations lists the events that relate to an event, oldest first.
-func (s *Service) Relations(ctx context.Context, roomID, eventID, relType, eventType, userID string, limit int, from, to string) ([]matrix.Event, string, error) {
+// Relations lists the events that relate to an event, paginated the way
+// /messages is: "b" (the default) walks newest first from the `from` token, "f"
+// walks oldest first from it, and `to` bounds the far end of the window.
+func (s *Service) Relations(ctx context.Context, roomID, eventID, relType, eventType, userID string, limit int, from, to, dir string) ([]matrix.Event, string, error) {
 	if err := s.RequireReadable(ctx, roomID, userID); err != nil {
 		return nil, "", err
 	}
 	if limit <= 0 || limit > 1000 {
 		limit = 10
+	}
+	direction, err := parseDirection(dir, "b")
+	if err != nil {
+		return nil, "", err
 	}
 	fromPos, err := s.ParseToken(from)
 	if err != nil {
@@ -213,7 +241,16 @@ func (s *Service) Relations(ctx context.Context, roomID, eventID, relType, event
 	if err != nil {
 		return nil, "", err
 	}
-	events, err := s.db.EventRepo.Relations(roomID, eventID, relType, eventType, limit, fromPos, toPos)
+	events, err := s.db.EventRepo.Relations(persist.RelationQuery{
+		RoomID:    roomID,
+		EventID:   eventID,
+		RelType:   relType,
+		EventType: eventType,
+		Limit:     limit,
+		From:      fromPos,
+		To:        toPos,
+		Forward:   direction == "f",
+	})
 	if err != nil {
 		return nil, "", matrix.ErrInternal(err)
 	}
@@ -235,8 +272,11 @@ type ThreadParams struct {
 	// active thread).
 	Relationship string
 	// From is a pagination token pointing at the last activity of the previous
-	// page.
-	From  string
+	// page when walking backwards, or of the next one when walking forwards.
+	From string
+	// To bounds the far end of the window; it is the counterpart of From.
+	To    string
+	Dir   string
 	Limit int
 }
 
@@ -270,7 +310,10 @@ func (t Thread) MarshalJSON() ([]byte, error) {
 	return json.Marshal(fields)
 }
 
-// Threads lists the threads of a room, most recently active first.
+// Threads lists the threads of a room, by default the most recently active
+// first. The counting happens in the database (EventRepo.ThreadStats) and the
+// roots and latest replies are then loaded in two batched reads, so the cost
+// grows with the number of threads rather than with the number of replies.
 func (s *Service) Threads(ctx context.Context, params ThreadParams) ([]Thread, string, error) {
 	if err := s.RequireReadable(ctx, params.RoomID, params.UserID); err != nil {
 		return nil, "", err
@@ -293,76 +336,93 @@ func (s *Service) Threads(ctx context.Context, params ThreadParams) ([]Thread, s
 	if limit <= 0 || limit > 1000 {
 		limit = 10
 	}
+	dir, err := parseDirection(params.Dir, "b")
+	if err != nil {
+		return nil, "", err
+	}
 	from, err := s.ParseToken(params.From)
 	if err != nil {
 		return nil, "", err
 	}
-	replies, err := s.db.EventRepo.Threads(params.RoomID)
+	to, err := s.ParseToken(params.To)
+	if err != nil {
+		return nil, "", err
+	}
+	stats, err := s.db.EventRepo.ThreadStats(params.RoomID, params.UserID)
 	if err != nil {
 		return nil, "", matrix.ErrInternal(err)
 	}
 
-	type digest struct {
-		count        int64
-		latest       *persist.Event
-		lastPos      uint64
-		participated bool
+	// Every thread needs its root (who started it, is it still there) and its
+	// most recent reply (what the listing shows), so both sets are loaded in one
+	// query each.
+	rootIDs := make([]string, 0, len(stats))
+	positions := make([]uint64, 0, len(stats))
+	for _, stat := range stats {
+		lastPos := stat.LatestPos
+		rootIDs = append(rootIDs, stat.RootID)
+		positions = append(positions, lastPos)
 	}
-	byRoot := map[string]*digest{}
-	for _, event := range replies {
-		if event.RelatesTo == "" {
-			continue
-		}
-		entry, ok := byRoot[event.RelatesTo]
-		if !ok {
-			entry = &digest{}
-			byRoot[event.RelatesTo] = entry
-		}
-		entry.count++
-		if event.Sender == params.UserID {
-			entry.participated = true
-		}
-		if entry.latest == nil || event.StreamPos > entry.latest.StreamPos {
-			entry.latest = event
-		}
-		if event.StreamPos > entry.lastPos {
-			entry.lastPos = event.StreamPos
-		}
+	roots, err := s.db.EventRepo.GetByIDs(rootIDs)
+	if err != nil {
+		return nil, "", matrix.ErrInternal(err)
+	}
+	latestByPos, err := s.db.EventRepo.ByPositions(params.RoomID, positions)
+	if err != nil {
+		return nil, "", matrix.ErrInternal(err)
 	}
 
-	var threads []Thread
-	for rootID, entry := range byRoot {
-		root, err := s.db.EventRepo.GetInRoom(params.RoomID, rootID)
-		if err != nil {
+	// An empty listing answers with an empty chunk, never null: a client reads
+	// chunk as an array.
+	threads := make([]Thread, 0, len(stats))
+	for _, stat := range stats {
+		root, ok := roots[stat.RootID]
+		if !ok || root.RoomID != params.RoomID {
 			// A thread whose root is missing (or lives in another room) is not
 			// listed.
 			continue
 		}
-		if include == "mine" && root.Sender != params.UserID && !entry.participated {
+		if include == "mine" && root.Sender != params.UserID && stat.Mine == 0 {
 			continue
 		}
-		lastPos := entry.lastPos
+		lastPos := stat.LatestPos
 		if root.StreamPos > lastPos {
 			lastPos = root.StreamPos
 		}
-		if from > 0 && lastPos >= from {
+		// Threads are paginated by their most recent activity, so the window the
+		// tokens describe is measured in that position: walking backwards reads
+		// below `from` down to `to`, walking forwards reads above `from` up to
+		// `to`.
+		if !positionInWindow(lastPos, from, to, dir == "f") {
 			continue
 		}
 		latest := root
-		if entry.latest != nil {
-			latest = entry.latest
+		if reply, ok := latestByPos[stat.LatestPos]; ok {
+			latest = reply
 		}
 		threads = append(threads, Thread{
 			Root:        root.Matrix(),
 			LatestEvent: latest.Matrix(),
-			Count:       entry.count,
-			NumEvents:   entry.count + 1,
+			Count:       stat.Replies,
+			NumEvents:   stat.Replies + 1,
 			LastPos:     lastPos,
 		})
 	}
-	sort.Slice(threads, func(i, j int) bool { return threads[i].LastPos > threads[j].LastPos })
+	if dir == "f" {
+		sort.Slice(threads, func(i, j int) bool { return threads[i].LastPos < threads[j].LastPos })
+	} else {
+		sort.Slice(threads, func(i, j int) bool { return threads[i].LastPos > threads[j].LastPos })
+	}
 	if relationship == "latest" && len(threads) > 1 {
-		threads = threads[:1]
+		// "latest" asks for the single most recently active thread of the window,
+		// whichever direction the listing walks in.
+		newest := threads[0]
+		for _, thread := range threads[1:] {
+			if thread.LastPos > newest.LastPos {
+				newest = thread
+			}
+		}
+		threads = []Thread{newest}
 	}
 	nextBatch := ""
 	if len(threads) > limit {
@@ -370,6 +430,16 @@ func (s *Service) Threads(ctx context.Context, params ThreadParams) ([]Thread, s
 		nextBatch = s.Token(threads[limit-1].LastPos)
 	}
 	return threads, nextBatch, nil
+}
+
+// positionInWindow reports whether a stream position lies inside the pagination
+// window described by the from and to tokens for the requested direction. Both
+// bounds are exclusive, which is how /messages treats its tokens.
+func positionInWindow(pos, from, to uint64, forward bool) bool {
+	if forward {
+		return (from == 0 || pos > from) && (to == 0 || pos < to)
+	}
+	return (from == 0 || pos < from) && (to == 0 || pos > to)
 }
 
 // ReportQuery narrows the administrator's view of stored abuse reports. Empty
