@@ -44,7 +44,12 @@ func Defaults() matrix.PowerLevelsContent {
 		Ban:          DefaultBan,
 		Redact:       DefaultRedact,
 		SendDefault:  DefaultMessage,
+		StateDefault: DefaultState,
 		UsersDefault: DefaultUser,
+		// The per-event levels are empty, but they are written out: a client that
+		// renders "who may send which event" reads this object, and a missing key is
+		// a blank table where the answer is "the room default for every one of them".
+		Events: map[string]int64{},
 	}
 }
 
@@ -63,6 +68,9 @@ func ApplyDefaults(levels matrix.PowerLevelsContent) matrix.PowerLevelsContent {
 	}
 	if levels.Redact == 0 {
 		levels.Redact = DefaultRedact
+	}
+	if levels.StateDefault == 0 {
+		levels.StateDefault = DefaultState
 	}
 	return levels
 }

@@ -155,6 +155,36 @@ type MemberContent struct {
 	AvatarURL        string `json:"avatar_url,omitempty"`
 	Reason           string `json:"reason,omitempty"`
 	ThirdPartyInvite Object `json:"third_party_invite,omitempty"`
+	// Extra carries the keys a client put in the body of a join, knock or invite
+	// that this server does not name itself. They belong to the client: a bridge
+	// that says what it is in its own member event, or a relay that tags why it
+	// joined, has nowhere else to say it. They are stored and served back.
+	Extra Object `json:"-"`
+}
+
+// MarshalJSON writes the named keys and then the client's own keys, which cannot
+// replace membership: an m.room.member event whose membership is not one of the
+// five defined values is not a member event, whatever else it says.
+func (m MemberContent) MarshalJSON() ([]byte, error) {
+	type named MemberContent
+	body, err := json.Marshal(named(m))
+	if err != nil {
+		return nil, err
+	}
+	if len(m.Extra) == 0 {
+		return body, nil
+	}
+	var content Object
+	if err := json.Unmarshal(body, &content); err != nil {
+		return nil, err
+	}
+	for key, value := range m.Extra {
+		if key == "membership" {
+			continue
+		}
+		content[key] = value
+	}
+	return json.Marshal(content)
 }
 
 // CreateContent is the content of an m.room.create event.
@@ -214,13 +244,21 @@ type CanonicalAliasContent struct {
 
 // PowerLevelsContent is the content of an m.room.power_levels event.
 type PowerLevelsContent struct {
-	Invite        int64            `json:"invite,omitempty"`
-	Kick          int64            `json:"kick,omitempty"`
-	Ban           int64            `json:"ban,omitempty"`
-	Redact        int64            `json:"redact,omitempty"`
-	SendDefault   int64            `json:"events_default,omitempty"`
-	UsersDefault  int64            `json:"users_default,omitempty"`
-	Events        map[string]int64 `json:"events,omitempty"`
+	// The levels are written out rather than left implicit. The specification lets a
+	// reader supply defaults, but a level of 0 disappears from JSON when it is
+	// optional, and a client that shows "who can invite" from the stored event reads
+	// a hole where an answer was.
+	Invite       int64 `json:"invite"`
+	Kick         int64 `json:"kick"`
+	Ban          int64 `json:"ban"`
+	Redact       int64 `json:"redact"`
+	SendDefault  int64 `json:"events_default"`
+	StateDefault int64 `json:"state_default"`
+	UsersDefault int64 `json:"users_default"`
+	// Events names per-event levels. An empty object is written rather than
+	// dropped: it says "no event has a level of its own", which is an answer, while
+	// a missing key leaves a client showing an empty table.
+	Events        map[string]int64 `json:"events"`
 	Users         map[string]int64 `json:"users,omitempty"`
 	Notifications map[string]int64 `json:"notifications,omitempty"`
 }

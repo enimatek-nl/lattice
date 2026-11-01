@@ -190,8 +190,12 @@ func (r *VisibilityRepoImpl) Get(roomID string) (string, error) {
 func (r *VisibilityRepoImpl) Published(limit, offset int, filter string) ([]*Room, int64, error) {
 	q := r.db.Model(&RoomVisibility{}).Where("visibility = ?", "public")
 	if filter != "" {
+		// The search term covers names and topics: a room directory searched by what
+		// a room is about has to read what the room says about itself, not only its
+		// name.
 		q = q.Where("room_id IN (?)", r.db.Model(&RoomState{}).
-			Select("room_id").Where("type = ? AND content LIKE ?", "m.room.name", "%"+filter+"%"))
+			Select("room_id").Where("type IN ? AND content LIKE ?",
+			[]string{"m.room.name", "m.room.topic"}, "%"+filter+"%"))
 	}
 	var total int64
 	if err := q.Session(&gorm.Session{}).Count(&total).Error; err != nil {

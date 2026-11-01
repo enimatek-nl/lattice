@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/enimatek-nl/lattice/internal/matrix"
+	"github.com/enimatek-nl/lattice/internal/persist"
 )
 
 // The User-Interactive Auth stages Lattice understands. A stage is the name a
@@ -370,6 +371,18 @@ func (s *Service) authorizeRegistration(params RegisterParams) error {
 // checkPasswordAuth verifies the m.login.password credentials a client put in
 // an auth dict.
 func (s *Service) checkPasswordAuth(auth matrix.Object, fallbackUser string) error {
+	account, password, err := s.passwordAuth(auth, fallbackUser)
+	if err != nil {
+		return err
+	}
+	return s.verifyPassword(account, password)
+}
+
+// passwordAuth resolves the m.login.password credentials of an auth dict into the
+// account they name and the password that came with them. The identifier may
+// arrive as identifier.user, as a bare user key (older clients) or not at all, in
+// which case the account the request works on is assumed.
+func (s *Service) passwordAuth(auth matrix.Object, fallbackUser string) (*persist.User, string, error) {
 	identifier, _ := auth["identifier"].(matrix.Object)
 	user := authString(identifier, "user")
 	password := authString(auth, "password")
@@ -381,7 +394,7 @@ func (s *Service) checkPasswordAuth(auth matrix.Object, fallbackUser string) err
 	}
 	account, err := s.localUser(user)
 	if err != nil {
-		return err
+		return nil, "", err
 	}
-	return s.verifyPassword(account, password)
+	return account, password, nil
 }

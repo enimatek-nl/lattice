@@ -116,6 +116,9 @@ func (s *Service) CreateFilter(ctx context.Context, owner, requester, body strin
 	if !json.Valid([]byte(body)) {
 		return "", matrix.ErrNotJSON("filter body must be valid JSON")
 	}
+	if err := validateFilter(body); err != nil {
+		return "", err
+	}
 	id, err := s.db.FilterRepo.NextFilterID()
 	if err != nil {
 		return "", matrix.ErrInternal(err)

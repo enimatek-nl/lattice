@@ -32,6 +32,9 @@ const (
 	ErrCodeTokenExpired         ErrorCode = "M_TOKEN_EXPIRED"
 	ErrCodeExclusive            ErrorCode = "M_EXCLUSIVE"
 	ErrCodeAliasExists          ErrorCode = "M_ALIAS_EXISTS"
+	ErrCodeBadAlias             ErrorCode = "M_BAD_ALIAS"
+	ErrCodeCannotOverwrite      ErrorCode = "M_CANNOT_OVERWRITE_MEDIA"
+	ErrCodeNotYetUploaded       ErrorCode = "M_NOT_YET_UPLOADED"
 	ErrCodeReserved             ErrorCode = "M_RESERVED"
 	ErrCodeSessionExpired       ErrorCode = "M_SESSION_EXPIRED"
 	ErrCodeFlowNotFound         ErrorCode = "M_FLOW_NOT_FOUND"
@@ -186,6 +189,31 @@ func ErrMissingToken() *Error {
 func ErrBadJSON(err error) *Error {
 	return newError(ErrCodeBadJSON, http.StatusBadRequest, "request body had the wrong shape: %v", err).
 		WithCause(err)
+}
+
+// ErrBadAlias returns a 400 M_BAD_ALIAS error for a canonical alias that does
+// not point at the room it is written into. The specification names this code
+// for m.room.canonical_alias alone, and it is deliberately not M_NOT_FOUND: a
+// client that reads the error cannot tell an unknown alias from a mistake in its
+// own room graph otherwise.
+func ErrBadAlias(format string, args ...any) *Error {
+	return newError(ErrCodeBadAlias, http.StatusBadRequest, format, args...)
+}
+
+// ErrNotYetUploaded returns a 504 M_NOT_YET_UPLOADED error for a media id that
+// was reserved but has no content yet. The reservation is real, so the answer is
+// "not now" rather than "does not exist": a client uploading a room avatar
+// downloads it straight after the PUT and needs to retry rather than give up.
+func ErrNotYetUploaded(format string, args ...any) *Error {
+	return newError(ErrCodeNotYetUploaded, http.StatusGatewayTimeout, format, args...)
+}
+
+// ErrUserInUse returns a 400 M_USER_IN_USE error for a registration that asks
+// for an account name that is taken. It is a client error rather than a conflict:
+// the name is not in a temporary state the client can wait out, it belongs to
+// somebody else.
+func ErrUserInUse(format string, args ...any) *Error {
+	return newError(ErrCodeUserInUse, http.StatusBadRequest, format, args...)
 }
 
 // ErrNotJSON returns a 400 M_NOT_JSON error for unparsable payloads.

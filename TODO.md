@@ -25,6 +25,10 @@ re-derive were kept (below the plan).
   receipts, to-device, device lists and cross-signing, an outbound per
   destination queue with retries, and `m.room.server_acl` enforced in both
   directions. The plan continues at **step 9, inbound PDU processing**.
+- Against [Complement](https://github.com/matrix-org/complement), the upstream
+  Matrix suite, **41 of 106** client-API tests fail (`make complement`, see
+  _Complement_ below for how it runs, what the run can hide, and what each
+  remaining failure is waiting for).
 - Federation is live behind `-federation` (default off): a persisted ed25519
   signing key, `/_matrix/key/v2/*`, `/_matrix/federation/v1/version`,
   `/_matrix/federation/v1/user/devices/{userId}`,
@@ -605,6 +609,85 @@ the house rules).
   unused), **signing-key rotation** (`old_verify_keys`), **SRV delegation**
   and being a notary of record, **`/logout/all`-style extras**.
 
+## Complement — the upstream suite (running since 2026-11-01)
+
+Tally: **41 of 106** client-API tests fail. The rest of this section is how to run
+it, what the run can hide, and what every remaining failure is waiting for.
+
+[Complement](https://github.com/matrix-org/complement) starts homeservers in
+containers and drives them over the client-server API. It is a second opinion on
+the client API: written by people who did not write this server, against the
+specification, with the assertions the specification's wording implies — several
+response shapes below were wrong here while every in-repo test stayed green.
+
+```sh
+make complement-image                     # bin/lattice with CGO off, then the image
+make complement COMPLEMENT=~/complement   # the whole csapi suite, ~5 min
+make complement COMPLEMENT_RUN='TestRoomAlias|TestRoomCreate'
+make complement COMPLEMENT_PKG=./tests/federation   # server-server, once steps 9–10 land
+```
+
+`COMPLEMENT` points at a Complement checkout; it is not a module dependency,
+because Complement's own `go.mod` owns the test binaries. The image is
+`localhost/lattice-complement:latest` (`COMPLEMENT_IMAGE`), built from
+`deploy/complement/`: `Dockerfile` (alpine plus the binary) and `entrypoint.sh`
+(signs a certificate for `SERVER_NAME` with the CA Complement mounts at
+`/complement/ca`, trusts that CA, then serves 8008 for clients and 8448 for
+federation).
+
+Two harness facts that cost an hour each:
+
+- **`CGO_ENABLED=0` is load-bearing.** The image is Alpine (musl); a dynamically
+  linked binary inside it dies as `/usr/local/bin/lattice: not found` with exit
+  code 127, and then every test times out against a server that never started.
+  `make complement-image` therefore builds its own binary instead of trusting
+  `make build`.
+- **A Complement run can abort and still hand back a failure list.** Some runs
+  panic inside Complement itself (`rooms_state_test.go:128` dereferences a nil
+  response), `go test` stops, and every test after it simply never reports — so
+  the `--- FAIL` count understates the truth. Count the `: Server logs:` blocks
+  (one per deployment) before believing a tally: two runs in a row were read as
+  "25 then 44 failures, improving" when both had aborted.
+
+Tally, complete run of 2026-11-01 (`tests/csapi`, 106 top-level tests): **41
+failing**. The complete run before the current round of fixes failed 43; that
+round turned `TestGetRoomMembers`, `TestGetFilteredRoomMembers`, `TestRoomMembers`,
+`TestRoomState`, `TestLogout`, `TestChangePasswordPushers` and `TestPublicRooms`
+green and regressed nothing, and the round before that (the `r0` prefix rewrite,
+body validation, filter validation, canonical-alias guards, Unicode aliases,
+media reservation states, key-backup replace rules) took the aborted pair from 50
+to 44.
+
+The 41, grouped by what is actually missing — each group is a work item, and the
+suite's own skips are not hiding any of them:
+
+| Missing | Tests |
+| --- | --- |
+| `unsigned.transaction_id` on the local echo of a `PUT /send` (`/sync`, `/event`, `/messages`) — the transaction log already stores it | TestTxnInEvent, TestTxnScopeOnLocalEcho, TestTxnIdWithRefreshToken |
+| History visibility on `GET /rooms/{roomID}/event/{eventID}`: refuse non-members, and events from before the join | TestFetchEventNonWorldReadable, TestFetchHistoricalJoinedEventDenied, TestFetchHistoricalInvitedEventFromBeforeInvite, TestLeaveEventVisibility |
+| Sync `leave` sections and timeline gaps: a left room reappearing with its old history, `limited` + `prev_batch` on a gapped timeline, room summaries for rooms with no timeline | TestSync, TestSyncTimelineGap, TestGappedSyncLeaveSection, TestOlderLeftRoomsNotInLeaveSection, TestLeftRoomFixture, TestArchivedRoomsHistory, TestRoomSummary |
+| `lazy_load_state` in `/messages` | TestRoomMessagesLazyLoading, TestRoomMessagesLazyLoadingLocalUser |
+| Presence — deferred on purpose (no `m.presence`), so these are expected red | TestPresence, TestPresenceSyncDifferentRooms, TestMembersLocal |
+| Device list updates: `GET /users/{id}/sync` and the `device_lists` edges they feed | TestDeviceListUpdates, TestInviteFromIgnoredUsersDoesNotAppearInSync |
+| Threads and relations: `/threads`, `/relations` pagination, threaded receipts, MSC4102 | TestThreadsEndpoint, TestRelationsPagination, TestRelationsPaginationSync, TestThreadedReceipts, TestThreadReceiptsInSyncMSC4102 |
+| Room-specific member display names: writing your own `m.room.member` through the state endpoint, and the user directory and room summary that read it | TestRoomSpecificUsernameAtJoin, TestRoomSpecificUsernameChange |
+| `GET /rooms/{roomID}/members?at=<sync token>` — membership at a sync position | TestGetRoomMembersAtPoint |
+| Push rules in the first sync as **`m.push_rules` account data** (the `pushrules` key is served now), and a rule change waking an incremental sync | TestPushSync |
+| Room forget: `/forget` then reading the room, and the sync `leave` section that follows it | TestRoomForget |
+| `/messages` with a filter (chunk contents) | TestRoomImageRoundtrip |
+| `m.room.power_levels` writes in a privileged-creators room version (MSC4289): the creator in `users` | TestPowerLevels |
+| `/search` results across a room upgrade | TestSearch |
+| `/keys/upload` refusing a bad one-time key with 400, and `/keys/query` for the device behind it | TestUploadKey |
+| Registration edges: `/register/available` wants 400 `M_USER_IN_USE` for a taken name (Complement's expectation, not Synapse's 200 `available: false`), and a UIA body without the `session` the server issued wants 401 | TestRegistration |
+| MSC4115 `unsigned.membership` on served events | TestMembershipOnEvents |
+| URL previews (`GET /_matrix/media/v3/preview_url`) — unimplemented, and this test does not skip on `M_UNRECOGNIZED` | TestUrlPreview |
+| Two-server behaviour, which needs inbound PDU processing and joins (steps 9–10) | TestMessagesOverFederation, TestPushRuleRoomUpgrade |
+
+The cheapest three, in order: `unsigned.transaction_id` (the transaction log
+already has the value, the event just has to carry it into `unsigned`), history
+visibility on `/event/{eventID}` (the visibility helper exists, the endpoint does
+not consult it), and `lazy_load_state` in `/messages`.
+
 ## Open (need a human or network, not a code step)
 
 - A real **Element click-through** against a running Lattice (the whole key
@@ -743,6 +826,23 @@ upload` accepts the bare-map, `signed_users` and `signed_keys` shapes;
   rules, aesthetics, encryption; **must include `m.room.create`**.
 - `m.room_versions` default room version and `m.federate: false` currently
   in `writeInitialState` — flips with `-federation` in step 10.
+- Shapes the upstream suite pinned (2026-11-01), all of them spec answers
+  rather than Complement inventions: the `GET /rooms/{roomID}/members` chunk
+  is the **member events** in client format (each carries `type`, `state_key`,
+  `content`, `room_id`), not a wrapper of `user_id`/`membership` keys; `GET
+/rooms/{roomID}/state` answers with a **bare JSON array** (both compatibility
+  harnesses now keep an array body in `Response.Array`); `m.room.canonical_alias`
+  stores the **full alias**, so `createRoom`'s `room_alias_name` is normalised
+  before the event is written; an `m.room.member` event keeps the client's own
+  content keys (`MemberContent.Extra`), which is how a join with custom content
+  survives; the first `/_matrix/client/versions` answer names its
+  `default_room_version`; the first `/sync` carries `pushrules`.
+- Session end: `POST /logout` ends the device behind the token (its sessions and
+  its device keys go with it), and `POST /logout/all` ends **everything**, the
+  calling token included — a device list full of signed-out devices is what the
+  other reading produces. A password change deletes the pushers **of the other
+  devices**, so a pusher records the device that registered it (the body's
+  `device_id`, else the device of the access token that made the request).
 
 ### Federation ground facts (verified against spec v1.19, 2026-11-01)
 

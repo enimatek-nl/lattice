@@ -320,6 +320,8 @@ make endpoints                           # regenerate ENDPOINTS.md
 make run                                 # dev server on 127.0.0.1:8008
 make swagger                             # OpenAPI docs, docs/swagger/ (not committed)
 make clean                               # drop bin/ and docs/swagger/
+make complement-image                    # the container image Complement drives
+make complement                          # the upstream Matrix suite, ~5 min
 
 go build ./... && go vet ./...
 go test ./tests/unit/                      # the offline unit tables, milliseconds
@@ -335,6 +337,17 @@ go run ./cmd/endpoints -out ENDPOINTS.md   # regenerate the coverage report
 editing it. `docs/swagger/` is generated too and gitignored: `make swagger`
 fetched swag on demand, so the repository carries the annotations but not the
 OpenAPI document, and no Swagger UI route is mounted.
+
+`make complement` runs [Complement](https://github.com/matrix-org/complement),
+the upstream Matrix test suite, against a container built from `bin/lattice` by
+`deploy/complement/`. It is deliberately not part of `make test`: it needs Docker
+(or Podman — the target only calls `docker`), and a checkout of Complement
+itself, which is not a module dependency because its own `go.mod` owns the test
+binaries. Point the target at that checkout (`COMPLEMENT=~/complement make
+complement`), narrow it with `COMPLEMENT_RUN='TestRoomAlias|TestRoomCreate'`,
+and see `COMPLEMENT_PKG=./tests/federation` for the server-server suite once
+step 9 lands. Where Lattice stands, and what each remaining failure is missing,
+is written up under _Complement_ in [TODO.md](TODO.md).
 
 ## Where development stands
 
@@ -353,6 +366,13 @@ recorded there.
 Note: `SPECS.md` references a spec corpus that is not in this repo, so anything
 depending on exact spec wording (the default push rule set, `/threads` ordering,
 key backup formats) needs the corpus fetched first.
+
+The external check is Complement: `make complement` runs the upstream Matrix
+test suite against a container built from this binary. It is a different yardstick
+from the in-repo compatibility suite — it is written against the specification by
+people who did not write this server — and the current tally, plus what each
+remaining failure is waiting for, is written up under _Complement_ in
+[TODO.md](TODO.md).
 
 ## House rules
 

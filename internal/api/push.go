@@ -159,7 +159,7 @@ func (a *App) handleSetPusher(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, r, err)
 		return
 	}
-	if err := a.svc.SetPusher(r.Context(), auth.GetUserID(r), body); err != nil {
+	if err := a.svc.SetPusher(r.Context(), auth.GetUserID(r), auth.GetDeviceID(r), body); err != nil {
 		a.writeError(w, r, err)
 		return
 	}

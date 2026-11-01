@@ -111,8 +111,15 @@ func TestMaintenance(t *testing.T) {
 	if count := report.Int("media_reservations_dropped"); count != 0 {
 		t.Errorf("media_reservations_dropped = %d before the reservation window passed", count)
 	}
-	if resp := server.Do(http.MethodGet, "/_matrix/media/v3/download/test.server/"+reservedID, alice.Token, nil); resp.Status != http.StatusNotFound {
+	// A reservation with no bytes is not served, and it is not called missing
+	// either: the id is real and its content is merely late, which is the answer a
+	// client that uploads a room avatar and reads it straight back needs so that it
+	// retries instead of giving up.
+	if resp := server.Do(http.MethodGet, "/_matrix/media/v3/download/test.server/"+reservedID, alice.Token, nil); resp.Status != http.StatusGatewayTimeout {
 		t.Errorf("a reservation with no bytes should not be served: %d %s", resp.Status, resp.Raw)
+	}
+	if resp := server.Do(http.MethodGet, "/_matrix/media/v3/download/test.server/"+reservedID, alice.Token, nil); resp.ErrCode() != "M_NOT_YET_UPLOADED" {
+		t.Errorf("errcode = %q, want M_NOT_YET_UPLOADED (%s)", resp.ErrCode(), resp.Raw)
 	}
 
 	// A day and an hour later every piece of ephemeral data is out of date.

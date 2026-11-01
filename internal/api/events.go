@@ -2,15 +2,24 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
 	"time"
+	"unicode/utf8"
 
 	"github.com/enimatek-nl/lattice/internal/auth"
 	"github.com/enimatek-nl/lattice/internal/matrix"
 	"github.com/enimatek-nl/lattice/internal/service"
 )
+
+// MaxEventContentBytes is the largest content block this server accepts on a
+// write. The server-server API puts the whole event, content and all, at 65536
+// bytes, so content that does not fit inside that budget could never be handed
+// to a peer: refusing it at the client boundary is what stops a room filling
+// with events that can only be read at home.
+const MaxEventContentBytes = 64 * 1024
 
 // stateOnlyTypes lists event types that must be sent through the state
 // endpoints instead of /send.
@@ -87,7 +96,7 @@ func (a *App) handleSetRoomState(w http.ResponseWriter, r *http.Request) {
 //	@Tags		events
 //	@Produce	json
 //	@Param		roomId	path	string	true	"Room ID"
-//	@Success	200		{object}	map[string][]matrix.Event
+//	@Success	200		{array}	matrix.Event
 //	@Router		/_matrix/client/v3/rooms/{roomId}/state [get]
 func (a *App) handleRoomState(w http.ResponseWriter, r *http.Request) {
 	var types []string
@@ -99,13 +108,30 @@ func (a *App) handleRoomState(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string][]matrix.Event{"state": events})
+	// The body is the array of events, not an object holding it. That is what the
+	// endpoint has always returned, and a client that iterates the response cannot
+	// be asked to know that this particular one wrapped it.
+	writeJSON(w, http.StatusOK, events)
 }
 
 // handleRoomStateKey implements GET /_matrix/client/v3/rooms/{roomId}/state/{eventType}
 // and GET /_matrix/client/v3/rooms/{roomId}/state/{eventType}/{stateKey}.
 func (a *App) handleRoomStateKey(w http.ResponseWriter, r *http.Request) {
 	stateKey := r.PathValue("stateKey")
+	// ?format=event asks for the whole event instead of its content: the sender,
+	// the room and the type are the point of the request, which is how a client
+	// checks who joined it when. Returning the content alone answers a different
+	// question.
+	if r.URL.Query().Get("format") == "event" {
+		event, err := a.svc.StateEventFor(r.Context(), r.PathValue("roomId"), r.PathValue("eventType"),
+			stateKey, auth.GetUserID(r))
+		if err != nil {
+			a.writeError(w, r, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, event)
+		return
+	}
 	raw, err := a.svc.StateContent(r.Context(), r.PathValue("roomId"), r.PathValue("eventType"), stateKey, auth.GetUserID(r))
 	if err != nil {
 		a.writeError(w, r, err)
@@ -363,8 +389,42 @@ func readRawBody(r *http.Request) (matrix.RawMessage, error) {
 	if len(body) == 0 {
 		return nil, matrix.ErrNotJSON("a content object is required")
 	}
+	if !utf8.Valid(body) {
+		return nil, matrix.ErrNotJSON("request body was not valid JSON: it is not valid UTF-8")
+	}
 	if !json.Valid(body) {
 		return nil, matrix.ErrNotJSON("request body was not valid JSON")
 	}
+	// An event content is an object. A body that parses as a string, a number or
+	// an array is well formed JSON but the wrong shape, and storing it would keep
+	// a client from telling its own bug from a server error - and from ever
+	// getting the M_BAD_JSON that says which.
+	var shape any
+	if err := json.Unmarshal(body, &shape); err != nil {
+		return nil, matrix.ErrNotJSON("request body was not valid JSON")
+	}
+	if _, ok := shape.(map[string]any); !ok {
+		return nil, matrix.ErrBadJSON(fmt.Errorf("a JSON object is required, got %s", jsonKind(shape)))
+	}
+	if len(body) > MaxEventContentBytes {
+		return nil, matrix.ErrTooLarge(MaxEventContentBytes)
+	}
 	return matrix.RawMessage(body), nil
+}
+
+// jsonKind names the JSON type of a decoded value for an error message.
+func jsonKind(value any) string {
+	switch value.(type) {
+	case nil:
+		return "null"
+	case bool:
+		return "a boolean"
+	case float64:
+		return "a number"
+	case string:
+		return "a string"
+	case []any:
+		return "an array"
+	}
+	return "an unknown type"
 }

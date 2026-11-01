@@ -30,7 +30,7 @@ func TestCreateRoom(t *testing.T) {
 	}
 
 	state := server.MustDo(http.MethodGet, "/_matrix/client/v3/rooms/"+roomID+"/state", alice.Token, nil, http.StatusOK)
-	events, _ := state.Body["state"].([]any)
+	events := state.Array
 	types := map[string]bool{}
 	for _, raw := range events {
 		event, _ := raw.(map[string]any)

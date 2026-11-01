@@ -168,6 +168,16 @@ func (s *Service) buildSync(ctx context.Context, params SyncParams, filter *Sync
 			response.DeviceLists = lists
 			changed = true
 		}
+	} else {
+		// A client that has never synced gets its push rules with the first
+		// response: they decide whether the events arriving in this response are
+		// notifications, so a client that has to ask /pushrules first has already
+		// missed the point of them.
+		rules, err := s.PushRules(ctx, userID)
+		if err != nil {
+			return nil, false, err
+		}
+		response.PushRules = &rules
 	}
 
 	receipts, err := s.receiptEventsForRooms(joined, since)

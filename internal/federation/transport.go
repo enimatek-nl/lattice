@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -73,6 +76,13 @@ type Config struct {
 	Timeout time.Duration
 	// Now is overridable so time-dependent behaviour is testable.
 	Now func() time.Time
+	// RootCAs replaces the trusted certificate authorities of outbound requests.
+	// Federation is TLS-first: a peer is reached at https://host:8448, and the
+	// certificate is the only thing between this server and an impostor that knows
+	// the server's name. Deployments behind a private CA name that CA here instead of
+	// disabling verification, which would trade the one check that matters for
+	// convenience.
+	RootCAs *x509.CertPool
 }
 
 // Transport talks to other homeservers: it resolves their names, signs every
@@ -126,10 +136,14 @@ func NewTransport(identity Identity, cfg Config) *Transport {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
+	transport := &http.Transport{}
+	if cfg.RootCAs != nil {
+		transport.TLSClientConfig = &tls.Config{RootCAs: cfg.RootCAs, MinVersion: tls.VersionTLS12}
+	}
 	return &Transport{
 		cfg:      cfg,
 		identity: identity,
-		client:   &http.Client{Timeout: cfg.Timeout},
+		client:   &http.Client{Timeout: cfg.Timeout, Transport: transport},
 		now:      cfg.Now,
 		keys:     map[string]*keyEntry{},
 		peers:    map[string]*peerEntry{},
@@ -511,4 +525,29 @@ func ServerNameParts(serverName string) (host, port string, hasPort bool) {
 		return serverName[:at], serverName[at+1:], true
 	}
 	return serverName, "", false
+}
+
+// LoadCAs reads PEM certificate files and returns the trust store they add to. An
+// empty list returns nil, which means "use the system's trust store" - the answer for
+// almost every deployment.
+func LoadCAs(paths []string) (*x509.CertPool, error) {
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		// A system without a trust store still gets the named CAs, rather than an
+		// empty pool that would reject every peer including the ones that are fine.
+		pool = x509.NewCertPool()
+	}
+	for _, path := range paths {
+		blob, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("the certificate authority %s cannot be read: %w", path, err)
+		}
+		if !pool.AppendCertsFromPEM(blob) {
+			return nil, fmt.Errorf("the certificate authority %s holds no certificate", path)
+		}
+	}
+	return pool, nil
 }

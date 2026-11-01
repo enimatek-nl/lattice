@@ -105,8 +105,11 @@ func (s *Server) URL() string { return s.http.URL }
 
 // Response pairs a status code with a decoded body.
 type Response struct {
-	Status  int
-	Body    map[string]any
+	Status int
+	Body   map[string]any
+	// Array holds the body when it is a JSON array rather than an object. Room
+	// state (GET /rooms/{roomID}/state) is the endpoint that does this.
+	Array   []any
 	Raw     []byte
 	Headers http.Header
 }
@@ -188,11 +191,16 @@ func (s *Server) roundTrip(req *http.Request) Response {
 	out := Response{Status: resp.StatusCode, Raw: raw, Headers: resp.Header}
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &out.Body); err != nil {
-			out.Body = map[string]any{}
-			// Media downloads are binary on purpose; only complain when a JSON
-			// body fails to parse.
-			if strings.HasPrefix(resp.Header.Get("Content-Type"), "application/json") {
-				s.t.Logf("response of %s %s is not JSON: %s", req.Method, req.URL.Path, raw)
+			out.Body = nil
+			// A JSON array is a valid Matrix body: GET /rooms/{roomID}/state returns
+			// one. Keep it where a test can reach it rather than calling it unparsable.
+			if err := json.Unmarshal(raw, &out.Array); err != nil {
+				out.Body = map[string]any{}
+				// Media downloads are binary on purpose; only complain when a JSON
+				// body fails to parse.
+				if strings.HasPrefix(resp.Header.Get("Content-Type"), "application/json") {
+					s.t.Logf("response of %s %s is not JSON: %s", req.Method, req.URL.Path, raw)
+				}
 			}
 		}
 	}

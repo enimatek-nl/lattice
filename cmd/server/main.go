@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"flag"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/enimatek-nl/lattice/internal/api"
 	"github.com/enimatek-nl/lattice/internal/auth"
+	"github.com/enimatek-nl/lattice/internal/federation"
 	"github.com/enimatek-nl/lattice/internal/matrix"
 	"github.com/enimatek-nl/lattice/internal/persist"
 	"github.com/enimatek-nl/lattice/internal/service"
@@ -63,6 +65,13 @@ func main() {
 			"serve the server-server API: other homeservers can talk to this one")
 		federationPeers = flag.String("federation-peer", "",
 			"comma separated server=URL pairs that pin where a peer is reached, bypassing well-known delegation; for tunnels and tests")
+		tlsCert = flag.String("tls-cert", "",
+			"serve TLS with this certificate; with -tls-addr it is a second listener for federation traffic only")
+		tlsKey  = flag.String("tls-key", "", "the private key of -tls-cert")
+		tlsAddr = flag.String("tls-addr", "",
+			"additional address to serve over TLS, for deployments where the federation port is served with a certificate and the client port is not")
+		caFiles = flag.String("ca-cert", "",
+			"comma separated PEM certificate authorities to trust when reaching peers; empty means the system trust store")
 		federationFlush = flag.Duration("federation-flush", time.Second,
 			"how often federation traffic waiting for a peer is retried; 0 delivers only on demand")
 		showVersion = flag.Bool("version", false, "print the version and exit")
@@ -99,6 +108,18 @@ func main() {
 		log.Fatalf("starting service: %v", err)
 	}
 
+	// Outbound federation is TLS first. A deployment behind a private CA names that
+	// CA; nothing here disables verification, because the certificate is what stands
+	// between this server and somebody who knows its name.
+	var federationCAs *x509.CertPool
+	if *caFiles != "" {
+		pool, err := federation.LoadCAs(splitList(*caFiles))
+		if err != nil {
+			log.Fatalf("certificate authorities: %v", err)
+		}
+		federationCAs = pool
+	}
+
 	app := api.New(svc, auth.NewStore(tokens, db), api.Config{
 		ServerName:           *serverName,
 		Version:              service.LatticeVersion,
@@ -117,8 +138,9 @@ func main() {
 			UploadBurst: *uploadBurst,
 			UploadRate:  *uploadRate,
 		},
-		Federation:      *federationOn,
-		FederationPeers: peerOverrides(*federationPeers),
+		Federation:        *federationOn,
+		FederationPeers:   peerOverrides(*federationPeers),
+		FederationRootCAs: federationCAs,
 	})
 
 	if *federationOn {
@@ -130,12 +152,38 @@ func main() {
 	}
 
 	handler := applyCORS(app.Handler(), *corsOrigin)
-	server := &http.Server{
-		Addr:              *addr,
-		Handler:           handler,
-		ReadHeaderTimeout: 10 * time.Second,
-		// Sync long polling needs a generous write timeout.
-		WriteTimeout: 0,
+	if (*tlsCert == "") != (*tlsKey == "") {
+		log.Fatalf("-tls-cert and -tls-key are given together")
+	}
+	if *tlsAddr != "" && *tlsCert == "" {
+		log.Fatalf("-tls-addr needs -tls-cert and -tls-key: a second listener that is not TLS is the same listener twice")
+	}
+
+	// The API is one handler with possibly two doors. A deployment that terminates TLS
+	// in a proxy serves plain HTTP on the client port; the federation port is a
+	// different matter, because a peer validates the certificate against the server name
+	// that appears in every event id it has ever seen - and because the specification
+	// sends federation traffic to https://<server name>.
+	type door struct {
+		server *http.Server
+		// secure says whether this door is served over TLS.
+		secure bool
+	}
+	newServer := func(address string) *http.Server {
+		return &http.Server{
+			Addr:              address,
+			Handler:           handler,
+			ReadHeaderTimeout: 10 * time.Second,
+			// Sync long polling needs a generous write timeout.
+			WriteTimeout: 0,
+		}
+	}
+	// With a certificate and no second address, TLS is how the one address is served.
+	// With a second address, the first stays plain HTTP and the second is the TLS door
+	// peers reach.
+	doors := []door{{server: newServer(*addr), secure: *tlsCert != "" && *tlsAddr == ""}}
+	if *tlsCert != "" && *tlsAddr != "" {
+		doors = append(doors, door{server: newServer(*tlsAddr), secure: true})
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -149,11 +197,19 @@ func main() {
 	// is how long a message waits before its first attempt leaves.
 	stopOutbox := svc.StartFederationOutbox(ctx, *federationFlush)
 
-	errs := make(chan error, 1)
-	go func() {
-		log.Printf("listening on %s as %s with database %s", *addr, *serverName, *dbPath)
-		errs <- server.ListenAndServe()
-	}()
+	errs := make(chan error, len(doors))
+	for _, entry := range doors {
+		entry := entry
+		go func() {
+			if entry.secure {
+				log.Printf("listening on %s as %s over TLS with database %s", entry.server.Addr, *serverName, *dbPath)
+				errs <- entry.server.ListenAndServeTLS(*tlsCert, *tlsKey)
+				return
+			}
+			log.Printf("listening on %s as %s with database %s", entry.server.Addr, *serverName, *dbPath)
+			errs <- entry.server.ListenAndServe()
+		}()
+	}
 
 	select {
 	case <-ctx.Done():
@@ -167,8 +223,10 @@ func main() {
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := server.Shutdown(shutdownCtx); err != nil {
-		log.Printf("shutdown: %v", err)
+	for _, entry := range doors {
+		if err := entry.server.Shutdown(shutdownCtx); err != nil {
+			log.Printf("shutdown: %v", err)
+		}
 	}
 	stopOutbox()
 	stopMaintenance()

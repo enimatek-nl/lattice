@@ -58,7 +58,16 @@ func (a *App) handleUpdateDevice(w http.ResponseWriter, r *http.Request) {
 
 // handleDeleteDevice implements DELETE /_matrix/client/v3/devices/{deviceId}.
 func (a *App) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
-	if err := a.svc.DeleteDevice(r.Context(), auth.GetUserID(r), r.PathValue("deviceId")); err != nil {
+	// The body is optional in the shape clients send, but the authentication inside it
+	// is not: a DELETE with no body is answered with the interactive auth challenge.
+	var body struct {
+		Auth matrix.Object `json:"auth,omitempty"`
+	}
+	if err := decodeBody(r, &body); err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	if err := a.svc.DeleteDevice(r.Context(), auth.GetUserID(r), r.PathValue("deviceId"), body.Auth); err != nil {
 		a.writeError(w, r, err)
 		return
 	}

@@ -71,13 +71,26 @@ func (s *Service) CreateRoom(ctx context.Context, params CreateRoomParams) (*per
 	}
 
 	if params.Alias != "" {
-		if _, err := s.CreateAlias(ctx, params.Alias, roomID, params.Creator); err != nil {
-			return nil, err
+		// The alias is claimed after the room's state exists, because the rule "only a
+		// member of a room may make an alias for it" is false for the creator until the
+		// creator's own join event has been written. The conflict is still checked here,
+		// so a taken alias does not leave a room behind with nothing pointing at it.
+		if taken, err := s.db.AliasRepo.Get(params.Alias); err == nil {
+			return nil, matrix.ErrConflict(matrix.ErrCodeAliasExists,
+				"alias %s already points at room %s", params.Alias, taken.RoomID)
+		} else if !persist.IsNotFound(err) {
+			return nil, matrix.ErrInternal(err)
 		}
 	}
 
 	if err := s.writeInitialState(ctx, roomID, params, preset); err != nil {
 		return nil, err
+	}
+
+	if params.Alias != "" {
+		if _, err := s.CreateAlias(ctx, params.Alias, roomID, params.Creator); err != nil {
+			return nil, err
+		}
 	}
 
 	visibility := params.Visibility
@@ -163,6 +176,7 @@ func (s *Service) writeInitialState(ctx context.Context, roomID string, params C
 		Ban:           PowerDefaultBan,
 		Redact:        PowerDefaultRedact,
 		SendDefault:   PowerDefaultMessage,
+		StateDefault:  PowerDefaultState,
 		UsersDefault:  PowerDefaultUser,
 		Events:        map[string]int64{},
 		Users:         map[string]int64{params.Creator: PowerAdmin},
@@ -188,21 +202,16 @@ func (s *Service) writeInitialState(ctx context.Context, roomID string, params C
 		matrix.Object{"guest_access": preset.GuestAccess}); err != nil {
 		return err
 	}
-	if params.Name != "" {
-		if err := s.appendState(ctx, roomID, params.Creator, matrix.TypeName,
-			matrix.Object{"name": params.Name}); err != nil {
-			return err
-		}
-	}
-	if params.Topic != "" {
-		if err := s.appendState(ctx, roomID, params.Creator, matrix.TypeTopic,
-			matrix.Object{"topic": params.Topic}); err != nil {
-			return err
-		}
-	}
 	if params.Alias != "" {
+		// The event names the alias in full. A bare localpart is not an identifier:
+		// a client, a public room list or another server cannot resolve it, and the
+		// room would answer to a name nobody can use.
+		alias, err := s.normaliseAlias(params.Alias)
+		if err != nil {
+			return err
+		}
 		if err := s.appendState(ctx, roomID, params.Creator, matrix.TypeCanonicalAlias,
-			matrix.Object{"alias": params.Alias}); err != nil {
+			matrix.Object{"alias": alias.String()}); err != nil {
 			return err
 		}
 	}
@@ -220,7 +229,40 @@ func (s *Service) writeInitialState(ctx context.Context, roomID string, params C
 			return err
 		}
 	}
+
+	// The named parameters of the request come last, so they win over the state a
+	// caller also handed in through initial_state. The specification puts the
+	// explicit keys above the list rather than under it, and a client that sends
+	// both - a room template with a topic the caller then edits - means the edit.
+	if params.Name != "" {
+		if err := s.appendState(ctx, roomID, params.Creator, matrix.TypeName,
+			matrix.Object{"name": params.Name}); err != nil {
+			return err
+		}
+	}
+	if params.Topic != "" {
+		if err := s.appendState(ctx, roomID, params.Creator, matrix.TypeTopic,
+			richTopic(params.Topic)); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// richTopic writes an m.room.topic content block the way the rich topics
+// extension asks for: the plain topic, plus the same text as a formatted
+// representation a client can render without guessing that a bare string is
+// plain text. Both are written from one string, so they cannot drift apart.
+func richTopic(topic string) matrix.Object {
+	return matrix.Object{
+		"topic": topic,
+		"m.topic": matrix.Object{
+			"m.text": []matrix.Object{{
+				"mimetype": "text/plain",
+				"body":     topic,
+			}},
+		},
+	}
 }
 
 // appendState appends a state event with an empty state key.
@@ -340,7 +382,7 @@ func (s *Service) normaliseAlias(alias string) (matrix.Alias, error) {
 	if domain != s.serverName {
 		return "", matrix.ErrForbidden("cannot create aliases on other servers")
 	}
-	if !matrix.ValidLocalpart(local) {
+	if !matrix.ValidAliasLocalpart(local) {
 		return "", matrix.ErrInvalidParam("invalid alias localpart %q", local)
 	}
 	if !matrix.Alias(alias).Valid() {

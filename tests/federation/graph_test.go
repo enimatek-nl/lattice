@@ -75,15 +75,11 @@ func stateEvents(t *testing.T, s *server, sess *session, roomID string) []any {
 	t.Helper()
 	got := s.mustDo(http.StatusOK, http.MethodGet,
 		fmt.Sprintf("/_matrix/client/v3/rooms/%s/state", roomID), sess.Token, nil)
-	body, ok := decoded(t, got.Raw).(matrix.Object)
+	body, ok := decoded(t, got.Raw).([]any)
 	if !ok {
-		t.Fatalf("the state of %s is not an object: %s", roomID, got.Raw)
+		t.Fatalf("the state of %s is not an array of events: %s", roomID, got.Raw)
 	}
-	entries, ok := body["state"].([]any)
-	if !ok {
-		t.Fatalf("the state of %s carries no state array: %s", roomID, got.Raw)
-	}
-	return entries
+	return body
 }
 
 // idsOf reads an array of event ids out of a served event.

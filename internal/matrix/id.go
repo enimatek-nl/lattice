@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 // Identifier alphabets used when minting new Matrix identifiers. The
@@ -96,7 +97,7 @@ func (a Alias) String() string { return string(a) }
 
 // Valid reports whether the alias has the shape "#localpart:domain".
 func (a Alias) Valid() bool {
-	return aliasRe.MatchString(string(a))
+	return aliasRe.MatchString(string(a)) && ValidAliasLocalpart(a.Localpart())
 }
 
 // Localpart returns the local part of the alias without the leading "#".
@@ -116,24 +117,83 @@ func (a Alias) Domain() string {
 	return ""
 }
 
-var aliasRe = regexp.MustCompile(`^#[a-zA-Z0-9._/=-]+:.+$`)
+// aliasRe is the outer shape of an alias: a "#", a local part, ":" and a domain.
+// The local part itself is checked by ValidAliasLocalpart, which knows the
+// Unicode range the specification allows and does not fit in an ASCII class.
+var aliasRe = regexp.MustCompile(`^#[^:]+:.+$`)
 
-// ValidLocalpart reports whether a user or alias localpart is acceptable for
-// this homeserver. Matrix reserves a small character set for localparts.
+// ValidLocalpart reports whether a user localpart is acceptable for this
+// homeserver. Matrix reserves a small character set for user ID local parts.
 func ValidLocalpart(localpart string) bool {
 	if localpart == "" {
 		return false
 	}
 	for _, r := range localpart {
+		if !userLocalpartRune(r) {
+			return false
+		}
+	}
+	return true
+}
+
+// ValidAliasLocalpart reports whether an alias local part is acceptable. Room
+// aliases are display text as much as identifiers: the specification lets them
+// hold any character from U+0080 upwards, which is how a room called
+// "#salle de réunion:example.com" or one named in Japanese is addressable.
+// User IDs stay restricted to the ASCII set above.
+func ValidAliasLocalpart(localpart string) bool {
+	if localpart == "" {
+		return false
+	}
+	for _, r := range localpart {
 		switch {
-		case r >= 'a' && r <= 'z':
-		case r >= '0' && r <= '9':
-		case r == '.' || r == '_' || r == '-' || r == '=' || r == '/':
+		case userLocalpartRune(r):
+		case r >= '\u0080' && !unicode.IsControl(r):
 		default:
 			return false
 		}
 	}
 	return true
+}
+
+// userLocalpartRune reports whether r belongs to the small ASCII set Matrix
+// allows in an identifier local part.
+func userLocalpartRune(r rune) bool {
+	switch {
+	case r >= 'a' && r <= 'z':
+	case r >= '0' && r <= '9':
+	case r == '.' || r == '_' || r == '-' || r == '=' || r == '/':
+	default:
+		return false
+	}
+	return true
+}
+
+// IsUserID reports whether id is written as "@localpart:domain" and holds a
+// local part this server could accept.
+func IsUserID(id string) bool {
+	localpart, _, ok := cutIdentifier(id, "@")
+	return ok && ValidLocalpart(localpart)
+}
+
+// IsRoomID reports whether id is written as "!localpart:domain". Room ID local
+// parts are opaque: a server mints them and nothing else reads them, so only the
+// shape is checked.
+func IsRoomID(id string) bool {
+	localpart, _, ok := cutIdentifier(id, "!")
+	return ok && localpart != ""
+}
+
+// cutIdentifier splits "<sigil>localpart:domain" into its parts.
+func cutIdentifier(id, sigil string) (localpart, domain string, ok bool) {
+	if !strings.HasPrefix(id, sigil) {
+		return "", "", false
+	}
+	localpart, domain, found := strings.Cut(strings.TrimPrefix(id, sigil), ":")
+	if !found || domain == "" {
+		return "", "", false
+	}
+	return localpart, domain, true
 }
 
 // UserMxid builds a user ID from a localpart and server name.

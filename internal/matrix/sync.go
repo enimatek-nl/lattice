@@ -9,9 +9,14 @@ type SyncResponse struct {
 	ToDevice           *Ephemeral          `json:"to_device,omitempty"`
 	DeviceLists        *DeviceLists        `json:"device_lists,omitempty"`
 	DeviceOneTimeCount *DeviceOneTimeCount `json:"device_one_time_keys_count,omitempty"`
-	UnusedFallbackKeys []string            `json:"device_unused_fallback_key_types,omitempty"`
-	Since              string              `json:"since,omitempty"`
-	DeletedRooms       []string            `json:"rooms_offline,omitempty"`
+	// PushRules carries the whole rule set on the first sync only: the rules decide
+	// whether the events in this very response are notifications, so handing them out
+	// later through /pushrules makes the first ones wrong. Later syncs leave it out
+	// and changes arrive as m.push_rules account data.
+	PushRules          *Object  `json:"pushrules,omitempty"`
+	UnusedFallbackKeys []string `json:"device_unused_fallback_key_types,omitempty"`
+	Since              string   `json:"since,omitempty"`
+	DeletedRooms       []string `json:"rooms_offline,omitempty"`
 }
 
 // Rooms groups the three room sections of a sync response.

@@ -351,7 +351,7 @@ func validKind(kind string) bool {
 
 // SetPusher creates, updates or deletes a pusher. A nil or empty body deletes
 // the pusher identified by its key and app id.
-func (s *Service) SetPusher(ctx context.Context, userID string, body matrix.Object) error {
+func (s *Service) SetPusher(ctx context.Context, userID, sessionDeviceID string, body matrix.Object) error {
 	pushKey, _ := body["pushkey"].(string)
 	appID, _ := body["app_id"].(string)
 	if pushKey == "" || appID == "" {
@@ -376,12 +376,21 @@ func (s *Service) SetPusher(ctx context.Context, userID string, body matrix.Obje
 	if tweak, ok := body["pusher.tweak"].(string); ok {
 		active = tweak != ""
 	}
+	// The pusher belongs to a device: it is that device that will be notified. A
+	// client may name one in the body, and when it does not the device of the access
+	// token that made the request is the only honest answer. Without this the pusher
+	// belongs to no device, and a password change or a sign-out of everything cannot
+	// tell whose pushers to drop.
+	device := stringOf(body, "device_id")
+	if device == "" {
+		device = sessionDeviceID
+	}
 	pusher := &persist.Pusher{
 		PushKey:  pushKey,
 		Kind:     kind,
 		AppID:    appID,
 		AppName:  stringOf(body, "app_display_name"),
-		DeviceID: stringOf(body, "device_id"),
+		DeviceID: device,
 		UserID:   userID,
 		Lang:     stringOf(body, "lang"),
 		Data:     string(matrix.Encode(data)),

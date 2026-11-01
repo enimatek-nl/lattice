@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 
 	"github.com/enimatek-nl/lattice/internal/auth"
@@ -66,7 +67,7 @@ func (a *App) handleDeleteAlias(w http.ResponseWriter, r *http.Request) {
 
 // handleRoomAliases implements GET /_matrix/client/v3/rooms/{roomId}/aliases.
 func (a *App) handleRoomAliases(w http.ResponseWriter, r *http.Request) {
-	aliases, err := a.svc.RoomAliases(r.Context(), r.PathValue("roomId"))
+	aliases, err := a.svc.ListRoomAliases(r.Context(), r.PathValue("roomId"), auth.GetUserID(r))
 	if err != nil {
 		a.writeError(w, r, err)
 		return
@@ -83,10 +84,14 @@ func (a *App) handleRoomAliases(w http.ResponseWriter, r *http.Request) {
 //	@Router		/_matrix/client/v3/publicRooms [get]
 func (a *App) handlePublicRooms(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Filter   string `json:"filter"`
-		Limit    int    `json:"limit"`
-		Since    string `json:"since"`
-		RoomType string `json:"room_network"`
+		// The filter is an object on the POST and a bare string on the GET, which is
+		// what the specification says and what clients send: a body whose filter is a
+		// string is a client that read an older draft, and answering it with a shape
+		// error is how a directory search becomes unusable.
+		Filter   publicRoomsFilter `json:"filter"`
+		Limit    int               `json:"limit"`
+		Since    string            `json:"since"`
+		RoomType string            `json:"room_network"`
 	}
 	if r.Method == http.MethodPost {
 		if err := decodeBody(r, &body); err != nil {
@@ -94,7 +99,7 @@ func (a *App) handlePublicRooms(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		body.Filter = queryValue(r, "filter", "")
+		body.Filter.GenericSearchTerm = queryValue(r, "filter", "")
 		limit, err := queryInt(r, "limit", 100)
 		if err != nil {
 			a.writeError(w, r, err)
@@ -102,12 +107,39 @@ func (a *App) handlePublicRooms(w http.ResponseWriter, r *http.Request) {
 		}
 		body.Limit, body.Since = limit, queryValue(r, "since", "")
 	}
-	result, err := a.svc.PublicRooms(r.Context(), body.Filter, body.Limit, body.Since)
+	result, err := a.svc.PublicRooms(r.Context(), body.Filter.GenericSearchTerm, body.Limit, body.Since)
 	if err != nil {
 		a.writeError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+// publicRoomsFilter is the filter object of POST /publicRooms. Only
+// generic_search_term is honoured; room_types is accepted and ignored, because a
+// room's type is state this server does not index in the directory table.
+type publicRoomsFilter struct {
+	GenericSearchTerm string     `json:"generic_search_term"`
+	RoomTypes         *[]*string `json:"room_types"`
+}
+
+// UnmarshalJSON also accepts a bare string, which is the shape older clients send.
+func (f *publicRoomsFilter) UnmarshalJSON(raw []byte) error {
+	if len(raw) > 0 && raw[0] == '"' {
+		var text string
+		if err := json.Unmarshal(raw, &text); err != nil {
+			return err
+		}
+		f.GenericSearchTerm = text
+		return nil
+	}
+	type filter publicRoomsFilter
+	var decoded filter
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return err
+	}
+	*f = publicRoomsFilter(decoded)
+	return nil
 }
 
 // handleGetVisibility implements GET /_matrix/client/v3/rooms/{roomId}/directory/visibility.
@@ -172,19 +204,33 @@ func (a *App) handleMembers(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, r, err)
 		return
 	}
-	chunk := make([]matrix.Object, 0, len(members))
+	// The chunk is the member events themselves, in client format, so each entry
+	// carries type, state_key, sender and content like any other event. A wrapper of
+	// user_id/membership keys answers a different question, and a client reaching for
+	// the event of a membership finds nothing to verify.
+	chunk := make([]any, 0, len(members))
 	for _, member := range members {
-		entry := matrix.Object{"user_id": member.UserID, "membership": member.Membership}
-		if member.DisplayName != "" {
-			entry["display_name"] = member.DisplayName
+		if member.Event == nil {
+			// A membership row with no event behind it: a room this server knows the
+			// user is in but never saw the membership for. Answer with what is known
+			// rather than leaving the member out.
+			stateKey := member.UserID
+			chunk = append(chunk, &matrix.Event{
+				RoomID:   roomID,
+				Type:     matrix.TypeMember,
+				StateKey: &stateKey,
+				Sender:   member.UserID,
+				Content: matrix.Encode(matrix.MemberContent{
+					Membership:  member.Membership,
+					DisplayName: member.DisplayName,
+					AvatarURL:   member.AvatarURL,
+				}),
+			})
+			continue
 		}
-		if member.AvatarURL != "" {
-			entry["avatar_url"] = member.AvatarURL
-		}
-		if member.Event != nil {
-			entry["event"] = member.Event
-		}
-		chunk = append(chunk, entry)
+		event := *member.Event
+		event.RoomID = roomID
+		chunk = append(chunk, &event)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"chunk": chunk})
 }

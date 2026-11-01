@@ -141,6 +141,7 @@ type PusherRepo interface {
 	Set(pusher *Pusher) error
 	List(userID string) ([]*Pusher, error)
 	Delete(userID, pushKey, appID string) error
+	DeleteExceptDevice(userID, deviceID string) error
 	Get(pushKey, appID string) (*Pusher, error)
 }
 
@@ -171,6 +172,16 @@ func (r *PusherRepoImpl) List(userID string) ([]*Pusher, error) {
 // again afterwards.
 func (r *PusherRepoImpl) Delete(userID, pushKey, appID string) error {
 	return r.db.Unscoped().Where("user_id = ? AND push_key = ? AND app_id = ?", userID, pushKey, appID).
+		Delete(&Pusher{}).
+		Error
+}
+
+// DeleteExceptDevice drops every pusher of a user except those registered by one
+// device. A pusher is a promise to notify a particular session's device, so when
+// the sessions of the other devices end — a password change, a sign-out of
+// everything — the promise ends with them.
+func (r *PusherRepoImpl) DeleteExceptDevice(userID, deviceID string) error {
+	return r.db.Unscoped().Where("user_id = ? AND (device_id IS NULL OR device_id <> ?)", userID, deviceID).
 		Delete(&Pusher{}).
 		Error
 }

@@ -27,6 +27,10 @@ type BackupSession struct {
 	RoomID          string
 	SessionID       string
 	FirstKnownIndex int64
+	// IsVerified and ForwardedCount travel with the index in deciding whether this
+	// session may replace the one already stored; see shouldReplaceBackup.
+	IsVerified     bool
+	ForwardedCount int64
 	// Data is the encrypted session blob, stored and returned as it came.
 	Data matrix.RawMessage
 }
@@ -135,20 +139,48 @@ func (s *Service) StoreBackupSessions(ctx context.Context, userID string, versio
 		if len(session.Data) == 0 {
 			return 0, matrix.ErrInvalidParam("the session %s carries no key data", session.SessionID)
 		}
-		rows = append(rows, &persist.BackupRoomKey{
+		next := &persist.BackupRoomKey{
 			UserID:          userID,
 			Version:         row.Version,
 			RoomID:          session.RoomID,
 			SessionID:       session.SessionID,
 			FirstKnownIndex: session.FirstKnownIndex,
+			IsVerified:      session.IsVerified,
+			ForwardedCount:  session.ForwardedCount,
 			Data:            string(session.Data),
-		})
+		}
+		// A session already on file is only overwritten by a better one, so the
+		// upload that races it has to read what is there first.
+		current, err := s.db.KeyBackupRepo.GetKey(userID, row.Version, session.RoomID, session.SessionID)
+		if err != nil && !errIsNoBackup(err) {
+			return 0, matrix.ErrInternal(err)
+		}
+		if current != nil && !shouldReplaceBackup(current, next) {
+			continue
+		}
+		rows = append(rows, next)
 	}
 	stored, err := s.db.KeyBackupRepo.StoreKeys(rows)
 	if err != nil {
 		return 0, matrix.ErrInternal(err)
 	}
 	return stored, nil
+}
+
+// shouldReplaceBackup reports whether a newly uploaded session may take the place
+// of the one already stored for the same room and session id.
+//
+// A session is a secret that has been copied around, and the copies get worse as
+// they travel: a session that was verified can become an unverified forward, and
+// each forward can only decrypt from a later message than the original. Keeping
+// the better copy is what makes a backup worth restoring, so a worse upload is
+// ignored rather than obeyed, and the count the endpoint reports stays honest
+// because the row is not written at all.
+func shouldReplaceBackup(stored, next *persist.BackupRoomKey) bool {
+	if next.IsVerified != stored.IsVerified {
+		return next.IsVerified
+	}
+	return next.FirstKnownIndex < stored.FirstKnownIndex || next.ForwardedCount < stored.ForwardedCount
 }
 
 // BackupSessions returns the stored sessions of a version. An empty roomID asks

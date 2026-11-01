@@ -65,7 +65,57 @@ func (s *Service) DeleteAlias(ctx context.Context, alias string, requester strin
 	if err := s.db.AliasRepo.Delete(alias); err != nil {
 		return matrix.ErrInternal(err)
 	}
-	return nil
+	return s.dropCanonicalAliasReference(ctx, row.RoomID, requester, alias)
+}
+
+// dropCanonicalAliasReference takes a deleted alias out of the room's
+// m.room.canonical_alias event.
+//
+// A canonical alias is a promise that the room answers to that address. Once the
+// alias is gone the promise is false, and a state event that advertises an address
+// which 404s is worse than no canonical alias at all - clients join through it and
+// report a missing room. The room therefore re-states the event without the dead
+// entry, and with an empty content object when nothing is left to state.
+func (s *Service) dropCanonicalAliasReference(ctx context.Context, roomID, requester, alias string) error {
+	state, err := s.db.StateRepo.Get(roomID, matrix.TypeCanonicalAlias, "")
+	if err != nil {
+		if persist.IsNotFound(err) {
+			return nil
+		}
+		return matrix.ErrInternal(err)
+	}
+	event, err := s.db.EventRepo.Get(state.EventID)
+	if err != nil {
+		if persist.IsNotFound(err) {
+			return nil
+		}
+		return matrix.ErrInternal(err)
+	}
+	content := matrix.MustParseObject([]byte(event.Content))
+	changed := false
+	if named, _ := content["alias"].(string); named == alias {
+		delete(content, "alias")
+		changed = true
+	}
+	if listed, ok := content["alt_aliases"].([]any); ok {
+		kept := make([]any, 0, len(listed))
+		for _, entry := range listed {
+			if entry == alias {
+				changed = true
+				continue
+			}
+			kept = append(kept, entry)
+		}
+		if len(kept) == 0 {
+			delete(content, "alt_aliases")
+		} else {
+			content["alt_aliases"] = kept
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return s.appendState(ctx, roomID, requester, matrix.TypeCanonicalAlias, content)
 }
 
 // IsAdmin reports whether a user is a server administrator.
@@ -75,6 +125,19 @@ func (s *Service) IsAdmin(ctx context.Context, userID string) bool {
 		return false
 	}
 	return user.Admin
+}
+
+// ListRoomAliases returns the local aliases of a room to somebody who may ask.
+//
+// The alias list is part of a room's identity: it is how a member finds the room
+// again. A stranger who knows a room id should not be able to enumerate the
+// addresses it answers to, so the listing follows membership rather than the
+// room id.
+func (s *Service) ListRoomAliases(ctx context.Context, roomID, requester string) ([]string, error) {
+	if s.MembershipOf(ctx, roomID, requester) == "" && !s.IsAdmin(ctx, requester) {
+		return nil, matrix.ErrForbidden("you are not a member of %s", roomID)
+	}
+	return s.RoomAliases(ctx, roomID)
 }
 
 // RoomAliases lists the local aliases of a room.

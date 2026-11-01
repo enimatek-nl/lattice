@@ -264,8 +264,11 @@ func startPlain(t *testing.T, name string) *server {
 
 // response pairs a status code with a decoded body.
 type response struct {
-	Status  int
-	Body    map[string]any
+	Status int
+	Body   map[string]any
+	// Array holds the body when it is a JSON array rather than an object, as room
+	// state (GET /rooms/{roomID}/state) is.
+	Array   []any
 	Raw     []byte
 	Headers http.Header
 }
@@ -338,7 +341,10 @@ func roundTrip(t *testing.T, request *http.Request) response {
 	out := response{Status: resp.StatusCode, Raw: raw, Headers: resp.Header}
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &out.Body); err != nil {
-			t.Fatalf("decoding the body of %s %s: %v (body %s)", request.Method, request.URL, err, raw)
+			out.Body = nil
+			if err := json.Unmarshal(raw, &out.Array); err != nil {
+				t.Fatalf("decoding the body of %s %s: %v (body %s)", request.Method, request.URL, err, raw)
+			}
 		}
 	}
 	return out

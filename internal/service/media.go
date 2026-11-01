@@ -150,7 +150,11 @@ func (s *Service) UploadToReservedMedia(ctx context.Context, userID, mediaID, fi
 	case err == nil && existing.UserID != "" && existing.UserID != userID:
 		return matrix.ErrForbidden("media %s belongs to another user", mediaID)
 	case err == nil && (existing.Size > 0 || len(existing.Blob) > 0):
-		return matrix.ErrConflict(matrix.ErrCodeUnknown, "media id already exists")
+		// The id already holds content. M_CANNOT_OVERWRITE_MEDIA is the code the
+		// specification gives this collision: the media repository never replaces a
+		// file, so an id that was used once is permanently taken and a client that
+		// reuses one must mint a new id rather than retry.
+		return matrix.ErrConflict(matrix.ErrCodeCannotOverwrite, "media id %s already has content", mediaID)
 	}
 	return s.db.MediaRepo.Save(&persist.Media{
 		MediaID:     mediaID,
@@ -179,10 +183,11 @@ func (s *Service) Media(ctx context.Context, origin, mediaID string) (*persist.M
 		return nil, matrix.ErrInternal(err)
 	}
 	if media.Size == 0 && len(media.Blob) == 0 {
-		// A media id minted by POST /create whose bytes never arrived. There is
-		// nothing to serve, and saying so is truer than an empty 200 that a client
-		// renders as a broken image.
-		return nil, matrix.ErrNotFound("media %s has no content yet", mediaID)
+		// A media id minted by POST /create whose bytes have not arrived yet. The
+		// reservation is real, so the honest answer is "not yet" (504) rather than
+		// "does not exist": a client that uploads a room avatar and reads it back is
+		// racing its own PUT, and a retry is the only recovery that works.
+		return nil, matrix.ErrNotYetUploaded("media %s has no content yet", mediaID)
 	}
 	return media, nil
 }

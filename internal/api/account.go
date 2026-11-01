@@ -245,7 +245,7 @@ func (a *App) handleRefresh(w http.ResponseWriter, r *http.Request) {
 //	@Success	200	{object}	map[string]string
 //	@Router		/_matrix/client/v3/logout [post]
 func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
-	if err := a.svc.Logout(r.Context(), auth.GetToken(r)); err != nil {
+	if err := a.svc.Logout(r.Context(), auth.GetUserID(r), auth.GetDeviceID(r), auth.GetToken(r)); err != nil {
 		a.writeError(w, r, err)
 		return
 	}
@@ -260,7 +260,7 @@ func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
 //	@Success	200	{object}	map[string]string
 //	@Router		/_matrix/client/v3/logout/all [post]
 func (a *App) handleLogoutAll(w http.ResponseWriter, r *http.Request) {
-	if err := a.svc.LogoutAll(r.Context(), auth.GetUserID(r), auth.GetDeviceID(r)); err != nil {
+	if err := a.svc.LogoutAll(r.Context(), auth.GetUserID(r)); err != nil {
 		a.writeError(w, r, err)
 		return
 	}
@@ -371,15 +371,17 @@ func (a *App) handleThreePIDRequestToken(w http.ResponseWriter, r *http.Request)
 //	@Router		/_matrix/client/v3/account/password [post]
 func (a *App) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		OldPassword string        `json:"old_password"`
-		NewPassword string        `json:"new_password"`
-		Auth        matrix.Object `json:"auth,omitempty"`
+		OldPassword   string        `json:"old_password"`
+		NewPassword   string        `json:"new_password"`
+		Auth          matrix.Object `json:"auth,omitempty"`
+		LogoutDevices *bool         `json:"logout_devices,omitempty"`
 	}
 	if err := decodeBody(r, &body); err != nil {
 		a.writeError(w, r, err)
 		return
 	}
-	if err := a.svc.ChangePassword(r.Context(), auth.GetUserID(r), body.OldPassword, body.NewPassword, body.Auth); err != nil {
+	if err := a.svc.ChangePassword(r.Context(), auth.GetUserID(r), auth.GetDeviceID(r),
+		body.OldPassword, body.NewPassword, body.LogoutDevices, body.Auth); err != nil {
 		a.writeError(w, r, err)
 		return
 	}

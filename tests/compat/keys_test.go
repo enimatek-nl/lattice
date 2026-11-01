@@ -417,7 +417,21 @@ func TestKeyDeviceRemoval(t *testing.T) {
 		t.Errorf("the device filter did not narrow the query: %s", filtered.Raw)
 	}
 
-	server.MustDo(http.MethodDelete, "/_matrix/client/v3/devices/"+second.DeviceID, alice.Token, nil, http.StatusOK)
+	// Deleting a device asks for the password, and the challenge comes back when it is
+	// not given: an access token alone is not proof that whoever holds it knows it.
+	challenge := server.Do(http.MethodDelete, "/_matrix/client/v3/devices/"+second.DeviceID, alice.Token, nil)
+	if challenge.Status != http.StatusUnauthorized {
+		t.Errorf("deleting a device without authentication: got %d %s, want 401", challenge.Status, challenge.Raw)
+	}
+	if flows, ok := challenge.Body["flows"].([]any); !ok || len(flows) == 0 {
+		t.Errorf("the challenge names no flows: %s", challenge.Raw)
+	}
+	if session, ok := challenge.Body["session"].(string); !ok || session == "" {
+		t.Errorf("the challenge carries no session: %s", challenge.Raw)
+	}
+	server.MustDo(http.MethodDelete, "/_matrix/client/v3/devices/"+second.DeviceID, alice.Token, map[string]any{
+		"auth": map[string]any{"type": "m.login.password", "user": "alice", "password": "wonderland"},
+	}, http.StatusOK)
 	remaining := query()
 	if len(remaining) != 1 || remaining[alice.DeviceID] == nil {
 		t.Errorf("the keys of the deleted device survived: %v", remaining)

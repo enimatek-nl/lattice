@@ -34,8 +34,14 @@ type BackupRoomKey struct {
 	SessionID string `json:"session_id" gorm:"uniqueIndex:uq_keybackup_key;size:255"`
 	// FirstKnownIndex is the index of the first message the session can decrypt,
 	// which a client uses to decide which sessions it still needs.
-	FirstKnownIndex int64  `json:"first_known_index"`
-	Data            string `json:"data" gorm:"type:text"`
+	FirstKnownIndex int64 `json:"first_known_index"`
+	// IsVerified says whether the session came from a device whose identity the
+	// owner has signed, and ForwardedCount how many times it has been handed to
+	// another device. Together with the index they decide whether a newly uploaded
+	// session may replace the one on file: see shouldReplaceBackup.
+	IsVerified     bool   `json:"is_verified"`
+	ForwardedCount int64  `json:"forwarded_count"`
+	Data           string `json:"data" gorm:"type:text"`
 
 	gorm.Model
 }
@@ -173,7 +179,8 @@ func (r *KeyBackupRepoImpl) StoreKeys(keys []*BackupRoomKey) (int64, error) {
 	err := r.db.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "user_id"}, {Name: "version"},
 			{Name: "room_id"}, {Name: "session_id"}},
-		DoUpdates: clause.AssignmentColumns([]string{"first_known_index", "data"}),
+		DoUpdates: clause.AssignmentColumns([]string{"first_known_index", "is_verified",
+			"forwarded_count", "data"}),
 	}).CreateInBatches(keys, 200).Error
 	if err != nil {
 		return 0, err

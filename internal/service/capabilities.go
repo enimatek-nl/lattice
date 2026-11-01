@@ -44,6 +44,10 @@ func (s *Service) Versions() map[string]any {
 	return map[string]any{
 		"versions":          SpecVersions,
 		"unstable_features": s.unstableFeaturesCopy(),
+		// A client creating a room without naming a version needs to know which one
+		// it is getting: room versions change event ids, and a client that guesses
+		// wrong cannot verify what the server sent.
+		"default_room_version": DefaultRoomVersion,
 	}
 }
 

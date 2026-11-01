@@ -14,6 +14,7 @@ package api
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"io"
@@ -23,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/enimatek-nl/lattice/internal/auth"
 	"github.com/enimatek-nl/lattice/internal/federation"
@@ -64,6 +66,9 @@ type Config struct {
 	// run a certified HTTPS server; an operator needs it when a peer is reachable
 	// through a fixed tunnel.
 	FederationPeers map[string]string
+	// FederationRootCAs replaces the certificate authorities outbound federation
+	// requests trust. Empty means the system trust store.
+	FederationRootCAs *x509.CertPool
 }
 
 // App owns the HTTP handlers and their dependencies.
@@ -105,6 +110,7 @@ func New(svc *service.Service, store *auth.Store, cfg Config) *App {
 		app.federation = federation.NewTransport(svc, federation.Config{
 			PeerBaseURLs: cfg.FederationPeers,
 			UserAgent:    "Lattice/" + cfg.Version,
+			RootCAs:      cfg.FederationRootCAs,
 		})
 		// The service sends federation traffic too - the outbox has to run with or
 		// without an inbound request - so it holds the same client the routes use.
@@ -207,7 +213,40 @@ func containsMethod(methods []string, method string) bool {
 
 // Handler returns the routed handler. CORS is applied by the caller so this
 // package stays free of third party middleware.
-func (a *App) Handler() http.Handler { return a.mux }
+func (a *App) Handler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.URL.Path, r.URL.RawPath = currentAPIPath(r.URL.Path, r.URL.RawPath)
+		a.mux.ServeHTTP(w, r)
+	})
+}
+
+// pathRewrites maps the older spelling of a versioned API prefix onto the one
+// this server routes.
+var pathRewrites = []struct{ from, to string }{
+	{"/_matrix/client/r0/", "/_matrix/client/v3/"},
+	{"/_matrix/media/r0/", "/_matrix/media/v3/"},
+}
+
+// currentAPIPath rewrites a request path that uses a retired version prefix.
+//
+// "r0" was the release candidate prefix of the client-server API and "v1" of the
+// media API; both are still sent by older clients and by test suites written
+// against them. The endpoints behind them are the current ones, so answering them
+// with M_UNRECOGNIZED would be a filing-cabinet error rather than a missing
+// feature. RawPath moves with Path, because net/http matches the escaped form of
+// a path whenever it is a valid encoding of it.
+func currentAPIPath(path, rawPath string) (string, string) {
+	for _, rewrite := range pathRewrites {
+		if strings.HasPrefix(path, rewrite.from) {
+			path = rewrite.to + strings.TrimPrefix(path, rewrite.from)
+			if strings.HasPrefix(rawPath, rewrite.from) {
+				rawPath = rewrite.to + strings.TrimPrefix(rawPath, rewrite.from)
+			}
+			return path, rawPath
+		}
+	}
+	return path, rawPath
+}
 
 // Registered lists the method-and-path patterns this server knows about. The
 // endpoint status tool compares this list with the specification index.
@@ -287,6 +326,12 @@ func decodeBody(r *http.Request, target any) error {
 	}
 	if len(body) == 0 {
 		return nil
+	}
+	// encoding/json reads invalid UTF-8 by quietly substituting it, which turns a
+	// broken client into a stored string nobody can read back. JSON is defined to be
+	// UTF-8, so the bytes are checked before anything is decoded from them.
+	if !utf8.Valid(body) {
+		return matrix.ErrNotJSON("request body was not valid JSON: it is not valid UTF-8")
 	}
 	if err := json.Unmarshal(body, target); err != nil {
 		var syntaxErr *json.UnmarshalTypeError

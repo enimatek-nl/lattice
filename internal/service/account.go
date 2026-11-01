@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 
@@ -55,28 +56,41 @@ func (s *Service) Register(ctx context.Context, params RegisterParams) (*Session
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+
+	// The body is checked before the authentication challenge. An account name this
+	// server could never hold is a client error no amount of authenticating fixes,
+	// and a taken user ID has to be reported as such rather than answered with a
+	// 401 that sends the client off to authenticate for nothing. The one request
+	// that is not a registration attempt is the one with neither a username nor an
+	// auth dict: that is how a client asks which flows exist, and it has to be
+	// answered with the challenge.
+	localpart := strings.ToLower(params.Username)
+	switch {
+	case localpart != "":
+		if !matrix.ValidLocalpart(localpart) {
+			return nil, matrix.ErrInvalidUsername("user ID @%s:%s is invalid", localpart, s.serverName)
+		}
+		if _, err := s.db.UserRepo.GetByLocalpart(localpart); err == nil {
+			return nil, matrix.ErrUserInUse("user ID is already taken")
+		} else if !persist.IsNotFound(err) {
+			return nil, matrix.ErrInternal(err)
+		}
+	case params.Guest:
+		localpart = matrix.NewUserLocalpart()
+	default:
+		stage := ""
+		if params.Auth != nil {
+			stage, _ = params.Auth["type"].(string)
+		}
+		if stage != "" {
+			return nil, matrix.ErrInvalidUsername("a username is required")
+		}
+	}
+
 	if !params.Guest {
 		if err := s.authorizeRegistration(params); err != nil {
 			return nil, err
 		}
-	}
-
-	localpart := params.Username
-	if localpart == "" {
-		if params.Guest {
-			localpart = matrix.NewUserLocalpart()
-		} else {
-			return nil, matrix.ErrInvalidUsername("a username is required")
-		}
-	}
-	localpart = strings.ToLower(localpart)
-	if !matrix.ValidLocalpart(localpart) {
-		return nil, matrix.ErrInvalidUsername("user ID @%s:%s is invalid", localpart, s.serverName)
-	}
-	if _, err := s.db.UserRepo.GetByLocalpart(localpart); err == nil {
-		return nil, matrix.ErrConflict(matrix.ErrCodeUserInUse, "user ID is already taken")
-	} else if !persist.IsNotFound(err) {
-		return nil, matrix.ErrInternal(err)
 	}
 
 	password := params.Password
@@ -101,7 +115,7 @@ func (s *Service) Register(ctx context.Context, params RegisterParams) (*Session
 	}
 	if err := s.db.UserRepo.Create(user); err != nil {
 		if persist.IsDuplicate(err) {
-			return nil, matrix.ErrConflict(matrix.ErrCodeUserInUse, "user ID is already taken")
+			return nil, matrix.ErrUserInUse("user ID is already taken")
 		}
 		return nil, matrix.ErrInternal(err)
 	}
@@ -231,22 +245,42 @@ func (s *Service) newSession(ctx context.Context, user *persist.User, deviceID, 
 }
 
 // Logout revokes a single access token.
-func (s *Service) Logout(ctx context.Context, accessToken string) error {
+func (s *Service) Logout(ctx context.Context, userID, deviceID, accessToken string) error {
 	if accessToken == "" {
 		return matrix.ErrMissingToken()
 	}
 	if err := s.db.SessionRepo.DeleteByToken(accessToken); err != nil {
 		return matrix.ErrInternal(err)
 	}
-	return nil
-}
-
-// LogoutAll revokes every session of a user except the current device.
-func (s *Service) LogoutAll(ctx context.Context, userID, exceptDeviceID string) error {
-	if err := s.db.SessionRepo.DeleteExceptDevice(userID, exceptDeviceID); err != nil {
+	if userID == "" || deviceID == "" {
+		return nil
+	}
+	// Signing out ends the device, not only the token it used. A device is the key
+	// bundle of a session: leaving it behind means other devices keep encrypting
+	// for an end-to-end session nobody can open any more, and the device list of
+	// the account fills up with a row for every sign-out.
+	if err := s.db.DeviceRepo.Delete(userID, deviceID); err != nil {
 		return matrix.ErrInternal(err)
 	}
-	return nil
+	if err := s.db.SessionRepo.DeleteByDevice(userID, deviceID); err != nil {
+		return matrix.ErrInternal(err)
+	}
+	return s.DropDeviceKeys(ctx, userID, deviceID)
+}
+
+// LogoutAll ends every session of an account. The specification is explicit that
+// this includes the access token that made the request: signing out of
+// everything is the request, and keeping the caller signed in is the one outcome
+// it did not ask for. The devices go with the sessions, and their device keys
+// with the devices.
+func (s *Service) LogoutAll(ctx context.Context, userID string) error {
+	if err := s.db.SessionRepo.DeleteByUser(userID); err != nil {
+		return matrix.ErrInternal(err)
+	}
+	if err := s.db.DeviceRepo.DeleteAll(userID, ""); err != nil {
+		return matrix.ErrInternal(err)
+	}
+	return s.DropDeviceKeys(ctx, userID)
 }
 
 // Refresh exchanges a refresh token for a new access token.
@@ -284,34 +318,76 @@ func (s *Service) UsernameAvailable(ctx context.Context, username string) (bool,
 	return false, matrix.ErrInternal(err)
 }
 
-// checkAuthFlow validates the optional User-Interactive Auth payload of an
-// administrative action such as changing a password or deleting a device.
+// checkAuthFlow validates the User-Interactive Auth payload of a destructive
+// administrative action such as deactivating an account or deleting a device.
 // Account registration goes through authorizeRegistration instead, which is the
 // one clients discover by asking for a flow list.
+//
+// The password is required. A request that already carries an access token is not
+// proof that whoever holds the token knows the password, and these are the actions
+// where that difference matters: deleting a device or an account destroys the
+// evidence its owner would want to look at after an intrusion. The dummy stage is
+// therefore not accepted here, whatever it means during registration - and a
+// request with no auth at all is answered with the challenge, not with the action.
 func (s *Service) checkAuthFlow(ctx context.Context, auth matrix.Object, username string) error {
-	if len(auth) == 0 {
-		return nil
+	stage, _ := auth["type"].(string)
+	if stage == "" {
+		return s.adminAuthChallenge(username, "additional authentication is required")
 	}
-	raw, ok := auth["type"].(string)
-	if !ok {
-		return matrix.ErrForbidden("malformed auth request")
-	}
-	switch raw {
-	case StageDummy, StageRegistrationToken, StageAdmin:
-		return nil
+	switch stage {
 	case StagePassword:
-		if err := s.checkPasswordAuth(auth, username); err != nil {
+		account, password, err := s.passwordAuth(auth, username)
+		if err != nil {
 			var merr *matrix.Error
 			if errors.As(err, &merr) && merr.HTTPStatus() == http.StatusForbidden {
-				return matrix.ErrForbidden("the user authentication passed in the request body is incorrect")
+				return s.adminAuthChallenge(username, "the user authentication passed in the request body is incorrect")
+			}
+			return err
+		}
+		// Authenticating as somebody else must not carry the right to act on this
+		// account: deleting a device, changing a password or deactivating an account
+		// are all destructive acts on one person's session, and knowing your own
+		// password proves nothing about theirs.
+		if matrix.LocalpartOf(account.ID) != matrix.LocalpartOf(username) {
+			return matrix.ErrForbidden("the authentication in the request body belongs to another account")
+		}
+		if err := s.verifyPassword(account, password); err != nil {
+			var merr *matrix.Error
+			if errors.As(err, &merr) && merr.HTTPStatus() == http.StatusForbidden {
+				return s.adminAuthChallenge(username, "the user authentication passed in the request body is incorrect")
 			}
 			return err
 		}
 		return nil
+	case StageAdmin:
+		// The administrator stage stands in for the password only for an account that
+		// is an administrator, and only because an administrator acting on another
+		// account does not have that account's password.
+		account, err := s.localUser(username)
+		if err == nil && account.Admin {
+			return nil
+		}
+		return s.adminAuthChallenge(username, "only an administrator may authenticate this way")
 	default:
-		return matrix.NewError(matrix.ErrCodeForbidden, http.StatusUnauthorized,
-			"session does not support authentication protocol "+raw)
+		return s.adminAuthChallenge(username, "session does not support authentication protocol "+stage)
 	}
+}
+
+// adminAuthChallenge answers a destructive action whose authentication is not
+// settled: the 401 with the stages that would be accepted, the parameters they
+// need and a session id, which is the shape clients stop on.
+//
+// Lattice checks the credentials in the request rather than the session, because
+// the action is already authenticated by the access token and a session would add
+// a table to expire. The session id is returned because clients read it and log it.
+func (s *Service) adminAuthChallenge(username, reason string) *matrix.Error {
+	log.Printf("interactive auth: %s for %s", reason, username)
+	return matrix.NewError(matrix.ErrCodeForbidden, http.StatusUnauthorized, reason).WithExtra(matrix.Object{
+		"flows":     []AuthFlow{{Stages: []string{StagePassword}}},
+		"params":    matrix.Object{},
+		"session":   matrix.NewToken(),
+		"completed": []string{},
+	})
 }
 
 // Whoami returns the user ID bound to an access token.

@@ -21,7 +21,10 @@ func TestRegister(t *testing.T) {
 		hasToken bool
 	}{
 		{name: "new account", body: map[string]any{"username": "bob", "password": "rubberduck", "auth": dummy}, want: http.StatusOK, hasToken: true},
-		{name: "taken name", body: map[string]any{"username": "alice", "password": "other", "auth": dummy}, want: http.StatusConflict, errCode: "M_USER_IN_USE"},
+		// A taken name is a client error, not a conflict: the localpart belongs to
+		// somebody else permanently, so there is nothing to retry. The specification
+		// and Complement both read it as 400 M_USER_IN_USE.
+		{name: "taken name", body: map[string]any{"username": "alice", "password": "other", "auth": dummy}, want: http.StatusBadRequest, errCode: "M_USER_IN_USE"},
 		{name: "invalid name", body: map[string]any{"username": "not valid!", "password": "other", "auth": dummy}, want: http.StatusBadRequest, errCode: "M_INVALID_USERNAME"},
 		{name: "missing name", body: map[string]any{"password": "other", "auth": dummy}, want: http.StatusBadRequest, errCode: "M_INVALID_USERNAME"},
 		{name: "guest", body: map[string]any{"kind": "guest"}, want: http.StatusOK, hasToken: true},
@@ -374,16 +377,25 @@ func TestLogout(t *testing.T) {
 	}
 
 	server.MustDo(http.MethodPost, "/_matrix/client/v3/logout/all", other.Token, nil, http.StatusOK)
-	if resp := server.Do(http.MethodGet, "/_matrix/client/v3/account/whoami", other.Token, nil); resp.Status != http.StatusOK {
-		t.Errorf("logout/all revoked the token that authenticated the request: %d %s", resp.Status, resp.Raw)
+	if resp := server.Do(http.MethodGet, "/_matrix/client/v3/account/whoami", other.Token, nil); resp.Status != http.StatusUnauthorized {
+		t.Errorf("logout/all kept the token that authenticated the request alive: %d %s", resp.Status, resp.Raw)
 	}
 	third := server.Login("grace", "kite")
 	if resp := server.Do(http.MethodGet, "/_matrix/client/v3/account/whoami", third.Token, nil); resp.Status != http.StatusOK {
 		t.Fatalf("the new device should work: %d %s", resp.Status, resp.Raw)
 	}
 	server.MustDo(http.MethodPost, "/_matrix/client/v3/logout/all", third.Token, nil, http.StatusOK)
-	if resp := server.Do(http.MethodGet, "/_matrix/client/v3/account/whoami", other.Token, nil); resp.Status != http.StatusUnauthorized {
-		t.Errorf("logout/all left another device signed in: %d %s", resp.Status, resp.Raw)
+	if resp := server.Do(http.MethodGet, "/_matrix/client/v3/account/whoami", third.Token, nil); resp.Status != http.StatusUnauthorized {
+		t.Errorf("logout/all left the calling device signed in: %d %s", resp.Status, resp.Raw)
+	}
+	// Signing out of everything ends the devices as well as their tokens, so the
+	// next sign-in starts an account with a clean device list rather than a pile of
+	// devices nobody can sign in with any more.
+	fourth := server.Login("grace", "kite")
+	devices := server.MustDo(http.MethodGet, "/_matrix/client/v3/devices", fourth.Token, nil, http.StatusOK)
+	listed, _ := devices.Body["devices"].([]any)
+	if len(listed) != 1 {
+		t.Errorf("devices after logout/all = %s, want only the new one", devices.Raw)
 	}
 }
 
@@ -425,7 +437,9 @@ func TestDeviceListing(t *testing.T) {
 	if one.String("display_name") != "phone" {
 		t.Errorf("display_name = %q", one.String("display_name"))
 	}
-	server.MustDo(http.MethodDelete, "/_matrix/client/v3/devices/"+second.DeviceID, session.Token, nil, http.StatusOK)
+	server.MustDo(http.MethodDelete, "/_matrix/client/v3/devices/"+second.DeviceID, session.Token,
+		map[string]any{"auth": map[string]any{"type": "m.login.password", "user": "ivan", "password": "trombone"}},
+		http.StatusOK)
 	if resp := server.Do(http.MethodGet, "/_matrix/client/v3/account/whoami", second.Token, nil); resp.Status != http.StatusUnauthorized {
 		t.Errorf("deleting a device left its session alive: %d %s", resp.Status, resp.Raw)
 	}

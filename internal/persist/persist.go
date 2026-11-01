@@ -7,6 +7,7 @@ package persist
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 
 	sqlite "github.com/ncruces/go-sqlite3/gormlite"
@@ -106,12 +107,29 @@ func models() []any {
 // NewDatabase opens (creating it when needed) the SQLite database at path and
 // migrates all models. Use ":memory:" for an ephemeral database.
 func NewDatabase(path string) (*Database, error) {
-	dsn := path
+	var dsn string
 	inMemory := path == ":memory:" || strings.HasPrefix(path, "file::memory")
 	if inMemory {
 		// Each fresh connection to ":memory:" would get its own empty database,
 		// so the shared cache keeps one schema across the connection pool.
 		dsn = "file::memory:?cache=shared"
+	} else {
+		// A file database is the one a real deployment uses, and a real deployment
+		// writes from several requests at once: a sync, a send and a receipt can all
+		// want the write lock in the same millisecond. Three settings make that a
+		// queue rather than a 500 - and the compatibility suite never noticed, because
+		// every test there runs against an in-memory database with one connection.
+		//
+		//   busy_timeout  wait for the lock instead of failing at once; the write is
+		//                 late, not lost.
+		//   journal_mode  WAL, so readers never block the writer and the writer never
+		//                 blocks readers - a long-polling sync holds a read open.
+		//   txlock        BEGIN IMMEDIATE: a transaction that means to write takes the
+		//                 write lock at once. Without it SQLite upgrades a read
+		//                 transaction mid-flight, and that upgrade cannot be waited
+		//                 for - it returns SQLITE_BUSY no matter what busy_timeout is
+		//                 set to.
+		dsn = withPragmas(path)
 	}
 	gdb, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
 		Logger:         logger.Default.LogMode(logger.Silent),
@@ -301,4 +319,51 @@ func IsDuplicate(err error) bool {
 	// TranslateError is enabled, and as a raw message otherwise.
 	return errors.Is(err, gorm.ErrDuplicatedKey) ||
 		strings.Contains(err.Error(), "constraint failed")
+}
+
+// databasePragmas are the settings a file database is opened with. They are only
+// applied when the caller did not name the same pragma themselves, so an operator
+// who wants a different durability or timeout can ask for it in the path.
+var databasePragmas = []string{
+	"busy_timeout(10000)",
+	"journal_mode(WAL)",
+}
+
+// withPragmas renders the path as the file: URL the SQLite driver reads, with the
+// pragmas and the transaction lock mode this server needs. A path that already
+// carries a query string is kept as it is, because that is how an operator passes
+// a pragma we have not thought of.
+func withPragmas(path string) string {
+	base := path
+	query := url.Values{}
+	if head, tail, found := strings.Cut(path, "?"); found {
+		base = head
+		if parsed, err := url.ParseQuery(tail); err == nil {
+			query = parsed
+		}
+	}
+	if !strings.HasPrefix(base, "file:") {
+		base = "file:" + base
+	}
+	for _, pragma := range databasePragmas {
+		name, _, _ := strings.Cut(pragma, "(")
+		if hasPragma(query, name) {
+			continue
+		}
+		query.Add("_pragma", pragma)
+	}
+	if !query.Has("_txlock") {
+		query.Set("_txlock", "immediate")
+	}
+	return base + "?" + query.Encode()
+}
+
+// hasPragma reports whether a query already names a pragma.
+func hasPragma(query url.Values, name string) bool {
+	for _, pragma := range query["_pragma"] {
+		if pragma == name || strings.HasPrefix(pragma, name+"(") || strings.HasPrefix(pragma, name+"=") {
+			return true
+		}
+	}
+	return false
 }

@@ -334,8 +334,8 @@ func (s *Service) receiptEventsForRooms(roomIDs []string, since uint64) (map[str
 	out := make(map[string][]matrix.Event, len(byRoom))
 	for roomID, content := range byRoom {
 		out[roomID] = []matrix.Event{{
+			// As with typing: the room is where the event sits, not a field of it.
 			Type:    matrix.TypeReceipt,
-			RoomID:  roomID,
 			Content: matrix.Encode(content),
 		}}
 	}
@@ -432,8 +432,11 @@ func (s *Service) typingEvents(roomID, userID string, since uint64) ([]matrix.Ev
 		userIDs = append(userIDs, id)
 	}
 	return []matrix.Event{{
-		Type:   matrix.TypeTyping,
-		RoomID: roomID,
+		// No room_id on the event. The room is the key the ephemeral events are
+		// grouped under in a sync, and the specification's example of this event names
+		// only content and type; a second copy of the room id is a second answer to a
+		// question already answered, and clients that read the wrong one disagree.
+		Type: matrix.TypeTyping,
 		Content: matrix.Encode(matrix.Object{
 			"typing":   len(userIDs) > 0,
 			"user_ids": userIDs,

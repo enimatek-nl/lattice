@@ -308,13 +308,15 @@ func (a *App) handleStoreBackupSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	index := int64(0)
-	if body.FirstKnownIndex != nil {
-		index = *body.FirstKnownIndex
+	if body.index() != nil {
+		index = *body.index()
 	}
 	_, err = a.svc.StoreBackupSessions(r.Context(), auth.GetUserID(r), version, []service.BackupSession{{
 		RoomID:          r.PathValue("roomId"),
 		SessionID:       r.PathValue("sessionId"),
 		FirstKnownIndex: index,
+		IsVerified:      body.IsVerified,
+		ForwardedCount:  body.ForwardedCount,
 		Data:            body.SessionData,
 	}})
 	if err != nil {
@@ -357,8 +359,8 @@ func (b backupRoomBody) sessions(roomID string) []service.BackupSession {
 	out := make([]service.BackupSession, 0, len(b.Sessions))
 	for sessionID, session := range b.Sessions {
 		index := b.FirstKnownIndex
-		if session.FirstKnownIndex != nil {
-			index = session.FirstKnownIndex
+		if session.index() != nil {
+			index = session.index()
 		}
 		known := int64(0)
 		if index != nil {
@@ -368,6 +370,8 @@ func (b backupRoomBody) sessions(roomID string) []service.BackupSession {
 			RoomID:          roomID,
 			SessionID:       sessionID,
 			FirstKnownIndex: known,
+			IsVerified:      session.IsVerified,
+			ForwardedCount:  session.ForwardedCount,
 			Data:            session.SessionData,
 		})
 	}
@@ -377,8 +381,24 @@ func (b backupRoomBody) sessions(roomID string) []service.BackupSession {
 // backupSessionBody is one session as a client uploads it. The session data is
 // kept as raw JSON so that what comes back is what was sent.
 type backupSessionBody struct {
-	FirstKnownIndex *int64            `json:"first_known_index"`
-	SessionData     matrix.RawMessage `json:"session_data"`
+	FirstKnownIndex *int64 `json:"first_known_index"`
+	// FirstMessageIndex is the name the current specification uses for the same
+	// number; clients of either generation send one of the two, so both are read.
+	FirstMessageIndex *int64 `json:"first_message_index"`
+	// IsVerified and ForwardedCount say how good this copy of the session is.
+	// Without them a client that re-uploads a worse copy would replace the verified
+	// session it backed up before.
+	IsVerified     bool              `json:"is_verified"`
+	ForwardedCount int64             `json:"forwarded_count"`
+	SessionData    matrix.RawMessage `json:"session_data"`
+}
+
+// index returns whichever spelling of the message index the client used.
+func (b backupSessionBody) index() *int64 {
+	if b.FirstMessageIndex != nil {
+		return b.FirstMessageIndex
+	}
+	return b.FirstKnownIndex
 }
 
 // backupVersionParam reads the version a key backup request means: the version
@@ -435,11 +455,17 @@ func backupRoomResponse(keys []*persist.BackupRoomKey) matrix.Object {
 	}
 }
 
-// backupSessionResponse renders one session.
+// backupSessionResponse renders one session. Both spellings of the message index
+// are written: first_message_index is what the current specification calls it and
+// what a restoring client compares, while first_known_index is the name older
+// clients and this server's own storage use.
 func backupSessionResponse(key *persist.BackupRoomKey) matrix.Object {
 	return matrix.Object{
-		"first_known_index": key.FirstKnownIndex,
-		"session_data":      matrix.RawMessage(key.Data),
+		"first_known_index":   key.FirstKnownIndex,
+		"first_message_index": key.FirstKnownIndex,
+		"is_verified":         key.IsVerified,
+		"forwarded_count":     key.ForwardedCount,
+		"session_data":        matrix.RawMessage(key.Data),
 	}
 }
 
@@ -447,8 +473,11 @@ func backupRoomSessions(keys []*persist.BackupRoomKey) matrix.Object {
 	sessions := matrix.Object{}
 	for _, key := range keys {
 		sessions[key.SessionID] = matrix.Object{
-			"first_known_index": key.FirstKnownIndex,
-			"session_data":      matrix.RawMessage(key.Data),
+			"first_known_index":   key.FirstKnownIndex,
+			"first_message_index": key.FirstKnownIndex,
+			"is_verified":         key.IsVerified,
+			"forwarded_count":     key.ForwardedCount,
+			"session_data":        matrix.RawMessage(key.Data),
 		}
 	}
 	return sessions

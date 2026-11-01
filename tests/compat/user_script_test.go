@@ -93,7 +93,7 @@ func TestUserScript(t *testing.T) {
 		t.Errorf("the alias resolves to %s, want %s", resolved.Raw, roomID)
 	}
 	state := server.MustDo(http.MethodGet, "/_matrix/client/v3/rooms/"+roomID+"/state", alice.Token, nil, http.StatusOK)
-	if len(eventsOf(state.Body["state"])) == 0 {
+	if len(state.Array) == 0 {
 		t.Errorf("the room has no state: %s", state.Raw)
 	}
 

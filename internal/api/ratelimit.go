@@ -61,10 +61,14 @@ type RateLimits struct {
 // never notice them, while a script hammering one device stops after its burst.
 func DefaultRateLimits() RateLimits {
 	return RateLimits{
-		WriteBurst:  100,
-		WriteRate:   30,
-		AuthBurst:   20,
-		AuthRate:    2,
+		WriteBurst: 100,
+		WriteRate:  30,
+		// An account setup run is chatty by nature: registering one device costs a
+		// challenge and the request that answers it, and a client restoring a session
+		// on several devices does that several times in a row. The burst is sized for
+		// that, while the refill rate still shuts a credential-stuffing script down.
+		AuthBurst:   60,
+		AuthRate:    5,
 		UploadBurst: 20,
 		UploadRate:  5,
 	}

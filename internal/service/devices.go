@@ -107,7 +107,20 @@ func (s *Service) DeleteDevices(ctx context.Context, userID string, deviceIDs []
 }
 
 // DeleteDevice removes a single device and its sessions.
-func (s *Service) DeleteDevice(ctx context.Context, userID, deviceID string) error {
+func (s *Service) DeleteDevice(ctx context.Context, userID, deviceID string, auth matrix.Object) error {
+	// The same rule as the bulk endpoint: deleting a device is a destructive act on an
+	// account, and the access token alone does not show that whoever asks knows the
+	// password. A device whose session was stolen is exactly the device whose removal
+	// an attacker would try first.
+	if err := s.checkAuthFlow(ctx, auth, matrix.LocalpartOf(userID)); err != nil {
+		return err
+	}
+	if _, err := s.db.DeviceRepo.Get(userID, deviceID); err != nil {
+		if persist.IsNotFound(err) {
+			return matrix.ErrNotFound("no such device %s", deviceID)
+		}
+		return matrix.ErrInternal(err)
+	}
 	if err := s.db.DeviceRepo.Delete(userID, deviceID); err != nil {
 		return matrix.ErrInternal(err)
 	}
@@ -117,8 +130,16 @@ func (s *Service) DeleteDevice(ctx context.Context, userID, deviceID string) err
 	return s.DropDeviceKeys(ctx, userID, deviceID)
 }
 
-// ChangePassword replaces the password of an account and revokes its sessions.
-func (s *Service) ChangePassword(ctx context.Context, userID, oldPassword, newPassword string, auth matrix.Object) error {
+// ChangePassword replaces the password of an account and revokes the sessions of
+// every device except the one that asked.
+//
+// The session that made the request survives because the person who just proved
+// they know the old password is the one person this action is not meant to lock
+// out; a client that changes its own password and is immediately logged out cannot
+// finish the change, and ends up looking like the server lost the account.
+// logoutDevices=false keeps the other sessions too, which is what a user with a
+// second device that is currently offline asks for.
+func (s *Service) ChangePassword(ctx context.Context, userID, deviceID, oldPassword, newPassword string, logoutDevices *bool, auth matrix.Object) error {
 	user, err := s.db.UserRepo.GetByID(userID)
 	if err != nil {
 		return matrix.ErrUnknownToken(false)
@@ -145,7 +166,17 @@ func (s *Service) ChangePassword(ctx context.Context, userID, oldPassword, newPa
 	if err := s.db.UserRepo.Save(user); err != nil {
 		return matrix.ErrInternal(err)
 	}
-	if err := s.db.SessionRepo.DeleteByUser(userID); err != nil {
+	if logoutDevices != nil && !*logoutDevices {
+		return nil
+	}
+	if err := s.db.SessionRepo.DeleteExceptDevice(userID, deviceID); err != nil {
+		return matrix.ErrInternal(err)
+	}
+	// A pusher belongs to the session that registered it. A password change ends the
+	// other sessions, so the pushers that were made with them end too; the one that
+	// made the change survives, because the device that is holding this very request
+	// is still signed in.
+	if err := s.db.PusherRepo.DeleteExceptDevice(userID, deviceID); err != nil {
 		return matrix.ErrInternal(err)
 	}
 	return nil

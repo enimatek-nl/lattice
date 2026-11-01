@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"net/http"
 
 	"github.com/enimatek-nl/lattice/internal/matrix"
 )
@@ -59,6 +60,19 @@ func (s *Service) JoinRoom(ctx context.Context, idOrAlias, userID string, extra 
 	if reason, ok := extra["reason"].(string); ok {
 		content.Reason = reason
 	}
+	// Whatever else the client sent in the body of the join is its own, and goes
+	// into the member event unchanged. Dropping it would break a bridge that
+	// identifies itself there, and no server-side rule says what those keys may be.
+	if len(extra) > 0 {
+		content.Extra = matrix.Object{}
+		for key, value := range extra {
+			switch key {
+			case "reason", "membership", "type":
+				continue
+			}
+			content.Extra[key] = value
+		}
+	}
 	if err := s.appendMember(ctx, room.ID, userID, userID, content); err != nil {
 		return "", err
 	}
@@ -107,10 +121,17 @@ func (s *Service) InviteRoom(ctx context.Context, roomID, inviter, invitee strin
 	if !s.UserExists(ctx, invitee) {
 		return matrix.ErrNotFound("user %s does not exist", invitee)
 	}
+	if invitee == inviter {
+		return matrix.ErrForbidden("you cannot invite yourself to a room")
+	}
 	target := s.MembershipOf(ctx, room.ID, invitee)
 	switch target {
 	case matrix.MembershipJoin:
-		return matrix.ErrConflict(matrix.ErrCodeUnknown, "user is already joined")
+		// Already a member: the invite would be a membership change nobody asked
+		// for. The specification answers M_FORBIDDEN rather than a conflict, because
+		// the room is not in a state the client can resolve by retrying - the user is
+		// simply already there.
+		return matrix.ErrForbidden("user %s is already joined to this room", invitee)
 	case matrix.MembershipBan:
 		return matrix.ErrForbidden("user is banned from this room")
 	}
@@ -181,7 +202,11 @@ func (s *Service) KickRoom(ctx context.Context, roomID, requester, target, reaso
 		return matrix.ErrForbidden("you do not have permission to kick users from this room")
 	}
 	if s.MembershipOf(ctx, room.ID, target) != matrix.MembershipJoin {
-		return matrix.ErrNotFound("user %s is not a member of the room", target)
+		// Kicking somebody who is not in the room is refused rather than reported as
+		// missing: the caller has the room, has the user id, and is not permitted to do
+		// this to them. Clients read 404 as "that user was never here", which is a
+		// different claim from the true one.
+		return matrix.ErrForbidden("user %s is not a member of the room", target)
 	}
 	content := matrix.MemberContent{
 		Membership: matrix.MembershipLeave,
@@ -237,7 +262,11 @@ func (s *Service) ForgetRoom(ctx context.Context, roomID, userID string) error {
 	}
 	membership := s.MembershipOf(ctx, room.ID, userID)
 	if membership == matrix.MembershipJoin {
-		return matrix.ErrForbidden("you cannot forget a room you are joined to")
+		// The specification answers a forgotten room that is still joined with a bad
+		// request rather than a refusal: the client asked for something the room
+		// allows no version of, and leaving first is a different call.
+		return matrix.NewError(matrix.ErrCodeUnknown, http.StatusBadRequest,
+			"you cannot forget a room you are joined to")
 	}
 	if membership == "" {
 		return nil
@@ -349,13 +378,14 @@ func (s *Service) JoinedMembers(ctx context.Context, roomID string) (map[string]
 		return nil, err
 	}
 	for _, row := range rows {
-		entry := matrix.Object{}
 		summary := profiles[row.UserID]
-		if summary.DisplayName != "" {
-			entry["display_name"] = summary.DisplayName
-		}
-		if summary.AvatarURL != "" {
-			entry["avatar_url"] = summary.AvatarURL
+		// Both keys are always written. The endpoint answers "who is here and how do
+		// they appear", and a member with no display name or avatar still has both:
+		// a client that finds no avatar_url key has to guess whether the member has
+		// no image or whether the server answered something else.
+		entry := matrix.Object{
+			"display_name": summary.DisplayName,
+			"avatar_url":   summary.AvatarURL,
 		}
 		joined[row.UserID] = entry
 	}

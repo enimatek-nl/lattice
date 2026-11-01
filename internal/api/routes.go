@@ -201,6 +201,10 @@ func (a *App) registerMediaRoutes() {
 	}
 	a.limited("POST /_matrix/media/v3/upload", limitUpload, a.handleMediaUpload)
 	a.limited("PUT /_matrix/media/v3/upload/{serverName}/{mediaId}", limitUpload, a.handleMediaUpload)
+	// /v1/create is the stable name of the async upload's reservation step; /v3/create
+	// is the draft spelling that clients and servers shipped for years, so both are
+	// served and the spec's name is the one the route table leads with.
+	a.authenticated("POST /_matrix/media/v1/create", a.handleMediaCreate)
 	a.authenticated("POST /_matrix/media/v3/create", a.handleMediaCreate)
 	a.authenticated("POST /_matrix/media/v3/commit/{serverName}/{mediaId}", a.handleMediaCommit)
 	a.handle("GET /_matrix/media/v3/download/{serverName}/{mediaId}", a.handleMediaDownload)

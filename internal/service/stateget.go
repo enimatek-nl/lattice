@@ -40,6 +40,21 @@ func (s *Service) StateContent(ctx context.Context, roomID, typ, stateKey, userI
 	return raw, nil
 }
 
+// StateEventFor returns the full event that holds a state key, for the read
+// endpoints that ask for the event rather than its content
+// (?format=event). Membership is checked the same way as for the content, so
+// asking for the whole event cannot widen what a caller may read.
+func (s *Service) StateEventFor(ctx context.Context, roomID, typ, stateKey, userID string) (matrix.Event, error) {
+	if err := s.RequireReadable(ctx, roomID, userID); err != nil {
+		return matrix.Event{}, err
+	}
+	event, err := s.StateEvent(ctx, roomID, typ, stateKey)
+	if err != nil {
+		return matrix.Event{}, err
+	}
+	return event.Matrix(), nil
+}
+
 // StateEvent returns the full event that currently holds a state key.
 func (s *Service) StateEvent(ctx context.Context, roomID, typ, stateKey string) (*persist.Event, error) {
 	state, err := s.db.StateRepo.Get(roomID, typ, stateKey)
