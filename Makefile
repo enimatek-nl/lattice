@@ -92,6 +92,8 @@ complement-image: ## Build the Complement container image for this binary
 # `make complement` runs the whole client-API suite (about five minutes); add
 # COMPLEMENT_RUN to narrow it, e.g.
 #   make complement COMPLEMENT_RUN='TestRoomAlias|TestRoomCanonicalAlias'
+# and add COMPLEMENT_PKG=./tests for the server-server suite (91 tests, most of
+# them starting two containers, so about 40 minutes for the whole package).
 # The suite runs from the Complement checkout, which has to be present; it is not
 # a module dependency because Complement's own go.mod owns the test binaries.
 complement: complement-image ## Run the Complement client-API suite against the image

@@ -96,6 +96,26 @@ func (s *Service) ServerKeysDocument(ctx context.Context) (matrix.Object, error)
 	return document, nil
 }
 
+// ServerKeysDocumentBody answers GET /_matrix/key/v2/server as bytes, in the
+// canonical form the self-signature was made over. The handler writes these
+// without re-encoding them: a document that is signed has no room for a byte
+// this server added on the way out.
+func (s *Service) ServerKeysDocumentBody(ctx context.Context) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	key, err := s.SigningKey(ctx)
+	if err != nil {
+		return nil, matrix.ErrInternal(err)
+	}
+	validUntil := s.NowMS() + federation.MaxKeyValidity.Milliseconds()
+	body, err := federation.KeyDocumentBody(s.serverName, key, validUntil)
+	if err != nil {
+		return nil, matrix.ErrInternal(err)
+	}
+	return body, nil
+}
+
 // HasSigningKey reports whether this server publishes a key id, which is what the
 // GET /_matrix/key/v2/server/{keyID} variant answers. An unknown id is a plain no:
 // the caller must not learn whether the id belongs to some other server, and no

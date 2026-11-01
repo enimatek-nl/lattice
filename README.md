@@ -344,10 +344,12 @@ the upstream Matrix test suite, against a container built from `bin/lattice` by
 (or Podman — the target only calls `docker`), and a checkout of Complement
 itself, which is not a module dependency because its own `go.mod` owns the test
 binaries. Point the target at that checkout (`COMPLEMENT=~/complement make
-complement`), narrow it with `COMPLEMENT_RUN='TestRoomAlias|TestRoomCreate'`,
-and see `COMPLEMENT_PKG=./tests/federation` for the server-server suite once
-step 9 lands. Where Lattice stands, and what each remaining failure is missing,
-is written up under _Complement_ in [TODO.md](TODO.md).
+complement`), narrow it with `COMPLEMENT_RUN='TestRoomAlias|TestRoomCreate'`, and
+use `COMPLEMENT_PKG=./tests` for the server-server suite — 91 tests, 87 of them
+red, waiting on the federation handshake of TODO steps 9–10 rather than on the
+transport, which already carries signed requests between two containers. Where
+Lattice stands, and what each remaining failure is missing, is written up under
+_Complement_ in [TODO.md](TODO.md).
 
 ## Where development stands
 

@@ -60,12 +60,12 @@ var contentKeysV1 = map[string][]string{
 // what makes the room's version and its "m.federate" choice survive a redaction of
 // the create event.
 var contentKeysV11 = map[string][]string{
-	matrix.TypeMember:      []string{"membership", "join_authorised_via_users_server"},
+	matrix.TypeMember:      {"membership", "join_authorised_via_users_server"},
 	matrix.TypeCreate:      nil, // nil means every key is kept
-	matrix.TypeJoinRules:   []string{"join_rule", "allow"},
-	matrix.TypePowerLevels: []string{"ban", "events", "events_default", "invite", "kick", "redact", "state_default", "users", "users_default"},
-	matrix.TypeHistoryVis:  []string{"history_visibility"},
-	matrix.TypeRedaction:   []string{"redacts"},
+	matrix.TypeJoinRules:   {"join_rule", "allow"},
+	matrix.TypePowerLevels: {"ban", "events", "events_default", "invite", "kick", "redact", "state_default", "users", "users_default"},
+	matrix.TypeHistoryVis:  {"history_visibility"},
+	matrix.TypeRedaction:   {"redacts"},
 }
 
 // UseRoom11Algorithms reports whether a room version uses the room version 11

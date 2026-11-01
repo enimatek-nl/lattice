@@ -13,9 +13,9 @@ re-derive were kept (below the plan).
 - A working homeserver with its **federation transport in production shape**:
   `make build vet lint` clean (`make lint` = golangci-lint, 0 issues),
   `go test ./...` green — **111** compatibility tests (~50 s here, ~5½ min
-  with `-race` on this machine), **55** offline unit tests in `tests/unit`
+  with `-race` on this machine), **56** offline unit tests in `tests/unit`
   (milliseconds), and **31** two-server tests in `tests/federation` (~9 s,
-  ~56 s with `-race`). Coverage: **155 of the 234** indexed endpoints, 27 extra
+  ~56 s with `-race`). Coverage: **156 of the 234** indexed endpoints, 27 extra
   routes (`make endpoints`). Steps 1–8 are closed: rate limiting, the
   client-API correctness tails, batched reads, offline unit tests, the
   federation signing/transport ground, the **event DAG** (events hashed,
@@ -24,11 +24,17 @@ re-derive were kept (below the plan).
   `PUT /send` with a replay-safe transaction log, EDU sinks for typing,
   receipts, to-device, device lists and cross-signing, an outbound per
   destination queue with retries, and `m.room.server_acl` enforced in both
-  directions. The plan continues at **step 9, inbound PDU processing**.
+  directions. The plan continues at **step 9**; steps 9 to 13 are driven
+  test-by-test against Complement's server-server suite, each naming the tests it
+  is expected to turn green, and step 14 wraps the release.
 - Against [Complement](https://github.com/matrix-org/complement), the upstream
-  Matrix suite, **41 of 106** client-API tests fail (`make complement`, see
-  _Complement_ below for how it runs, what the run can hide, and what each
-  remaining failure is waiting for).
+  Matrix suite, **41 of 106** client-API tests fail (`make complement`) and **87 of
+  91** server-server tests fail (`make complement COMPLEMENT_PKG=./tests`). See
+  _Complement_ below for how they run, what a run can hide, and what each remaining
+  failure is waiting for. The transport itself is not among the reasons: those
+  failures are a peer answering `M_UNRECOGNIZED` to a handshake Lattice does not
+  serve yet, and one client-side fix (`GET /_matrix/key/v2/server` published as
+  canonical JSON) already turned a server-server test green.
 - Federation is live behind `-federation` (default off): a persisted ed25519
   signing key, `/_matrix/key/v2/*`, `/_matrix/federation/v1/version`,
   `/_matrix/federation/v1/user/devices/{userId}`,
@@ -66,7 +72,7 @@ re-derive were kept (below the plan).
   the _PUT /sendToDevice_ entry under _Behaviour already handled_.
 - Federation decision (2026-11-01): **in scope for the first release**,
   gated behind a `-federation` boolean flag (default off → server-server routes
-  unmounted, `M_UNRECOGNIZED` on those paths). The work is the steps 6–12 of this
+  unmounted, `M_UNRECOGNIZED` on those paths). The work is the steps 6–14 of this
   plan. Target: spec v1.19 server-server API. One part of it is deliberately **not**
   behind the flag since step 7: events are hashed, signed and given derived ids
   whether or not federation is on, because those are properties of the stored event
@@ -398,7 +404,7 @@ the house rules).
   graph to recover, and naming the newest event is the only honest answer.
 - **`prev_events`/`auth_events` are decided once.** They are stored, not recomputed: in
   v3+ the id is a hash over them, so recomputing against a graph that moved on describes
-  a different event. Reads that need the graph (step 9's `/event_auth`, `/backfill`)
+  a different event. Reads that need the graph (step 11's `/event_auth`, `/backfill`)
   must read the stored arrays.
 
 ### 8. Federation III — transactions and EDUs — done (2026-11-02)
@@ -420,7 +426,7 @@ the house rules).
       not when a server relayed it), `m.direct_to_device` → to-device store,
       `m.device_list_update` → `RemoteDevice` cache with gap detection
       (`prev_id` vs the recorded stream position → `DeviceStream.GapSeen`, which
-      step 11 turns into a re-query), `m.signing_key_update` → cross-signing
+      step 13 turns into a re-query), `m.signing_key_update` → cross-signing
       store plus a device list change; `m.presence` accepted and ignored
       (presence stays local); an unknown EDU type is logged and ignored, per spec.
 - [x] Outbound (`internal/service/fedsend.go`): `persist.OutboxItem` +
@@ -514,8 +520,42 @@ the house rules).
   device-list sync position** (`DeviceListChange.StreamPos`, echoed by
   `FederatedDevices`), so a peer's view and this server's own `changed` list
   cannot disagree.
+- **A signed document has to be served as the bytes its signature was made
+  over.** `GET /_matrix/key/v2/server` built a correct document and re-verified it
+  in-process, and Complement still rejected it: the standard library's JSON encoder
+  appends a newline to every body it writes, and a peer that checks the signature
+  against the bytes it received counts that byte as part of what was signed. The
+  document is now published by `federation.KeyDocumentBody` in canonical form and
+  written by `writeRawJSON`, which no response body goes through with whitespace
+  this server added. `tests/unit/keydocument_test.go` pins it: the served bytes are
+  their own canonical form, and the signature verifies over everything except
+  itself.
 
-### 9. Federation IV — inbound PDU processing
+### The loop steps 9 to 13 are driven by
+
+The client API was built against Complement's `tests/csapi`: pick a red test, name
+the reason it is red, write the Lattice test that reproduces that reason, fix,
+re-run. Steps 9 to 13 do the same against `COMPLEMENT_PKG=./tests` — 91 tests, 87
+red (the Complement section has the command, the harness facts and the baseline).
+**Each step names the tests it is expected to turn green**, so "federation got
+better" is a measurement rather than a feeling. Iterate with `COMPLEMENT_RUN`: a
+full server-server run is around 40 minutes, because most of those tests start two
+containers and wait for them.
+
+One ordering rule falls out of that baseline. The failures are the *peer* answering
+`M_UNRECOGNIZED` to `make_join` and friends: signed requests reach the other
+container over TLS on 8448, and come back with "no such route". So the handshake
+endpoints, not the transport, are what block everything — and the read-side graph
+endpoints (`/event_auth`, `/state_ids`, `/get_missing_events`, `/backfill`) come
+**after** the first join rather than before it, because they are easy to write
+against a room that does not exist locally and impossible to test honestly
+otherwise.
+
+### 9. Federation IV — judge the event that arrived (no Complement win yet)
+
+This step buys no green test: Complement cannot get as far as judging an event
+until step 10 lets a second server into a room. It is a prerequisite for every step
+after it, so its tests are in-repo and its definition of done is local.
 
 - [ ] The spec's check order, verbatim: valid for the room version →
       origin-server signature (cached keys) → content hash (on mismatch use
@@ -539,54 +579,205 @@ the house rules).
       local events, and advance forward extremities (a state leak here is
       invisible locally and fatal on a peer).
 
-### 10. Federation V — membership handshakes (first real remote join)
+Tests: `tests/unit/stateres_test.go` (table-driven conflicts), and
+`tests/federation/intake_test.go`, where the cluster signs a PDU, ships it over the
+real transport, and the receiver's decision is visible: an accepted event reaches
+`/sync` and `/messages` there, a rejected one is never shown, a soft-failed one is
+stored and relayed as a parent but hidden. **The new two-server cases must stop
+seeding rows** — the room has to exist because events put it there. Step 8's tests
+insert `Room` and `RoomMembership` rows directly, which is fine for testing storage
+and useless for testing whether a room can be joined.
 
-- [ ] Outbound join: `query/directory` for remote aliases → resident
-      `make_join` (**must verify** the template's type/room_id/sender/
-      state_key/membership before signing) → `PUT /v2/send_join` with
-      `omit_members=true` → persist returned state + auth chain; next
-      candidate on `M_UNABLE_TO_GRANT_JOIN`.
-- [ ] Knock (`make_knock`/`send_knock`) and leave
-      (`make_leave`/`v2/send_leave`) are the same handshake.
-- [ ] Inbound: serve those endpoints for local rooms (reuse the
-      power-level/join-rule code, `join_authorised_via_users_server` for
-      restricted rooms), `v2 /invite` with `invite_room_state` **including
-      m.room.create**; remote-host side of invite signing.
-- [ ] With the flag on: `writeInitialState` defaults `m.federate=true`;
-      `LocalRoom` call sites become "is the state in my DAG";
-      `walkHierarchy`'s remote-space skip resolves via
-      `GET /federation/v1/hierarchy`.
+Done when: an event created on server B appears on server A with A's own decision
+recorded, and A and B resolve the same state after a deliberate fork.
 
-### 11. Federation VI — read-side queries, cross-server E2EE, media
+### 10. Federation V — the first honest cross-server join (first Complement greens)
 
-- [ ] Read off the DAG: `GET /event/{id}`, `/state`, `/state_ids`,
-      `/event_auth`, `/backfill`, `/get_missing_events`,
-      `/timestamp_to_event`.
-- [ ] `query/directory` (local aliases), `query/profile`, `publicRooms`
-      GET+POST, `openid/userinfo` (`OpenIDToken` already mints tokens).
-- [ ] `GET /user/devices/{userId}`, `POST /user/keys/query` and
-      `/user/keys/claim` proxy the existing key services; **emit**
-      `m.device_list_update` (per-user `stream_id`, `prev_id` chain) and
-      `m.signing_key_update` on the changes the local paths already record —
-      cross-server E2EE is the whole point of the trust layer.
-- [ ] Media: `GET /federation/v1/media/download|thumbnail` (multipart/mixed,
-      exactly two parts), cache remote `mxc://` content as Media rows.
+The step the rest of federation waits for: a user on one Lattice gets into a room
+on another, and both hold the room afterwards.
 
-### 12. Federation VII — two-server test suite + release wrap
+- [ ] Outbound: `_wellknownClient` directory lookup for `#alias:remote` →
+      `GET /v1/make_join/{roomId}/{userId}` (v2 form advertises supported room
+      versions) → `PUT /v2/send_join/{roomId}/{eventId}` with `omit_members=true`
+      → persist the returned state and its auth chain. Next candidate on
+      `M_UNABLE_TO_GRANT_JOIN`. The room's version comes from the handshake:
+      `fedrecv` records `DefaultRoomVersion` as a guess for an invite it has not
+      joined, and step 10 replaces that guess.
+- [ ] Inbound: serve `make_join` v1/v2 (partial state: the current state plus the
+      auth chain of the join event) and `send_join` v1/v2 (verify the join, return
+      the state the joining server needs), reusing the local power-level and
+      join-rule code, including `join_authorised_via_users_server` for restricted
+      rooms.
+- [ ] The same handshake for leave (`make_leave` v1/v2, `PUT /v2/send_leave` — the
+      leave event is signed by the leaving server) and for knock
+      (`make_knock`/`send_knock` v1/v2; the client-side knock already exists).
+- [ ] Invites: `PUT /v1/invite/{roomId}/{eventId}` and
+      `PUT /v2/invite/...`, whose `invite_room_state` must include
+      `m.room.create`; a local `/invite` reaching a remote user; a ban or unban
+      arriving as an invite, since that is what a ban is over the wire.
+- [ ] Guards a naive implementation passes and Complement does not let: a
+      `send_join` carrying something other than a `m.room.member` **join** is
+      refused, a `send_leave` carrying anything other than a **leave** is refused,
+      and a banned user cannot join.
+- [ ] Flip the room-creation default: `writeInitialState` currently hard-codes
+      `m.federate=false`, which was right while nothing federated and is wrong
+      now — a room is federated unless the creator says otherwise, with
+      `-no-federation` as the server-wide opt-out. Then the `LocalRoom` call sites
+      become "is this state in my DAG", and `walkHierarchy`'s remote-space skip
+      resolves through `/federation/v1/hierarchy` (step 12).
 
-- [ ] `tests/federation/` (black-box style): **two** in-process Lattice
-      servers with different `-server-name` in one test binary; inject peer
-      base URLs (skips DNS/TLS/discovery) and seed each keypair into the
-      other's verify-key cache (skips notaries).
-- [ ] Scenario table: join, invite→join, messages both ways, typing,
-      receipts, to-device, remote profile/keys, leave, knock, backfill,
-      soft-fail (ban, then event referencing pre-ban state), transaction
-      retry idempotency.
-- [ ] Update README (what `-federation` turns on, the now-mandatory TLS
-      note, `m.federate` default), regenerate ENDPOINTS.md, run
-      `go test ./tests/compat/ -race` + the federation suite, then tag
-      `0.2.0` (client API complete) / `1.0.0` (with federation) as decided
-      at the time.
+`TestOutboundFederationSend` (a message sent locally reaches the peer — it needs
+steps 9 and 10 together), and `TestACLs`/`TestACLsForEDUs`, whose rules step 8
+implemented but which could never run until two servers shared a room.
+
+Complement turns green: `TestJoinViaRoomIDAndServerName`,
+`TestJoinFederatedRoomFailOver`, `TestSendJoinPartialStateResponse`,
+`TestCannotSendNonJoinViaSendJoinV1`, `TestCannotSendNonJoinViaSendJoinV2`,
+`TestCannotSendNonLeaveViaSendLeaveV1`, `TestCannotSendNonLeaveViaSendLeaveV2`,
+`TestBannedUserCannotSendJoin`, `TestUnbanViaInvite`, `TestFederationRoomsInvite`,
+`TestFederationRejectInvite`, `TestRemoteTyping` (a typing EDU needs a membership
+on the peer), `TestUserAppearsInChangedDeviceListOnJoinOverFederation` (the join
+plus the device-list EDU), and on the csapi side `TestMessagesOverFederation` and
+`TestPushRuleRoomUpgrade` once steps 9 and 10 combine.
+
+### 11. Federation VI — the read side of the graph: auth chains and gap filling
+
+Two servers that were apart have to agree afterwards, which means each has to be
+able to name the events the other is missing and to prove an event's authority.
+
+- [ ] Persist and read the auth chain as a query (the arrays are stored per event
+      since step 7; the walk is what is missing).
+- [ ] Serve `GET /event_auth/{roomId}/{eventId}`, `GET /event/{eventId}`,
+      `GET /state_ids/{roomId}` (including the partial-state form `send_join`
+      uses) and `GET /state/{roomId}/{eventId}` for one event.
+- [ ] Serve `POST /get_missing_events/{roomId}` (bounded by `limit`, only events
+      the requester may see) **and** request it: on a gap, ask, receive the events
+      through `/send`, apply them through step 9. Gap filling is also what makes
+      soft-fail and rejected events observable in practice.
+- [ ] Serve `GET /backfill/{roomId}` (older history with its state, depth-bounded)
+      and `POST /timestamp_to_event/{roomId}` (MSC3030).
+- [ ] Events whose auth chain is broken, or that hang off a rejected event:
+      refused, and reported in the per-PDU answer rather than retried forever.
+      Unverifiable events in room versions that tolerate them are a separate rule,
+      and `TestJoinFederatedRoomWithUnverifiableEvents` checks it.
+
+Complement turns green: `TestEventAuth`, `TestGetMissingEventsGapFilling`,
+`TestInboundCanReturnMissingEvents`,
+`TestOutboundFederationIgnoresMissingEventWithBadJSONForRoomVersion6`,
+`TestOutboundFederationEventSizeGetMissingEvents`, `TestCorruptedAuthChain`,
+`TestUnrejectRejectedEvents`, `TestInboundFederationRejectsEventsWithRejectedAuthEvents`,
+`TestJoinFederatedRoomWithUnverifiableEvents`, `TestFederationRedactSendsWithoutEvent`,
+`TestNetworkPartitionOrdering`.
+
+### 12. Federation VII — names, profiles and spaces
+
+- [ ] `GET /_matrix/federation/v1/query/directory`, so a remote server can resolve
+      a local alias (Unicode included), and the client-side path that then joins
+      through it.
+- [ ] `GET /_matrix/federation/v1/query/profile` — display name and avatar of a
+      local user, refused for a user this server does not have.
+- [ ] `GET`/`POST /_matrix/federation/v1/publicRooms` for another server's room
+      directory, and the client-side `/publicRooms?server=` that reaches it.
+- [ ] `GET /_matrix/federation/v1/hierarchy/{roomId}` to serve our side of a space,
+      and `walkHierarchy` following remote spaces through it instead of skipping
+      them.
+- [ ] Decide what happens to `GET /_matrix/federation/v1/openid/userinfo`: it is
+      indexed and unimplemented, and it exists for third-party invites, which are
+      themselves deferred. Record the decision instead of leaving it unlisted.
+
+Complement turns green: `TestRemoteAliasRequestsUnderstandUnicode`,
+`TestInboundFederationProfile`, `TestOutboundFederationProfile`,
+`TestFederatedClientSpaces`, `TestClientSpacesSummary`,
+`TestClientSpacesSummaryJoinRules`.
+
+### 13. Federation VIII — cross-server E2EE, device lists, to-device and media
+
+The sinks for all of this landed in step 8; this is the producing and asking half.
+
+- [ ] **Emit** `m.device_list_update` when a device uploads or deletes keys, with
+      the per-user `stream_id`/`prev_id` chain on the counter `FederatedDevices`
+      already counts, to the servers that hold that user in a room; and
+      `m.signing_key_update` on the cross-signing changes the local paths already
+      record.
+- [ ] `POST /client/v3/keys/query` and `/keys/claim` for **remote** users: ask the
+      owning server (`GET /federation/v1/user/devices/{userId}` is already served),
+      verify its signature, cache, answer as if local. A `device_id` that is not
+      there is asked for again, never invented.
+- [ ] To-device to a remote user: queue for the destination server (inbound and the
+      `*` expansion already work).
+- [ ] Federation media: `GET /_matrix/federation/v1/media/download/{mediaId}` and
+      `/thumbnail/{mediaId}/{width}/{height}` answered as `multipart/mixed` with
+      **exactly two parts**, and the client-side `/download` and `/thumbnail`
+      fetching from the owning server for an `mxc://` this server does not have,
+      caching the result as a Media row.
+
+Complement turns green: `TestDeviceListsUpdateOverFederation`,
+`TestDeviceListsUpdateOverFederationOnRoomJoin`, `TestFederationKeyUploadQuery`,
+`TestToDeviceMessagesOverFederation`, `TestContentMediaV1`.
+
+### 14. Federation IX — a two-server suite that does not cheat, and the wrap
+
+- [ ] Rewrite the in-repo two-server cases that seed `Room`/`RoomMembership` rows
+      so the membership is the result of step 10's handshake; keep the seeded form
+      where it tests storage rather than flow. The scenario table stays: join,
+      invite→join, messages both ways, typing, receipts, to-device, remote
+      profile/keys, leave, knock, backfill, soft-fail (ban, then an event
+      referencing pre-ban state), transaction retry idempotence.
+- [ ] Run both Complement packages and record the tallies here and in README:
+      `make complement` and `make complement COMPLEMENT_PKG=./tests`.
+- [ ] Regenerate `ENDPOINTS.md`: the federation count should move from 3/31 to
+      near-complete, with the media-admin endpoints, the CS-protocol proxying, and
+      whatever the deferred list above names still open.
+- [ ] README's federation section: what `-federation` turns on, TLS and the
+      certificate, `-federation-address`, `-federation-peer`, `-insecure`, and the
+      fact that rooms federate by default with `-no-federation` to opt out.
+- [ ] Decide `0.2.0` (client API complete) / `1.0.0` (with federation) tagging.
+### What else the server-server package holds, and who owns it
+
+Steps 9 to 13 name 37 of the 87 red. The other 50 sit in that package because
+Complement groups by **deployment**, not by protocol: most of them start a single
+container.
+
+- **Knocking and restricted rooms** (17: `TestKnocking*`, `TestKnockRestricted*`,
+  `TestRestrictedRooms*`, including the MSC3787 variants) — join-rule `allow` lists
+  naming users and spaces, `join_authorised_via_users_server` validated against a
+  space the authoriser is in, and the spaces summary that supplies that
+  authorisation. Client-side join rules, not federation; it fits after step 10
+  because the space half wants step 12's hierarchy, and `TestKnockRoomsInPublicRoomsDirectory*`
+  wants step 12's room directory too.
+- **Room versions past v11** (13: `TestComplementCanCreateValidV12Rooms`, the five
+  MSC4291 cases, the six MSC4289 privileged-creators cases) — a track of its own:
+  `im.n.affoliat.matrix.v2`, an event id derived from the create event, and
+  privileged creators listed in `m.room.power_levels.users` (the same gap csapi
+  reports as `TestPowerLevels`). Not federation; a room-version step.
+- **Stripped state** (`TestMSC4311StrippedStateClientAPI`,
+  `TestMSC4311FullEventsOnStrippedStateFederation`,
+  `TestMSC4311RejectInvalidStrippedStateFederation`) — invite and hierarchy state
+  carrying whole events with the room version, and invalid stripped state refused.
+  Lands with the invite and hierarchy work of steps 10 and 12.
+- **State resolution v2 as a black box** (`TestMSC4297StateResolutionV2_1_starts_from_empty_set`,
+  `..._includes_conflicted_subgraph`) — these drive Lattice from Complement's *own*
+  federation server (`federation.NewServer` with `HandleMakeSendJoinRequests` and
+  `HandleTransactionRequests`), so they exercise our client side and the spec's
+  letter rather than our serving side. They go green with steps 9 and 10 together,
+  and they are the first tests that tell us where our outbound client disagrees with
+  an implementation that is not ours.
+- **Media** (`TestMediaFilenames`, `TestMediaWithoutFileName`,
+  `TestMediaWithoutFileNameCSMediaV1`, `TestRemotePngThumbnail`,
+  `TestFederationThumbnail`, `TestContentMediaV1`) — `Content-Disposition` filenames,
+  the client v1 media paths, and fetching from the owning server: step 13.
+- **Client-side strays** (`TestSyncOmitsStateChangeOnFilteredEvents`,
+  `TestRoomSummaryAllowedRoomIDs`, `TestIsDirectFlagLocal`, `TestIsDirectFlagFederation`,
+  `TestJumpToDateEndpoint`) — the same gaps the csapi table lists, seen from a
+  package that starts one container anyway. `TestJumpToDateEndpoint` is
+  `/timestamp_to_event`, which step 11 serves for peers and the client API needs too.
+
+**Deliberately left red** — these are decisions, not gaps, so do not "fix" them by
+accident: `TestRemotePresence`, because presence is deferred past the first release
+and remote presence stays red until that decision changes;
+`TestJoinFederatedRoomFromApplicationServiceBridgeUser`, because application
+services are out of scope; and anything that needs this server to be a **notary of
+record** or to follow **SRV delegation**, both deferred.
 
 ## Deferred past the first release (decisions recorded 2026-11-01)
 
@@ -624,7 +815,8 @@ response shapes below were wrong here while every in-repo test stayed green.
 make complement-image                     # bin/lattice with CGO off, then the image
 make complement COMPLEMENT=~/complement   # the whole csapi suite, ~5 min
 make complement COMPLEMENT_RUN='TestRoomAlias|TestRoomCreate'
-make complement COMPLEMENT_PKG=./tests/federation   # server-server, once steps 9–10 land
+make complement COMPLEMENT_PKG=./tests    # the server-server suite (91 tests)
+make complement COMPLEMENT_PKG=./tests COMPLEMENT_RUN='TestJoinViaRoomIDAndServerName'
 ```
 
 `COMPLEMENT` points at a Complement checkout; it is not a module dependency,
@@ -687,6 +879,35 @@ The cheapest three, in order: `unsigned.transaction_id` (the transaction log
 already has the value, the event just has to carry it into `unsigned`), history
 visibility on `/event/{eventID}` (the visibility helper exists, the endpoint does
 not consult it), and `lazy_load_state` in `/messages`.
+
+**The server-server suite is a different package and a different yardstick.** The
+package is `./tests` — package `tests`, **91 tests**: the `federation_*` tables
+plus knock, restricted rooms, room hierarchy, media and v12. There is no
+`./tests/federation`.
+
+Tally, first complete run of 2026-11-01: **88 of 91 fail**, and **87 after the
+key-document fix** recorded under step 8 (`TestInboundFederationKeys` went green).
+The three that passed before that: `TestUnknownEndpoints` (an unknown federation
+path answers 404 `M_UNRECOGNIZED`, which is the right answer where there is no
+route), `TestLocalPngThumbnail`, `TestWriteMDirectAccountData`.
+
+Two facts from that run, which decide the order of steps 9 to 13:
+
+- **The transport is not the problem.** The failures are `make_join` and friends
+  answered `M_UNRECOGNIZED` by the *peer* Lattice — signed requests reach the
+  other container over TLS on 8448 and come back with "no such route". Discovery
+  (`/.well-known/matrix/server`, then `https://<name>:8448`, SRV skipped), the CA
+  the entrypoint installs, and key fetching already work.
+- **Nothing is seeded.** The in-repo `tests/federation` cluster injects peer URLs
+  and inserts `Room` and `RoomMembership` rows directly, which is why it proves
+  the transport and the DAG plumbing but has never proved that a room can be
+  *joined* across two servers. Complement starts two containers of this image and
+  reaches a client-visible assertion only if the protocol actually ran — so a
+  federation test going green is evidence, and an in-repo one is not.
+
+The entrypoint starts Lattice with `-federation` and a key file, and signs a
+certificate naming `SERVER_NAME`, so federation is on in every deployment and a
+federation failure reads as a protocol failure rather than a certificate one.
 
 ## Open (need a human or network, not a code step)
 

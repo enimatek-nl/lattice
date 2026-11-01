@@ -61,12 +61,12 @@ func (a *App) registerFederationRoutes() {
 //	@Success\t200\t{object}	matrix.Object\t"The signed key document"
 //	@Router\t/_matrix/key/v2/server [get]
 func (a *App) handleServerKeys(w http.ResponseWriter, r *http.Request) {
-	document, err := a.svc.ServerKeysDocument(r.Context())
+	body, err := a.svc.ServerKeysDocumentBody(r.Context())
 	if err != nil {
 		a.writeError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, document)
+	writeRawJSON(w, http.StatusOK, body)
 }
 
 // handleServerKey answers the {keyID} variant. The specification returns the whole

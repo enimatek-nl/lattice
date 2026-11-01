@@ -291,13 +291,25 @@ func (a *App) Service() *service.Service { return a.svc }
 
 // writeJSON serialises a response body.
 func writeJSON(w http.ResponseWriter, status int, body any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	if body == nil {
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		log.Printf("encoding response: %v", err)
 		return
 	}
-	if err := json.NewEncoder(w).Encode(body); err != nil {
-		log.Printf("encoding response: %v", err)
+	writeRawJSON(w, status, encoded)
+}
+
+// writeRawJSON answers with bytes the caller produced itself. It exists for
+// bodies whose exact bytes matter: the standard library's JSON encoder appends a
+// newline, and a peer that verifies a signature over the bytes it received - as
+// the Complement suite does for a server's key document - reads that byte as part
+// of what was signed. Encoding with json.Marshal and writing the result leaves
+// the body exactly as it was built.
+func writeRawJSON(w http.ResponseWriter, status int, body []byte) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if _, err := w.Write(body); err != nil {
+		log.Printf("writing response: %v", err)
 	}
 }
 

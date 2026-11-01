@@ -170,6 +170,24 @@ func KeyDocument(serverName string, key KeyPair, validUntilMS int64) (matrix.Obj
 	return document, nil
 }
 
+// KeyDocumentBody builds the key document and returns the bytes it is served
+// as, which are its canonical JSON form.
+//
+// A signed object has to be served in the form its signature was made over,
+// byte for byte. A peer that re-canonicalises the object it read never notices a
+// difference, but a peer that verifies the signature against the bytes it
+// received - and the Complement suite does exactly this for a server's key
+// document - rejects a body this server changed on the way out. Encoding a
+// response with the standard library's JSON encoder adds a trailing newline;
+// that single byte makes a perfectly signed document look forged.
+func KeyDocumentBody(serverName string, key KeyPair, validUntilMS int64) ([]byte, error) {
+	document, err := KeyDocument(serverName, key, validUntilMS)
+	if err != nil {
+		return nil, err
+	}
+	return matrix.CanonicalJSON(document)
+}
+
 // KeySet is the verify keys of one server, with the validity window that was
 // read from its published document.
 type KeySet struct {
