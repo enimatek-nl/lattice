@@ -16,6 +16,12 @@ func (a *App) registerRoutes() {
 	a.registerKeysRoutes()
 	a.registerKeyBackupRoutes()
 	a.registerThirdPartyRoutes()
+	// The server-server routes come last, and only when the flag is on: with it off
+	// those paths are not registered at all, which is how they keep answering
+	// M_UNRECOGNIZED.
+	if a.cfg.Federation {
+		a.registerFederationRoutes()
+	}
 }
 
 // registerDiscoveryRoutes serves the public discovery endpoints.

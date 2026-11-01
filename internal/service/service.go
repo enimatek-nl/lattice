@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/enimatek-nl/lattice/internal/auth"
+	"github.com/enimatek-nl/lattice/internal/federation"
 	"github.com/enimatek-nl/lattice/internal/matrix"
 	"github.com/enimatek-nl/lattice/internal/persist"
 	"github.com/enimatek-nl/lattice/internal/realtime"
@@ -43,6 +44,14 @@ type Service struct {
 	// the stages a client has already completed.
 	uiaMu       sync.Mutex
 	uiaSessions map[string]*authSession
+	// federationEnabled is set by -federation. It decides whether the API layer
+	// mounts the server-server routes; the signing key exists either way, because
+	// events are signed where they are created.
+	federationEnabled bool
+	// signingKeyMu guards the cached server signing key, so two concurrent first
+	// requests cannot each mint a keypair.
+	signingKeyMu sync.Mutex
+	signingKey   *federation.KeyPair
 	// now is overridable for tests.
 	now func() time.Time
 }
@@ -89,6 +98,14 @@ func WithPublicBaseURL(url string) Option {
 	return func(s *Service) { s.publicBaseURL = strings.TrimRight(strings.TrimSpace(url), "/") }
 }
 
+// WithFederation turns the server-server layer on: the signing key of this
+// homeserver is generated at start-up, and the API layer mounts the federation
+// routes. Without it Lattice is a single-server homeserver, routes and database
+// alike.
+func WithFederation(enabled bool) Option {
+	return func(s *Service) { s.federationEnabled = enabled }
+}
+
 // New builds a service for the given database and server name.
 func New(db *persist.Database, serverName string, tokens *auth.TokenService, opts ...Option) (*Service, error) {
 	s := &Service{
@@ -109,11 +126,22 @@ func New(db *persist.Database, serverName string, tokens *auth.TokenService, opt
 		return nil, err
 	}
 	s.stream.Store(pos)
+	// The signing key is minted at start-up whether or not the server-server API is
+	// mounted, because every event this server creates is hashed and signed with it.
+	// A server that started signing later would hold events that no other homeserver
+	// can check, and rooms created before the first key existed cannot be repaired
+	// afterwards: the signature and the hash are part of what those events are.
+	if _, err := s.SigningKey(context.Background()); err != nil {
+		return nil, err
+	}
 	return s, nil
 }
 
 // DB exposes the storage layer to the API package.
 func (s *Service) DB() *persist.Database { return s.db }
+
+// FederationEnabled reports whether this process serves the server-server API.
+func (s *Service) FederationEnabled() bool { return s.federationEnabled }
 
 // Tokens exposes the token service to the API package.
 func (s *Service) Tokens() *auth.TokenService { return s.tokens }

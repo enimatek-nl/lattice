@@ -1,0 +1,267 @@
+package api
+
+import (
+	"net/http"
+	"strconv"
+
+	"github.com/enimatek-nl/lattice/internal/matrix"
+)
+
+// The server-server API begins with identity: a peer has to know which server it
+// is talking to, which key that server signs with, and that the request it
+// received came from the server it claims to come from. Everything in this file is
+// the ground those three facts are established on, and every later step - sending
+// a transaction, accepting a join, pinning an event into a room - is mounted on
+// top of it.
+//
+// All of it is behind -federation. With the flag off, no route below is registered,
+// so the paths answer M_UNRECOGNIZED like any other unknown path and the binary is
+// the single-server Lattice it was before.
+
+// federated registers a route that only a verified peer may reach. The wrapper
+// reads the body, checks the X-Matrix signature over the request as it arrived,
+// and puts the peer's server name on the context; handlers read the origin from
+// there and never from a body field.
+func (a *App) federated(pattern string, handler http.HandlerFunc) {
+	a.handle(pattern, a.federation.Authenticate(handler).ServeHTTP)
+}
+
+// registerFederationRoutes mounts the server-server routes. It runs only when the
+// flag is on.
+func (a *App) registerFederationRoutes() {
+	// Server keys are published to anybody: a peer that has not yet been able to
+	// verify a signature needs the key to verify with, and the answer is signed by
+	// the key it describes, so it carries its own proof.
+	a.handle("GET /_matrix/key/v2/server", a.handleServerKeys)
+	a.handle("GET /_matrix/key/v2/server/{keyID}", a.handleServerKey)
+	// A key query makes this server dial out on a stranger's behalf, so it is
+	// charged against the same per-address budget as a login attempt. Publishing our
+	// own key is not charged: peers fetch it constantly, and the work is local.
+	a.anonymousLimited("POST /_matrix/key/v2/query", limitAuth, a.handleKeyQuery)
+	a.anonymousLimited("GET /_matrix/key/v2/query/{serverName}", limitAuth, a.handleKeyQueryServer)
+
+	a.handle("GET /_matrix/federation/v1/version", a.handleFederationVersion)
+	a.federated("GET /_matrix/federation/v1/user/devices/{userId}", a.handleFederationDevices)
+}
+
+// handleServerKeys answers GET /_matrix/key/v2/server.
+//
+//	@Summary\tThis server's signing key
+//	@Description\tPublishes the ed25519 key this homeserver signs federation requests and events with, signed by that key itself. Peers fetch it directly; a notary fetches it, checks it, and re-signs it.
+//	@Tags\tfederation
+//	@Produce\tjson
+//	@Success\t200\t{object}	matrix.Object\t"The signed key document"
+//	@Router\t/_matrix/key/v2/server [get]
+func (a *App) handleServerKeys(w http.ResponseWriter, r *http.Request) {
+	document, err := a.svc.ServerKeysDocument(r.Context())
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, document)
+}
+
+// handleServerKey answers the {keyID} variant. The specification returns the whole
+// document for any key id the server knows, so the path parameter is a question
+// about which key, not a request for a fragment of the answer.
+//
+//	@Summary\tThis server's signing key by key ID
+//	@Description\tThe same signed document as the unversioned path, for a key id this server publishes. An unknown key id is refused.
+//	@Tags\tfederation
+//	@Produce\tjson
+//	@Param\tkeyID\tpath\tstring\ttrue\t"Key ID of the form ed25519:id"
+//	@Success\t200\t{object}	matrix.Object\t"The signed key document"
+//	@Failure\t404\t{object}	matrix.Error
+//	@Router\t/_matrix/key/v2/server/{keyID} [get]
+func (a *App) handleServerKey(w http.ResponseWriter, r *http.Request) {
+	keyID := r.PathValue("keyID")
+	found, err := a.svc.HasSigningKey(r.Context(), keyID)
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	if !found {
+		a.writeError(w, r, matrix.ErrNotFound("this server does not publish %s", keyID))
+		return
+	}
+	a.handleServerKeys(w, r)
+}
+
+// keyQueryBody is the notary request: the servers to look up, each with the keys
+// the requester already holds and how long it needs the answer to stay valid. The
+// criteria are not ignored - a request that wants keys valid until next week gets
+// a fresh fetch rather than a cached document that expires tomorrow.
+type keyQueryBody struct {
+	ServerKeys map[string]map[string]struct {
+		MinimumValidUntilTS int64 `json:"minimum_valid_until_ts"`
+	} `json:"server_keys"`
+	MinimumValidUntilTS int64 `json:"minimum_valid_until_ts"`
+}
+
+// handleKeyQuery answers POST /_matrix/key/v2/query, the notary endpoint.
+//
+// A notary's value is that the requester does not have to trust the peer whose
+// keys it wants: it trusts the notary, and the answer carries both signatures.
+// That is only worth anything if the notary verified what it signed, so the
+// document is fetched through the same path that checks a peer's self-signature,
+// its server_name, and its expiry. Lattice acts as a notary for others; acting as
+// a client of someone else's notary is not implemented, and is recorded in
+// TODO.md.
+//
+//	@Summary\tServer keys, notarised
+//	@Description\tFetches the signing keys of other servers, verifies them, and re-signs them with this server's key so the requester can rely on this server's word instead of the peer's.
+//	@Tags\tfederation
+//	@Accept\tjson
+//	@Produce\tjson
+//	@Param\tbody\tbody\tkeyQueryBody\ttrue\t"Server names to look up"
+//	@Success\t200\t{object}	matrix.Object\t"server_keys and failures"
+//	@Router\t/_matrix/key/v2/query [post]
+func (a *App) handleKeyQuery(w http.ResponseWriter, r *http.Request) {
+	var body keyQueryBody
+	if err := decodeBody(r, &body); err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	wanted := map[string]int64{}
+	for serverName, criteria := range body.ServerKeys {
+		until := body.MinimumValidUntilTS
+		for _, criterion := range criteria {
+			if criterion.MinimumValidUntilTS > until {
+				until = criterion.MinimumValidUntilTS
+			}
+		}
+		wanted[serverName] = until
+	}
+	a.notarise(w, r, wanted)
+}
+
+// handleKeyQueryServer answers GET /_matrix/key/v2/query/{serverName}, the same
+// service in its single-server spelling.
+//
+//	@Summary\tServer keys of one server, notarised
+//	@Description\tThe notary answer for one server name.
+//	@Tags\tfederation
+//	@Produce\tjson
+//	@Param\tserverName\tpath\tstring\ttrue\t"Server name to look up"
+//	@Param\tminimum_valid_until_ts\tquery\tint\tfalse\t"Earliest timestamp the answer must stay valid until"
+//	@Success\t200\t{object}	matrix.Object\t"server_keys and failures"
+//	@Router\t/_matrix/key/v2/query/{serverName} [get]
+func (a *App) handleKeyQueryServer(w http.ResponseWriter, r *http.Request) {
+	until, err := a.queryInt(w, r, "minimum_valid_until_ts")
+	if err != nil {
+		return
+	}
+	a.notarise(w, r, map[string]int64{r.PathValue("serverName"): until})
+}
+
+// notarise fetches, verifies and re-signs, and answers with the array of documents
+// plus the map of servers it could not reach. A peer that is unreachable is a
+// failure entry, not an error response: a requester asking about five servers can
+// still use the four that answered.
+func (a *App) notarise(w http.ResponseWriter, r *http.Request, wanted map[string]int64) {
+	if a.federation == nil {
+		a.writeError(w, r, matrix.ErrUnrecognized("%s", r.URL.Path))
+		return
+	}
+	documents := matrix.Array{}
+	failures := matrix.Object{}
+	for serverName, until := range wanted {
+		if serverName == "" {
+			continue
+		}
+		_, document, err := a.federation.PeerKeys(r.Context(), serverName, until)
+		if err != nil {
+			failures[serverName] = err.Error()
+			continue
+		}
+		signed, err := a.svc.Notarise(r.Context(), document)
+		if err != nil {
+			failures[serverName] = err.Error()
+			continue
+		}
+		documents = append(documents, signed)
+	}
+	writeJSON(w, http.StatusOK, matrix.Object{
+		"server_keys": documents,
+		"failures":    failures,
+	})
+}
+
+// handleFederationVersion answers GET /_matrix/federation/v1/version, which is not
+// authenticated: an operator comparing what two servers run should be able to ask
+// before either side has agreed on a key.
+//
+// The specification leaves the values free-form and suggests naming the
+// implementation rather than claiming compatibility: a version string that reads
+// like Synapse's is how a server ends up being sent traffic it cannot handle.
+//
+//	@Summary\tSoftware running on this server
+//	@Description\tThe implementation name and version, for operators comparing two homeservers. Not authenticated.
+//	@Tags\tfederation
+//	@Produce\tjson
+//	@Success\t200\t{object}	matrix.Object\t"server.name and server.version"
+//	@Router\t/_matrix/federation/v1/version [get]
+func (a *App) handleFederationVersion(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, matrix.Object{
+		"server": matrix.Object{"name": "Lattice", "version": a.cfg.Version},
+	})
+}
+
+// handleFederationDevices answers GET /_matrix/federation/v1/user/devices/{userId},
+// which is how a peer learns which devices to send an encrypted message to. The
+// device keys are handed over exactly as their owners uploaded them: the signatures
+// on them are the user's own, and re-encoding the object breaks them.
+//
+//	@Summary\tDevice keys of a local user
+//	@Description\tServes another homeserver the device keys, cross-signing keys and device list version of a user that lives here.
+//	@Tags\tfederation
+//	@Produce\tjson
+//	@Param\tuserId\tpath\tstring\ttrue\t"User ID local to this server"
+//	@Success\t200\t{object}	matrix.Object\t"user_id, devices and stream_id"
+//	@Failure\t401\t{object}	matrix.Error\t"The request carries no valid peer signature"
+//	@Failure\t404\t{object}	matrix.Error\t"No such user"
+//	@Router\t/_matrix/federation/v1/user/devices/{userId} [get]
+func (a *App) handleFederationDevices(w http.ResponseWriter, r *http.Request) {
+	// The service answers for a user this server does not have, which covers a
+	// well-formed ID of another server just as it covers a missing one: the peer
+	// asked the wrong place, and M_NOT_FOUND says so without leaking whether the
+	// name is in use elsewhere.
+	list, err := a.svc.FederatedDevices(r.Context(), r.PathValue("userId"))
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	body := matrix.Object{
+		"user_id":   list.UserID,
+		"stream_id": list.StreamID,
+		"devices":   list.Devices,
+	}
+	// The cross-signing keys are optional in the response, and left out when the
+	// user has none: a peer reads an absent key as "this user has no cross-signing",
+	// which is a different statement from an empty object.
+	for key, object := range map[string]matrix.Object{
+		"master_key":       list.MasterKey,
+		"self_signing_key": list.SelfSigningKey,
+		"user_signing_key": list.UserSigningKey,
+	} {
+		if object != nil {
+			body[key] = object
+		}
+	}
+	writeJSON(w, http.StatusOK, body)
+}
+
+// queryInt reads an optional integer query parameter, answering the request itself
+// when the value cannot be one.
+func (a *App) queryInt(w http.ResponseWriter, r *http.Request, name string) (int64, error) {
+	raw := r.URL.Query().Get(name)
+	if raw == "" {
+		return 0, nil
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		a.writeError(w, r, matrix.ErrInvalidRequest("%q must be an integer", name))
+		return 0, err
+	}
+	return value, nil
+}

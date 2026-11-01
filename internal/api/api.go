@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/enimatek-nl/lattice/internal/auth"
+	"github.com/enimatek-nl/lattice/internal/federation"
 	"github.com/enimatek-nl/lattice/internal/matrix"
 	"github.com/enimatek-nl/lattice/internal/persist"
 	"github.com/enimatek-nl/lattice/internal/service"
@@ -52,6 +53,17 @@ type Config struct {
 	// RateLimits guards the expensive writes: the room writes that cost the
 	// most, media uploads, and the authentication attempts a stranger can make.
 	RateLimits RateLimits
+	// Federation mounts the server-server API: the routes under
+	// /_matrix/federation and /_matrix/key/v2, each authenticated by the peer's
+	// signature. With it off those paths are not registered at all, so they answer
+	// M_UNRECOGNIZED exactly like any other unknown path, and the binary is a
+	// single-server homeserver.
+	Federation bool
+	// FederationPeers maps a server name to the URL to reach that server on,
+	// bypassing well-known delegation and TLS. Tests need it because they cannot
+	// run a certified HTTPS server; an operator needs it when a peer is reachable
+	// through a fixed tunnel.
+	FederationPeers map[string]string
 }
 
 // App owns the HTTP handlers and their dependencies.
@@ -66,6 +78,9 @@ type App struct {
 	limiter *limiter
 	// rejections counts rate limit rejections for the log.
 	rejections *rejections
+	// federation talks to peer homeservers and verifies what they send back. It is
+	// nil while the federation routes are off.
+	federation *federation.Transport
 }
 
 // New builds the API application.
@@ -85,6 +100,12 @@ func New(svc *service.Service, store *auth.Store, cfg Config) *App {
 		logger:     log.New(log.Writer(), "lattice: ", log.LstdFlags),
 		limiter:    newLimiter(cfg.RateLimits),
 		rejections: &rejections{},
+	}
+	if cfg.Federation {
+		app.federation = federation.NewTransport(svc, federation.Config{
+			PeerBaseURLs: cfg.FederationPeers,
+			UserAgent:    "Lattice/" + cfg.Version,
+		})
 	}
 	app.registerRoutes()
 	// Anything the route table does not cover gets a Matrix error instead of the
@@ -107,6 +128,13 @@ func (a *App) handleUnknownEndpoint(w http.ResponseWriter, r *http.Request) {
 			r.Method, r.URL.Path, strings.Join(allowed, ", "))
 		err.Status = http.StatusMethodNotAllowed
 		a.writeError(w, r, err)
+		return
+	}
+	// A peer that reaches a server with federation switched off is looking at a
+	// configuration problem, and the ordinary message does not say so.
+	if !a.cfg.Federation && federation.IsFederationPath(r.URL.Path) {
+		a.writeError(w, r, matrix.ErrUnrecognized(
+			"no handler for %s %s; this server does not serve the server-server API", r.Method, r.URL.Path))
 		return
 	}
 	a.writeError(w, r, matrix.ErrUnrecognized("no handler for %s %s", r.Method, r.URL.Path))
@@ -321,3 +349,8 @@ func requireSelf(w http.ResponseWriter, r *http.Request) bool {
 	auth.WriteError(w, matrix.ErrForbidden("%s may only modify its own data", auth.GetUserID(r)))
 	return false
 }
+
+// Federation exposes the peer transport to the outbound side of the server-server
+// API, which is where transactions and join requests are sent from. It returns nil
+// while the federation routes are off, so callers that need it must check the flag.
+func (a *App) Federation() *federation.Transport { return a.federation }

@@ -42,6 +42,7 @@ type Database struct {
 	ReadMarkerRepo   ReadMarkerRepo
 	ReceiptRepo      ReceiptRepo
 	RoomRepo         RoomRepo
+	ServerKeyRepo    ServerKeyRepo
 	SessionRepo      SessionRepo
 	StateRepo        StateRepo
 	ToDeviceRepo     ToDeviceRepo
@@ -82,6 +83,7 @@ func models() []any {
 		&DeviceKey{},
 		&OneTimeKey{},
 		&DeviceListChange{},
+		&ServerKey{},
 		&CrossSigningKey{},
 		&KeyBackupVersion{},
 		&BackupRoomKey{},
@@ -187,6 +189,7 @@ func NewFromGORM(gdb *gorm.DB) *Database {
 		ReadMarkerRepo:   NewReadMarkerRepo(gdb),
 		ReceiptRepo:      NewReceiptRepo(gdb),
 		RoomRepo:         NewRoomRepo(gdb),
+		ServerKeyRepo:    NewServerKeyRepo(gdb),
 		SessionRepo:      NewSessionRepo(gdb),
 		StateRepo:        NewStateRepo(gdb),
 		ToDeviceRepo:     NewToDeviceRepo(gdb),

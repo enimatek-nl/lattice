@@ -76,6 +76,10 @@ func registeredRoutes() ([]coverage.Endpoint, error) {
 		ServerName:  "example.com",
 		EnableMedia: true,
 		AllowGuests: true,
+		// The report counts what the binary is able to serve. The server-server
+		// routes exist behind -federation, and leaving them out would report the
+		// key endpoints as unimplemented and hide the extra routes they add.
+		Federation: true,
 	})
 	return coverage.Routes(app.Registered()), nil
 }

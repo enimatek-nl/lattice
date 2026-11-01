@@ -58,7 +58,11 @@ func main() {
 		uploadBurst = flag.Int("rate-limit-upload-burst", api.DefaultRateLimits().UploadBurst,
 			"how many media uploads one device may start in a burst")
 		uploadRate = flag.Float64("rate-limit-upload-rate", api.DefaultRateLimits().UploadRate,
-			"how many media uploads per second one device's budget refills to")
+			"how many media uploads one device's budget refills to per second")
+		federationOn = flag.Bool("federation", false,
+			"serve the server-server API: other homeservers can talk to this one")
+		federationPeers = flag.String("federation-peer", "",
+			"comma separated server=URL pairs that pin where a peer is reached, bypassing well-known delegation; for tunnels and tests")
 		showVersion = flag.Bool("version", false, "print the version and exit")
 	)
 	flag.Parse()
@@ -87,6 +91,7 @@ func main() {
 		service.WithMediaReservationWindow(*reservationWindow),
 		service.WithRegistrationSecrets(splitList(*registrationSecrets)...),
 		service.WithPublicBaseURL(*publicBaseURL),
+		service.WithFederation(*federationOn),
 	)
 	if err != nil {
 		log.Fatalf("starting service: %v", err)
@@ -110,7 +115,17 @@ func main() {
 			UploadBurst: *uploadBurst,
 			UploadRate:  *uploadRate,
 		},
+		Federation:      *federationOn,
+		FederationPeers: peerOverrides(*federationPeers),
 	})
+
+	if *federationOn {
+		// Saying which key the server signs with turns "my peer refuses me" into a
+		// line an operator can compare against what the peer fetched.
+		if key, err := svc.SigningKey(context.Background()); err == nil {
+			log.Printf("federation on: signing as %s with key %s", *serverName, key.ID)
+		}
+	}
 
 	handler := applyCORS(app.Handler(), *corsOrigin)
 	server := &http.Server{
@@ -183,4 +198,22 @@ func randomSecret() string {
 		log.Fatal("could not generate a signing secret")
 	}
 	return token
+}
+
+// peerOverrides parses the server=URL pairs of --federation-peer. A pin bypasses
+// well-known delegation and TLS for that name, which is how two homeservers on one
+// machine reach each other, and how a peer behind a fixed tunnel is named.
+func peerOverrides(list string) map[string]string {
+	if strings.TrimSpace(list) == "" {
+		return nil
+	}
+	overrides := map[string]string{}
+	for _, entry := range splitList(list) {
+		name, url, found := strings.Cut(entry, "=")
+		if !found || name == "" || url == "" {
+			log.Fatalf("--federation-peer expects server=URL pairs, got %q", entry)
+		}
+		overrides[name] = strings.TrimRight(url, "/")
+	}
+	return overrides
 }

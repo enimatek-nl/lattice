@@ -6,7 +6,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
+	"strconv"
 )
 
 // Canonical JSON is the encoding the Matrix signing specification defines for
@@ -62,6 +64,32 @@ func encodeCanonical(out *bytes.Buffer, value any, depth int) error {
 			return fmt.Errorf("empty number in JSON value")
 		}
 		out.WriteString(typed.String())
+	case int:
+		out.WriteString(strconv.Itoa(typed))
+	case int64:
+		out.WriteString(strconv.FormatInt(typed, 10))
+	case uint64:
+		out.WriteString(strconv.FormatUint(typed, 10))
+	case float64:
+		// Canonical JSON writes a number with no exponent and no meaningless
+		// fraction. Whole numbers inside the range int64 models exactly go back as
+		// integers, because that is how a sender wrote a timestamp or a power level
+		// and writing 1600000000000 as "1600000000000.0" would change the bytes a
+		// signature was made over.
+		//
+		// A fraction is not refused: a homeserver has to be able to re-encode an
+		// object it received without touching its digits, and an event content
+		// holding 1.5 is legal JSON even though no Matrix field requires it. The
+		// shortest form that round-trips is written without an exponent, which is
+		// the only spelling canonical JSON allows.
+		if math.IsNaN(typed) || math.IsInf(typed, 0) {
+			return fmt.Errorf("cannot canonically encode %v", typed)
+		}
+		if typed == math.Trunc(typed) && typed <= 1<<53 && typed >= -(1<<53) {
+			out.WriteString(strconv.FormatInt(int64(typed), 10))
+			break
+		}
+		out.WriteString(strconv.FormatFloat(typed, 'f', -1, 64))
 	case string:
 		encodeCanonicalString(out, typed)
 	case map[string]any:
