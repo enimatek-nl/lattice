@@ -123,10 +123,13 @@ func TestPowerLevel(t *testing.T) {
 // 50, messages to the room's events_default, and a per-type entry wins over
 // both.
 func TestEventRequired(t *testing.T) {
-	levels := matrix.PowerLevelsContent{
+	// A room's levels as a decoded event would arrive, with the specification's
+	// defaults restored over it: a room that wrote no state_default asks 50 for a
+	// state event, and a room that wrote one means it.
+	levels := power.ApplyDefaults(matrix.PowerLevelsContent{
 		SendDefault: 5,
 		Events:      map[string]int64{"m.room.name": 100, "m.room.message": 0, "m.sticker": 10},
-	}
+	})
 	tests := []struct {
 		typ     string
 		isState bool

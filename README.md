@@ -14,10 +14,10 @@ that decide what a client trusts, and stores encrypted room-key backups without
 being able to read any of it.
 
 **Status:** working homeserver whose federation transport delivers events between two
-servers; the end-to-end cryptography stays on the clients. **155 of
+servers; the end-to-end cryptography stays on the clients. **156 of
 the 234** endpoints indexed in [SPECS.md](SPECS.md) are implemented, plus 27
 extra routes (see [ENDPOINTS.md](ENDPOINTS.md)). 111 black-box compatibility
-tests, 55 offline unit tests and 31 two-server federation tests are green.
+tests, 64 offline unit tests and 31 two-server federation tests are green.
 `make build vet lint` clean (golangci-lint reports 0 issues).
 Implementation version `0.1.0`
 (reported by `GET /_matrix/client/versions` as `Lattice/0.1.0`).
@@ -175,6 +175,17 @@ receiver's transaction log meaningful. A room's `m.room.server_acl` is enforced 
 both directions: the excluded server is not sent the room's events, and its events
 are dropped on arrival.
 
+An event that arrives is judged before it is kept, in the order the specification
+gives: it has to be a valid event for the room's version, then the server that made it
+has to have signed it with a key that server currently publishes (a peer delivering an
+event is not its author and is never asked to sign it), then its content hash has to
+cover the content that arrived — and when it does not, this server keeps the redacted
+copy it computed itself rather than the copy it was sent. A peer that cannot prove one
+of those gets a reason in that event's slot of the transaction answer, not a refused
+transaction: the good events in the same batch should not be retried forever because
+one event was broken. What is not done yet is deciding whether the event was *allowed*
+in the room, and putting it there — see the next section.
+
 ## What does not work yet
 
 - **End-to-end encryption is client-side, and the server does not read it.**
@@ -217,10 +228,12 @@ are dropped on arrival.
 - **Federation carries traffic but does not yet apply it, and only behind
   `-federation`.** Two Lattice servers can exchange room events, typing, read
   receipts, room keys and device list updates for rooms both are in, and each
-  refuses what the other cannot prove. What no server can do yet is *act* on an
-  incoming event: a received event is stored and acknowledged, but not judged
-  against the room's auth rules or merged into state, and no room can be joined
-  across servers. So a user still cannot read a room that lives somewhere else.
+  refuses what the other cannot prove — an arriving event is checked against the room
+  version's event format, against the author's signing key and against its own content
+  hash before it is stored. What no server can do yet is *act* on an incoming event: it
+  is queued, but not judged against the room's authorization rules or merged into the
+  room's state, and no room can be joined across servers. So a user still cannot read a
+  room that lives somewhere else.
   Deferred by decision rather than by omission: SRV lookups (a name is resolved by
   its well-known delegation or on port 8448), acting as a client of somebody
   else's notary server, and signing key rotation.
@@ -288,6 +301,10 @@ internal/auth     JWT tokens, auth middleware, context getters
 internal/realtime hub that wakes long-polling syncs
 internal/coverage route-to-spec matcher the ENDPOINTS.md numbers come from
 internal/power    power level arithmetic (which level a user has, what an action asks for)
+internal/authcheck  the authorization rules of a room version: may this event be in this
+                   room, given the state these rules read
+internal/stateres  state resolution v2: two servers' claims about one room, resolved to
+                   one state
 internal/push     push rule engine: rule precedence, pattern and count matching
 internal/federation  signing identity, X-Matrix auth, peer transport, key caches,
                    transaction envelopes, server ACLs

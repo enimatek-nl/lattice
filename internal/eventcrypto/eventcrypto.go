@@ -347,6 +347,17 @@ func withoutSignatures(object matrix.Object) matrix.Object {
 // id a client sees is added on the way out of the origin server - so a server re-checking
 // an event it received has to leave that field out, or it hashes an event nobody signed.
 // Room versions 1 and 2 carry the id, and the hash covers it.
+// RedactedForm returns the event as this server would hold it after the room version's
+// redaction algorithm: the published form of the event, with the properties the version
+// destroys gone.
+//
+// A receiver keeps its own redacted copy rather than the one a peer sent, which is the
+// only honest answer to a hash mismatch: the peer's copy may have had content added to
+// it in transit, and the redaction is what proves which fields were there.
+func RedactedForm(event matrix.Object, roomVersion string) matrix.Object {
+	return Redact(asPublished(event, roomVersion), roomVersion)
+}
+
 func ContentHashOf(event matrix.Object, roomVersion string) ([32]byte, error) {
 	return ContentHash(asPublished(event, roomVersion))
 }

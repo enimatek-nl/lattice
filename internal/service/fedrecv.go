@@ -1,10 +1,12 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 
 	"github.com/enimatek-nl/lattice/internal/eventcrypto"
@@ -160,6 +162,15 @@ func (s *Service) queuePDU(ctx context.Context, peer, txnID string, pdu matrix.O
 		log.Printf("federation: %s sent %s to a room that excludes it", peer, eventID)
 		return eventID, ""
 	}
+	// The checks the specification performs on an event that arrives, in its order:
+	// is it an event at all, does the server that made it sign it, and does its content
+	// hash say what it says. The order is the specification's and it is not interchangeable:
+	// a format check is free, a signature check costs a key fetched over the network, and
+	// both come before any of the room's rules are read.
+	pdu, problem = s.judgeIncomingPDU(ctx, pdu, version)
+	if problem != "" {
+		return eventID, problem
+	}
 	// A server may deliver an event whose sender lives somewhere else entirely: it is
 	// relaying what the origin server signed, and the signature - checked before this
 	// point - is what says so. The sender is therefore not required to be a user of the
@@ -187,6 +198,101 @@ func (s *Service) queuePDU(ctx context.Context, peer, txnID string, pdu matrix.O
 		log.Printf("federation: %s sent %s again", peer, eventID)
 	}
 	return eventID, ""
+}
+
+// judgeIncomingPDU runs the three checks an arriving event has to survive before it is
+// worth putting anywhere: the shape the room version gives an event, the signature of
+// the server that made it, and its own content hash. It returns the event this server
+// will keep - which is not always the one that arrived - and an empty problem string
+// when the event is taken.
+//
+// A hash that does not match is not a refusal. The specification reads it as "we were
+// given a redacted copy, or somebody added fields to the event in transit", and asks
+// the receiver to keep the redacted copy it calculated itself. That is the honest
+// answer: the signature, which is made over the redacted form, has already been checked,
+// so the fields this server cannot account for are dropped rather than believed.
+func (s *Service) judgeIncomingPDU(ctx context.Context, pdu matrix.Object, version string) (matrix.Object, string) {
+	if err := eventcrypto.PDUCheck(pdu, version); err != nil {
+		return nil, fmt.Sprintf("the event is not a valid event for room version %s: %v", version, err)
+	}
+	if problem := s.verifyPDUSignature(ctx, pdu, version); problem != "" {
+		return nil, problem
+	}
+	if err := eventcrypto.VerifyContentHash(pdu, version); err != nil {
+		redacted := eventcrypto.RedactedForm(pdu, version)
+		if !eventcrypto.IsRedactedForm(pdu, version) && !sameEventBytes(pdu, redacted) {
+			log.Printf("federation: the content hash of %s does not cover the event as received; "+
+				"keeping the redacted copy this server computed", federation.EventField(pdu, "event_id"))
+		}
+		return redacted, ""
+	}
+	return pdu, ""
+}
+
+// verifyPDUSignature checks that the server named as an event's author signed it, with a
+// key that server currently publishes.
+//
+// Which server that is depends on the room version. Versions 1 and 2 say it twice over:
+// in the origin field, and in the domain of the id the origin server chose. Later
+// versions dropped both, and the author is the server of the user who sent it - which is
+// also what the specification's list of expected signatures says. The peer that
+// delivered the event is not the author and is not asked to sign it: a PDU is signed by
+// the server that made it precisely so that it can be relayed.
+func (s *Service) verifyPDUSignature(ctx context.Context, pdu matrix.Object, version string) string {
+	transport := s.federationTransport()
+	if transport == nil {
+		// Federation is off, so this server has no way to look up a signing key and no
+		// business accepting an event that needs one.
+		return "this server cannot check the signature of a remote event"
+	}
+	signers := []string{matrix.DomainOf(federation.EventField(pdu, "sender"))}
+	if number, err := strconv.Atoi(strings.TrimSpace(version)); err == nil && number <= 2 {
+		if origin := federation.EventField(pdu, "origin"); origin != "" {
+			signers = append(signers, origin)
+		}
+		if domain := matrix.DomainOf(federation.EventField(pdu, "event_id")); domain != "" {
+			signers = append(signers, domain)
+		}
+	}
+	signatures, _ := asObject(pdu["signatures"])
+	for _, serverName := range signers {
+		if serverName == "" {
+			continue
+		}
+		byKey, ok := asObject(signatures[serverName])
+		if !ok || len(byKey) == 0 {
+			return fmt.Sprintf("the event carries no signature by %s, which made it", serverName)
+		}
+		var problem = "the signature of the event does not verify"
+		for keyID := range byKey {
+			publicKey, err := transport.VerifyKeyOf(ctx, serverName, keyID)
+			if err != nil {
+				problem = fmt.Sprintf("the signing key %s of %s could not be used: %v", keyID, serverName, err)
+				continue
+			}
+			if err := eventcrypto.EventSignature(pdu, version, serverName, keyID, publicKey); err != nil {
+				problem = err.Error()
+				continue
+			}
+			return ""
+		}
+		return problem
+	}
+	return "the event names no server that could have signed it"
+}
+
+// sameEventBytes compares two events by their canonical encoding, the only comparison
+// that does not depend on how a sender spelled a number or ordered a key.
+func sameEventBytes(a, b matrix.Object) bool {
+	left, err := matrix.CanonicalJSON(a)
+	if err != nil {
+		return false
+	}
+	right, err := matrix.CanonicalJSON(b)
+	if err != nil {
+		return false
+	}
+	return bytes.Equal(left, right)
 }
 
 // applyEDU applies one ephemeral message. A type this server does not handle is

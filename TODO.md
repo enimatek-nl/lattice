@@ -13,7 +13,7 @@ re-derive were kept (below the plan).
 - A working homeserver with its **federation transport in production shape**:
   `make build vet lint` clean (`make lint` = golangci-lint, 0 issues),
   `go test ./...` green — **111** compatibility tests (~50 s here, ~5½ min
-  with `-race` on this machine), **56** offline unit tests in `tests/unit`
+  with `-race` on this machine), **64** offline unit tests in `tests/unit`
   (milliseconds), and **31** two-server tests in `tests/federation` (~9 s,
   ~56 s with `-race`). Coverage: **156 of the 234** indexed endpoints, 27 extra
   routes (`make endpoints`). Steps 1–8 are closed: rate limiting, the
@@ -24,7 +24,10 @@ re-derive were kept (below the plan).
   `PUT /send` with a replay-safe transaction log, EDU sinks for typing,
   receipts, to-device, device lists and cross-signing, an outbound per
   destination queue with retries, and `m.room.server_acl` enforced in both
-  directions. The plan continues at **step 9**; steps 9 to 13 are driven
+  directions. Step 9 is **half closed**: the room version's authorization rules
+  (`internal/authcheck`), state resolution v2 (`internal/stateres`) and the first
+  three receipt checks on the inbound path are in; consuming the queue is the next
+  piece of work. The plan continues at **step 9**; steps 9 to 13 are driven
   test-by-test against Complement's server-server suite, each naming the tests it
   is expected to turn green, and step 14 wraps the release.
 - Against [Complement](https://github.com/matrix-org/complement), the upstream
@@ -44,11 +47,12 @@ re-derive were kept (below the plan).
   *client* of someone else's notary, key rotation, and per-peer budgets for the
   volume routes that arrive with the read-side queries of step 11.
 - What federation does **not** do yet, so a two-server test is not mistaken for a
-  working join: received events are queued and acknowledged but not applied —
-  no room on this server changes because a peer sent an event (step 9), and no
-  room can be joined across servers yet (step 10). Two Lattice servers can
-  already exchange messages, typing, receipts, room keys and device list updates
-  for rooms that both are in.
+  working join: an arriving event is now judged — its shape against the room version,
+  its signature against the author's published key, its content hash — and then
+  **queued but not applied**: no room on this server changes because a peer sent an
+  event (the rest of step 9), and no room can be joined across servers yet (step 10).
+  Two Lattice servers can already exchange messages, typing, receipts, room keys and
+  device list updates for rooms that both are in.
 - The E2EE trust layer is done end-to-end: device keys, cross-signing
   (verified server-side over canonical JSON), key signatures, room key
   backup. The Element "unable to set up keys" thread is **closed** — pinned
@@ -557,39 +561,111 @@ This step buys no green test: Complement cannot get as far as judging an event
 until step 10 lets a second server into a room. It is a prerequisite for every step
 after it, so its tests are in-repo and its definition of done is local.
 
-- [ ] The spec's check order, verbatim: valid for the room version →
-      origin-server signature (cached keys) → content hash (on mismatch use
-      the locally redacted copy) → auth rules against its `auth_events` →
-      auth against the state at the event → **soft-fail** if it fails only
-      against the current resolved state.
-- [ ] Semantics: rejected = kept out of state and never shown; soft-failed =
-      stored and relayed as a parent, hidden from clients, not a forward
-      extremity.
-- [ ] **State resolution v2 first**: step 7 left it undone on purpose, and step 9
-      is where two servers' graphs collide for real, so it belongs here. It is a
-      pure function over loaded state (`internal/stateres`, table-driven in
-      `tests/unit`) built on the auth-chain rules step 7's `selectAuthEvents`
-      already encodes: the full graph of forward extremities' ancestors, the
-      power-rules subset, `auth_rule`/lexicographic ordering by the numeric part
-      of the event id (not its display form), then the conflict resolutions for
-      `m.room.member`, `m.room.join_rules`, `m.room.power_levels`,
-      `m.room.create`, `m.room.history_visibility`, `m.room.name` and
-      `m.room.topic`.
-- [ ] Apply the resolved state; fan out to sync through the realtime hub like
-      local events, and advance forward extremities (a state leak here is
-      invisible locally and fatal on a peer).
+Half of it is in, on 2026-11-02.
 
-Tests: `tests/unit/stateres_test.go` (table-driven conflicts), and
-`tests/federation/intake_test.go`, where the cluster signs a PDU, ships it over the
-real transport, and the receiver's decision is visible: an accepted event reaches
-`/sync` and `/messages` there, a rejected one is never shown, a soft-failed one is
-stored and relayed as a parent but hidden. **The new two-server cases must stop
-seeding rows** — the room has to exist because events put it there. Step 8's tests
-insert `Room` and `RoomMembership` rows directly, which is fine for testing storage
-and useless for testing whether a room can be joined.
+- [x] **The rules themselves**: `internal/authcheck` answers "may this event be in
+      this room, given the state these rules read?" — the numbered list of the room
+      version, over a `Graph` of events and a `State` snapshot. Pure, no database, no
+      network, so every clause is pinned by a table in `tests/unit/authrules_test.go`
+      (~70 cases across versions 2, 5, 7, 9, 10, 11). Two entry points, and the split
+      matters: `Check` is the whole list including the rule that reads the sender's own
+      choice of `auth_events`, and `Rules` is the list without it — which is what state
+      resolution needs, because resolution is there to re-derive that choice.
+- [x] **State resolution v2**: `internal/stateres`, the specification's algorithm —
+      unconflicted map, conflicted set, auth difference, power events sorted by reverse
+      topological power ordering, iterative auth checks, then the rest by mainline
+      order, then the unconflicted keys restored. `tests/unit/stateres_test.go` pins
+      five forks, including the one that matters most: a kick on one fork beats what the
+      kicked user did on the other.
+- [x] **The first three receipt checks**, in the spec's order, in
+      `Service.judgeIncomingPDU` on the `PUT /send` path: `eventcrypto.PDUCheck` (shape
+      for the room version — see `tests/unit/pduformat_test.go`), then the author's
+      signature with a key fetched and verified over federation, then the content hash.
+      A hash mismatch keeps this server's own redacted copy rather than the peer's, and
+      `TestEventsAreQueuedAndAnswered` now ships a genuinely signed PDU over the real
+      transport and shows all three outcomes.
+
+What is left of step 9:
+
+- [ ] The remaining receipt checks: auth rules against the event's own `auth_events`
+      (needs the auth chain fetched), against the state at the event, and against the
+      current resolved state — the last one producing a **soft failure** rather than a
+      rejection.
+- [ ] The two rules `authcheck` hands back to its caller because no state snapshot
+      holds a public key: the **authorising user's server signature** on a restricted
+      join (`join_authorised_via_users_server` has to be signed by that user's homeserver,
+      or "my friend let me in" is a claim anybody can make), and the third-party invite
+      signature, which `authcheck` can check because the keys travel in the room's own
+      `m.room.third_party_invite` event.
+- [ ] Semantics of the two outcomes: rejected = kept out of state, never relayed as a
+      parent, never a forward extremity; soft-failed = stored, relayed as a parent,
+      hidden from clients. `persist.Event` already has the columns; nothing writes them.
+- [ ] Consume the queue: `ReceivedPDURepo.Pending` is read by nobody today, so an event
+      that passes the checks above is stored and never applied. Applying it means the
+      room row appearing because an event said so (not because a test inserted it), the
+      state entries moving, forward extremities advancing, and sync noticing — the same
+      path a local event takes, with the signature already checked.
+- [ ] `tests/federation/intake_test.go`: the cluster signs a PDU, ships it, and the
+      receiver's decision is visible — an accepted event reaches `/sync` and
+      `/messages` there, a rejected one is never shown, a soft-failed one is stored and
+      relayed as a parent but hidden. **The new two-server cases must stop seeding
+      rows**: step 8's tests insert `Room` and `RoomMembership` rows directly, which is
+      fine for testing storage and useless for testing whether a room can be joined.
 
 Done when: an event created on server B appears on server A with A's own decision
-recorded, and A and B resolve the same state after a deliberate fork.
+recorded, and A and B resolve the same state after a deliberate fork — the second half
+of which `internal/stateres` now makes checkable rather than aspirational.
+
+### Findings worth not re-deriving (step 9)
+
+- **TODO.md was wrong that state resolution existed.** It named `internal/stateres` and
+  `eventcrypto.PDUCheck` as done work; neither file was in the tree, and the intake
+  accepted any PDU with any hash and any signature. Trust the tree over the plan.
+- **The `auth_events` selection is written twice** — `selectAuthEvents` in
+  `internal/service/dag.go` picks them when an event is made, `authcheck.Selection`
+  re-derives them when one is judged. Both are the spec's list; they have to stay the
+  same list, because a sender that chose otherwise has changed which rules apply to its
+  own event. Rule 2 is what catches the divergence, and it refuses an event whose auth
+  events are *also* more than the list, so a lax selection is as fatal as a mean one.
+- **Room version 2 does not drop a failed power event's state entry.** Room version 1
+  removed all events with the same `(type, state_key)` when a *power event* failed auth;
+  the v2 text says only that the event is ignored, and v2 gets that protection from
+  weighing power events first instead. Implementing v1's removal in the v2 loop silently
+  deletes the honest change the other fork made.
+- **The auth-event-set rule must not run inside resolution.** Resolution assembles the
+  state an event is checked against, and the event's `auth_events` are what it is there
+  to re-derive; running rule 2 there refuses nearly every event under resolution. Hence
+  `authcheck.Check` versus `authcheck.Rules`.
+- **A `state_default` of 0 means 0.** `power.ApplyDefaults` folds an explicit 0 back to
+  50 because a decoded int64 cannot tell 0 from absent, and the client-facing checks
+  accept that. The authorization rules read the raw content, where presence *is*
+  visible, so `authcheck.powerLevels` restores defaults only for keys the room did not
+  write — and `power.EventRequired` now takes levels that already have defaults restored
+  rather than guessing again.
+- **Refusing more than the room's rules refuse is not safety.** An authorising user
+  named on a join to a *public* room is decoration: the room is open either way, and a
+  server that refuses such a join becomes the only one that could not read the room. The
+  authoriser is checked where its rules apply — under `restricted` and
+  `knock_restricted` — and ignored elsewhere.
+- **The content hash covers the unredacted event in every room version** (the v11 change
+  is about which keys redaction strips, not about hashing). So a redacted copy never
+  matches its own hash, and the receiver's rule is "use the redacted copy I computed",
+  not "reject".
+- **The author of a PDU in room version 3 and later is the sender's server.** Versions 1
+  and 2 name it twice (`origin`, and the domain of the id the origin chose) and both
+  have to have signed; later versions name nothing, and the spec's list of expected
+  signatures says "the sender's server". The *delivering* peer never signs a PDU — that
+  is the point of signing PDUs at all.
+- **A test fixture with `"hashes": {"sha256": "not-a-real-hash"}` tests the queue, not
+  the checks.** `TestEventsAreQueuedAndAnswered` had one, and passed for months; with
+  the receipt checks wired in it had to sign the event with the server's own key, which
+  is what makes it also able to show a forged signature and a tampered body.
+- **The server-server tally is unchanged by the intake checks: still 87 of 91.** A
+  re-run after this half of step 9 (`./tests`, 126 deployments, no panics) fails exactly
+  the set it did before, minus `TestInboundFederationKeys` which went green in step 8.
+  Step 9 turns no test green by design — Complement cannot reach event judgement until a
+  join exists — so a run that stays flat while the intake gets stricter is the result
+  that says nothing else broke.
 
 ### 10. Federation V — the first honest cross-server join (first Complement greens)
 
@@ -947,9 +1023,14 @@ federation failure reads as a protocol failure rather than a certificate one.
   `app.Registered()`.
 - Pure rule packages cut out of the service layer so `tests/unit` can drive
   them (and federation can reuse them): `internal/power` (level arithmetic —
-  `service.powerLevels` only reads the event and calls `power.ApplyDefaults`),
-  `internal/push` (rule precedence and matching — `service.PushRuleKinds` is
-  `push.Kinds`, `notifyParticipants` only gathers inputs), `internal/coverage`
+  `service.powerLevels` only reads the event and calls `power.ApplyDefaults`, and
+  `power.EventRequired` expects levels that already have the defaults restored),
+  `internal/authcheck` (the room version's authorization rules, and the auth-event
+  selection: `Check` is the whole list, `Rules` is the list without the rule that
+  reads the sender's own `auth_events`, which is what `stateres` needs),
+  `internal/stateres` (state resolution v2, over an `authcheck.Graph` and state
+  snapshots), `internal/push` (rule precedence and matching — `service.PushRuleKinds`
+  is `push.Kinds`, `notifyParticipants` only gathers inputs), `internal/coverage`
   (the SPECS.md matcher and report — `cmd/endpoints` is a thin `main`).
   `.gitignore` used to carry `coverage.*`, which silently matched
   `internal/coverage/coverage.go` and would have kept the package out of the

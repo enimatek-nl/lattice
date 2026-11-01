@@ -89,14 +89,19 @@ func Level(levels matrix.PowerLevelsContent, userID, creator string) int64 {
 }
 
 // EventRequired returns the level required to send an event of a type: the
-// per-type level the room set, or 50 for state events, or the room's default
-// level for messages.
+// per-type level the room set, or the room's state_default for a state event, or
+// the room's events_default for a message.
+//
+// The levels passed in have to be the room's levels with the specification's
+// defaults restored, which is what [Defaults] and [ApplyDefaults] produce. A room
+// that wrote its own state_default of 0 means it, and a caller that restores the
+// defaults over a decoded event has already turned an absent key into 50.
 func EventRequired(levels matrix.PowerLevelsContent, typ string, isState bool) int64 {
 	if level, ok := levels.Events[typ]; ok {
 		return level
 	}
 	if isState {
-		return DefaultState
+		return levels.StateDefault
 	}
 	return levels.SendDefault
 }

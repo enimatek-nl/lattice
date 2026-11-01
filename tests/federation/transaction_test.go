@@ -2,6 +2,8 @@ package federation
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -394,7 +396,7 @@ func TestEventsAreQueuedAndAnswered(t *testing.T) {
 	bob := two.register("bob", "rubberduck")
 	roomID := two.createRoom(bob, map[string]any{"name": "Their room"})
 
-	pdu := matrix.Object{
+	pdu := signedPDU(t, one, matrix.Object{
 		"room_id":          roomID,
 		"type":             matrix.TypeMessage,
 		"sender":           "@alice:" + one.name,
@@ -403,9 +405,7 @@ func TestEventsAreQueuedAndAnswered(t *testing.T) {
 		"prev_events":      matrix.Array{},
 		"auth_events":      matrix.Array{},
 		"content":          matrix.Object{"msgtype": "m.text", "body": "from the other side"},
-		"hashes":           matrix.Object{"sha256": "not-a-real-hash"},
-		"signatures":       matrix.Object{one.name: matrix.Object{"ed25519:key": "not-a-real-signature"}},
-	}
+	})
 	first, failure := sendTransaction(t, one, two.name, "events-1", transactionBody(one.name, matrix.Array{pdu}, nil))
 	if failure != nil {
 		t.Fatalf("the event transaction was refused: %d %s %s", failure.Status, failure.Code, failure.Message)
@@ -462,6 +462,68 @@ func TestEventsAreQueuedAndAnswered(t *testing.T) {
 		t.Errorf("after the same event arrived twice, %d events are queued, want 1", count)
 	}
 
+	// An event that the sending server did not sign is not an event that server made.
+	// The transaction still answers - a refusal at the envelope would make the whole
+	// batch, including the good events in it, get retried forever - but this event is
+	// answered with the reason and is not queued.
+	forged := signedPDU(t, one, matrix.Object{
+		"room_id":          roomID,
+		"type":             matrix.TypeMessage,
+		"sender":           "@mallory:" + two.name,
+		"origin_server_ts": int64(1700000004000),
+		"depth":            int64(10),
+		"prev_events":      matrix.Array{},
+		"auth_events":      matrix.Array{},
+		"content":          matrix.Object{"msgtype": "m.text", "body": "signed by somebody else"},
+	})
+	answer, failure := sendTransaction(t, one, two.name, "events-2b", transactionBody(one.name, matrix.Array{forged}, nil))
+	if failure != nil {
+		t.Fatalf("the forged event was refused at the envelope: %d %s", failure.Status, failure.Message)
+	}
+	entry, ok := answer["pdus"].(matrix.Object)[""]
+	if !ok {
+		if id := derivedEventIDQuiet(two, roomID, forged); id != "" {
+			entry, ok = answer["pdus"].(matrix.Object)[id]
+		}
+	}
+	if !ok {
+		t.Fatalf("the forged event is answered with %v, which does not name it", answer["pdus"])
+	}
+	if result, isObject := entry.(matrix.Object); !isObject || result["error"] == nil {
+		t.Errorf("the forged event is answered with %v, which claims it was handled", entry)
+	}
+
+	// A peer that changes the content of a signed event in transit fails the content
+	// hash. That is not a reason to throw the event away - the signature over the
+	// redacted form is still good, and the room's history needs the statement the event
+	// makes - but the fields this server cannot account for are not believed: the copy
+	// that is kept is the redacted one this server computed.
+	tampered := signedPDU(t, one, matrix.Object{
+		"room_id":          roomID,
+		"type":             matrix.TypeMessage,
+		"sender":           "@alice:" + one.name,
+		"origin_server_ts": int64(1700000005000),
+		"depth":            int64(11),
+		"prev_events":      matrix.Array{},
+		"auth_events":      matrix.Array{},
+		"content":          matrix.Object{"msgtype": "m.text", "body": "honest body"},
+	})
+	tampered["content"] = matrix.Object{"msgtype": "m.text", "body": "body somebody else wrote"}
+	if _, failure := sendTransaction(t, one, two.name, "events-2c", transactionBody(one.name, matrix.Array{tampered}, nil)); failure != nil {
+		t.Fatalf("the tampered event was refused at the envelope: %d %s", failure.Status, failure.Message)
+	}
+	tamperedID := derivedEventIDQuiet(two, roomID, tampered)
+	if tamperedID == "" {
+		t.Fatal("the tampered event cannot be named")
+	}
+	kept, err := two.db.ReceivedPDURepo.Get(tamperedID)
+	if err != nil {
+		t.Fatalf("the tampered event was not queued: %v", err)
+	}
+	if strings.Contains(kept.JSON, "somebody else wrote") {
+		t.Errorf("the tampered copy was stored as received, so its content hash now covers a body no server signed")
+	}
+
 	// An event that cannot be named - no id, and a room this server has never heard of,
 	// so its room version is unknown - is answered with a problem rather than accepted
 	// silently, because the answer is keyed by event id.
@@ -471,18 +533,65 @@ func TestEventsAreQueuedAndAnswered(t *testing.T) {
 		"sender":  "@someone:elsewhere.example",
 		"content": matrix.Object{},
 	}
-	answer, failure := sendTransaction(t, one, two.name, "events-3", transactionBody(one.name, matrix.Array{unknown}, nil))
+	last, failure := sendTransaction(t, one, two.name, "events-3", transactionBody(one.name, matrix.Array{unknown}, nil))
 	if failure != nil {
 		t.Fatalf("the unnamed event was refused at the envelope: %d %s", failure.Status, failure.Message)
 	}
-	entry, ok := answer["pdus"].(matrix.Object)[""]
+	unnamed, ok := last["pdus"].(matrix.Object)[""]
 	if !ok {
-		t.Errorf("the unnamed event is answered with %v, which hides that it was refused", answer["pdus"])
+		t.Errorf("the unnamed event is answered with %v, which hides that it was refused", last["pdus"])
 		return
 	}
-	if result, ok := entry.(matrix.Object); !ok || result["error"] == nil {
+	if result, ok := unnamed.(matrix.Object); !ok || result["error"] == nil {
 		t.Errorf("the unnamed event is answered with %v, which claims it was handled", entry)
 	}
+}
+
+// signedPDU gives a fixture event the shape a peer sends: the content hash over the
+// event as it stands, and the signature of the server that made it, made over the
+// redacted form the room version defines. A test that sends an unsigned event tests the
+// queue rather than the checks an event has to survive on the way in.
+func signedPDU(t *testing.T, from *server, event matrix.Object) matrix.Object {
+	t.Helper()
+	key, err := from.db.ServerKeyRepo.Current()
+	if err != nil {
+		t.Fatalf("reading the signing key of %s: %v", from.name, err)
+	}
+	seed, err := base64.RawStdEncoding.DecodeString(key.PrivateSeed)
+	if err != nil {
+		t.Fatalf("decoding the signing key of %s: %v", from.name, err)
+	}
+	signed, err := eventcrypto.HashAndSign(event, roomVersionOf(from, event), ed25519.NewKeyFromSeed(seed), from.name, key.KeyID)
+	if err != nil {
+		t.Fatalf("signing the fixture event: %v", err)
+	}
+	return signed
+}
+
+// roomVersionOf is the version of the room a fixture event belongs to. The room was made
+// by a Lattice, so it is the version that server creates rooms with; the fixture names
+// the room, so the room row says the same thing.
+func roomVersionOf(s *server, event matrix.Object) string {
+	roomID, _ := event["room_id"].(string)
+	if room, err := s.db.RoomRepo.Get(roomID); err == nil && room.RoomVersion != "" {
+		return room.RoomVersion
+	}
+	return "11"
+}
+
+// derivedEventIDQuiet names an event the way its receiver will, or returns the empty
+// string. It is the quiet twin of derivedEventID, for the cases where an event may
+// legitimately have no name.
+func derivedEventIDQuiet(s *server, roomID string, event matrix.Object) string {
+	room, err := s.db.RoomRepo.Get(roomID)
+	if err != nil {
+		return ""
+	}
+	id, err := eventReference(room, event)
+	if err != nil {
+		return ""
+	}
+	return id
 }
 
 // TestADeviceListUpdateIsCached checks the device list sink: a peer's announcement of a
