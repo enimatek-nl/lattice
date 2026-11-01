@@ -235,6 +235,28 @@ func txnKind(kind string) string {
 	return kind
 }
 
+// replayTxn returns the event a client transaction id already produced. ok
+// is false when the id is unknown; a stored transaction whose event has gone
+// missing counts as unknown too, so the request is processed normally. Only a
+// real repository failure returns an error.
+func (s *Service) replayTxn(sender, kind, roomID, txnID string) (*persist.Event, bool, error) {
+	if txnID == "" {
+		return nil, false, nil
+	}
+	existing, err := s.db.TxnRepo.Get(sender, txnKind(kind), roomID, txnID)
+	if persist.IsNotFound(err) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, matrix.ErrInternal(err)
+	}
+	stored, err := s.db.EventRepo.Get(existing.EventID)
+	if err != nil {
+		return nil, false, nil
+	}
+	return stored, true, nil
+}
+
 // relationOf extracts the (event id, relation type) pair of an m.relates_to
 // content block. Thread and annotation relations are stored directly; legacy
 // in-reply-to relations are normalised onto the same columns.
@@ -263,16 +285,10 @@ func relationOf(content matrix.RawMessage) (eventID, relType string) {
 // SendRoomEvent appends a message-like event, honouring the client
 // transaction id so retries return the original event.
 func (s *Service) SendRoomEvent(ctx context.Context, roomID, sender, typ string, content matrix.RawMessage, txnID string) (*persist.Event, error) {
-	if txnID != "" {
-		existing, err := s.db.TxnRepo.Get(sender, txnKind("room_event"), roomID, txnID)
-		if err == nil {
-			event, err := s.db.EventRepo.Get(existing.EventID)
-			if err == nil {
-				return event, nil
-			}
-		} else if !persist.IsNotFound(err) {
-			return nil, matrix.ErrInternal(err)
-		}
+	if event, replayed, err := s.replayTxn(sender, "room_event", roomID, txnID); err != nil {
+		return nil, err
+	} else if replayed {
+		return event, nil
 	}
 	if err := s.RequireSend(ctx, roomID, sender); err != nil {
 		return nil, err
@@ -290,16 +306,10 @@ func (s *Service) SendRoomEvent(ctx context.Context, roomID, sender, typ string,
 // SetRoomState appends a state event, honouring the optional transaction id
 // used for idempotent PUT /state requests.
 func (s *Service) SetRoomState(ctx context.Context, roomID, sender, typ, stateKey string, content matrix.RawMessage, txnID string) (*persist.Event, error) {
-	if txnID != "" {
-		existing, err := s.db.TxnRepo.Get(sender, txnKind("state"), roomID, txnID)
-		if err == nil {
-			event, err := s.db.EventRepo.Get(existing.EventID)
-			if err == nil {
-				return event, nil
-			}
-		} else if !persist.IsNotFound(err) {
-			return nil, matrix.ErrInternal(err)
-		}
+	if event, replayed, err := s.replayTxn(sender, "state", roomID, txnID); err != nil {
+		return nil, err
+	} else if replayed {
+		return event, nil
 	}
 	if err := s.RequireSend(ctx, roomID, sender); err != nil {
 		return nil, err
@@ -323,16 +333,10 @@ func (s *Service) SetRoomState(ctx context.Context, roomID, sender, typ, stateKe
 
 // RedactEvent appends an m.room.redaction event and strips the target event.
 func (s *Service) RedactEvent(ctx context.Context, roomID, sender, targetEventID, reason, txnID string) (*persist.Event, error) {
-	if txnID != "" {
-		existing, err := s.db.TxnRepo.Get(sender, txnKind("redaction"), roomID, txnID)
-		if err == nil {
-			event, err := s.db.EventRepo.Get(existing.EventID)
-			if err == nil {
-				return event, nil
-			}
-		} else if !persist.IsNotFound(err) {
-			return nil, matrix.ErrInternal(err)
-		}
+	if event, replayed, err := s.replayTxn(sender, "redaction", roomID, txnID); err != nil {
+		return nil, err
+	} else if replayed {
+		return event, nil
 	}
 	if err := s.RequireSend(ctx, roomID, sender); err != nil {
 		return nil, err

@@ -246,7 +246,8 @@ Phase 1 (bare POC) and phase 2 (the everyday client endpoints) are done, and so
 is the E2EE key layer: device keys, cross-signing and server-side key backup. The
 next chunks queued in [TODO.md](TODO.md) are `account/3pid/*`, SSO, appservice
 APIs, unit tests in `tests/unit/`, a Makefile and OpenAPI generation. Federation
-is probably out of scope — that decision is not recorded yet.
+is decided in scope as phase 3, gated behind a `-federation` flag — the decision
+and the full plan are recorded in [TODO.md](TODO.md).
 
 Note: `SPECS.md` references a spec corpus that is not in this repo, so anything
 depending on exact spec wording (the default push rule set, `/threads` ordering,

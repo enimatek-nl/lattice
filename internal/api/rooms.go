@@ -300,8 +300,9 @@ func (a *App) handleUpgradeRoom(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"replacement_room": newRoomID})
 }
 
-// bodyObject decodes a JSON body into a generic object, tolerating an empty
-// body.
+// bodyObject decodes a JSON body into a generic object. An empty or
+// undecodable body yields an empty object: the endpoints that use it treat a
+// body they cannot read as no body at all rather than rejecting the request.
 func bodyObject(r *http.Request) matrix.Object {
 	out := matrix.Object{}
 	_ = decodeBody(r, &out)
