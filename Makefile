@@ -12,7 +12,7 @@ ENDPOINTS ?= ENDPOINTS.md
 SWAG_DIR  ?= docs/swagger
 
 # Development server: the flags README.md uses for the local try-it run.
-ADDR        ?= 0.0.0.0:8008
+ADDR        ?= 127.0.0.1:8008
 SERVER_NAME ?= localhost:8008
 DB          ?= /tmp/lattice.db
 JWT_SECRET  ?= dev
