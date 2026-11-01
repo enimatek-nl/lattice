@@ -11,6 +11,26 @@ import (
 // toDeviceLimit caps how many send-to-device messages one sync delivers.
 const toDeviceLimit = 100
 
+// refusesOnTheToDevicePath says whether an event type named in the
+// /sendToDevice/{eventType}/{txnId} path is a room event with no business being
+// pushed straight to a device.
+//
+// m.room.encrypted is deliberately **not** refused, and it is not really an
+// exception: it is the Olm envelope. Establishing an Olm session means handing an
+// encrypted message to another device, and every client does that through this
+// path with this type - the specification's Olm walkthrough gives the content
+// (algorithm, sender_key, ciphertext keyed by the recipient's Curve25519 key)
+// while the path supplies the type, so the per-device value carries no wrapper.
+// Refusing it reads as tidy input validation and breaks end-to-end encryption
+// outright: the claimed one-time key is spent, the room key never arrives, and the
+// other device answers every message with "the sender's device has not sent us the
+// keys for this message". The room events that genuinely do not belong here -
+// m.room.message, m.room.member and the rest - are still refused, because no
+// reading of this endpoint makes them sensible.
+func refusesOnTheToDevicePath(eventType string) bool {
+	return strings.HasPrefix(eventType, "m.room.") && eventType != matrix.TypeEncrypted
+}
+
 // SendToDevice stores messages addressed to other users' devices rather than to
 // a room; clients pick them up in the to_device section of a sync. Recipients
 // that are remote or unknown are skipped silently, as the specification asks.
@@ -25,7 +45,7 @@ func (s *Service) SendToDevice(ctx context.Context, senderID, senderDevice, even
 	if eventType == "" {
 		return matrix.ErrInvalidParam("the event type is required")
 	}
-	if strings.HasPrefix(eventType, "m.room.") {
+	if refusesOnTheToDevicePath(eventType) {
 		return matrix.ErrInvalidParam("%q is a room event and cannot be sent to a device", eventType)
 	}
 	if len(messages) == 0 {

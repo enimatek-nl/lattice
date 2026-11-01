@@ -3,7 +3,11 @@ package compat
 import (
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/enimatek-nl/lattice/internal/persist"
 )
 
 // fakeDeviceKey builds a device_key object shaped like a real one. The server
@@ -535,4 +539,336 @@ func TestKeyDeviceListEcho(t *testing.T) {
 	if bobSync.DeviceLists == nil || !contains(bobSync.DeviceLists.Changed, alice.UserID) {
 		t.Errorf("the other user was not told about the upload: %+v", bobSync.DeviceLists)
 	}
+}
+
+// elementOneTimeKeys builds a batch the way Element and matrix-js-sdk upload it:
+// the key under "key", signed by the device's ed25519 key, with the signatures
+// next to it. The homeserver cannot read those signatures, so its only job is to
+// hand the same object back to whoever claims the key.
+func elementOneTimeKeys(userID, deviceID, prefix string, count int) map[string]any {
+	keys := map[string]any{}
+	for i := range count {
+		id := fmt.Sprintf("signed_curve25519:%s%04d", prefix, i)
+		keys[id] = map[string]any{
+			"key": id + "-secret",
+			"signatures": map[string]any{
+				userID: map[string]string{"ed25519:" + deviceID: "sig-" + id},
+			},
+		}
+	}
+	return keys
+}
+
+// TestOneTimeKeyTopUpKeepsThePool pins what a second, smaller upload means. A
+// client tops up: it counts the keys the server holds, and uploads enough to
+// reach its target (100 for every known client). Replacing the pool instead of
+// adding to it makes that count hover below the target forever, so the client
+// uploads on every sync - Element Web does exactly that, one /keys/upload per
+// sync, and the key a device offers is gone before anybody can claim it.
+func TestOneTimeKeyTopUpKeepsThePool(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+
+	upload := func(batch map[string]any) map[string]int64 {
+		t.Helper()
+		resp := server.MustDo(http.MethodPost, "/_matrix/client/v3/keys/upload", alice.Token, map[string]any{
+			"device_id":     alice.DeviceID,
+			"device_key":    fakeDeviceKey(alice.UserID, alice.DeviceID, "curve-alice"),
+			"one_time_keys": batch,
+		}, http.StatusOK)
+		return keyCounts(t, resp)
+	}
+	available := upload(oneTimeKeys("FULL", 100))
+	if available["signed_curve25519"] != 100 {
+		t.Fatalf("after 100 keys: %v", available)
+	}
+
+	// A top-up of 48 on a full device cannot raise the count, but it must not
+	// lower it either: the 100 keys still on offer stay on offer.
+	after := upload(oneTimeKeys("TOP", 48))
+	if after["signed_curve25519"] != 100 {
+		t.Errorf("a top-up shrank the pool to %d keys: %v", after["signed_curve25519"], after)
+	}
+	// Retrying an upload is not adding the same keys twice.
+	retried := upload(oneTimeKeys("TOP", 48))
+	if retried["signed_curve25519"] != 100 {
+		t.Errorf("a repeated upload changed the count to %d: %v", retried["signed_curve25519"], retried)
+	}
+
+	// The count a sync reports is what the client tops up from, so it has to agree
+	// with the upload response.
+	synced := server.MustSync(alice, "?timeout=0")
+	if synced.DeviceOneTimeCount == nil {
+		t.Fatalf("a sync with a device token carries no key counts")
+	}
+	if got := (*synced.DeviceOneTimeCount)["signed_curve25519"]; got != 100 {
+		t.Errorf("sync reports %d one-time keys, want 100: %+v", got, synced.DeviceOneTimeCount)
+	}
+
+	// And the pool the client counted is really claimable: every claim gets a
+	// different key, and the count follows.
+	seen := map[string]bool{}
+	for i := 0; i < 100; i++ {
+		granted := claimKeys(t, server, alice, alice)
+		if len(granted) == 0 {
+			t.Fatalf("claim %d got no key, want the pool to hold 100", i)
+		}
+		id := keyIDOf(granted)
+		if id == "" {
+			t.Fatalf("claim %d returned no key id: %v", i, granted)
+		}
+		if seen[id] {
+			t.Fatalf("key %s was handed out twice", id)
+		}
+		seen[id] = true
+	}
+	if extra := claimKeys(t, server, alice, alice); len(extra) != 0 {
+		t.Errorf("a 101st claim still got a key: %v", extra)
+	}
+	drained := server.MustSync(alice, "?timeout=0")
+	if drained.DeviceOneTimeCount == nil {
+		t.Fatalf("a sync with a device token carries no key counts")
+	}
+	if got := (*drained.DeviceOneTimeCount)["signed_curve25519"]; got != 0 {
+		t.Errorf("after the pool was drained sync reports %d keys, want 0", got)
+	}
+}
+
+// TestOneTimeKeysComeBackAsUploaded pins the shape of a claimed key. The claiming
+// device verifies the signature over the key object, so a server that stores or
+// rewrites the object on the way in hands out a key that cannot be verified: the
+// claimer cannot open an Olm session, and the room key that would follow never
+// reaches the other side.
+func TestOneTimeKeysComeBackAsUploaded(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	bob := server.Register("bob", "rubberduck")
+
+	server.MustDo(http.MethodPost, "/_matrix/client/v3/keys/upload", alice.Token, map[string]any{
+		"device_id":     alice.DeviceID,
+		"device_key":    fakeDeviceKey(alice.UserID, alice.DeviceID, "curve-alice"),
+		"one_time_keys": elementOneTimeKeys(alice.UserID, alice.DeviceID, "SHAPE", 1),
+	}, http.StatusOK)
+
+	granted := claimKeys(t, server, bob, alice)
+	object := keyObjectOf(t, granted)
+	if object["key"] != "signed_curve25519:SHAPE0000-secret" {
+		t.Errorf("the claimed key = %v, want the uploaded key: %v", object["key"], granted)
+	}
+	signatures, ok := object["signatures"].(map[string]any)
+	if !ok || len(signatures) == 0 {
+		t.Fatalf("the claimed key carries no signature, so it cannot be verified: %v", object)
+	}
+	deviceSig, ok := signatures[alice.UserID].(map[string]any)
+	if !ok || deviceSig["ed25519:"+alice.DeviceID] == nil {
+		t.Errorf("the signature is not the one the device made: %v", signatures)
+	}
+
+	// A fallback key keeps its flag and its signature too: the specification
+	// describes both as properties of the key object, and MSC3288 says a client
+	// tells a fallback key apart by that flag.
+	server.MustDo(http.MethodPost, "/_matrix/client/v3/keys/upload", alice.Token, map[string]any{
+		"device_id": alice.DeviceID,
+		"fallback_keys": map[string]any{
+			"signed_curve25519:FALLBACK": map[string]any{
+				"fallback": true,
+				"key":      "fallback-secret",
+				"signatures": map[string]any{
+					alice.UserID: map[string]string{"ed25519:" + alice.DeviceID: "sig-fallback"},
+				},
+			},
+		},
+	}, http.StatusOK)
+	if synced := server.MustSync(alice, "?timeout=0"); len(synced.UnusedFallbackKeys) == 0 {
+		t.Errorf("a stored fallback key is not reported as unused: %+v", synced)
+	}
+
+	fallback := claimKeys(t, server, bob, alice)
+	object = keyObjectOf(t, fallback)
+	if object["fallback"] != true {
+		t.Errorf("the claimed fallback key lost its flag: %v", object)
+	}
+	if object["key"] != "fallback-secret" {
+		t.Errorf("the claimed fallback key = %v, want the uploaded secret", object["key"])
+	}
+	if signatures, ok := object["signatures"].(map[string]any); !ok || len(signatures) == 0 {
+		t.Errorf("the claimed fallback key carries no signature: %v", object)
+	}
+	// A fallback key is not consumed: a second claim gets the same one, which is
+	// MSC3288's point.
+	again := claimKeys(t, server, bob, alice)
+	if keyIDOf(again) != "signed_curve25519:FALLBACK" {
+		t.Errorf("the second claim got %v, want the fallback key handed out again", again)
+	}
+}
+
+// TestClaimedOneTimeKeysSurviveTopUp pins that a key another device already took
+// cannot be revived or reissued by the owner uploading more keys.
+func TestClaimedOneTimeKeysSurviveTopUp(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	bob := server.Register("bob", "rubberduck")
+
+	server.MustDo(http.MethodPost, "/_matrix/client/v3/keys/upload", alice.Token, map[string]any{
+		"device_id":     alice.DeviceID,
+		"device_key":    fakeDeviceKey(alice.UserID, alice.DeviceID, "curve-alice"),
+		"one_time_keys": oneTimeKeys("SURV", 3),
+	}, http.StatusOK)
+
+	taken := keyIDOf(claimKeys(t, server, bob, alice))
+	if taken == "" {
+		t.Fatalf("bob got no key: %v", taken)
+	}
+	server.MustDo(http.MethodPost, "/_matrix/client/v3/keys/upload", alice.Token, map[string]any{
+		"device_id":     alice.DeviceID,
+		"one_time_keys": oneTimeKeys("FRESH", 2),
+	}, http.StatusOK)
+
+	seen := map[string]bool{taken: false}
+	for i := 0; i < 4; i++ {
+		id := keyIDOf(claimKeys(t, server, bob, alice))
+		if id == "" {
+			t.Fatalf("claim %d got no key, want 2 taken plus 2 fresh ones", i)
+		}
+		if id == taken {
+			t.Fatalf("the claimed key %s was handed out again", taken)
+		}
+		seen[id] = true
+	}
+	if len(seen) != 5 {
+		t.Errorf("claims returned %v, want four different keys on top of the taken one", seen)
+	}
+	if extra := claimKeys(t, server, bob, alice); len(extra) != 0 {
+		t.Errorf("a claim after the pool is empty still got a key: %v", extra)
+	}
+}
+
+// claimKeys asks for a one-time key of target and returns the one_time_keys
+// object of the response.
+func claimKeys(t *testing.T, server *Server, requester, target *Session) map[string]any {
+	t.Helper()
+	resp := server.MustDo(http.MethodPost, "/_matrix/client/v3/keys/claim", requester.Token, map[string]any{
+		"one_time_keys": map[string]any{target.UserID: map[string]string{target.DeviceID: "signed_curve25519"}},
+	}, http.StatusOK)
+	granted, _ := resp.Body["one_time_keys"].(map[string]any)
+	return granted
+}
+
+// keyIDOf digs the single key id out of a claim response, or "".
+func keyIDOf(granted map[string]any) string {
+	for _, devices := range granted {
+		byDevice, ok := devices.(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, keys := range byDevice {
+			object, ok := keys.(map[string]any)
+			if !ok {
+				continue
+			}
+			for id := range object {
+				return id
+			}
+		}
+	}
+	return ""
+}
+
+// keyObjectOf returns the single key object of a claim response.
+func keyObjectOf(t *testing.T, granted map[string]any) map[string]any {
+	t.Helper()
+	id := keyIDOf(granted)
+	if id == "" {
+		t.Fatalf("no key was granted: %v", granted)
+	}
+	for _, devices := range granted {
+		byDevice, _ := devices.(map[string]any)
+		for _, keys := range byDevice {
+			object, _ := keys.(map[string]any)
+			if entry, ok := object[id].(map[string]any); ok {
+				return entry
+			}
+		}
+	}
+	t.Fatalf("key %s is not in the response: %v", id, granted)
+	return nil
+}
+
+// TestUpgradeDropsUnverifiableOneTimeKeys covers the database an older Lattice
+// left behind. Uploads used to be rewritten into {"signed_curve25519": "..."},
+// which dropped the signature the device made over the key object, so every key
+// such a server stored was useless to whoever claimed it. An upgrade has to throw
+// those rows away: without that, a fixed server keeps handing out broken keys
+// until the pool drains, and the user still cannot decrypt.
+func TestUpgradeDropsUnverifiableOneTimeKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lattice.db")
+	db, err := persist.NewDatabase(path)
+	if err != nil {
+		t.Fatalf("opening the database: %v", err)
+	}
+	legacy := []*persist.OneTimeKey{
+		{UserID: "@old:test.server", DeviceID: "OLD", KeyID: "signed_curve25519:LEGACY",
+			Algorithm: "signed_curve25519", KeyJSON: `{"signed_curve25519":"no-signature"}`,
+			StoredTS: time.Now().UnixMilli()},
+		{UserID: "@old:test.server", DeviceID: "OLD", KeyID: "signed_curve25519:SIGNED",
+			Algorithm: "signed_curve25519",
+			KeyJSON:   `{"key":"a-key","signatures":{"@old:test.server":{"ed25519:OLD":"sig"}}}`,
+			StoredTS:  time.Now().UnixMilli()},
+		{UserID: "@old:test.server", DeviceID: "OLD", KeyID: "curve25519:PLAIN",
+			Algorithm: "curve25519", KeyJSON: `{"curve25519":"never-signed-by-design"}`,
+			StoredTS: time.Now().UnixMilli()},
+		{UserID: "@old:test.server", DeviceID: "OLD", KeyID: "signed_curve25519:TAKEN",
+			Algorithm: "signed_curve25519", KeyJSON: `{"signed_curve25519":"already-claimed"}`,
+			StoredTS: time.Now().UnixMilli(), ClaimedTS: time.Now().UnixMilli()},
+	}
+	if err := db.OneTimeKeyRepo.Add(legacy); err != nil {
+		t.Fatalf("storing the legacy rows: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("closing: %v", err)
+	}
+
+	again, err := persist.NewDatabase(path)
+	if err != nil {
+		t.Fatalf("reopening the database: %v", err)
+	}
+	defer func() { _ = again.Close() }()
+
+	survivors, err := again.OneTimeKeyRepo.Available("@old:test.server", "OLD", "signed_curve25519", false, 10)
+	if err != nil {
+		t.Fatalf("reading what survived: %v", err)
+	}
+	if len(survivors) != 1 || survivors[0].KeyID != "signed_curve25519:SIGNED" {
+		t.Errorf("the repaired pool is %v, want only the signed key", keyIDs(survivors))
+	}
+
+	// An algorithm whose keys are unsigned by design is nobody to clean up.
+	plain, err := again.OneTimeKeyRepo.Available("@old:test.server", "OLD", "curve25519", false, 10)
+	if err != nil {
+		t.Fatalf("reading the unsigned-algorithm keys: %v", err)
+	}
+	if len(plain) != 1 {
+		t.Errorf("curve25519 keys after the repair: %v, want the one that was stored", keyIDs(plain))
+	}
+
+	// A key that was already handed out stays for the retention window: the
+	// sessions built with it live on the devices that took part, and deleting the
+	// row would not undo anything.
+	var claimed int64
+	if err := again.GORM().Unscoped().Model(&persist.OneTimeKey{}).
+		Where("key_id = ?", "signed_curve25519:TAKEN").Count(&claimed).Error; err != nil {
+		t.Fatalf("counting the claimed row: %v", err)
+	}
+	if claimed != 1 {
+		t.Errorf("the claimed legacy row is gone; want it kept for the retention window")
+	}
+}
+
+// keyIDs names a batch of stored keys.
+func keyIDs(keys []*persist.OneTimeKey) []string {
+	ids := make([]string, 0, len(keys))
+	for _, key := range keys {
+		ids = append(ids, key.KeyID)
+	}
+	return ids
 }

@@ -463,3 +463,26 @@ func TestInviteStateCarriesOnlyTheTwoPeople(t *testing.T) {
 		}
 	}
 }
+
+// TestSyncIdleWaitsForTheTimeout pins the other half of the long-poll contract:
+// with nothing to report a sync waits for the timeout instead of answering at
+// once. A server that answers immediately turns every client into a busy loop
+// against it - the shape of failure that shows up as a wall of identical requests
+// in an access log, and as a client that never stops uploading its keys.
+func TestSyncIdleWaitsForTheTimeout(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	started := server.MustSync(alice, "?timeout=0")
+	alice.NextBatch = started.NextBatch
+
+	from := time.Now()
+	idle, _ := server.SyncSince(alice, 1000)
+	elapsed := time.Since(from)
+	if elapsed < 800*time.Millisecond {
+		t.Errorf("an idle sync returned after %s, want it to wait for the timeout", elapsed)
+	}
+	if idle.NextBatch != started.NextBatch {
+		t.Errorf("an idle sync advanced the token from %s to %s with nothing to report",
+			started.NextBatch, idle.NextBatch)
+	}
+}

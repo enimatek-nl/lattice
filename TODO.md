@@ -11,7 +11,7 @@ re-derive were kept (below the plan).
 ## Current state (verified 2026-11-01)
 
 - A working **single-server homeserver**: `make build vet lint` clean
-  (`make lint` = golangci-lint, 0 issues), `go test ./...` green — **103**
+  (`make lint` = golangci-lint, 0 issues), `go test ./...` green — **109**
   compatibility tests (~48 s here, ~5½ min with `-race` on this machine) plus
   **31** offline unit tests in `tests/unit` (milliseconds). Coverage: **149 of
   the 234** indexed endpoints, 26 extra routes (`make endpoints`). Rate limiting
@@ -25,6 +25,20 @@ re-derive were kept (below the plan).
   `TestCrossSigningPartialUpload`, `TestKeyUploadIdentityFieldNames`,
   `TestCrossSigningAuthShapes`. Do not re-open it; the only thing left there
   is clicking through a real Element (see _Open_ below).
+- Second Element thread, closed 2026-11-01 (with its follow-up the same day): an
+  Element Web account spammed
+  `POST /keys/upload` (48 `signed_curve25519` keys each time, every sync) while
+  messages from another user would not decrypt. Two server bugs, both fixed and
+  pinned: `/keys/upload` **replaced** the one-time key pool instead of adding to
+  it (so the client's count never reached its target of 100 and it topped up
+  forever, destroying keys other devices were about to claim), and the stored key
+  object was **normalised**, which dropped `signatures` — a claimed key could not
+  be verified, so no Olm session opened and the room key never arrived. See the
+  gotcha under _Device one-time keys_. Long-polling was checked and is fine: an
+  idle sync waits out its timeout (`TestSyncIdleWaitsForTheTimeout`). The follow-up
+  was the next request in that same chain: `PUT /sendToDevice/m.room.encrypted`
+  refused as a room event, so the Megolm key never reached the other device — see
+  the _PUT /sendToDevice_ entry under _Behaviour already handled_.
 - Federation decision (2026-11-01): **in scope for the first release**,
   gated behind a `-federation` boolean flag (default off → routes unmounted,
   behaviour byte-for-byte unchanged, `M_UNRECOGNIZED` on those paths). The
@@ -414,7 +428,10 @@ users_default+1)`; tombstone carries `replacement_room`, successor's
   empty; **an invitation that already exists must not wake a long poll**
   (only an event written after the token may); a device list change is
   never echoed to the device that caused it; an abandoned long poll writes
-  **no body and no log line**; `Event.IsState` carries empty-state-key state
+  **no body and no log line**; **an idle sync waits out the timeout and answers
+  with the token it was given** (`TestSyncIdleWaitsForTheTimeout` — answering at
+  once turns every client into a busy loop, which is what an upload storm looks
+  like in an access log); `Event.IsState` carries empty-state-key state
   explicitly (backfilled on migrate) and every state event serialises
   `state_key` even when it is `""`.
 - Cross-signing: `usage` accepted as `self-signing` AND `self_signing`
@@ -427,9 +444,40 @@ users_default+1)`; tombstone carries `replacement_room`, successor's
 upload` accepts the bare-map, `signed_users` and `signed_keys` shapes;
   key backup versions are **strings**, PUT creates (POST 405), wrong version
   400 `M_WRONG_KEY_VERSION`, deletes are hard deletes.
+- `PUT /sendToDevice/{eventType}/{txnId}`: the per-device value **is the event
+  content** — there is no `type`/`content` wrapper, the type comes from the path.
+  `m.room.encrypted` is therefore **accepted**: it is the Olm envelope, and that
+  request is how every client hands a Megolm key to another device after claiming
+  its one-time key (`refusesOnTheToDevicePath` still bans the other `m.room.*`
+  types). The content is stored and delivered byte-for-byte, `ciphertext` and the
+  client's `org.matrix.msgid` included — Lattice never reads it. Third Element
+  thread, 2026-11-01: refusing it spent the claimed key and left the recipient with
+  "the sender's device has not sent us the keys for this message" forever.
+  `TestSendToDeviceOlmEncrypted`, `TestSendToDevice`.
+  **Known divergence, not fixed:** a wildcard send to one's own user is echoed back
+  to the sending device (`Pending` matches `target_device IN (device, "*")` with no
+  sender exclusion), while Synapse drops the sender's own device. Delivery to the
+  *other* devices of the same user — what multi-device key sharing needs — works.
 - Device one-time keys are opaque and claimed once; fallback keys are
   repeat-claimed, never counted, filed under their arriving key id's
-  algorithm (`fallback_curve25519`); re-upload keeps unclaimed keys.
+  algorithm (`fallback_curve25519`). **An upload adds to the pool**: a client
+  counts the keys on offer (upload response + every sync's
+  `device_one_time_keys_count`) and tops up to 100, so replacing the pool makes
+  Element Web POST `/keys/upload` after every sync and throw away keys another
+  device was about to claim (`OneTimeKeyRepo.Add`; `MaxOneTimeKeys` = 100 bounds
+  it; re-uploading a claimed key id never revives it — `claimed_ts` is not in the
+  conflict update). Synapse is the reference here: the count in its upload response
+  covers the keys "previously persisted", a repeated upload is a no-op
+  (matrix-org/synapse#2053), and the key object is stored and returned as uploaded
+  with `fallback` and `signatures` intact. **Store the key object byte-for-byte**: the claimer verifies
+  the signature the uploading device made over that object, so normalising
+  `{"key":…, "signatures":…}` into `{"signed_curve25519":…}` hands out an
+  unverifiable key — no Olm session, "Unable to decrypt" on the other side. Those
+  two bugs together were the Element Web upload storm plus undecryptable messages
+  (2026-11-01). Pinned by `TestOneTimeKeyTopUpKeepsThePool`,
+  `TestOneTimeKeysComeBackAsUploaded`, `TestClaimedOneTimeKeysSurviveTopUp`, and
+  the open-time repair of databases written before the fix by
+  `TestUpgradeDropsUnverifiableOneTimeKeys`.
 - Media: **two flows, both complete** (`create`→`PUT upload`→`commit`, with
   `-media-reservation-window`; reservations are unserved placeholder rows,
   404 not empty 200); inline in SQLite; PNG thumbnails via stdlib.
@@ -482,7 +530,10 @@ destination, content}`; `uri` = full path + query, never the host; server
   `eventOfType`, `testPNG`, `pngBounds`, `mustMediaID`,
   `actionsOf(...).notifies()/.hasTweak()`, `lenList`, `lenPushers`,
   `toDeviceOf`, `typingEvents`, `decodeReports`, `server.DoRaw`,
-  `server.MustSync`, `Response.Int/String/ErrCode`. `server.Sync`/
+  `server.MustSync`, `Response.Int/String/ErrCode`. Keys: `fakeDeviceKey`,
+  `oneTimeKeys` (algorithm-named shape), `elementOneTimeKeys` (`key` +
+  `signatures` shape), `keyCounts`, `claimKeys`, `keyIDOf`, `keyObjectOf`,
+  `keyIDs`. `server.Sync`/
   `SyncSince` do **not** update `session.NextBatch` — assign it by hand;
   `Response` has no `Sync()` helper (`json.Unmarshal(resp.Raw,
 &matrix.SyncResponse{})`); time travel via `newClockServer(t, clock)` +
@@ -491,6 +542,13 @@ destination, content}`; `uri` = full path + query, never the host; server
 - SQLite `:memory:` gives per-connection DBs — `NewDatabase` rewrites to
   `file::memory:?cache=shared` + pins one connection; the harness uses a
   file in `t.TempDir()` instead.
+- **There is no schema version.** `NewDatabase` (in `internal/persist/persist.go`,
+  not `db.go`) runs `AutoMigrate` plus the open-time repairs —
+  `backfillStateFlags`, `sweepUnsignedOneTimeKeys` — on **every** open, so a
+  repair has to be idempotent and cheap. That also makes an upgrade testable
+  without a fake old binary: open a file, write the old-shaped rows through a
+  repo, `Close()`, `NewDatabase` the same path, assert (`TestUpgradeDropsUnverifiableOneTimeKeys`).
+  `db.GORM()` is the escape hatch for rows a repo will not show.
 
 ### GORM / mux / SQLite gotchas
 

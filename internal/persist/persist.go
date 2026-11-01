@@ -120,7 +120,25 @@ func NewDatabase(path string) (*Database, error) {
 	if err := backfillStateFlags(gdb); err != nil {
 		return nil, fmt.Errorf("backfill state event markers: %w", err)
 	}
+	if err := sweepUnsignedOneTimeKeys(gdb); err != nil {
+		return nil, fmt.Errorf("drop unverifiable one-time keys: %w", err)
+	}
 	return NewFromGORM(gdb), nil
+}
+
+// sweepUnsignedOneTimeKeys is a data repair, run on every open like the state
+// backfill, because there is no schema version to hang it on and it is cheap:
+// the pool of unclaimed keys is bounded by MaxOneTimeKeys per device.
+//
+// Lattice used to rewrite an uploaded one-time key object into
+// {"signed_curve25519": "..."}, which threw away the signature the device made
+// over that object. Whoever claims the key verifies that signature, so every key
+// stored in that shape was useless: no Olm session, and "unable to decrypt" on
+// the other side. Deleting the rows is what lets an existing database recover -
+// the owning device uploads a fresh, properly signed key on its next sync.
+func sweepUnsignedOneTimeKeys(gdb *gorm.DB) error {
+	_, err := NewOneTimeKeyRepo(gdb).SweepUnsignedOneTimeKeys()
+	return err
 }
 
 // backfillStateFlags marks stored events as state events.

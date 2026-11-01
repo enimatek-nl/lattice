@@ -15,7 +15,7 @@ being able to read any of it.
 **Status:** working single-server homeserver; the cryptography stays on the
 clients. **149 of
 the 234** endpoints indexed in [SPECS.md](SPECS.md) are implemented, plus 26
-extra routes (see [ENDPOINTS.md](ENDPOINTS.md)). 103 black-box compatibility tests
+extra routes (see [ENDPOINTS.md](ENDPOINTS.md)). 109 black-box compatibility tests
 and 31 offline unit tests are green. `make build vet lint` clean (golangci-lint
 reports 0 issues).
 Implementation version `0.1.0`
@@ -157,7 +157,27 @@ endpoint that is missing.
   never told about a device list change it caused itself: uploading an identity key
   records one so the user's other devices and the people in their rooms re-query,
   and echoed back to the uploader that same record makes a client fetch its own
-  keys, over and over. What that still
+  keys, over and over. The same trap sits under one-time keys, from the other side:
+  a client counts the keys the server holds (in the upload response and in every
+  sync) and uploads enough to reach its target of 100, so an upload **adds** to the
+  pool instead of replacing it — replacing it keeps the count below the target
+  forever, so the client uploads on every sync, and the keys other devices were
+  about to claim disappear. A device keeps at most `MaxOneTimeKeys` (100) available
+  keys, and a claimed key stays claimed even if the same key id is uploaded again.
+  A key object is stored and handed to the claimer exactly as it arrived, because
+  its signature is made by the uploading device over that very object and verified
+  by whoever claims it: renaming its field or dropping its signatures looks
+  harmless on the server and leaves the other side unable to decrypt forever. A
+  database written before that fix is repaired when it is opened: unclaimed signed
+  keys with no signature are dropped, because the only thing a client can do with
+  one is fail to verify it, and the device uploads a proper key on its next sync.
+  And the to-device path accepts `m.room.encrypted`, which is not a room event
+  there but the Olm envelope: it is how every client hands the Megolm key to
+  another device once an Olm session is open, with the type in the path and the
+  envelope itself as the per-device value. Refusing it spends the claimed key and
+  leaves the other side locked out of every message for good. Other room event
+  types on that path are still refused.
+  What that still
   leaves open: a device key signature is only checked when Lattice holds the key
   that made it, and none of this has been run against a real
   client test suite.

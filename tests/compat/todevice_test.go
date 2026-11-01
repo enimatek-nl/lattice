@@ -126,9 +126,11 @@ func TestSendToDevice(t *testing.T) {
 		t.Errorf("an ignored recipient still delivered to bob: %v", events)
 	}
 
-	// Room events do not belong on the to_device path.
-	if resp := server.sendToDevice(alice, "m.room.encrypted", "td-3", map[string]map[string]any{
-		bob.UserID: {"*": map[string]any{"ciphertext": "x"}},
+	// A room event does not belong on the to_device path - but note that
+	// m.room.encrypted does, and is tested separately below: it is the Olm
+	// envelope, not a room event in the sense this guard means.
+	if resp := server.sendToDevice(alice, "m.room.message", "td-3", map[string]map[string]any{
+		bob.UserID: {"*": map[string]any{"body": "hello"}},
 	}); resp.Status != http.StatusBadRequest {
 		t.Errorf("a room event type: got %d %s, want 400", resp.Status, resp.Raw)
 	}
@@ -259,5 +261,106 @@ func TestHeroesOrderByActivity(t *testing.T) {
 		if matrix.LocalpartOf(id) != want[i] {
 			t.Errorf("summary m.heroes[%d] = %v, want %s (%s)", i, id, want[i], summary.Raw)
 		}
+	}
+}
+
+// olmEnvelope is the body Element puts under a device once it has claimed that
+// device's one-time key: an Olm message, with the ciphertext keyed by the
+// recipient's Curve25519 key and the client's own deduplication id alongside.
+func olmEnvelope() map[string]any {
+	return map[string]any{
+		"algorithm":  "m.olm.v1.curve25519-aes-sha2",
+		"sender_key": "bFNfeyQaH7tZrKfKA9yB1R6ofCZb7D8zOTOP2NYinUo",
+		"ciphertext": map[string]any{
+			"KKtxOS7hEpGv+Nv2pJ0XVOutjiGH1jX4RmQud6gB4x0": map[string]any{
+				"type": 0,
+				"body": "AwogkJNbWAVPWlhbGsj9+Tey78YxacEBbjapZEPFXapqs1o",
+			},
+		},
+		"org.matrix.msgid": "a02b524f55fd4580979ce550b43c538e",
+	}
+}
+
+// TestSendToDeviceOlmEncrypted reproduces the request that carries a Megolm key
+// to another device: PUT /sendToDevice/m.room.encrypted/{txnId}, with the Olm
+// envelope itself as the per-device value. The event type comes from the path and
+// the value is the event content, as the specification's Olm walkthrough shows -
+// so a server that sees "m.room." in the path and refuses has broken
+// end-to-end-encryption: the room key never reaches the other device, and every
+// message from the sender stays locked with "the sender's device has not sent us
+// the keys for this message".
+func TestSendToDeviceOlmEncrypted(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	bob := server.Register("bob", "rubberduck")
+	server.advance(bob)
+
+	send := func(txnID string, messages map[string]map[string]any) Response {
+		return server.sendToDevice(alice, "m.room.encrypted", txnID, messages)
+	}
+	addressed := map[string]map[string]any{bob.UserID: {bob.DeviceID: olmEnvelope()}}
+	if resp := send("f8a6f2a075854a72bfab7822e1f16f3d", addressed); resp.Status != http.StatusOK {
+		t.Fatalf("sending an Olm-encrypted to-device message: got %d %s, want 200", resp.Status, resp.Raw)
+	}
+
+	events := toDeviceOf(server.advance(bob))
+	if len(events) != 1 {
+		t.Fatalf("bob received %d to_device events, want one: %v", len(events), events)
+	}
+	delivered := events[0]
+	if delivered.Type != "m.room.encrypted" {
+		t.Errorf("delivered type = %s, want m.room.encrypted", delivered.Type)
+	}
+	if delivered.Sender != alice.UserID {
+		t.Errorf("delivered sender = %s, want %s", delivered.Sender, alice.UserID)
+	}
+
+	// The content has to be the envelope exactly as it arrived. The receiving
+	// device decrypts the ciphertext and then checks the sender key and the
+	// message id inside it: a server that renames, wraps or drops a field here
+	// leaves the other side unable to open the room key.
+	var content map[string]any
+	if err := json.Unmarshal(delivered.Content, &content); err != nil {
+		t.Fatalf("decoding the delivered content: %v", err)
+	}
+	if content["algorithm"] != "m.olm.v1.curve25519-aes-sha2" {
+		t.Errorf("algorithm = %v in %v", content["algorithm"], content)
+	}
+	if content["sender_key"] != olmEnvelope()["sender_key"] {
+		t.Errorf("sender_key = %v, want the uploaded key", content["sender_key"])
+	}
+	if content["org.matrix.msgid"] != olmEnvelope()["org.matrix.msgid"] {
+		t.Errorf("org.matrix.msgid = %v, want the client's deduplication id", content["org.matrix.msgid"])
+	}
+	batch, ok := content["ciphertext"].(map[string]any)
+	if !ok {
+		t.Fatalf("ciphertext = %v, want a map keyed by curve25519 key", content["ciphertext"])
+	}
+	cipher, ok := batch["KKtxOS7hEpGv+Nv2pJ0XVOutjiGH1jX4RmQud6gB4x0"].(map[string]any)
+	if !ok {
+		t.Fatalf("the ciphertext of the recipient's key is missing: %v", batch)
+	}
+	if cipher["type"] != float64(0) || cipher["body"] != "AwogkJNbWAVPWlhbGsj9+Tey78YxacEBbjapZEPFXapqs1o" {
+		t.Errorf("ciphertext = %v, want the type-0 prekey message as sent", cipher)
+	}
+
+	// Retrying the same transaction does not deliver the key twice, which matters
+	// because a client that is unsure whether a to-device message landed simply
+	// sends it again.
+	if resp := send("f8a6f2a075854a72bfab7822e1f16f3d", addressed); resp.Status != http.StatusOK {
+		t.Fatalf("retrying the send: got %d %s, want 200", resp.Status, resp.Raw)
+	}
+	if again := toDeviceOf(server.advance(bob)); len(again) != 0 {
+		t.Errorf("the retried transaction delivered again: %v", again)
+	}
+
+	// A wildcard addresses every device of the recipient, which is how a client
+	// shares one room key with several of them in one request.
+	wildcard := map[string]map[string]any{bob.UserID: {"*": olmEnvelope()}}
+	if resp := send("0d1f6d2a3b4c5d6e7f8091a2b3c4d5e6", wildcard); resp.Status != http.StatusOK {
+		t.Fatalf("sending to all devices: got %d %s, want 200", resp.Status, resp.Raw)
+	}
+	if again := toDeviceOf(server.advance(bob)); len(again) != 1 {
+		t.Errorf("bob's device received %d events for a wildcard send, want one", len(again))
 	}
 }

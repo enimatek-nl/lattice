@@ -1,6 +1,7 @@
 package persist
 
 import (
+	"encoding/json"
 	"errors"
 
 	"gorm.io/gorm"
@@ -114,10 +115,21 @@ type OneTimeKey struct {
 
 // OneTimeKeyRepo is the contract for one-time key storage access.
 type OneTimeKeyRepo interface {
-	// Replace drops the unclaimed keys of a device (for the given fallback
-	// class) and stores the new batch. Claimed keys are kept until they fall
-	// out of the retention window so a claim can never be replayed.
-	Replace(userID, deviceID string, fallback bool, keys []*OneTimeKey) error
+	// Add stores a fresh batch of one-time keys next to the ones the device
+	// already has on offer. A key id that is already stored is overwritten with
+	// the new key material - that is what a retried upload means - but a key that
+	// was already claimed stays claimed, so a claim can never be revived.
+	// Nothing else is touched: a client tops its pool up by uploading a few more
+	// keys, and wiping the ones still on offer would take away the keys other
+	// devices are about to claim. Synapse behaves the same way - the count it
+	// returns on an upload covers the keys "previously persisted", and a repeated
+	// upload is a no-op rather than a reset (matrix-org/synapse#2053).
+	Add(keys []*OneTimeKey) error
+	// ReplaceFallback drops the unclaimed fallback keys of a device and stores the
+	// new batch. MSC3288 gives a fresh fallback key the right to replace the one
+	// still outstanding; claimed fallback rows stay until they fall out of the
+	// retention window.
+	ReplaceFallback(userID, deviceID string, keys []*OneTimeKey) error
 	// Counts returns how many available keys a device has per algorithm. Fallback
 	// keys are excluded: they are never consumed, so counting them would keep a
 	// device permanently "full". Clients learn about them from the unused
@@ -136,6 +148,11 @@ type OneTimeKeyRepo interface {
 	Delete(userID string, deviceIDs ...string) error
 	// Count reports how many keys a device still has available.
 	Count(userID, deviceID string) (int64, error)
+	// SweepUnsignedOneTimeKeys deletes unclaimed keys of the signed algorithm
+	// whose stored object carries no signatures - a shape only an older Lattice
+	// could have written, and one no client can verify. It returns how many rows
+	// went away.
+	SweepUnsignedOneTimeKeys() (int64, error)
 }
 
 // OneTimeKeyRepoImpl is the GORM backed OneTimeKeyRepo.
@@ -143,11 +160,23 @@ type OneTimeKeyRepoImpl struct {
 	db *gorm.DB
 }
 
-// Replace implements [OneTimeKeyRepo].
-func (r *OneTimeKeyRepoImpl) Replace(userID, deviceID string, fallback bool, keys []*OneTimeKey) error {
+// Add implements [OneTimeKeyRepo]. The conflict update deliberately leaves
+// claimed_ts alone: an upload cannot hand a key out a second time.
+func (r *OneTimeKeyRepoImpl) Add(keys []*OneTimeKey) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	return r.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "user_id"}, {Name: "device_id"}, {Name: "key_id"}},
+		DoUpdates: clause.AssignmentColumns([]string{"algorithm", "fallback", "key_json", "stored_ts", "updated_at"}),
+	}).Create(&keys).Error
+}
+
+// ReplaceFallback implements [OneTimeKeyRepo].
+func (r *OneTimeKeyRepoImpl) ReplaceFallback(userID, deviceID string, keys []*OneTimeKey) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Unscoped().Where("user_id = ? AND device_id = ? AND fallback = ? AND claimed_ts = 0",
-			userID, deviceID, fallback).Delete(&OneTimeKey{}).Error; err != nil {
+			userID, deviceID, true).Delete(&OneTimeKey{}).Error; err != nil {
 			return err
 		}
 		if len(keys) == 0 {
@@ -155,7 +184,7 @@ func (r *OneTimeKeyRepoImpl) Replace(userID, deviceID string, fallback bool, key
 		}
 		return tx.Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "user_id"}, {Name: "device_id"}, {Name: "key_id"}},
-			DoUpdates: clause.AssignmentColumns([]string{"algorithm", "fallback", "key_json", "claimed_ts", "updated_at"}),
+			DoUpdates: clause.AssignmentColumns([]string{"algorithm", "fallback", "key_json", "stored_ts", "updated_at"}),
 		}).Create(&keys).Error
 	})
 }
@@ -224,6 +253,45 @@ func (r *OneTimeKeyRepoImpl) Count(userID, deviceID string) (int64, error) {
 		Where("user_id = ? AND device_id = ? AND claimed_ts = 0", userID, deviceID).
 		Count(&n).Error
 	return n, err
+}
+
+// signedCurveAlgorithm names the one-time key algorithm whose keys are always
+// signed by the device that uploaded them. The service owns the list of
+// algorithms; this copy exists because the storage-level repair below has to name
+// one without importing the layer above it.
+const signedCurveAlgorithm = "signed_curve25519"
+
+// SweepUnsignedOneTimeKeys implements [OneTimeKeyRepo]. Lattice used to rewrite
+// an uploaded one-time key object into {"signed_curve25519": "..."}, which drops
+// the signature the device made over that object. The claiming device verifies
+// that signature, so such a key can never open an Olm session: the honest thing
+// to do with one is delete it, and the owning device uploads a fresh, properly
+// signed key on its next sync. Keys already handed out are left alone for the
+// retention window, because the sessions built with them live on the devices that
+// took part, and a client that genuinely uploaded no signature for an unsigned
+// algorithm is not touched.
+func (r *OneTimeKeyRepoImpl) SweepUnsignedOneTimeKeys() (int64, error) {
+	var rows []OneTimeKey
+	if err := r.db.Unscoped().Where("claimed_ts = 0 AND algorithm = ?", signedCurveAlgorithm).
+		Find(&rows).Error; err != nil {
+		return 0, err
+	}
+	doomed := make([]uint, 0, len(rows))
+	for _, row := range rows {
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(row.KeyJSON), &object); err != nil {
+			doomed = append(doomed, row.ID)
+			continue
+		}
+		if _, ok := object["signatures"]; !ok {
+			doomed = append(doomed, row.ID)
+		}
+	}
+	if len(doomed) == 0 {
+		return 0, nil
+	}
+	res := r.db.Unscoped().Where("id IN ?", doomed).Delete(&OneTimeKey{})
+	return res.RowsAffected, res.Error
 }
 
 // DeviceListChange records that the devices of a user changed at a position in

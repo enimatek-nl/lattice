@@ -41,10 +41,13 @@ type KeyUploadResult struct {
 
 // UploadKeys stores the key material of a device.
 //
-// Re-uploading the identity key replaces it, and a fresh batch of one-time keys
-// replaces the ones that were never claimed. Only a changed identity key records
-// a device list change: one-time key uploads are frequent and their effect is
-// visible in the counts a client gets back, so they must not wake every sync.
+// Re-uploading the identity key replaces it. A fresh batch of one-time keys is
+// **added** to the ones the device still has on offer: a client counts the keys
+// the server holds and uploads enough to reach its target, so replacing the pool
+// instead of adding to it keeps that count below the target forever and the
+// client uploads on every sync. Only a changed identity key records a device list
+// change: one-time key uploads are frequent and their effect is visible in the
+// counts a client gets back, so they must not wake every sync.
 func (s *Service) UploadKeys(ctx context.Context, params KeyUploadParams) (*KeyUploadResult, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -108,9 +111,26 @@ func (s *Service) storeDeviceKey(ctx context.Context, params KeyUploadParams) er
 	return nil
 }
 
-// storeOneTimeKeys normalises and stores one batch of prekeys. An empty batch
-// is a no-op: clients repeat the same upload on every start, and wiping the keys
-// a device still has available would break in-flight sessions.
+// MaxOneTimeKeys is how many one-time keys a device may have on offer at once.
+// Every known client tops its pool up to a number of this size - matrix-js-sdk
+// and the Rust crypto stack both use 100 - so more than this only lets a looping
+// or buggy client fill the database. A batch that does not fit is accepted as far
+// as the ceiling and the surplus is dropped: the response reports the counts, and
+// the client sees its target met.
+const MaxOneTimeKeys = 100
+
+// storeOneTimeKeys stores one batch of prekeys. An empty batch is a no-op:
+// clients repeat the same upload on every start, and wiping the keys a device
+// still has on offer would take away the keys other devices are about to claim.
+//
+// A key object is stored exactly as it arrived, because the claiming device
+// verifies the signature the device made over that very object. A server that
+// rewrites it on the way in - renaming the field, dropping the signatures -
+// hands out a key no client can verify: the Olm session that should follow never
+// opens and the room keys never arrive, which looks like a broken recipient.
+// Which field name carries the key is the client's business: the specification
+// spells the value both as "key" and as the algorithm name, and clients differ
+// about which they upload.
 func (s *Service) storeOneTimeKeys(params KeyUploadParams, keys map[string]matrix.Object, fallback bool) error {
 	if len(keys) == 0 {
 		return nil
@@ -122,7 +142,7 @@ func (s *Service) storeOneTimeKeys(params KeyUploadParams, keys map[string]matri
 		if algorithm == "" {
 			return matrix.ErrInvalidParam("one-time key %q does not name an algorithm", keyID)
 		}
-		raw, err := json.Marshal(normaliseKey(algorithm, key))
+		raw, err := json.Marshal(key)
 		if err != nil {
 			return matrix.ErrBadJSON(err)
 		}
@@ -137,10 +157,42 @@ func (s *Service) storeOneTimeKeys(params KeyUploadParams, keys map[string]matri
 		})
 	}
 	sort.Slice(stored, func(i, j int) bool { return stored[i].KeyID < stored[j].KeyID })
-	if err := s.db.OneTimeKeyRepo.Replace(params.UserID, params.DeviceID, fallback, stored); err != nil {
+	if fallback {
+		// MSC3288: a fresh fallback key replaces the one still outstanding.
+		if err := s.db.OneTimeKeyRepo.ReplaceFallback(params.UserID, params.DeviceID, stored); err != nil {
+			return matrix.ErrInternal(err)
+		}
+		return nil
+	}
+	fitting, err := fitWithinCeiling(s.db.OneTimeKeyRepo.Counts, params.UserID, params.DeviceID, stored)
+	if err != nil {
+		return err
+	}
+	if err := s.db.OneTimeKeyRepo.Add(fitting); err != nil {
 		return matrix.ErrInternal(err)
 	}
 	return nil
+}
+
+// fitWithinCeiling trims a batch to what the device may still have on offer,
+// counted per algorithm. counts is injected so the ceiling can be tested without
+// a database.
+func fitWithinCeiling(counts func(userID, deviceID string) (map[string]int64, error),
+	userID, deviceID string, keys []*persist.OneTimeKey) ([]*persist.OneTimeKey, error) {
+	held, err := counts(userID, deviceID)
+	if err != nil {
+		return nil, matrix.ErrInternal(err)
+	}
+	added := map[string]int64{}
+	out := make([]*persist.OneTimeKey, 0, len(keys))
+	for _, key := range keys {
+		if held[key.Algorithm]+added[key.Algorithm] >= MaxOneTimeKeys {
+			continue
+		}
+		added[key.Algorithm]++
+		out = append(out, key)
+	}
+	return out, nil
 }
 
 // algorithmOfKeyID splits the algorithm off a key id of the form
@@ -151,25 +203,6 @@ func algorithmOfKeyID(keyID string) string {
 		return ""
 	}
 	return algorithm
-}
-
-// normaliseKey puts a one-time key into the shape the specification uses when it
-// hands the key to another device: an object with a single field named after the
-// algorithm. Some clients upload the same key under the literal field name
-// "key", so that is rewritten rather than rejected.
-func normaliseKey(algorithm string, key matrix.Object) matrix.Object {
-	if _, ok := key[algorithm]; ok {
-		return key
-	}
-	if value, ok := key["key"]; ok {
-		return matrix.Object{algorithm: value}
-	}
-	if len(key) == 1 {
-		for _, value := range key {
-			return matrix.Object{algorithm: value}
-		}
-	}
-	return key
 }
 
 // KeyQueryResult is the response of POST /keys/query.
