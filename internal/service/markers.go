@@ -60,6 +60,9 @@ func (s *Service) PostReceipt(ctx context.Context, roomID, userID, receiptType, 
 			return err
 		}
 	}
+	// A read receipt is only worth recording if it also travels: the person whose
+	// message was read is usually on another server.
+	s.queueReceiptForPeers(ctx, roomID, userID, receiptType, eventID, ts, data)
 	s.Notify()
 	return nil
 }
@@ -196,6 +199,10 @@ func (s *Service) SetTyping(ctx context.Context, roomID, userID string, typing b
 	}); err != nil {
 		return matrix.ErrInternal(err)
 	}
+	// The peer servers of the room are told as well, and told about the stopping too:
+	// an indicator that never goes away on the other side is a wrong picture that lasts
+	// until the timeout on the receiver.
+	s.queueTypingForPeers(ctx, roomID, userID, typing)
 	s.Notify()
 	return nil
 }

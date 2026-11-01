@@ -51,9 +51,17 @@ func (s *Service) SendToDevice(ctx context.Context, senderID, senderDevice, even
 	if len(messages) == 0 {
 		return nil
 	}
+	remote := map[string]map[string]matrix.RawMessage{}
 	for target, byDevice := range messages {
 		if !s.UserExists(ctx, target) {
-			continue
+			// A user of another server is not this server's user, but their server is
+			// reachable and is the only place their devices are. With federation off
+			// there is nowhere to send it, and the specification's rule - silently skip
+			// the unknown - is what applies.
+			if !s.outboxWanted() || matrix.DomainOf(target) == s.serverName || matrix.DomainOf(target) == "" {
+				continue
+			}
+			remote[target] = byDevice
 		}
 		for device, content := range byDevice {
 			if device == "" {
@@ -75,6 +83,10 @@ func (s *Service) SendToDevice(ctx context.Context, senderID, senderDevice, even
 			}
 		}
 	}
+	// The handoff that makes cross-server E2EE possible: the message also goes to the
+	// servers of the remote recipients, carrying the client's transaction id as the
+	// message id so a retry cannot deliver the same room key twice.
+	s.queueToDeviceForPeers(ctx, senderID, senderDevice, eventType, txnID, remote)
 	s.Notify()
 	return nil
 }

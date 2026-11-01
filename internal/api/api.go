@@ -106,6 +106,9 @@ func New(svc *service.Service, store *auth.Store, cfg Config) *App {
 			PeerBaseURLs: cfg.FederationPeers,
 			UserAgent:    "Lattice/" + cfg.Version,
 		})
+		// The service sends federation traffic too - the outbox has to run with or
+		// without an inbound request - so it holds the same client the routes use.
+		svc.SetFederationTransport(app.federation)
 	}
 	app.registerRoutes()
 	// Anything the route table does not cover gets a Matrix error instead of the

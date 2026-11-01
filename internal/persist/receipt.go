@@ -27,6 +27,10 @@ type ReceiptRepo interface {
 	// changed, which is what the receipt listing endpoint reports.
 	ForRoom(roomID string) ([]*Receipt, error)
 	ListForUser(userID string, since uint64) ([]*Receipt, error)
+	// ListForRooms lists the receipts of several rooms that changed after a position,
+	// which is what a sync delivers: a client is told about everybody who read
+	// something in a room it is in, not only about itself.
+	ListForRooms(roomIDs []string, since uint64) ([]*Receipt, error)
 	LatestForUser(userID, roomID, receiptType string) (*Receipt, error)
 }
 
@@ -65,6 +69,17 @@ func (r *ReceiptRepoImpl) ForRoom(roomID string) ([]*Receipt, error) {
 func (r *ReceiptRepoImpl) ListForUser(userID string, since uint64) ([]*Receipt, error) {
 	var rows []*Receipt
 	err := r.db.Where("user_id = ? AND stream_pos > ?", userID, since).
+		Order("stream_pos asc").Find(&rows).Error
+	return rows, err
+}
+
+// ListForRooms implements [ReceiptRepo].
+func (r *ReceiptRepoImpl) ListForRooms(roomIDs []string, since uint64) ([]*Receipt, error) {
+	if len(roomIDs) == 0 {
+		return nil, nil
+	}
+	var rows []*Receipt
+	err := r.db.Where("room_id IN ? AND stream_pos > ?", roomIDs, since).
 		Order("stream_pos asc").Find(&rows).Error
 	return rows, err
 }

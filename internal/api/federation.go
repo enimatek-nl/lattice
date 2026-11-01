@@ -1,9 +1,12 @@
 package api
 
 import (
+	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 
+	"github.com/enimatek-nl/lattice/internal/federation"
 	"github.com/enimatek-nl/lattice/internal/matrix"
 )
 
@@ -42,6 +45,11 @@ func (a *App) registerFederationRoutes() {
 
 	a.handle("GET /_matrix/federation/v1/version", a.handleFederationVersion)
 	a.federated("GET /_matrix/federation/v1/user/devices/{userId}", a.handleFederationDevices)
+
+	// The transaction endpoint is the door all live activity comes through: events and
+	// ephemeral messages arrive in batches, and the transaction id is what makes a retry
+	// mean the same thing the first attempt did.
+	a.federated("PUT /_matrix/federation/v1/send/{txnId}", a.handleSendTransaction)
 }
 
 // handleServerKeys answers GET /_matrix/key/v2/server.
@@ -249,6 +257,59 @@ func (a *App) handleFederationDevices(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, body)
+}
+
+// handleSendTransaction answers PUT /_matrix/federation/v1/send/{txnId}.
+//
+// The peer is the one the middleware verified, and the service refuses a body whose
+// claimed origin disagrees with it. A transaction that has been answered before gets the
+// earlier answer rather than a second processing, which is the difference between a
+// retry and a duplicate event in a room.
+//
+//	@Summary	Deliver a federation transaction
+//	@Description	Accepts a batch of events and ephemeral messages from a peer, applying the ephemeral ones and queueing the events for the room. A repeated transaction id from the same server is answered with the previous result.
+//	@Tags	federation
+//	@Accept	json
+//	@Produce	json
+//	@Param	txnId	path	string	true	"Transaction id, unique per sending server"
+//	@Param	body	body	matrix.Object	true	"The transaction: origin, origin_server_ts, pdus and edus"
+//	@Success	200	{object}	matrix.Object	"Per-event results"
+//	@Failure	400	{object}	matrix.Error	"The transaction is malformed or oversized"
+//	@Failure	401	{object}	matrix.Error	"The request is not signed by the origin it claims"
+//	@Router	/_matrix/federation/v1/send/{txnId} [put]
+func (a *App) handleSendTransaction(w http.ResponseWriter, r *http.Request) {
+	body, err := federationBody(r)
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	result, err := a.svc.HandleSendTransaction(r.Context(), federation.Peer(r.Context()), r.PathValue("txnId"), body)
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// federationBody reads a request body as an object with its numbers kept exactly as
+// written. A PDU inside a transaction is stored, hashed and identified by the bytes it
+// encodes to, so a body that passes through float64 on the way in becomes an event that
+// its own content hash does not cover - the difference is invisible in a log and fatal
+// at the first signature check.
+func federationBody(r *http.Request) (matrix.Object, error) {
+	raw, err := io.ReadAll(io.LimitReader(r.Body, federation.MaxTransactionBytes))
+	if err != nil {
+		return nil, matrix.ErrNotJSON("could not read the request body")
+	}
+	value, err := matrix.DecodeCanonical(raw)
+	if err != nil {
+		return nil, matrix.ErrNotJSON("the transaction body is not valid JSON: %v", err)
+	}
+	object, ok := value.(matrix.Object)
+	if !ok {
+		return nil, matrix.ErrBadJSON(fmt.Errorf("the transaction body is not an object"))
+	}
+	return object, nil
 }
 
 // queryInt reads an optional integer query parameter, answering the request itself

@@ -59,6 +59,10 @@ func (s *Service) AppendEvent(ctx context.Context, draft *EventDraft) (*persist.
 	pos := s.nextStreamPos()
 	var created *persist.Event
 
+	// The room version decides the shape of every event in the room, and it is needed
+	// after the transaction too: a peer receives the event in the form its room version
+	// defines, not the form this server stores for clients.
+	version := ""
 	err := s.db.Tx(func(tx *gorm.DB) error {
 		rooms := persist.NewRoomRepo(tx)
 		room, err := rooms.Get(draft.RoomID)
@@ -75,7 +79,7 @@ func (s *Service) AppendEvent(ctx context.Context, draft *EventDraft) (*persist.
 		// its content. Doing this inside the transaction is what keeps the cited events
 		// the ones that were current when the event was made.
 		originServerTS := s.NowMS()
-		version := RoomVersionOf(room)
+		version = RoomVersionOf(room)
 		packet, err := s.BuildPDU(ctx, tx, draft, version, originServerTS)
 		if err != nil {
 			return err
@@ -163,6 +167,11 @@ func (s *Service) AppendEvent(ctx context.Context, draft *EventDraft) (*persist.
 	}
 
 	s.Notify()
+	// The event goes to the peers that share the room through the outbox, not from this
+	// call: a peer that is unreachable must not make a local message fail, and the
+	// specification's transaction rules make the unit of delivery a queued batch rather
+	// than an event.
+	s.queueEventForPeers(ctx, created, version)
 	if err := s.notifyParticipants(ctx, draft.RoomID, created); err != nil {
 		log.Printf("push rule evaluation for %s failed: %v", created.EventID, err)
 	}

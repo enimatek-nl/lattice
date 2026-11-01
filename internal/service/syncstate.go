@@ -298,10 +298,14 @@ func accountDataWire(rows []*persist.AccountData) []matrix.Event {
 	return out
 }
 
-// receiptEventsForUser groups the read receipts of a user by room, producing
+// receiptEventsForRooms groups the receipts of a set of rooms by room, producing
 // m.receipt ephemeral events.
-func (s *Service) receiptEventsForUser(userID string, since uint64) (map[string][]matrix.Event, error) {
-	rows, err := s.db.ReceiptRepo.ListForUser(userID, since)
+//
+// Every receipt of the room is reported, not only the reader's own: seeing that the
+// person you are talking to has read your message is the point of the event, and it is
+// also how a receipt that arrived from another homeserver reaches a client.
+func (s *Service) receiptEventsForRooms(roomIDs []string, since uint64) (map[string][]matrix.Event, error) {
+	rows, err := s.db.ReceiptRepo.ListForRooms(roomIDs, since)
 	if err != nil {
 		return nil, matrix.ErrInternal(err)
 	}
@@ -317,11 +321,15 @@ func (s *Service) receiptEventsForUser(userID string, since uint64) (map[string]
 			eventBody = matrix.Object{}
 			content[row.EventID] = eventBody
 		}
-		eventBody[row.ReceiptType] = matrix.Object{
-			userID: matrix.Object{
-				"ts": row.SentTS,
-			},
+		reader := matrix.Object{"ts": row.SentTS}
+		if row.Data != "" {
+			if data := matrix.MustParseObject([]byte(row.Data)); len(data) > 0 {
+				for key, value := range data {
+					reader[key] = value
+				}
+			}
 		}
+		eventBody[row.ReceiptType] = matrix.Object{row.UserID: reader}
 	}
 	out := make(map[string][]matrix.Event, len(byRoom))
 	for roomID, content := range byRoom {

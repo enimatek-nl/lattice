@@ -45,9 +45,17 @@ type Service struct {
 	uiaMu       sync.Mutex
 	uiaSessions map[string]*authSession
 	// federationEnabled is set by -federation. It decides whether the API layer
-	// mounts the server-server routes; the signing key exists either way, because
-	// events are signed where they are created.
+	// mounts the server-server routes and whether the outbox queues anything; the
+	// signing key exists either way, because events are signed where they are created.
 	federationEnabled bool
+	// outboxTraffic is the signed client this server sends federation traffic with. The
+	// API layer builds it and hands it over, because its configuration lives there.
+	federationMu  sync.Mutex
+	outboxTraffic *federation.Transport
+	// outboxLocks serialise attempts per destination, which is what keeps the
+	// specification's one-outstanding-transaction rule true inside one process.
+	outboxMu    sync.Mutex
+	outboxLocks map[string]*sync.Mutex
 	// signingKeyMu guards the cached server signing key, so two concurrent first
 	// requests cannot each mint a keypair.
 	signingKeyMu sync.Mutex

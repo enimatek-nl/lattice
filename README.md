@@ -13,11 +13,11 @@ in the clients; Lattice relays the key material, verifies the cross-signing keys
 that decide what a client trusts, and stores encrypted room-key backups without
 being able to read any of it.
 
-**Status:** working homeserver whose federation identity layer and event graph are in
-place; the end-to-end cryptography stays on the clients. **154 of
+**Status:** working homeserver whose federation transport delivers events between two
+servers; the end-to-end cryptography stays on the clients. **155 of
 the 234** endpoints indexed in [SPECS.md](SPECS.md) are implemented, plus 27
-extra routes (see [ENDPOINTS.md](ENDPOINTS.md)). 110 black-box compatibility
-tests, 49 offline unit tests and 13 two-server federation tests are green.
+extra routes (see [ENDPOINTS.md](ENDPOINTS.md)). 111 black-box compatibility
+tests, 55 offline unit tests and 31 two-server federation tests are green.
 `make build vet lint` clean (golangci-lint reports 0 issues).
 Implementation version `0.1.0`
 (reported by `GET /_matrix/client/versions` as `Lattice/0.1.0`).
@@ -102,6 +102,7 @@ registrations.
 | `-maintenance-interval`                | `service.MaintenancePeriod` | how often to prune to-device messages, transaction ids and typing rows; `0` disables                                               |
 | `-federation`                          | `false`                     | serve the server-server API: mount `/_matrix/federation/*` and `/_matrix/key/v2/*`, and generate this server's signing key         |
 | `-federation-peer`                     | _(empty)_                   | comma separated `server=URL` pairs that pin where a peer is reached, bypassing well-known delegation and TLS; for tunnels and tests  |
+| `-federation-flush`                    | `1s`                        | how often federation traffic waiting for a peer is retried; `0` delivers only when something asks for a flush                         |
 | `-version`                             | `false`                     | print the version and exit                                                                                                         |
 
 ## What works today
@@ -145,14 +146,17 @@ of the one that went away), the admin routes, abuse reports, and
 answer `404 M_UNRECOGNIZED` rather than a bare HTTP 404, so a client can name the
 endpoint that is missing.
 
-With `-federation`, the identity half of the server-server API is served too:
-`GET /_matrix/key/v2/server` (and its `{keyID}` variant) publishes an ed25519 key
+With `-federation`, the server-server API is served too: `GET
+/_matrix/key/v2/server` (and its `{keyID}` variant) publishes an ed25519 key
 that is generated once and kept, `POST /_matrix/key/v2/query` and `GET
 /_matrix/key/v2/query/{serverName}` fetch another server's keys, verify them and
 re-sign them with this server's key, `GET /_matrix/federation/v1/version` says what
-this server runs without requiring a signature, and `GET
+this server runs without requiring a signature, `GET
 /_matrix/federation/v1/user/devices/{userId}` serves another server the device keys
-of a local user, byte for byte as their own devices signed them. Every request on
+of a local user, byte for byte as their own devices signed them, and `PUT
+/_matrix/federation/v1/send/{txnId}` takes the transactions a peer delivers — up to
+50 events and 100 ephemeral messages, answered per event, with `(origin, txnId)` and
+its answer kept so a retry is answered rather than re-executed. Every request on
 the authenticated paths carries an `Authorization: X-Matrix` signature over the
 method, the exact request target, both server names and the body, and a request
 that cannot be attributed to a known peer is refused with `401 M_UNAUTHORIZED`
@@ -160,6 +164,16 @@ before a handler sees it. Outbound requests are signed the same way, and a peer'
 published keys are only trusted after checking that the document names the server
 that was asked, is signed by a key it publishes, and has not expired — capped at
 seven days however long the document claims to live.
+
+Traffic leaves through a queue rather than through the request that produced it:
+a message, a typing indicator, a receipt, a room key or a device list change is
+stored in an outbox per destination and put on the wire by a loop
+(`-federation-flush`). A peer that is down is retried with the same transaction id
+and the same bytes, backing off from five seconds to ten minutes, and one
+destination never has two transactions in flight — which is what makes the
+receiver's transaction log meaningful. A room's `m.room.server_acl` is enforced in
+both directions: the excluded server is not sent the room's events, and its events
+are dropped on arrival.
 
 ## What does not work yet
 
@@ -200,12 +214,13 @@ seven days however long the document claims to live.
   leaves open: a device key signature is only checked when Lattice holds the key
   that made it, and none of this has been run against a real
   client test suite.
-- **Federation is only the identity layer, and only behind `-federation`.** Other
-  homeservers can be reached, can verify this one, and can ask it for keys; what no
-  server can yet do is exchange room events, so a user still cannot read a room
-  that lives somewhere else. What is missing is the event DAG (an event carries no
-  `prev_events`, and event ids are random rather than derived from the event, which
-  another server cannot check), transaction delivery, and the join handshakes.
+- **Federation carries traffic but does not yet apply it, and only behind
+  `-federation`.** Two Lattice servers can exchange room events, typing, read
+  receipts, room keys and device list updates for rooms both are in, and each
+  refuses what the other cannot prove. What no server can do yet is *act* on an
+  incoming event: a received event is stored and acknowledged, but not judged
+  against the room's auth rules or merged into state, and no room can be joined
+  across servers. So a user still cannot read a room that lives somewhere else.
   Deferred by decision rather than by omission: SRV lookups (a name is resolved by
   its well-known delegation or on port 8448), acting as a client of somebody
   else's notary server, and signing key rotation.
@@ -274,7 +289,9 @@ internal/realtime hub that wakes long-polling syncs
 internal/coverage route-to-spec matcher the ENDPOINTS.md numbers come from
 internal/power    power level arithmetic (which level a user has, what an action asks for)
 internal/push     push rule engine: rule precedence, pattern and count matching
-internal/federation  signing identity, X-Matrix auth, peer transport, key caches
+internal/federation  signing identity, X-Matrix auth, peer transport, key caches,
+                   transaction envelopes, server ACLs
+internal/eventcrypto  the event's own rules: redaction, hashes, derived ids, signatures
 internal/service  business logic (one file per feature area)
 internal/api      HTTP handlers and the route table (routes.go)
 tests/compat      black-box compatibility suite: HTTP against a running server

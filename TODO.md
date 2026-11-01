@@ -8,27 +8,37 @@ done, so the next one is **step 6**; federation is steps 6-12. The history that
 used to fill this file lives in git; only facts a future session must not
 re-derive were kept (below the plan).
 
-## Current state (verified 2026-11-01)
+## Current state (verified 2026-11-02)
 
-- A working homeserver with its **federation identity layer in place**:
+- A working homeserver with its **federation transport in production shape**:
   `make build vet lint` clean (`make lint` = golangci-lint, 0 issues),
-  `go test ./...` green — **110** compatibility tests (~50 s here, ~5½ min
-  with `-race` on this machine), **49** offline unit tests in `tests/unit`
-  (milliseconds), and **13** two-server tests in `tests/federation` (a couple
-  of seconds). Coverage: **154 of the 234** indexed endpoints, 27 extra routes
-  (`make endpoints`). Steps 1–7 are closed: rate limiting, the client-API
-  correctness tails, batched reads, offline unit tests, the federation
-  signing/transport ground, and the **event DAG** — events are now hashed,
-  signed, identified by reference hash, and stored with `prev_events`,
-  `auth_events` and their exact signed JSON. The plan continues at
-  **step 8, transactions and EDUs**.
+  `go test ./...` green — **111** compatibility tests (~50 s here, ~5½ min
+  with `-race` on this machine), **55** offline unit tests in `tests/unit`
+  (milliseconds), and **31** two-server tests in `tests/federation` (~9 s,
+  ~56 s with `-race`). Coverage: **155 of the 234** indexed endpoints, 27 extra
+  routes (`make endpoints`). Steps 1–8 are closed: rate limiting, the
+  client-API correctness tails, batched reads, offline unit tests, the
+  federation signing/transport ground, the **event DAG** (events hashed,
+  signed, identified by reference hash, stored with `prev_events`,
+  `auth_events` and their exact signed JSON), and **transactions** — inbound
+  `PUT /send` with a replay-safe transaction log, EDU sinks for typing,
+  receipts, to-device, device lists and cross-signing, an outbound per
+  destination queue with retries, and `m.room.server_acl` enforced in both
+  directions. The plan continues at **step 9, inbound PDU processing**.
 - Federation is live behind `-federation` (default off): a persisted ed25519
   signing key, `/_matrix/key/v2/*`, `/_matrix/federation/v1/version`,
-  `/_matrix/federation/v1/user/devices/{userId}`, an outbound client that
-  signs, and inbound middleware that refuses anything it cannot attribute to a
-  peer. Still deferred on purpose: SRV lookups, acting as a *client* of
-  someone else's notary, key rotation, and per-peer budgets for the volume
-  routes that arrive with step 8.
+  `/_matrix/federation/v1/user/devices/{userId}`,
+  `PUT /_matrix/federation/v1/send/{txnId}`, an outbound client that signs and a
+  queue that retries it, and inbound middleware that refuses anything it cannot
+  attribute to a peer. Still deferred on purpose: SRV lookups, acting as a
+  *client* of someone else's notary, key rotation, and per-peer budgets for the
+  volume routes that arrive with the read-side queries of step 11.
+- What federation does **not** do yet, so a two-server test is not mistaken for a
+  working join: received events are queued and acknowledged but not applied —
+  no room on this server changes because a peer sent an event (step 9), and no
+  room can be joined across servers yet (step 10). Two Lattice servers can
+  already exchange messages, typing, receipts, room keys and device list updates
+  for rooms that both are in.
 - The E2EE trust layer is done end-to-end: device keys, cross-signing
   (verified server-side over canonical JSON), key signatures, room key
   backup. The Element "unable to set up keys" thread is **closed** — pinned
@@ -387,21 +397,119 @@ the house rules).
   a different event. Reads that need the graph (step 9's `/event_auth`, `/backfill`)
   must read the stored arrays.
 
-### 8. Federation III — transactions and EDUs
+### 8. Federation III — transactions and EDUs — done (2026-11-02)
 
-- [ ] Inbound `PUT /_matrix/federation/v1/send/{txnId}`: persist
-      `(origin, txnId)` → stored result so retried transactions are
-      answered, not re-executed (same idea as `replayTxn`, server-to-server);
-      ≤50 PDUs / 100 EDUs per txn, one outstanding txn per destination.
-- [ ] EDU sinks (all exist locally): `m.typing` → typing rows + hub,
-      `m.receipt` → receipts, `m.direct_to_device` → to-device store,
-      `m.device_list_update` → remote device cache, `m.signing_key_update` →
-      cross-signing store. PDUs answer per-event errors until step 9.
-- [ ] Outbound: pending-transaction table per destination + one
-      context-bound worker (errgroup, exponential backoff); txn ids unique
-      per origin; batching rules above.
-- [ ] `m.room.server_acl`: enforce on the spec's endpoint prefix list and
-      per-PDU inside `/send`.
+- [x] Inbound `PUT /_matrix/federation/v1/send/{txnId}`
+      (`internal/service/fedrecv.go`, route in `internal/api/federation.go`).
+      `persist.InboundTxn` keys `(origin, txn_id)` → the stored answer, so a
+      retry is answered from the row and never re-executed; a replay is logged
+      and reported by a header. Caps enforced before any work:
+      **50 PDUs / 100 EDUs** per transaction, **65536 bytes** per PDU, txn id
+      ≤ 255 characters, body ≤ 10 MiB.
+- [x] PDU intake answers **per event** (`{"pdus": {"$id": {}}}`). Until step 9
+      judges an event, intake verifies the *transaction* (signed, origin matches
+      the authenticated peer, a peer speaks only for its own users' EDUs) and
+      keeps the event byte-for-byte in `persist.ReceivedPDU` with its derived
+      event id, origin and room version.
+- [x] EDU sinks: `m.typing` → typing rows + hub, `m.receipt` → receipts (the
+      sender's `data.ts` is kept — a receipt says when a person read something,
+      not when a server relayed it), `m.direct_to_device` → to-device store,
+      `m.device_list_update` → `RemoteDevice` cache with gap detection
+      (`prev_id` vs the recorded stream position → `DeviceStream.GapSeen`, which
+      step 11 turns into a re-query), `m.signing_key_update` → cross-signing
+      store plus a device list change; `m.presence` accepted and ignored
+      (presence stays local); an unknown EDU type is logged and ignored, per spec.
+- [x] Outbound (`internal/service/fedsend.go`): `persist.OutboxItem` +
+      `persist.OutboundTxn`. Producers queue work instead of sending inline —
+      events (`AppendEvent`), typing, receipts, to-device (including `*`
+      device fan-out on the receiving side), device list and cross-signing
+      changes. One destination at a time has **one outstanding transaction**
+      (`sync.Mutex` per destination in-process + the `OutboundTxn` row across
+      restarts); a retry re-sends the **same bytes under the same txn id**,
+      which is what lets the receiver's transaction log do its job. Exponential
+      backoff 5 s → 10 min with a random slice subtracted (servers that lose the
+      same peer come back in step without it). Destinations are worked on
+      concurrently (`sync.WaitGroup`; no new dependency), `StartFederationOutbox`
+      is the loop (`-federation-flush`, default 1 s), `FlushFederationOutbox` is
+      the on-the-spot version.
+- [x] `m.room.server_acl`: `federation.ServerAllowed` (`internal/federation/acl.go`)
+      implements the spec's order — no ACL allows, IP literal denied when
+      `allow_ip_literals` is false, then `deny`, then `allow` (an empty allow
+      list allows); globs are `*`/`?` only, case-insensitive, port stripped.
+      Enforced **both ways**: `destinationsOfRoom` filters the queue, and
+      `queuePDU` drops events from a server the room excludes. A refused
+      inbound event is answered as accepted — a refusal is retried, and a retry
+      is how an exclusion turns into a flood. The ACL event itself still travels
+      to excluded servers, because a ban the banned server never hears about is
+      not a ban.
+- [x] Tests: `tests/unit/transaction_test.go` (envelope, caps, results,
+      `NewTxnID`), `tests/unit/acl_test.go` (21 ACL cases),
+      `tests/federation/transaction_test.go` (inbound: signed transport, replay
+      idempotence, EDU sinks, forged users refused, oversized refused, unknown
+      EDU ignored, PDUs queued and answered, device list gaps),
+      `tests/federation/outbox_test.go` (outbound: room keys cross the wire and
+      reach the device, typing/receipts travel with the sender's timestamp, PDUs
+      arrive named identically on both sides, retry keeps the txn id and lands
+      when the peer returns, the loop delivers without help, 130 items arrive as
+      100 + 30, ACLs bite both ways, unknown rooms refuse messages but keep
+      invites).
+- [x] Client-API correctness found on the way and fixed: read receipts are
+      room-wide in `/sync` (the old user-only read hid a receipt from the person
+      the message was for — pinned by `TestReceiptsReachTheOtherSide`), and
+      receipt events no longer replace typing in the same ephemeral block.
+- [x] `make endpoints`: **155/234** (was 154) — `PUT
+      /_matrix/federation/v1/send/{txnId}`. 27 extra routes unchanged.
+
+### Findings worth not re-deriving (step 8)
+
+- **A per-PDU error is not a transport failure.** The peer understood the
+  transaction and said what it did with each event. Retrying such a transaction
+  gets the same answer forever, so `attemptTransaction` logs the rejections
+  (`PDUResults.Rejections`) and acknowledges. Only a signature, connection or
+  decode failure puts a transaction back on the retry clock.
+- **A retry keeps its id and its bytes.** `OutboxRepo.Retry` updates the
+  `OutboundTxn` row in place (tries, next try, last error) and leaves the row
+  outstanding; only `Acknowledge` deletes it. `DueDestinations` therefore unions
+  "has unpacked items due" with "has an outstanding transaction due" — a
+  destination whose only work is a failed transaction is still due, and a
+  version of `Retry` that un-packed the items made every attempt a new
+  transaction id (found by `TestTheOutboxRetriesTheSameTransaction`).
+- **`origin` in the transaction body is this server's name**, not the
+  destination's. The destination is the value at hand when the queue row is
+  written, which is how this bug happened; the receiver compares the body's
+  origin with the origin the signature came from and refuses a mismatch.
+- **Rooms the receiver is not in.** A non-membership PDU for an unknown room is
+  refused per event (`this server is not in the room the event belongs to`) —
+  without the room version its id cannot be derived at all, since the id is the
+  hash. A `m.room.member` event naming one of *this* server's users is taken in:
+  an invite is the only way a server ever learns of a room. Those rows record
+  the room version their id was named under (`DefaultRoomVersion`, i.e. the
+  version this server creates rooms with). Divergence on purpose: room version 3
+  spells event ids differently, so an invite into a v3 room is named wrong until
+  the join replaces the guess — v3 rooms are a decade old.
+- **`matrix.CanonicalJSON` does not encode typed maps.** `map[string]map[string]any`
+  fails with "cannot canonically encode". Build nested `matrix.Object` instead of
+  nested Go maps, or the EDU is silently never queued (found by
+  `TestAToDeviceMessageReachesARemoteDevice`).
+- **A `*` to-device device id is expanded by the receiver**, from the devices it
+  knows; the sender has no visibility into a remote user's devices. The local
+  send-to-device store keys rows by device id and sync serves only that device's
+  rows, so storing `*` would make the message undeliverable.
+- **The EDU cap is a packing target.** 100 EDUs is the maximum a receiver must
+  accept, so a backlog is delivered 100 at a time (PDUs: 50). A test that expects
+  50 EDUs per transaction is testing the wrong number.
+- **`Event.Content` holds the content object**, not an envelope: unmarshalling
+  the ACL column into `struct{ Content matrix.Object }` silently produced an
+  empty ACL and let everything through (found by `TestARoomCanExcludeAServer`).
+- **Typing has no identity.** A typing EDU is queued with an empty edge, i.e. no
+  de-duplication: "still typing" repeated is the same statement, and "stopped
+  typing" has to be able to arrive again. Receipts are keyed by
+  `event_id[:thread]`, to-device by the client's transaction id, device list
+  updates by `device:stream_id`.
+- **`m.device_list_update` carries `stream_id` from the same counter as the
+  device-list sync position** (`DeviceListChange.StreamPos`, echoed by
+  `FederatedDevices`), so a peer's view and this server's own `changed` list
+  cannot disagree.
 
 ### 9. Federation IV — inbound PDU processing
 
@@ -413,8 +521,19 @@ the house rules).
 - [ ] Semantics: rejected = kept out of state and never shown; soft-failed =
       stored and relayed as a parent, hidden from clients, not a forward
       extremity.
-- [ ] Apply state via step 7's state res v2; fan out to sync through the
-      realtime hub like local events.
+- [ ] **State resolution v2 first**: step 7 left it undone on purpose, and step 9
+      is where two servers' graphs collide for real, so it belongs here. It is a
+      pure function over loaded state (`internal/stateres`, table-driven in
+      `tests/unit`) built on the auth-chain rules step 7's `selectAuthEvents`
+      already encodes: the full graph of forward extremities' ancestors, the
+      power-rules subset, `auth_rule`/lexicographic ordering by the numeric part
+      of the event id (not its display form), then the conflict resolutions for
+      `m.room.member`, `m.room.join_rules`, `m.room.power_levels`,
+      `m.room.create`, `m.room.history_visibility`, `m.room.name` and
+      `m.room.topic`.
+- [ ] Apply the resolved state; fan out to sync through the realtime hub like
+      local events, and advance forward extremities (a state leak here is
+      invisible locally and fatal on a peer).
 
 ### 10. Federation V — membership handshakes (first real remote join)
 

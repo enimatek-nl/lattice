@@ -170,6 +170,11 @@ func (s *Service) UploadCrossSigningKeys(ctx context.Context, userID string, upl
 	if !changed {
 		return nil
 	}
+	// Cross-signing keys are announced to the servers that share a room with this user,
+	// unchanged and unsigned-by-us: whether the keys are trusted is decided on the user's
+	// own devices, and a homeserver that rewrites what it cannot vouch for destroys the
+	// evidence it is passing along.
+	s.queueSigningKeysForPeers(ctx, userID)
 	return s.recordDeviceListChange(ctx, persist.DeviceListChanged, userID)
 }
 

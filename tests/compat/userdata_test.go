@@ -341,6 +341,60 @@ func TestReadReceipts(t *testing.T) {
 	}
 }
 
+// TestReceiptsReachTheOtherSide pins who a read receipt is delivered to. A receipt is not
+// a note to self: its purpose is to tell the author of a message that somebody read it,
+// and it is also how a receipt that arrived from another homeserver reaches a client. A
+// server that reports only the reader's own receipts leaves every other member of the
+// room unable to see anybody reading anything.
+//
+// The same sync also carries the typing indicator of that reader, which pins the other
+// half of the bug: ephemeral events of one kind must not replace the ones of another.
+func TestReceiptsReachTheOtherSide(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	bob := server.Register("bob", "rubberduck")
+	roomID := server.CreateRoom(alice, map[string]any{"preset": "public_chat"})
+	server.MustDo(http.MethodPost, "/_matrix/client/v3/join/"+roomID, bob.Token, nil, http.StatusOK)
+	aliceSince := server.MustDo(http.MethodGet, "/_matrix/client/v3/sync?timeout=0", alice.Token, nil, http.StatusOK).String("next_batch")
+
+	message := server.Send(alice, roomID, "txn-reach-1", "read me")
+	server.MustDo(http.MethodPost, receiptPath(roomID, "m.read", message), bob.Token,
+		map[string]any{"ts": 1700000004000}, http.StatusOK)
+	server.MustDo(http.MethodPut, "/_matrix/client/v3/rooms/"+roomID+"/typing/"+bob.UserID,
+		bob.Token, map[string]any{"typing": true, "timeout": 30000}, http.StatusOK)
+
+	after, resp := server.Sync(alice, "?since="+aliceSince+"&timeout=0")
+	room, ok := after.Rooms.Join[roomID]
+	if !ok {
+		t.Fatalf("the room is missing from the sync: %s", resp.Raw)
+	}
+	if room.Ephemeral == nil {
+		t.Fatalf("the sync of the message's author carries no ephemeral events: %s", resp.Raw)
+	}
+	var typing, receipts *matrix.Event
+	for i, event := range room.Ephemeral.Events {
+		switch event.Type {
+		case matrix.TypeTyping:
+			typing = &room.Ephemeral.Events[i]
+		case matrix.TypeReceipt:
+			receipts = &room.Ephemeral.Events[i]
+		}
+	}
+	if typing == nil {
+		t.Errorf("the author never learned that bob is typing: %s", resp.Raw)
+	} else if users, _ := objectContent(t, *typing)["user_ids"].([]any); len(users) == 0 || users[0] != bob.UserID {
+		t.Errorf("the typing event names %v, want bob", objectContent(t, *typing)["user_ids"])
+	}
+	if receipts == nil {
+		t.Fatalf("the author never learned that bob read the message: %s", resp.Raw)
+	}
+	perEvent, _ := objectContent(t, *receipts)[message].(map[string]any)
+	public, _ := perEvent["m.read"].(map[string]any)
+	if _, ok := public[bob.UserID]; !ok {
+		t.Errorf("the receipt of bob's is missing from the author's sync: %v", perEvent)
+	}
+}
+
 // TestReadMarkers covers POST /rooms/{roomId}/read_markers and the m.fully_read
 // account data it writes.
 func TestReadMarkers(t *testing.T) {

@@ -170,7 +170,7 @@ func (s *Service) buildSync(ctx context.Context, params SyncParams, filter *Sync
 		}
 	}
 
-	receipts, err := s.receiptEventsForUser(userID, since)
+	receipts, err := s.receiptEventsForRooms(joined, since)
 	if err != nil {
 		return nil, false, err
 	}
@@ -183,7 +183,15 @@ func (s *Service) buildSync(ctx context.Context, params SyncParams, filter *Sync
 			}
 			response.Rooms.Join[roomID] = room
 		}
-		room.Ephemeral = &matrix.Ephemeral{Events: events}
+		// The receipts are added to whatever the room already carries rather than
+		// replacing it: a room's ephemeral events also include the typing indicator, and
+		// a sync that reports one of them by dropping the other is a client with a
+		// conversation that appears to have stopped.
+		if room.Ephemeral == nil {
+			room.Ephemeral = &matrix.Ephemeral{Events: events}
+		} else {
+			room.Ephemeral.Events = append(room.Ephemeral.Events, events...)
+		}
 		changed = true
 	}
 

@@ -63,6 +63,8 @@ func main() {
 			"serve the server-server API: other homeservers can talk to this one")
 		federationPeers = flag.String("federation-peer", "",
 			"comma separated server=URL pairs that pin where a peer is reached, bypassing well-known delegation; for tunnels and tests")
+		federationFlush = flag.Duration("federation-flush", time.Second,
+			"how often federation traffic waiting for a peer is retried; 0 delivers only on demand")
 		showVersion = flag.Bool("version", false, "print the version and exit")
 	)
 	flag.Parse()
@@ -142,6 +144,10 @@ func main() {
 	// Housekeeping runs until the process is asked to stop; the returned function
 	// cancels the loop and waits for it, so no goroutine outlives the database.
 	stopMaintenance := svc.StartMaintenance(ctx, *maintenancePeriod)
+	// Federation traffic is queued rather than sent inline, so something has to put it on
+	// the wire. A peer that is down is retried with backoff from this loop; the interval
+	// is how long a message waits before its first attempt leaves.
+	stopOutbox := svc.StartFederationOutbox(ctx, *federationFlush)
 
 	errs := make(chan error, 1)
 	go func() {
@@ -164,6 +170,7 @@ func main() {
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Printf("shutdown: %v", err)
 	}
+	stopOutbox()
 	stopMaintenance()
 }
 

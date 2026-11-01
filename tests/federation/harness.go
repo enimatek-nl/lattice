@@ -51,6 +51,7 @@ const (
 type cluster struct {
 	t       *testing.T
 	servers map[string]*server
+	holders map[string]*lazyHandler
 	order   []string
 }
 
@@ -113,7 +114,7 @@ func newCluster(t *testing.T) *cluster {
 // newClusterNamed starts a cluster of the given server names.
 func newClusterNamed(t *testing.T, names ...string) *cluster {
 	t.Helper()
-	c := &cluster{t: t, servers: map[string]*server{}, order: names}
+	c := &cluster{t: t, servers: map[string]*server{}, holders: map[string]*lazyHandler{}, order: names}
 	holders := map[string]*lazyHandler{}
 	listeners := map[string]*httptest.Server{}
 	peers := map[string]string{}
@@ -124,6 +125,7 @@ func newClusterNamed(t *testing.T, names ...string) *cluster {
 		httpServer := httptest.NewServer(holder)
 		t.Cleanup(httpServer.Close)
 		holders[name] = holder
+		c.holders[name] = holder
 		listeners[name] = httpServer
 		peers[name] = httpServer.URL
 	}
@@ -139,6 +141,25 @@ func newClusterNamed(t *testing.T, names ...string) *cluster {
 func (c *cluster) disconnect(name string) {
 	c.t.Helper()
 	c.byName(name).http.Close()
+}
+
+// blackout makes a server answer every request with a 503, the way a server that is
+// running but not serving Matrix does. Unlike disconnect the address keeps working, so
+// the peers that already pinned its URL can reach it again when it is restored - which
+// is what makes a retry testable end to end.
+func (c *cluster) blackout(name string) {
+	c.t.Helper()
+	c.holders[name].set(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"errcode":"M_UNKNOWN","error":"the remote server is unavailable"}`))
+	}))
+}
+
+// restore puts a blacked out server back to serving its application.
+func (c *cluster) restore(name string) {
+	c.t.Helper()
+	c.holders[name].set(c.byName(name).app.Handler())
 }
 
 // dbPathOf is the database file a server was started with, for a test that wants to

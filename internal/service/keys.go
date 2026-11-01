@@ -107,6 +107,10 @@ func (s *Service) storeDeviceKey(ctx context.Context, params KeyUploadParams) er
 	if err := s.db.DeviceListRepo.Append(change); err != nil {
 		return matrix.ErrInternal(err)
 	}
+	// A peer holding a stale picture of this user's devices sends encrypted messages to
+	// a device that no longer exists, and they never arrive. The device list update is
+	// how that picture is kept current without a round trip per message.
+	s.queueDeviceListForPeers(ctx, params.UserID, params.DeviceID, false, int64(pos))
 	s.Notify()
 	return nil
 }
@@ -513,6 +517,7 @@ func (s *Service) recordDeviceListChange(ctx context.Context, kind, userID strin
 	if err := s.db.DeviceListRepo.Append(change); err != nil {
 		return matrix.ErrInternal(err)
 	}
+	s.queueDeviceListForPeers(ctx, userID, change.DeviceID, kind == persist.DeviceListLeft, int64(pos))
 	s.Notify()
 	return nil
 }

@@ -26,8 +26,13 @@ type Database struct {
 	CrossSigningRepo CrossSigningRepo
 	DeviceRepo       DeviceRepo
 	DeviceKeyRepo    DeviceKeyRepo
+	DeviceStreamRepo DeviceStreamRepo
 	DeviceListRepo   DeviceListRepo
 	EventRepo        EventRepo
+	OutboxRepo       OutboxRepo
+	InboundTxnRepo   InboundTxnRepo
+	ReceivedPDURepo  ReceivedPDURepo
+	RemoteDeviceRepo RemoteDeviceRepo
 	FilterRepo       FilterRepo
 	KeyBackupRepo    KeyBackupRepo
 	MediaRepo        MediaRepo
@@ -86,6 +91,12 @@ func models() []any {
 		&DeviceListChange{},
 		&ServerKey{},
 		&ForwardExtremity{},
+		&InboundTxn{},
+		&ReceivedPDU{},
+		&OutboxItem{},
+		&OutboundTxn{},
+		&RemoteDevice{},
+		&DeviceStream{},
 		&CrossSigningKey{},
 		&KeyBackupVersion{},
 		&BackupRoomKey{},
@@ -224,8 +235,13 @@ func NewFromGORM(gdb *gorm.DB) *Database {
 		CrossSigningRepo: NewCrossSigningRepo(gdb),
 		DeviceRepo:       NewDeviceRepo(gdb),
 		DeviceKeyRepo:    NewDeviceKeyRepo(gdb),
+		DeviceStreamRepo: NewDeviceStreamRepo(gdb),
 		DeviceListRepo:   NewDeviceListRepo(gdb),
 		EventRepo:        NewEventRepo(gdb),
+		OutboxRepo:       NewOutboxRepo(gdb),
+		InboundTxnRepo:   NewInboundTxnRepo(gdb),
+		ReceivedPDURepo:  NewReceivedPDURepo(gdb),
+		RemoteDeviceRepo: NewRemoteDeviceRepo(gdb),
 		FilterRepo:       NewFilterRepo(gdb),
 		KeyBackupRepo:    NewKeyBackupRepo(gdb),
 		MediaRepo:        NewMediaRepo(gdb),
