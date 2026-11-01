@@ -1,15 +1,19 @@
 package persist
 
 import (
+	"encoding/json"
 	"strings"
 	"time"
 
 	"github.com/enimatek-nl/lattice/internal/matrix"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
-// Event is a persisted Matrix event. The full event is reconstructed from the
-// columns below so history can be queried without decoding JSON blobs.
+// Event is a persisted Matrix event. Most of it is reconstructed from the columns
+// below, so history can be queried without decoding JSON blobs; the signed form of
+// the event lives in the JSON column, because it is the only copy its own signature
+// covers.
 type Event struct {
 	EventID string `json:"event_id" gorm:"uniqueIndex;size:255"`
 	RoomID  string `json:"room_id" gorm:"index:idx_event_room_stream,priority:1;index:idx_event_room_rel,priority:1;size:255"`
@@ -41,7 +45,59 @@ type Event struct {
 	RelatesTo string `json:"-" gorm:"index:idx_event_relates,priority:1;index:idx_event_room_rel,priority:3;size:255"`
 	RelType   string `json:"-" gorm:"index:idx_event_relates,priority:2;index:idx_event_room_rel,priority:2;size:64"`
 
+	// JSON is the event in the form the room version defines: the object that was
+	// hashed, signed and identified. It is kept because it cannot be rebuilt. A
+	// signature is made over the exact bytes of that object, so re-serialising an
+	// event from the columns above - which drop prev_events, hashes and the order of
+	// keys - produces an event its own signature does not cover. Federation sends this
+	// copy, and a client is served from it too.
+	JSON string `json:"-" gorm:"type:text"`
+	// PrevEvents and AuthEvents are the JSON arrays that place this event in the
+	// room's graph. They are stored rather than recomputed because they are part of
+	// what the event *is*: in room version 3 and later the event id is the hash of the
+	// event including its prev_events and auth_events, so deriving them again later -
+	// from a graph that has moved on - would describe a different event.
+	PrevEvents string `json:"-" gorm:"type:text"`
+	AuthEvents string `json:"-" gorm:"type:text"`
+	// SoftFailed marks an event that did not pass its auth checks against its auth
+	// chain but is kept anyway: a later event may still cite it, and what decides the
+	// room state is the resolution over the state at the event. RejectedReason marks
+	// an event that must never be used, with the reason kept for the operator who asks.
+	SoftFailed     bool   `json:"soft_failed"`
+	RejectedReason string `json:"-" gorm:"size:255"`
+
 	gorm.Model
+}
+
+// ForwardExtremity records that an event is a leaf of a room's graph: no other
+// event cites it in prev_events. New events attach to the leaves, so this is the set
+// that decides where the next event goes, and the set that has to converge between
+// servers for a room to stay one room.
+//
+// It is kept as rows rather than derived on the fly because deriving it means asking
+// which of a room's events are not named by any other event - a full scan of the room
+// on every send. Depth and OriginServerTS ride along so the leaves can be ordered the
+// way the specification asks, deepest first.
+type ForwardExtremity struct {
+	RoomID         string `json:"room_id" gorm:"uniqueIndex:uq_extremity_event,priority:1;index:idx_extremity_room,priority:1;size:255"`
+	EventID        string `json:"event_id" gorm:"uniqueIndex:uq_extremity_event,priority:2;size:255"`
+	Depth          int64  `json:"depth" gorm:"index:idx_extremity_room,priority:2"`
+	OriginServerTS int64  `json:"origin_server_ts" gorm:"index:idx_extremity_room,priority:3"`
+
+	gorm.Model
+}
+
+// decodeStringList decodes a JSON array of strings, returning nothing for a column
+// that was never filled.
+func decodeStringList(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil
+	}
+	return out
 }
 
 // Matrix converts the stored event into its wire representation. Age is
@@ -59,6 +115,31 @@ func (e *Event) Matrix() matrix.Event {
 		ID:             e.EventID,
 		Content:        content,
 		Depth:          e.Depth,
+		PrevEvents:     decodeStringList(e.PrevEvents),
+		AuthEvents:     decodeStringList(e.AuthEvents),
+	}
+	// The stored PDU carries what the columns cannot: the origin server name, the
+	// content hashes and the server signature. A client that checks an event for
+	// itself - a key-sharing dialog, a bridge, an audit tool - needs those fields,
+	// and they only exist in the form that was signed.
+	if e.JSON != "" {
+		if pdu := matrix.MustParseObject([]byte(e.JSON)); len(pdu) > 0 {
+			if origin, ok := pdu["origin"].(string); ok {
+				ev.Origin = origin
+			}
+			if hashes, ok := pdu["hashes"].(matrix.Object); ok {
+				ev.Hashes = hashes
+			}
+			if signatures, ok := pdu["signatures"].(matrix.Object); ok {
+				ev.Signatures = signatures
+			}
+		}
+		// A redacted event is served from its columns, never from the stored copy:
+		// the stored copy still contains the content the redaction destroyed, and a
+		// redaction that leaves the original readable has not redacted anything.
+		if !e.Redacted {
+			ev.Stored = matrix.RawMessage(e.JSON)
+		}
 	}
 	// A state event carries state_key even when the key is the empty string.
 	// Rows written before the IsState column existed are recognised by their
@@ -130,6 +211,12 @@ type EventRepo interface {
 	// RecentEventIDs returns the ids of the most recent events of a room,
 	// used to build prev_events.
 	RecentEventIDs(roomID string, limit int, excludeType string) ([]string, error)
+	// ForwardExtremities lists the leaves of a room's graph, deepest first, which is
+	// what a new event attaches to.
+	ForwardExtremities(roomID string, limit int) ([]string, error)
+	// AdvanceForwardExtremities replaces the leaves a new event cited with the new
+	// event, so the graph has one leaf again rather than one per fork.
+	AdvanceForwardExtremities(roomID string, consumed []string, added *ForwardExtremity) error
 	// HistoryByTimestamp finds events around an origin_server_ts; "b" searches
 	// backwards in time, "f" forwards.
 	HistoryByTimestamp(roomID string, ts int64, dir string, limit int) ([]*Event, error)
@@ -320,6 +407,33 @@ func (r *EventRepoImpl) RecentEventIDs(roomID string, limit int, excludeType str
 	}
 	err := q.Order("stream_pos desc").Limit(limit).Pluck("event_id", &ids).Error
 	return ids, err
+}
+
+// ForwardExtremities implements [EventRepo].
+func (r *EventRepoImpl) ForwardExtremities(roomID string, limit int) ([]string, error) {
+	var ids []string
+	q := r.db.Model(&ForwardExtremity{}).Where("room_id = ?", roomID)
+	q = q.Order("depth desc, origin_server_ts desc, event_id desc")
+	if limit > 0 {
+		q = q.Limit(limit)
+	}
+	err := q.Pluck("event_id", &ids).Error
+	return ids, err
+}
+
+// AdvanceForwardExtremities implements [EventRepo].
+func (r *EventRepoImpl) AdvanceForwardExtremities(roomID string, consumed []string, added *ForwardExtremity) error {
+	if len(consumed) > 0 {
+		if err := r.db.Where("room_id = ? AND event_id IN ?", roomID, consumed).
+			Delete(&ForwardExtremity{}).Error; err != nil {
+			return err
+		}
+	}
+	if added == nil {
+		return nil
+	}
+	added.RoomID = roomID
+	return r.db.Clauses(clause.OnConflict{DoNothing: true}).Create(added).Error
 }
 
 // HistoryByTimestamp implements [EventRepo].

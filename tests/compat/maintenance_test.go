@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -198,4 +199,120 @@ func typingEvents(room *matrix.JoinedRoom) []matrix.Event {
 		}
 	}
 	return out
+}
+
+// TestALegacyRoomGetsALeaf covers the upgrade from a Lattice that never recorded
+// where events attach. Rooms written before events carried prev_events have no graph
+// to recover - the links were not stored - so the only honest answer is that the
+// newest event is where the next one goes. Without that, an upgraded server would
+// create its first event in an old room with nothing in prev_events and call it the
+// root of a room that already had forty events in it.
+func TestALegacyRoomGetsALeaf(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lattice.db")
+	db, err := persist.NewDatabase(path)
+	if err != nil {
+		t.Fatalf("opening the database: %v", err)
+	}
+	room := persist.Room{ID: "!legacy:test.server", Creator: "@old:test.server", RoomVersion: "11", JoinRule: "invite"}
+	if err := db.GORM().Create(&room).Error; err != nil {
+		t.Fatalf("storing the room: %v", err)
+	}
+	legacy := []*persist.Event{
+		{EventID: "$first", RoomID: room.ID, StreamPos: 1, Type: matrix.TypeCreate, StateKey: "", IsState: true,
+			Sender: "@old:test.server", OriginServerTS: time.Now().UnixMilli(), Content: `{}`, Depth: 1},
+		{EventID: "$second", RoomID: room.ID, StreamPos: 2, Type: matrix.TypeMessage,
+			Sender: "@old:test.server", OriginServerTS: time.Now().UnixMilli() + 1, Content: `{"body":"before"}`, Depth: 2},
+	}
+	for _, event := range legacy {
+		if err := db.GORM().Create(event).Error; err != nil {
+			t.Fatalf("storing a legacy event: %v", err)
+		}
+	}
+	// The state of the old room is recorded the way an old Lattice recorded it: a
+	// current-state row per state event, which is what auth event selection reads.
+	for _, state := range []*persist.RoomState{
+		{RoomID: room.ID, Type: matrix.TypeCreate, StateKey: "", EventID: "$first", StreamPos: 1,
+			Sender: "@old:test.server", Content: `{"creator":"@old:test.server"}`},
+		{RoomID: room.ID, Type: matrix.TypeMember, StateKey: "@old:test.server", EventID: "$member", StreamPos: 1,
+			Sender: "@old:test.server", Content: `{"membership":"join"}`},
+		{RoomID: room.ID, Type: matrix.TypePowerLevels, StateKey: "", EventID: "$power", StreamPos: 1,
+			Sender: "@old:test.server", Content: `{"users":{"@old:test.server":100}}`},
+	} {
+		if err := db.GORM().Create(state).Error; err != nil {
+			t.Fatalf("storing legacy state: %v", err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("closing: %v", err)
+	}
+
+	again, err := persist.NewDatabase(path)
+	if err != nil {
+		t.Fatalf("reopening the database: %v", err)
+	}
+	defer func() { _ = again.Close() }()
+
+	leaves, err := persist.NewEventRepo(again.GORM()).ForwardExtremities(room.ID, 10)
+	if err != nil {
+		t.Fatalf("reading the leaves of the old room: %v", err)
+	}
+	if len(leaves) != 1 || leaves[0] != "$second" {
+		t.Errorf("the old room's leaves are %v, want just its newest event", leaves)
+	}
+
+	// The repair is idempotent, like the others: reopening must not add a second
+	// leaf or move the existing one.
+	third, err := persist.NewDatabase(path)
+	if err != nil {
+		t.Fatalf("reopening the database again: %v", err)
+	}
+	defer func() { _ = third.Close() }()
+	leaves, err = persist.NewEventRepo(third.GORM()).ForwardExtremities(room.ID, 10)
+	if err != nil {
+		t.Fatalf("reading the leaves a second time: %v", err)
+	}
+	if len(leaves) != 1 || leaves[0] != "$second" {
+		t.Errorf("after a second open the leaves are %v, want the newest event once", leaves)
+	}
+
+	// The point of the repair: the next event in that room attaches to it. A room
+	// whose graph was never recorded would otherwise gain a second root.
+	tokens := auth.NewTokenService("test-secret", auth.WithTTL(100*24*time.Hour))
+	svc, err := service.New(third, "test.server", tokens)
+	if err != nil {
+		t.Fatalf("building a service over the upgraded database: %v", err)
+	}
+	appended, err := svc.AppendEvent(t.Context(), &service.EventDraft{
+		RoomID:  room.ID,
+		Type:    matrix.TypeMessage,
+		Sender:  "@old:test.server",
+		Content: matrix.RawMessage(`{"msgtype":"m.text","body":"after the upgrade"}`),
+	})
+	if err != nil {
+		t.Fatalf("appending to the old room: %v", err)
+	}
+	if appended.PrevEvents != `["$second"]` {
+		t.Errorf("the new event builds on %s, want the room's newest old event", appended.PrevEvents)
+	}
+	if !strings.HasPrefix(appended.EventID, "$") || len(appended.EventID) != 44 {
+		t.Errorf("the new event has the id %s, which is not a reference hash", appended.EventID)
+	}
+	if appended.JSON == "" {
+		t.Error("the new event carries no signed form")
+	}
+	// The old room's recorded state is what authorises the new event: a server that
+	// could not name the create event, the power levels and the sender's membership
+	// would send a peer an event it cannot check.
+	for _, want := range []string{"$first", "$power", "$member"} {
+		if !strings.Contains(appended.AuthEvents, want) {
+			t.Errorf("the new event is authorised by %s, which leaves out %s", appended.AuthEvents, want)
+		}
+	}
+	leaves, err = persist.NewEventRepo(third.GORM()).ForwardExtremities(room.ID, 10)
+	if err != nil {
+		t.Fatalf("reading the leaves after the append: %v", err)
+	}
+	if len(leaves) != 1 || leaves[0] != appended.EventID {
+		t.Errorf("after the append the leaves are %v, want just the new event", leaves)
+	}
 }

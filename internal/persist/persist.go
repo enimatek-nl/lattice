@@ -11,6 +11,7 @@ import (
 
 	sqlite "github.com/ncruces/go-sqlite3/gormlite"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"gorm.io/gorm/logger"
 )
 
@@ -84,6 +85,7 @@ func models() []any {
 		&OneTimeKey{},
 		&DeviceListChange{},
 		&ServerKey{},
+		&ForwardExtremity{},
 		&CrossSigningKey{},
 		&KeyBackupVersion{},
 		&BackupRoomKey{},
@@ -125,7 +127,57 @@ func NewDatabase(path string) (*Database, error) {
 	if err := sweepUnsignedOneTimeKeys(gdb); err != nil {
 		return nil, fmt.Errorf("drop unverifiable one-time keys: %w", err)
 	}
+	if err := seedForwardExtremities(gdb); err != nil {
+		return nil, fmt.Errorf("seed the graph leaves of existing rooms: %w", err)
+	}
 	return NewFromGORM(gdb), nil
+}
+
+// seedForwardExtremities gives every room that has events but no recorded leaves one
+// leaf: its newest event.
+//
+// Rooms written before events carried prev_events have no graph to recover - the
+// links were never stored - so the only honest answer is that the newest event is
+// where the next one attaches. The repair only touches rooms with no rows of their
+// own, which after the first run means no rooms at all, so it costs one indexed
+// lookup per open.
+func seedForwardExtremities(gdb *gorm.DB) error {
+	var roomIDs []string
+	if err := gdb.Model(&ForwardExtremity{}).Distinct().Pluck("room_id", &roomIDs).Error; err != nil {
+		return err
+	}
+	known := make(map[string]bool, len(roomIDs))
+	for _, roomID := range roomIDs {
+		known[roomID] = true
+	}
+	var latest []Event
+	if err := gdb.Model(&Event{}).
+		Select("room_id, max(stream_pos) as stream_pos").
+		Group("room_id").Scan(&latest).Error; err != nil {
+		return err
+	}
+	for _, row := range latest {
+		if known[row.RoomID] {
+			continue
+		}
+		var newest Event
+		if err := gdb.Where("room_id = ? AND stream_pos = ?", row.RoomID, row.StreamPos).
+			First(&newest).Error; err != nil {
+			if IsNotFound(err) {
+				continue
+			}
+			return err
+		}
+		if err := gdb.Clauses(clause.OnConflict{DoNothing: true}).Create(&ForwardExtremity{
+			RoomID:         newest.RoomID,
+			EventID:        newest.EventID,
+			Depth:          newest.Depth,
+			OriginServerTS: newest.OriginServerTS,
+		}).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // sweepUnsignedOneTimeKeys is a data repair, run on every open like the state

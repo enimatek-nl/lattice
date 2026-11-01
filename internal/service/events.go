@@ -60,36 +60,43 @@ func (s *Service) AppendEvent(ctx context.Context, draft *EventDraft) (*persist.
 	var created *persist.Event
 
 	err := s.db.Tx(func(tx *gorm.DB) error {
-		room := persist.NewRoomRepo(tx)
-		if _, err := room.Get(draft.RoomID); err != nil {
+		rooms := persist.NewRoomRepo(tx)
+		room, err := rooms.Get(draft.RoomID)
+		if err != nil {
 			if persist.IsNotFound(err) {
 				return matrix.ErrNotFound("no such room %s", draft.RoomID)
 			}
 			return matrix.ErrInternal(err)
 		}
 
-		events := persist.NewEventRepo(tx)
-		prevIDs, err := events.RecentEventIDs(draft.RoomID, 10, "")
+		// The event is first built and signed in the form the room version defines,
+		// because its id depends on that form: in room version 3 and later the id is a
+		// hash over the event including the events it cites and the hash that covers
+		// its content. Doing this inside the transaction is what keeps the cited events
+		// the ones that were current when the event was made.
+		originServerTS := s.NowMS()
+		version := RoomVersionOf(room)
+		packet, err := s.BuildPDU(ctx, tx, draft, version, originServerTS)
 		if err != nil {
 			return err
 		}
-		depth := int64(1)
-		if len(prevIDs) > 0 {
-			prev, err := events.Get(prevIDs[0])
-			if err == nil {
-				depth = prev.Depth + 1
-			}
+		if err := s.SignAndIdentify(ctx, packet); err != nil {
+			return err
 		}
 
+		events := persist.NewEventRepo(tx)
 		event := &persist.Event{
-			EventID:        matrix.NewEventID(),
+			EventID:        packet.eventID,
 			RoomID:         draft.RoomID,
 			StreamPos:      pos,
 			Type:           draft.Type,
 			Sender:         draft.Sender,
-			OriginServerTS: s.NowMS(),
+			OriginServerTS: originServerTS,
 			Content:        string(content),
-			Depth:          depth,
+			Depth:          depthOf(packet),
+			JSON:           packet.encoded,
+			PrevEvents:     encodedIDs(packet.prevIDs),
+			AuthEvents:     encodedIDs(packet.authIDs),
 		}
 		if draft.StateKey != nil {
 			event.StateKey = *draft.StateKey
@@ -124,6 +131,16 @@ func (s *Service) AppendEvent(ctx context.Context, draft *EventDraft) (*persist.
 				return err
 			}
 		}
+		// The new event takes the place of the leaves it cited: a graph whose leaves
+		// are never retired grows a fork for every concurrent send.
+		if err := events.AdvanceForwardExtremities(draft.RoomID, packet.prevIDs, &persist.ForwardExtremity{
+			EventID:        event.EventID,
+			Depth:          event.Depth,
+			OriginServerTS: event.OriginServerTS,
+		}); err != nil {
+			return fmt.Errorf("advance the graph leaves: %w", err)
+		}
+
 		if draft.TxnID != "" {
 			txn := persist.NewTxnRepo(tx)
 			if err := txn.Set(&persist.Txn{

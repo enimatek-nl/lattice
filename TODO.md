@@ -10,14 +10,25 @@ re-derive were kept (below the plan).
 
 ## Current state (verified 2026-11-01)
 
-- A working **single-server homeserver**: `make build vet lint` clean
-  (`make lint` = golangci-lint, 0 issues), `go test ./...` green — **109**
-  compatibility tests (~48 s here, ~5½ min with `-race` on this machine) plus
-  **31** offline unit tests in `tests/unit` (milliseconds). Coverage: **149 of
-  the 234** indexed endpoints, 26 extra routes (`make endpoints`). Rate limiting
-  is in place (step 2), the client-API correctness tails of step 3 are closed,
-  the N+1 read paths of step 4 are batched, and the pure rules are pinned
-  offline (step 5) — so the plan now starts at **step 6, federation**.
+- A working homeserver with its **federation identity layer in place**:
+  `make build vet lint` clean (`make lint` = golangci-lint, 0 issues),
+  `go test ./...` green — **110** compatibility tests (~50 s here, ~5½ min
+  with `-race` on this machine), **49** offline unit tests in `tests/unit`
+  (milliseconds), and **13** two-server tests in `tests/federation` (a couple
+  of seconds). Coverage: **154 of the 234** indexed endpoints, 27 extra routes
+  (`make endpoints`). Steps 1–7 are closed: rate limiting, the client-API
+  correctness tails, batched reads, offline unit tests, the federation
+  signing/transport ground, and the **event DAG** — events are now hashed,
+  signed, identified by reference hash, and stored with `prev_events`,
+  `auth_events` and their exact signed JSON. The plan continues at
+  **step 8, transactions and EDUs**.
+- Federation is live behind `-federation` (default off): a persisted ed25519
+  signing key, `/_matrix/key/v2/*`, `/_matrix/federation/v1/version`,
+  `/_matrix/federation/v1/user/devices/{userId}`, an outbound client that
+  signs, and inbound middleware that refuses anything it cannot attribute to a
+  peer. Still deferred on purpose: SRV lookups, acting as a *client* of
+  someone else's notary, key rotation, and per-peer budgets for the volume
+  routes that arrive with step 8.
 - The E2EE trust layer is done end-to-end: device keys, cross-signing
   (verified server-side over canonical JSON), key signatures, room key
   backup. The Element "unable to set up keys" thread is **closed** — pinned
@@ -40,9 +51,12 @@ re-derive were kept (below the plan).
   refused as a room event, so the Megolm key never reached the other device — see
   the _PUT /sendToDevice_ entry under _Behaviour already handled_.
 - Federation decision (2026-11-01): **in scope for the first release**,
-  gated behind a `-federation` boolean flag (default off → routes unmounted,
-  behaviour byte-for-byte unchanged, `M_UNRECOGNIZED` on those paths). The
-  work is the steps 6–12 of this plan. Target: spec v1.19 server-server API.
+  gated behind a `-federation` boolean flag (default off → server-server routes
+  unmounted, `M_UNRECOGNIZED` on those paths). The work is the steps 6–12 of this
+  plan. Target: spec v1.19 server-server API. One part of it is deliberately **not**
+  behind the flag since step 7: events are hashed, signed and given derived ids
+  whether or not federation is on, because those are properties of the stored event
+  and a room created unsigned can never be federated afterwards.
 
 ## Release plan — pick one step at a time, top to bottom
 
@@ -218,49 +232,160 @@ the house rules).
       - A display-name mention has to appear as it is written: a multi-word
         display name matches as a phrase, not one word at a time.
 
-### 6. Federation I — identity, keys, signed transport
+### 6. Federation I — identity, keys, signed transport — done (2026-11-02)
 
-- [ ] Flag `-federation` in `cmd/server` (+ `api.Config` field); when off,
-      none of the routes below are mounted.
-- [ ] `ServerKeys` table: generate one ed25519 key per server on first boot
-      with the flag on (id `ed25519:<ver>`), keep the private key; rotation
-      and `old_verify_keys` are deferred.
-- [ ] Serve `GET /_matrix/key/v2/server` (self-signed response,
-      `valid_until_ts` treated as ≤7 days out), `GET
-    /_matrix/federation/v1/version`, and best-effort notary endpoints
-      `POST /_matrix/key/v2/query` + `GET /_matrix/key/v2/query/{serverName}`
-      (fetch, cache, re-sign).
-- [ ] New package `internal/federation`: outbound peer client (server-name
-      resolution via `/.well-known/matrix/server` then port 8448 — skip SRV
-      for now; verify-key cache with TTLs; X-Matrix request signing) and the
-      inbound middleware that verifies `Authorization: X-Matrix …` and
-      answers 401 on failure. Both directions reuse `matrix.CanonicalJSON`,
-      `SignEd25519`, `VerifyEd25519Signature`.
-- [ ] Compat tests: key endpoints respond and self-verify; a federation
-      request with a broken signature gets 401; nothing is mounted when the
-      flag is off.
+- [x] `-federation` in `cmd/server` (+ `api.Config.Federation`). Off is the
+      default, and off is an **absence** rather than a guard:
+      `registerRoutes` does not call `registerFederationRoutes` at all, so
+      those paths answer `M_UNRECOGNIZED` and no key row is written —
+      `service.WithFederation(true)` is what makes `service.New` mint the
+      signing key. Pinned by `TestFederationIsOffUnlessItIsAskedFor`, which
+      also checks the ordinary client path still works; the other direction is
+      `TestTheClientAPIIsUnchangedWithFederationOn`.
+- [x] `persist.ServerKey` (`internal/persist/serverkeys.go`) and
+      `ServerKeyRepo` (`Current`, `List`, `Store` with
+      `OnConflict{key_id, DoNothing}`): one ed25519 pair per server, id
+      `ed25519:<version>`, the private seed stored beside it. Minted on first
+      use and cached behind a mutex in `Service.SigningKey` — two racing first
+      requests must not each mint a pair, or peers see two signers for one
+      name. `TestSigningKeySurvivesARestart` reopens the database file and
+      demands the same key id back. Rotation stays deferred.
+- [x] `internal/federation`: `keys.go` (`KeyPair`, `KeyDocument`,
+      `VerifyKeyDocument` — server_name must match the name that was asked
+      for, key ids must be `ed25519:<version>` with a spec-shaped version, the
+      document must be signed by a key it publishes, `valid_until_ts` must be
+      ahead and is capped at 7 days by `KeySet.Expires`), `authorization.go`
+      (sign/parse/verify the X-Matrix header, quoted **and** bare parameters),
+      `transport.go` (peer client + caches), `middleware.go` (inbound
+      verification, and the peer's name on the context via `federation.Peer`).
+- [x] Endpoints: `GET /_matrix/key/v2/server`; `GET
+      /_matrix/key/v2/server/{keyID}` (extra route — the whole document for a
+      key id we publish, `M_NOT_FOUND` for one we do not); `POST
+      /_matrix/key/v2/query` and `GET /_matrix/key/v2/query/{serverName}`
+      (fetch → verify → re-sign with our key; a peer that does not answer is a
+      `failures` entry, never an error, and the array stays `[]` not `null`);
+      `GET /_matrix/federation/v1/version` (unauthenticated on purpose — an
+      operator comparing two servers must be able to ask); and `GET
+      /_matrix/federation/v1/user/devices/{userId}`, step 11's read side
+      pulled forward because it is the smallest signed-and-authenticated GET
+      available. Coverage is now **154 of 234** endpoints, 27 extra routes.
+- [x] Name resolution: a `PeerBaseURLs` pin first (tests and tunnels;
+      `-federation-peer "name=http://127.0.0.1:PORT"`), then
+      `/.well-known/matrix/server`'s `m.server` (24 h cache, 1 h for a
+      failure), then the name itself with `:8448` when it names no port. SRV
+      is still skipped as planned. `federation.ServerNameParts` does the split
+      — bracketed IPv6 literals are the trap.
+- [x] Verify-key cache: an entry lives until the document's own expiry capped
+      at 7 days. An unknown key id forces one refetch (a peer that rotated
+      must not be locked out forever) but never more than one per 30 s
+      (`keyRefetchGap`) — both forcing reasons are peer-provocable, so an
+      attacker cannot turn bad requests into outbound traffic. A peer that is
+      briefly unreachable does **not** invalidate keys still inside their
+      window; pinned by the last block of `TestKeyQueryNotarisesAPeersKeys`.
+- [x] Tests: `tests/federation/` is the two-server suite (9 tests). Its
+      `lazyHandler` exists because peer URLs are part of `api.Config`, so both
+      listeners must exist before either app is built. Requests are pinned to
+      loopback URLs — two servers on one machine cannot present certificates the
+      other trusts, and the pin is the same mechanism an operator names on the
+      command line, so the code under test is the production path.
+      `tests/unit/federation_test.go` adds 8 offline tables for the signature,
+      canonical-number and server-name grammar rules: a signature accepted when
+      it should not be leaves no trace in either server's behaviour, so it has
+      to be pinned where it is decided.
+- Gotchas to know before step 7:
+  - The signed uri is the **raw request target** (`r.RequestURI`). The
+    transport signs `path + "?" + url.Values.Encode()` and puts exactly that
+    string into the URL it sends, so the target that is verified is the target
+    that was signed. Any re-encode on either side breaks the signature.
+  - A GET signs an empty object as `content`; `contentToVerify` treats an
+    absent body as that same empty object rather than refusing it.
+  - `destination=` may legitimately be **absent** (older peers). The rule is
+    "present ⇒ must name us", and the query `origin=` on a GET must agree with
+    the signed origin when both are there.
+  - Peer answers are decoded with `matrix.DecodeCanonical` (`json.Number`), and
+    `matrix.CanonicalJSON` gained exact `int`/`int64`/`uint64`/`json.Number`
+    and float handling. A fractional float used to be **refused**, which would
+    have made a peer event carrying `1.5` unverifiable; whole floats still go
+    back as integers so a timestamp does not gain a `.0`.
+  - `matrix.Object` is an **alias** of `map[string]any`: a type switch must not
+    carry both `matrix.Object` and `map[string]any` cases (it will not
+    compile), and a `.(matrix.Object)` assertion on decoded JSON does succeed.
+  - Peers are dialed over **https** unless pinned. A live two-server test on
+    one machine needs `-federation-peer` with `http://` URLs.
+  - Key queries are charged to the per-address `auth` bucket because they dial
+    out on a stranger's behalf; publishing our own key is not charged, since
+    peers fetch it constantly and the work is local.
 
-### 7. Federation II — the event DAG (the hard part; build offline)
+### 7. Federation II — the event DAG — done (2026-11-02)
 
-- [ ] Storage: `prev_events`, `auth_events` and the **exact signed PDU JSON**
-      alongside `persist.Event` (it has `Depth` but no DAG fields today);
-      forward-extremities bookkeeping; hard-delete rules and the GORM
-      gotchas below apply as usual.
-- [ ] `AppendEvent` fills `prev_events` (events with no known child) and
-      `auth_events` per the spec's selection: create, power_levels, sender
-      member, target member (m.room.member), join_rules for
-      join/invite/knock, `join_authorised_via_users_server` member.
-- [ ] Event ids become reference-hash based (`$` + unpadded base64 sha256) —
-      room versions ≥3 derive the id from the event; `$`-random ids cannot
-      talk to other servers.
-- [ ] Content hash (sha256 over canonical JSON, `unsigned`/`signatures`/
-      `hashes` removed), the redaction algorithm, hash-and-sign per the
-      spec's pseudocode; outgoing events carry `hashes` + `signatures` from
-      the F6 key **before** persisting or queueing.
-- [ ] State resolution **v2** (room versions 2–11, Lattice creates 11) as
-      pure functions over loaded events; state res v1 only if joining v1
-      rooms later demands it.
-- [ ] All of this unit-tested in `tests/unit/` first — no network needed.
+- [x] Storage: `prev_events`, `auth_events` and the **exact signed PDU JSON**
+      (`persist.Event.JSON`, canonical-encoded), plus `SoftFailed` and
+      `RejectedReason` for the steps that need them, and a `ForwardExtremity`
+      table — one row per leaf of a room's graph, with depth and timestamp so
+      leaves can be ordered the way the specification asks.
+- [x] `AppendEvent` fills `prev_events` (the stored leaves, deepest first, capped
+      at 20 and logged when a room exceeds the cap) and `auth_events` per the
+      spec's selection: create, power_levels, sender member, target member,
+      join_rules for join/invite/knock, `m.room.third_party_invite` by token,
+      and the `join_authorised_via_users_server` member.
+- [x] Event ids are reference-hash based: `$` + unpadded base64 for room version
+      3, `$` + URL-safe unpadded base64 for 4 and later, invented ids only for
+      versions 1–2 (which also carry `origin`, which v3+ does not).
+- [x] Content hash, the two redaction algorithms, and hash-and-sign in the spec's
+      order, in a pure package `internal/eventcrypto`; outgoing events carry
+      `hashes` + `signatures` from the signing key **before** persisting.
+- [x] The client is served the **stored** event (`matrix.Event.MarshalJSON`), with
+      `event_id` and this server's `unsigned` properties added.
+- [x] Pinned in `tests/unit/eventcrypto_test.go` (spec known-answer hashes and
+      the redaction key sets), `tests/federation/graph_test.go` (a message trail
+      whose ids, prev/auth events, depths, hashes and signatures are checked
+      against the server's own published key), and
+      `TestALegacyRoomGetsALeaf` in `tests/compat/maintenance_test.go` (a
+      database from an older Lattice: its rooms get a leaf at open time, and the
+      next event in one attaches to it and is authorised from the state that old
+      server recorded).
+- [ ] State resolution **v2** is *not* here: it is a pure function over loaded
+      state and belongs with step 9/10, where conflicts from two servers exist
+      to resolve. Nothing local has forked yet.
+
+### Findings worth not re-deriving (step 7)
+
+- **A room version 11 PDU has no `event_id` and no `origin`.** The v11 table lists
+  `auth_events`, `content`, `depth`, `hashes`, `origin_server_ts`, `prev_events`,
+  `room_id`, `sender`, `signatures`, `type` as required. `origin` belongs to the
+  pre-v3 event. Lattice builds the PDU that way and adds `event_id` only on the way
+  to a client.
+- **The id is computed after the hash and after signing.** The reference hash covers
+  the *redacted* copy *including* the content hash. An id computed before the hash was
+  in the event, or a signature made before the hash was added, yields an event every
+  other server refuses. `eventcrypto.HashAndSign` follows that order, with a test.
+- **A receiver must strip `event_id` before recomputing anything** in room versions 3
+  and later: `eventcrypto.asPublished` does it for the content hash, the reference hash
+  and the signature check. Without it every received event looks forged, because the
+  copy in hand has an id the sender never hashed.
+- **Clients have to be served the stored event.** Serving the reconstructed struct
+  passed every pre-existing test and failed the new ones: the fields matched, the bytes
+  did not, and a hash is about bytes. The stored PDU's `origin_server_ts` and the
+  column's must also come from **one** read of the clock — two `NowMS()` calls in the
+  append path produced an event whose served copy was a millisecond newer than its own
+  signature.
+- **A redacted event is served from its columns, never from its stored copy**, which
+  still holds the content the redaction destroyed. `persist.Event.Matrix()` leaves
+  `Stored` unset when the row is redacted.
+- **Room versions 1 and 2 still work and are not silently upgraded**: invented
+  `event_id`, `origin` present, and the hash covers both.
+- **The signing key is no longer gated on `-federation`.** It used to be, which would
+  have left a Lattice started without the flag holding rooms it could never federate —
+  the hash and signature are part of what those events are and cannot be retrofitted.
+  The flag now only decides whether the server-server routes are mounted; with it off
+  the cost is one row in the database.
+- **Old rooms get one leaf each** (their newest event) seeded at open time, like the
+  other idempotent repairs: their events never recorded `prev_events`, so there is no
+  graph to recover, and naming the newest event is the only honest answer.
+- **`prev_events`/`auth_events` are decided once.** They are stored, not recomputed: in
+  v3+ the id is a hash over them, so recomputing against a graph that moved on describes
+  a different event. Reads that need the graph (step 9's `/event_auth`, `/backfill`)
+  must read the stored arrays.
 
 ### 8. Federation III — transactions and EDUs
 

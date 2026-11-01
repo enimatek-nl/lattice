@@ -1,6 +1,9 @@
 package matrix
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 // Well known event types used by the client-server API.
 const (
@@ -26,6 +29,9 @@ const (
 	TypePresence         = "m.presence"
 	TypeTag              = "m.tag"
 	TypeDirect           = "m.direct"
+	TypeThirdPartyInvite = "m.room.third_party_invite"
+	TypeServerACL        = "m.room.server_acl"
+	TypePolicyServerACL  = "m.room.policy_server_acl"
 	TypeSpaceChild       = "m.space.child"
 	TypeSpaceParent      = "m.space.parent"
 	TypeCallInvite       = "m.call.invite"
@@ -89,6 +95,54 @@ type Event struct {
 	Depth      int64    `json:"depth,omitempty"`
 	Origin     string   `json:"origin,omitempty"`
 	Redacts    string   `json:"redacts,omitempty"`
+	// Hashes and Signatures are how an event proves who put it in the room and that
+	// nothing in it changed on the way. A client normally ignores them; a bridge, a
+	// key-sharing dialog, or a user auditing a room cannot, and a server that never
+	// passes them on makes those checks impossible.
+	Hashes     Object `json:"hashes,omitempty"`
+	Signatures Object `json:"signatures,omitempty"`
+	// Stored is the event as its sender signed it, when the server has that copy. A
+	// client is served from it rather than from the fields above, because a signature
+	// is made over one particular set of properties: an event rebuilt from columns
+	// carries the same story in different words and fails its own hash.
+	Stored RawMessage `json:"-"`
+}
+
+// MarshalJSON serves an event in the form it was signed in when the server holds that
+// copy, and in the form of its fields otherwise.
+//
+// The distinction is not cosmetic. The hash and signature of an event cover the
+// properties of the event as its origin server wrote them, so a homeserver that answers
+// with a reconstruction hands out an event that does not verify against its own hash -
+// and a client that checks, or a bridge that relays, has to decide which copy to
+// believe. What is served is therefore the stored event, with the id added (an event in
+// room version 3 and later does not carry its own id; a client still needs one) and with
+// the unsigned properties this server chose to tell the client.
+func (e Event) MarshalJSON() ([]byte, error) {
+	if len(e.Stored) == 0 {
+		type served Event
+		return json.Marshal(served(e))
+	}
+	decoded, err := DecodeCanonical(e.Stored)
+	if err != nil {
+		return nil, fmt.Errorf("the stored event cannot be decoded: %w", err)
+	}
+	object, ok := decoded.(Object)
+	if !ok {
+		return nil, fmt.Errorf("the stored event is not an object")
+	}
+	if e.ID != "" {
+		object["event_id"] = e.ID
+	}
+	if e.RoomID != "" {
+		object["room_id"] = e.RoomID
+	}
+	if len(e.Unsigned) > 0 {
+		object["unsigned"] = e.Unsigned
+	} else {
+		delete(object, "unsigned")
+	}
+	return json.Marshal(object)
 }
 
 // IsState reports whether the event is a state event.

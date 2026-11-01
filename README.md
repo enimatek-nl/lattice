@@ -7,17 +7,18 @@
 A minimal [Matrix](https://spec.matrix.org/latest/) homeserver written in Go:
 the client-server HTTP API, a business layer, and a single SQLite file for
 storage. The goal is a drop-in homeserver for clients that speak the standard
-client API — no federation, no external services. End-to-end encryption happens
+client API, plus the server-server API behind a flag (`-federation`, off by
+default) — no external services. End-to-end encryption happens
 in the clients; Lattice relays the key material, verifies the cross-signing keys
 that decide what a client trusts, and stores encrypted room-key backups without
 being able to read any of it.
 
-**Status:** working single-server homeserver; the cryptography stays on the
-clients. **149 of
-the 234** endpoints indexed in [SPECS.md](SPECS.md) are implemented, plus 26
-extra routes (see [ENDPOINTS.md](ENDPOINTS.md)). 109 black-box compatibility tests
-and 31 offline unit tests are green. `make build vet lint` clean (golangci-lint
-reports 0 issues).
+**Status:** working homeserver whose federation identity layer and event graph are in
+place; the end-to-end cryptography stays on the clients. **154 of
+the 234** endpoints indexed in [SPECS.md](SPECS.md) are implemented, plus 27
+extra routes (see [ENDPOINTS.md](ENDPOINTS.md)). 110 black-box compatibility
+tests, 49 offline unit tests and 13 two-server federation tests are green.
+`make build vet lint` clean (golangci-lint reports 0 issues).
 Implementation version `0.1.0`
 (reported by `GET /_matrix/client/versions` as `Lattice/0.1.0`).
 
@@ -99,6 +100,8 @@ registrations.
 | `-support-email`, `-support-matrix-id` | _(empty)_                   | published in `/.well-known/matrix/support`                                                                                         |
 | `-media`                               | `true`                      | enable the media endpoints                                                                                                         |
 | `-maintenance-interval`                | `service.MaintenancePeriod` | how often to prune to-device messages, transaction ids and typing rows; `0` disables                                               |
+| `-federation`                          | `false`                     | serve the server-server API: mount `/_matrix/federation/*` and `/_matrix/key/v2/*`, and generate this server's signing key         |
+| `-federation-peer`                     | _(empty)_                   | comma separated `server=URL` pairs that pin where a peer is reached, bypassing well-known delegation and TLS; for tunnels and tests  |
 | `-version`                             | `false`                     | print the version and exit                                                                                                         |
 
 ## What works today
@@ -142,6 +145,22 @@ of the one that went away), the admin routes, abuse reports, and
 answer `404 M_UNRECOGNIZED` rather than a bare HTTP 404, so a client can name the
 endpoint that is missing.
 
+With `-federation`, the identity half of the server-server API is served too:
+`GET /_matrix/key/v2/server` (and its `{keyID}` variant) publishes an ed25519 key
+that is generated once and kept, `POST /_matrix/key/v2/query` and `GET
+/_matrix/key/v2/query/{serverName}` fetch another server's keys, verify them and
+re-sign them with this server's key, `GET /_matrix/federation/v1/version` says what
+this server runs without requiring a signature, and `GET
+/_matrix/federation/v1/user/devices/{userId}` serves another server the device keys
+of a local user, byte for byte as their own devices signed them. Every request on
+the authenticated paths carries an `Authorization: X-Matrix` signature over the
+method, the exact request target, both server names and the body, and a request
+that cannot be attributed to a known peer is refused with `401 M_UNAUTHORIZED`
+before a handler sees it. Outbound requests are signed the same way, and a peer's
+published keys are only trusted after checking that the document names the server
+that was asked, is signed by a key it publishes, and has not expired — capped at
+seven days however long the document claims to live.
+
 ## What does not work yet
 
 - **End-to-end encryption is client-side, and the server does not read it.**
@@ -181,8 +200,15 @@ endpoint that is missing.
   leaves open: a device key signature is only checked when Lattice holds the key
   that made it, and none of this has been run against a real
   client test suite.
-- **No federation** — nothing under `/_matrix/federation/v1/*`. Users can only
-  reach users on this server.
+- **Federation is only the identity layer, and only behind `-federation`.** Other
+  homeservers can be reached, can verify this one, and can ask it for keys; what no
+  server can yet do is exchange room events, so a user still cannot read a room
+  that lives somewhere else. What is missing is the event DAG (an event carries no
+  `prev_events`, and event ids are random rather than derived from the event, which
+  another server cannot check), transaction delivery, and the join handshakes.
+  Deferred by decision rather than by omission: SRV lookups (a name is resolved by
+  its well-known delegation or on port 8448), acting as a client of somebody
+  else's notary server, and signing key rotation.
 - **No calls** (`/voip/turnServer` publishes no TURN relay), **no SSO** or
   `m.login.token`, **no 3PID / email recovery**, **no application services**,
   **no bridges** (`/thirdparty/protocols` is empty).
@@ -248,17 +274,22 @@ internal/realtime hub that wakes long-polling syncs
 internal/coverage route-to-spec matcher the ENDPOINTS.md numbers come from
 internal/power    power level arithmetic (which level a user has, what an action asks for)
 internal/push     push rule engine: rule precedence, pattern and count matching
+internal/federation  signing identity, X-Matrix auth, peer transport, key caches
 internal/service  business logic (one file per feature area)
 internal/api      HTTP handlers and the route table (routes.go)
 tests/compat      black-box compatibility suite: HTTP against a running server
+tests/federation  two Lattice servers in one process, talking to each other
 tests/unit        offline unit tests: pure functions, tables, no server
 ```
 
 Functional tests live in `tests/` only, never next to the implementation — that
 is what makes "which endpoint is already covered?" answerable. The pure rules
 federation will reuse (identifiers, errors, power levels, push rules, tokens,
-endpoint matching) are additionally pinned in `tests/unit`, where a wrong answer
-is a readable table diff rather than a confusing HTTP response.
+endpoint matching, canonical JSON and signatures) are additionally pinned in
+`tests/unit`, where a wrong answer is a readable table diff rather than a
+confusing HTTP response. `tests/federation` exists because a claim about
+federation cannot be checked from inside one server: a bug in a join is a
+disagreement between two databases.
 
 ## Commands
 
@@ -275,6 +306,7 @@ make clean                               # drop bin/ and docs/swagger/
 
 go build ./... && go vet ./...
 go test ./tests/unit/                      # the offline unit tables, milliseconds
+go test ./tests/federation/                # two servers talking to each other, under a second
 go test ./tests/compat/ -race              # ~5 min because of the long-poll tests
 go test ./tests/compat/                    # ~50 s
 go run ./cmd/endpoints                     # coverage summary
