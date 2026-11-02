@@ -13,7 +13,15 @@ func (a *App) handleWellKnownClient(w http.ResponseWriter, r *http.Request) {
 
 // handleWellKnownServer implements GET /.well-known/matrix/server.
 func (a *App) handleWellKnownServer(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, matrix.Object{"m.server": a.cfg.ServerName})
+	// This document is an instruction to strangers about where this server can be
+	// reached, and a stranger that cannot reach it has no way to prove a word it was
+	// sent. The server name alone means port 8448, so a deployment behind a proxy on
+	// 443 says so here rather than leaving every peer to knock on a closed port.
+	advertised := a.cfg.FederationAdvertise
+	if advertised == "" {
+		advertised = a.cfg.ServerName
+	}
+	writeJSON(w, http.StatusOK, matrix.Object{"m.server": advertised})
 }
 
 // handleWellKnownSupport implements GET /.well-known/matrix/support.

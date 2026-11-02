@@ -12,7 +12,7 @@ re-derive were kept (below the plan).
 
 - A working homeserver with its **federation transport in production shape**:
   `make build vet lint` clean (`make lint` = golangci-lint, 0 issues),
-  `go test ./...` green — **113** compatibility tests (~52 s here, ~5½ min
+  `go test ./...` green — **114** compatibility tests (~52 s here, ~5½ min
   with `-race` on this machine), **65** offline unit tests in `tests/unit`
   (milliseconds), and **40** two-server tests in `tests/federation` (~13 s,
   ~56 s with `-race`). Coverage: **165 of the 234** indexed endpoints, 31 extra
@@ -910,6 +910,18 @@ which now works, plus the pieces named above).
   that never sees it. A duplicate arriving as something that happened here now promotes the
   event into the timeline at this moment: the content of the copy on disk stands, because it
   is the same event, but the timeline flag and the position are not somebody else's to keep.
+- **A peer that cannot fetch this server's key refuses everything, and the client sees an
+  authentication error.** A real deployment behind a reverse proxy on 443 answers peers on
+  443, but the well-known document published `m.server: <server name>` - a name with no port,
+  which means 8448. Every peer therefore knocked on a closed port, could not fetch
+  `/_matrix/key/v2/server`, and refused to believe a signed request from this server. The
+  room looked unjoinable and the client was handed
+  `401 M_UNAUTHORIZED: no signing keys available for <this server>` - words from the peer,
+  and a code a client reads as "your access token is no good", which costs a user their
+  session. Two answers: `-federation-advertise host:port` for the well-known document, and a
+  peer's `M_UNAUTHORIZED` translated into a `502 M_UNKNOWN` that names the peer, with the
+  reason and the address peers use logged where an operator will see it - including at
+  startup, before a single request has failed.
 - **An event must not cite the same auth event twice, and a membership event about
   oneself does.** `selectAuthEvents` adds the sender's membership and the target's
   membership, which are one and the same stored event when the sender equals the state

@@ -37,6 +37,29 @@ func TestWellKnownClient(t *testing.T) {
 	}
 }
 
+// TestWellKnownFederationEndpoint covers the other half of /.well-known/matrix/server:
+// it tells strangers where this server can be reached, and a peer that cannot reach it
+// cannot verify a single request signed by this server. A server name with no port means
+// port 8448, which is where a server that listens there wants to be found and where a
+// deployment behind a reverse proxy on 443 is never found.
+func TestWellKnownFederationEndpoint(t *testing.T) {
+	byName := NewServerWith(t, api.Config{AllowGuests: true, Federation: true})
+	resp := byName.MustDo(http.MethodGet, "/.well-known/matrix/server", "", nil, http.StatusOK)
+	if got := resp.Body["m.server"]; got != "test.server" {
+		t.Errorf("m.server = %v, want the server name itself (%s)", got, resp.Raw)
+	}
+
+	behind := NewServerWith(t, api.Config{
+		AllowGuests:         true,
+		Federation:          true,
+		FederationAdvertise: "matrix.example.org:443",
+	})
+	advertised := behind.MustDo(http.MethodGet, "/.well-known/matrix/server", "", nil, http.StatusOK)
+	if got := advertised.Body["m.server"]; got != "matrix.example.org:443" {
+		t.Errorf("m.server = %v, want the advertised host and port (%s)", got, advertised.Raw)
+	}
+}
+
 // homeServerOf returns the m.homeserver object of a discovery document, or nil.
 func homeServerOf(body map[string]any) map[string]any {
 	home, _ := body["m.homeserver"].(map[string]any)

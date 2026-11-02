@@ -65,6 +65,8 @@ func main() {
 			"serve the server-server API: other homeservers can talk to this one")
 		federationPeers = flag.String("federation-peer", "",
 			"comma separated server=URL pairs that pin where a peer is reached, bypassing well-known delegation; for tunnels and tests")
+		federationAdvertise = flag.String("federation-advertise", "",
+			"host:port published under /.well-known/matrix/server as where peers reach this server, including for its signing key; empty means the server name, which means port 8448")
 		tlsCert = flag.String("tls-cert", "",
 			"serve TLS with this certificate; with -tls-addr it is a second listener for federation traffic only")
 		tlsKey  = flag.String("tls-key", "", "the private key of -tls-cert")
@@ -138,9 +140,10 @@ func main() {
 			UploadBurst: *uploadBurst,
 			UploadRate:  *uploadRate,
 		},
-		Federation:        *federationOn,
-		FederationPeers:   peerOverrides(*federationPeers),
-		FederationRootCAs: federationCAs,
+		Federation:          *federationOn,
+		FederationPeers:     peerOverrides(*federationPeers),
+		FederationAdvertise: *federationAdvertise,
+		FederationRootCAs:   federationCAs,
 	})
 
 	if *federationOn {
@@ -158,6 +161,12 @@ func main() {
 			"https://%s/_matrix/key/v2/server, or against the host and port that "+
 			"/.well-known/matrix/server at %s names - that address has to answer over TLS, and "+
 			"serve the key route, or no peer will believe anything sent from here", *serverName, *serverName)
+		if *federationAdvertise != "" {
+			log.Printf("federation: /.well-known/matrix/server advertises %s", *federationAdvertise)
+		} else {
+			log.Printf("federation: /.well-known/matrix/server advertises %s, so peers will knock on port 8448; "+
+				"a deployment reached through a reverse proxy should pass -federation-advertise host:port", *serverName)
+		}
 	}
 
 	handler := applyCORS(app.Handler(), *corsOrigin)

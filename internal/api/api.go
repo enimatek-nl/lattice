@@ -61,6 +61,14 @@ type Config struct {
 	// M_UNRECOGNIZED exactly like any other unknown path, and the binary is a
 	// single-server homeserver.
 	Federation bool
+	// FederationAdvertise is the host and port this server publishes under
+	// /.well-known/matrix/server, which is where peers go looking for it - including
+	// for the key document they need to believe a request signed by this server.
+	// Empty means the server name as it stands, and a name without a port means
+	// port 8448: right for a server that listens there, wrong for a deployment whose
+	// federation arrives through a reverse proxy on 443, where every peer ends up
+	// unable to verify this server and refusing it.
+	FederationAdvertise string
 	// FederationPeers maps a server name to the URL to reach that server on,
 	// bypassing well-known delegation and TLS. Tests need it because they cannot
 	// run a certified HTTPS server; an operator needs it when a peer is reachable

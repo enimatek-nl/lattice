@@ -19,7 +19,7 @@ user reaches the server that user lives on, and a leave reaches the server that 
 room. The end-to-end cryptography stays on
 the clients. **165 of
 the 234** endpoints indexed in [SPECS.md](SPECS.md) are implemented, plus 31
-extra routes (see [ENDPOINTS.md](ENDPOINTS.md)). 113 black-box compatibility
+extra routes (see [ENDPOINTS.md](ENDPOINTS.md)). 114 black-box compatibility
 tests, 65 offline unit tests and 40 two-server federation tests are green.
 `make build vet lint` clean (golangci-lint reports 0 issues).
 Implementation version `0.1.0`
@@ -105,6 +105,7 @@ registrations.
 | `-maintenance-interval`                | `service.MaintenancePeriod` | how often to prune to-device messages, transaction ids and typing rows; `0` disables                                               |
 | `-federation`                          | `false`                     | serve the server-server API: mount `/_matrix/federation/*` and `/_matrix/key/v2/*`, and generate this server's signing key         |
 | `-federation-peer`                     | _(empty)_                   | comma separated `server=URL` pairs that pin where a peer is reached, bypassing well-known delegation and TLS; for tunnels and tests  |
+| `-federation-advertise`               | _(empty)_                   | `host:port` published under `/.well-known/matrix/server` as where peers reach this server (and its signing key); empty means the server name, hence port 8448 |
 | `-federation-flush`                    | `1s`                        | how often federation traffic waiting for a peer is retried; `0` delivers only when something asks for a flush                         |
 | `-version`                             | `false`                     | print the version and exit                                                                                                         |
 
