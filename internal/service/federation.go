@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
+	"time"
 
 	"github.com/enimatek-nl/lattice/internal/federation"
 	"github.com/enimatek-nl/lattice/internal/matrix"
@@ -64,6 +66,16 @@ func (s *Service) generateServerKey() (*persist.ServerKey, error) {
 	if err := s.db.ServerKeyRepo.Store(row); err != nil {
 		return nil, matrix.ErrInternal(err)
 	}
+	// A fresh key in a database that already holds events means the previous key is gone -
+	// usually a database that was not persisted across a restart. Every event this server
+	// has already sent is signed by the lost key, so peers can no longer believe any of
+	// them and the rooms this server hosts stop federating. The loss is silent until a peer
+	// refuses something, which is why it is said out loud here.
+	if events, err := s.db.EventRepo.Count(); err == nil && events > 0 {
+		log.Printf("warning: this server generated a new signing key (%s) while its database holds %d events; "+
+			"those events are signed by a key this server no longer has, so peers will refuse them - the signing "+
+			"key lives in the database, which has to be persisted across restarts", row.KeyID, events)
+	}
 	// Another process may have won the race and inserted its own pair; re-read so
 	// both sides end up with the same answer rather than each using its own.
 	stored, err := s.db.ServerKeyRepo.Current()
@@ -72,6 +84,11 @@ func (s *Service) generateServerKey() (*persist.ServerKey, error) {
 	}
 	return stored, nil
 }
+
+// keyValidityMargin keeps a published key document inside the validity window peers
+// enforce rather than on its edge. The window a week; the margin is an hour of clock
+// disagreement between this server and whoever reads the document.
+const keyValidityMargin = time.Hour
 
 // ServerKeysDocument publishes this server's signing key for peers: the object
 // served at GET /_matrix/key/v2/server, signed by the key it publishes.
@@ -88,7 +105,7 @@ func (s *Service) ServerKeysDocument(ctx context.Context) (matrix.Object, error)
 	if err != nil {
 		return nil, err
 	}
-	validUntil := s.NowMS() + federation.MaxKeyValidity.Milliseconds()
+	validUntil := s.NowMS() + (federation.MaxKeyValidity - keyValidityMargin).Milliseconds()
 	document, err := federation.KeyDocument(s.serverName, key, validUntil)
 	if err != nil {
 		return nil, matrix.ErrInternal(err)
@@ -108,7 +125,7 @@ func (s *Service) ServerKeysDocumentBody(ctx context.Context) ([]byte, error) {
 	if err != nil {
 		return nil, matrix.ErrInternal(err)
 	}
-	validUntil := s.NowMS() + federation.MaxKeyValidity.Milliseconds()
+	validUntil := s.NowMS() + (federation.MaxKeyValidity - keyValidityMargin).Milliseconds()
 	body, err := federation.KeyDocumentBody(s.serverName, key, validUntil)
 	if err != nil {
 		return nil, matrix.ErrInternal(err)

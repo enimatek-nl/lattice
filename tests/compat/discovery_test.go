@@ -4,8 +4,10 @@ import (
 	"net/http"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/enimatek-nl/lattice/internal/api"
+	"github.com/enimatek-nl/lattice/internal/federation"
 	"github.com/enimatek-nl/lattice/internal/service"
 )
 
@@ -215,5 +217,35 @@ func TestCapabilities(t *testing.T) {
 
 	if resp := server.Do(http.MethodGet, "/_matrix/client/v1/capabilities", "", nil); resp.Status != http.StatusUnauthorized {
 		t.Errorf("unauthenticated capabilities: got %d, want 401", resp.Status)
+	}
+}
+
+// TestPublishedKeyDocumentStaysInsideTheValidityWindow covers a peer refusing a key
+// document that is reachable and signed. The specification caps how far ahead a key
+// document may be dated at a week, and peers enforce that cap against their own clock:
+// dated exactly a week out, a few milliseconds of clock disagreement is enough for the
+// peer to call the document invalid, which looks to an operator like a server whose keys
+// cannot be found at all. The published window therefore has to sit inside the cap.
+func TestPublishedKeyDocumentStaysInsideTheValidityWindow(t *testing.T) {
+	server := NewServerWith(t, api.Config{AllowGuests: true, Federation: true})
+	resp := server.MustDo(http.MethodGet, "/_matrix/key/v2/server", "", nil, http.StatusOK)
+
+	validUntil, ok := resp.Body["valid_until_ts"].(float64)
+	if !ok {
+		t.Fatalf("valid_until_ts = %v, want a timestamp (%s)", resp.Body["valid_until_ts"], resp.Raw)
+	}
+	window := time.Duration(int64(validUntil)-time.Now().UnixMilli()) * time.Millisecond
+	if window <= 0 {
+		t.Errorf("the key document is already expired: the window from now is %s", window)
+	}
+	if margin := federation.MaxKeyValidity - window; margin < time.Hour {
+		t.Errorf("the document is dated %s from now, only %s inside the %s cap peers enforce",
+			window, margin, federation.MaxKeyValidity)
+	}
+
+	// The document has to verify as it is served, because it is the bytes that are
+	// signed and not a re-encoding of them.
+	if _, err := federation.VerifyKeyDocument(resp.Body, "test.server", time.Now().UnixMilli()); err != nil {
+		t.Errorf("the published key document does not verify: %v", err)
 	}
 }
