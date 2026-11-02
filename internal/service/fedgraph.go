@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"log"
+	"sort"
 
 	"github.com/enimatek-nl/lattice/internal/matrix"
 	"github.com/enimatek-nl/lattice/internal/persist"
@@ -124,6 +125,10 @@ func (s *Service) ServeMissingEvents(ctx context.Context, roomID string, peer st
 	if wanted := numberField(body, "limit"); wanted > 0 && int(wanted) < limit {
 		limit = int(wanted)
 	}
+	// min_depth is how shallow an event may be and still be answered. A peer asking about a
+	// recent gap is not asking for the room's beginning, and a server that answers it anyway
+	// is publishing history the question did not reach for.
+	minDepth := numberField(body, "min_depth")
 	version, err := s.roomVersion(roomID)
 	if err != nil {
 		return nil, err
@@ -140,9 +145,9 @@ func (s *Service) ServeMissingEvents(ctx context.Context, roomID string, peer st
 		exclude[id] = true
 	}
 	seen := map[string]bool{}
-	collected := make([]string, 0, limit)
+	found := map[string]*persist.Event{}
 	frontier := append([]string(nil), latest...)
-	for depth := 0; depth < maxServedMissingEvents && len(collected) < limit; depth++ {
+	for depth := 0; depth < maxServedMissingEvents && len(found) < limit; depth++ {
 		next := make([]string, 0, len(frontier))
 		for _, id := range frontier {
 			if seen[id] {
@@ -150,25 +155,19 @@ func (s *Service) ServeMissingEvents(ctx context.Context, roomID string, peer st
 			}
 			seen[id] = true
 			event, err := s.db.EventRepo.Get(id)
-			if err != nil {
-				continue
-			}
-			if event.RoomID != roomID {
+			if err != nil || event.RoomID != roomID {
 				continue
 			}
 			for _, prev := range storedIDsOf(event.PrevEvents) {
-				if seen[prev] || wanted[prev] {
+				if seen[prev] || wanted[prev] || exclude[prev] {
 					continue
 				}
-				if !exclude[prev] {
-					collected = append(collected, prev)
-					if len(collected) >= limit {
-						break
-					}
+				if prev, err := s.db.EventRepo.Get(prev); err == nil && prev.RoomID == roomID {
+					found[prev.EventID] = prev
 				}
 				next = append(next, prev)
 			}
-			if len(collected) >= limit {
+			if len(found) >= limit {
 				break
 			}
 		}
@@ -178,13 +177,19 @@ func (s *Service) ServeMissingEvents(ctx context.Context, roomID string, peer st
 		frontier = next
 	}
 
+	// The walk was backwards, from events the peer has to events it does not. The answer
+	// goes the other way: a peer filling a gap wants the events in the order the room was
+	// built, because that is the order it can attach them to its own graph. Depth first and
+	// arrival second, so two events at the same depth keep the order this server learned them.
 	events := matrix.Array{}
-	for _, id := range collected {
-		row, err := s.db.EventRepo.Get(id)
-		if err != nil {
+	for _, event := range byDepth(found) {
+		if minDepth > 0 && event.Depth < minDepth {
 			continue
 		}
-		pdu, err := transportPDU(row.JSON, version)
+		if len(events) >= limit {
+			break
+		}
+		pdu, err := transportPDU(event.JSON, version)
 		if err != nil {
 			continue
 		}
@@ -267,6 +272,22 @@ func (s *Service) authChainIDsOf(seeds []string) []string {
 		ids = append(ids, id)
 	}
 	return ids
+}
+
+// byDepth orders events as the room was built: shallowest first, and events at the same
+// depth in the order they reached this server.
+func byDepth(events map[string]*persist.Event) []*persist.Event {
+	ordered := make([]*persist.Event, 0, len(events))
+	for _, event := range events {
+		ordered = append(ordered, event)
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].Depth != ordered[j].Depth {
+			return ordered[i].Depth < ordered[j].Depth
+		}
+		return ordered[i].StreamPos < ordered[j].StreamPos
+	})
+	return ordered
 }
 
 // roomVersion reads the room version a room is held in, for preparing PDUs of that version.
