@@ -936,6 +936,12 @@ which now works, plus the pieces named above).
   check an event's `origin` against its sender - room versions 11 and 12 have no `origin` in
   the event, so a strict peer rejects a correctly relayed event and nothing on the sending
   side can satisfy it without changing the event's hash.
+  The two gaps the same tests name: history visibility has to be respected on what is served
+  (under `joined` or `invited`, events that predate the asking server's presence go out
+  redacted, and `m.room.history_visibility` is currently read only to decide who may read a
+  room at all), and a gap this server notices in its own timeline has to be asked about - the
+  outbound half of `get_missing_events`.
+
 
 - **A room version this server does not speak is refused by name, not as a missing room.**
   A real join of a room on another homeserver failed with the peer answering
