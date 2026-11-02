@@ -452,28 +452,9 @@ func (s *Service) ServeSendJoin(ctx context.Context, roomID, eventID string, eve
 		return nil, matrix.ErrInternal(err)
 	}
 	version := RoomVersionOf(room)
-	if federation.EventField(event, "type") != matrix.TypeMember {
-		return nil, matrix.ErrInvalidRequest("send_join takes an m.room.member event, not %s",
-			federation.EventField(event, "type"))
-	}
-	key, hasKey := event["state_key"].(string)
-	sender := federation.EventField(event, "sender")
-	if !hasKey {
-		return nil, matrix.ErrInvalidRequest("the m.room.member event sent to send_join has no state key")
-	}
-	if key != sender {
-		return nil, matrix.ErrInvalidRequest("%s cannot join the room as %s", sender, key)
-	}
-	if federation.EventField(event, "room_id") != roomID {
-		return nil, matrix.ErrInvalidRequest("the event is for room %s, not %s",
-			federation.EventField(event, "room_id"), roomID)
-	}
-	content := objectOf(event, "content")
-	if membership, _ := content["membership"].(string); membership != matrix.MembershipJoin {
-		return nil, matrix.ErrInvalidRequest("send_join takes a join, not a %s", membership)
-	}
-	if got := federation.EventField(event, "event_id"); got != "" && got != eventID {
-		return nil, matrix.ErrInvalidRequest("the path names %s and the event names %s", eventID, got)
+	sender, shape := membershipForEndpoint(event, eventID, roomID, "send_join", matrix.MembershipJoin)
+	if shape != nil {
+		return nil, shape
 	}
 	if usesDerivedEventIDs(version) {
 		derived, err := eventcrypto.EventID(event, version)

@@ -14,8 +14,8 @@ re-derive were kept (below the plan).
   `make build vet lint` clean (`make lint` = golangci-lint, 0 issues),
   `go test ./...` green — **113** compatibility tests (~52 s here, ~5½ min
   with `-race` on this machine), **65** offline unit tests in `tests/unit`
-  (milliseconds), and **36** two-server tests in `tests/federation` (~10 s,
-  ~56 s with `-race`). Coverage: **161 of the 234** indexed endpoints, 29 extra
+  (milliseconds), and **37** two-server tests in `tests/federation` (~10 s,
+  ~56 s with `-race`). Coverage: **163 of the 234** indexed endpoints, 31 extra
   routes (`make endpoints`). Steps 1–10 are closed: rate limiting, the
   client-API correctness tails, batched reads, offline unit tests, the
   federation signing/transport ground, the **event DAG** (events hashed,
@@ -24,17 +24,17 @@ re-derive were kept (below the plan).
   `PUT /send` with a replay-safe transaction log, EDU sinks for typing,
   receipts, to-device, device lists and cross-signing, an outbound per
   destination queue with retries, and `m.room.server_acl` enforced in both
-  directions — and the **cross-server join**: `make_join`/`send_join` served and
-  sent, the state a peer hands over persisted and usable, remote aliases
-  resolved through `/query/directory`, and a room's decision about a user
-  (ban, unban, invite, kick) reaching the server that user lives on. The plan
-  continues at **step 11**; steps 11 to 13 are driven
+  directions — and the **cross-server membership handshake**: `make_join`/`send_join`
+  and `make_leave`/`send_leave` served and sent, the state a peer hands over persisted
+  and usable, remote aliases resolved through `/query/directory`, and a room's decision
+  about a user (ban, unban, invite, kick, leave) reaching the server that user lives on.
+  The plan continues at **step 11**; steps 11 to 13 are driven
   test-by-test against Complement's server-server suite, each naming the tests it
   is expected to turn green, and step 14 wraps the release.
 - Against [Complement](https://github.com/matrix-org/complement), the upstream
-  Matrix suite, **40 of 106** client-API tests fail (`make complement`) and **74 of
+  Matrix suite, **40 of 106** client-API tests fail (`make complement`) and **72 of
   91** server-server tests fail (`make complement COMPLEMENT_PKG=./tests`) — up from
-  4 green before step 10, all of them the join handshake and what hangs off it.
+  4 green before step 10, all of them the membership handshake and what hangs off it.
   See _Complement_ below for how they run, what a run can hide, and what each remaining
   failure is waiting for. The transport itself is not among the reasons: most of
   what is left is a peer answering `M_UNRECOGNIZED` to a handshake Lattice does not
@@ -46,6 +46,8 @@ re-derive were kept (below the plan).
   `GET /_matrix/federation/v1|v2/make_join/{roomId}/{userId}`,
   `PUT /_matrix/federation/v1|v2/send_join/{roomId}/{eventId}`,
   `GET /_matrix/federation/v1/query/directory`,
+  `GET /_matrix/federation/v1|v2/make_leave/{roomId}/{userId}`,
+  `PUT /_matrix/federation/v1|v2/send_leave/{roomId}/{eventId}`,
   an outbound client that signs, fetches an auth chain it is missing, and retries a
   queue, and inbound middleware that refuses anything it cannot attribute to a peer.
   Still deferred on purpose: SRV lookups, acting as a
@@ -760,10 +762,16 @@ and it is the first step to turn Complement server-server tests green: **17 of t
 - [x] A membership change made by the room's server reaches the server of the user
       it is about — a ban whose destination list is built from the membership the
       ban already changed is a ban the banned user's own server never hears about.
-- [ ] The same handshake for leave (`make_leave` v1/v2, `PUT /v2/send_leave`) and
-      knock (`make_knock`/`send_knock` v1/v2): refused as `M_UNRECOGNIZED` today,
-      which is what `TestCannotSendNonLeaveViaSendLeaveV1/V2`, `TestKnocking*` and
-      `TestFederationRejectInvite` are waiting on. Owned by step 11's list below.
+- [x] The same handshake for leave: `make_leave` v1/v2 and `PUT /v1|v2/send_leave`, a
+      leave made and signed by the leaving server, refused unless it is a **leave** by
+      the sender of themselves (a kick is an ordinary event from the kicking server, not
+      a `send_leave`), and applied and relayed to the rest of the room when accepted. A
+      local user leaving a room this server does not host goes through that server,
+      which is the only way the room's own list of members stops being wrong.
+- [ ] Knock (`make_knock`/`send_knock` v1/v2; the client-side knock already exists),
+      which is what `TestKnocking`, `TestKnockingInMSC3787Room`,
+      `TestCannotSendNonKnockViaSendKnock` and
+      `TestCannotSendKnockViaSendKnockInMSC3787Room` wait on.
 - [ ] Invites over the dedicated endpoint: `PUT /v1|v2/invite/{roomId}/{eventId}`,
       whose `invite_room_state` must carry `m.room.create`. A local `/invite` of a
       remote user already reaches them today by the ordinary event relay, which is
@@ -780,13 +788,15 @@ membership for the user.
 Complement is green now: `TestJoinViaRoomIDAndServerName`,
 `TestJoinFederatedRoomFailOver`, `TestSendJoinPartialStateResponse`,
 `TestCannotSendNonJoinViaSendJoinV1`, `TestCannotSendNonJoinViaSendJoinV2`,
+`TestCannotSendNonLeaveViaSendLeaveV1`, `TestCannotSendNonLeaveViaSendLeaveV2`,
 `TestBannedUserCannotSendJoin`, `TestUnbanViaInvite`,
 `TestJoinFederatedRoomWithUnverifiableEvents`, `TestOutboundFederationSend`,
 `TestRemoteTyping`, `TestRemoteAliasRequestsUnderstandUnicode`,
 `TestInboundFederationRejectsEventsWithRejectedAuthEvents`.
-Still red from this list, and who owns them: `TestCannotSendNonLeaveViaSendLeaveV1`
-and `V2`, `TestFederationRoomsInvite`, `TestFederationRejectInvite` (leave and
-invite handshakes), `TestUserAppearsInChangedDeviceListOnJoinOverFederation`
+Still red from this list, and who owns them: `TestFederationRoomsInvite` and
+`TestFederationRejectInvite` (the invite endpoint `PUT /v1|v2/invite`, the only road to a
+server that is not in the room yet), `TestKnocking*` and the knock guards (the knock
+handshake), `TestUserAppearsInChangedDeviceListOnJoinOverFederation`
 (step 13: the device-list EDU on join), `TestMessagesOverFederation` and
 `TestPushRuleRoomUpgrade` on the csapi side (they need a room two servers share,
 which now works, plus the pieces named above).
@@ -817,6 +827,12 @@ which now works, plus the pieces named above).
   `MembershipLeave` and never `MembershipBan`, so a ban that arrived over
   federation updated the database and said nothing to the client — the sync had no
   room at all, and the ban event, the only explanation, never reached anyone.
+- **An event must not cite the same auth event twice, and a membership event about
+  oneself does.** `selectAuthEvents` adds the sender's membership and the target's
+  membership, which are one and the same stored event when the sender equals the state
+  key. Locally created events got away with the duplicate, because this server does not
+  run a receiver's checks on its own events; the room's server refused a federated leave
+  for it. Auth event selection de-duplicates now.
 - **Partial state is the room before the join.** The state and the server list of a
   `send_join` answer are read *before* the join is applied, and this server names
   itself in `servers_in_room` because hosting the room is being in it. Following
@@ -1017,9 +1033,9 @@ record** or to follow **SRV delegation**, both deferred.
 ## Complement — the upstream suite (running since 2026-11-01)
 
 Tally, complete run of 2026-11-02 against Complement `e3fcff1`: **40 of 106**
-client-API tests fail (44 deployments, no panics), and **74 of 91** server-server
-tests fail (108 deployments, no panics) — 17 server-server tests green, where the
-run before the join handshake had 4. The rest of this section is how to run
+client-API tests fail (44 deployments, no panics), and **72 of 91** server-server
+tests fail (108 deployments, no panics) — 19 server-server tests green, where the
+run before the membership handshake had 4. The rest of this section is how to run
 it, what the run can hide, and what every remaining failure is waiting for.
 
 [Complement](https://github.com/matrix-org/complement) starts homeservers in
@@ -1089,6 +1105,7 @@ The server-server run of 2026-11-02, after step 10, is green for
 `TestJoinViaRoomIDAndServerName`, `TestJoinFederatedRoomFailOver`,
 `TestJoinFederatedRoomWithUnverifiableEvents`, `TestSendJoinPartialStateResponse`,
 `TestCannotSendNonJoinViaSendJoinV1`, `TestCannotSendNonJoinViaSendJoinV2`,
+`TestCannotSendNonLeaveViaSendLeaveV1`, `TestCannotSendNonLeaveViaSendLeaveV2`,
 `TestBannedUserCannotSendJoin`, `TestUnbanViaInvite`, `TestOutboundFederationSend`,
 `TestRemoteTyping`, `TestRemoteAliasRequestsUnderstandUnicode`,
 `TestInboundFederationKeys`, `TestInboundFederationRejectsEventsWithRejectedAuthEvents`,
@@ -1096,9 +1113,12 @@ The server-server run of 2026-11-02, after step 10, is green for
 `TestSyncOmitsStateChangeOnFilteredEvents`. The client-API tally did **not** move when
 the room presets did (a `public_chat` room no longer gets an `m.room.guest_access`
 event), which is the check that the preset change was a fix rather than a regression.
-What the remaining 74 wait for, by group: `make_leave`/`send_leave` and
-`make_knock`/`send_knock` (leave, knock and the guards that go with them), the invite
-endpoint `PUT /v1|v2/invite` (`TestFederationRoomsInvite`,
+One deployment failed in that run with a podman limit - `allocating lock for new volume:
+allocation failed; exceeded num_locks (2048)`, from roughly two thousand anonymous
+volumes left behind by earlier runs - so the named test was re-run alone and failed for
+its real reason. `podman volume prune -f` between long runs is now part of the routine.
+What the remaining 72 wait for, by group: `make_knock`/`send_knock` (knock and its
+guards), the invite endpoint `PUT /v1|v2/invite` (`TestFederationRoomsInvite`,
 `TestFederationRejectInvite`), the graph-reading queries `event_auth`, `state_ids`,
 `state`, `get_missing_events`, `backfill`, `timestamp_to_event`
 (`TestEventAuth`, `TestGetMissingEventsGapFilling`, `TestInboundCanReturnMissingEvents`,

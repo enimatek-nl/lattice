@@ -66,6 +66,12 @@ func (a *App) registerFederationRoutes() {
 	a.federated("GET /_matrix/federation/v2/make_join/{roomID}/{userID}", a.handleFederationMakeJoin)
 	a.federated("PUT /_matrix/federation/v1/send_join/{roomID}/{eventID}", a.handleFederationSendJoin)
 	a.federated("PUT /_matrix/federation/v2/send_join/{roomID}/{eventID}", a.handleFederationSendJoin)
+	// A leave is the mirror of a join: the room's server hands out a shape, the leaving
+	// server signs it, and the room's server decides whether it stands.
+	a.federated("GET /_matrix/federation/v1/make_leave/{roomID}/{userID}", a.handleFederationMakeLeave)
+	a.federated("GET /_matrix/federation/v2/make_leave/{roomID}/{userID}", a.handleFederationMakeLeave)
+	a.federated("PUT /_matrix/federation/v1/send_leave/{roomID}/{eventID}", a.handleFederationSendLeave)
+	a.federated("PUT /_matrix/federation/v2/send_leave/{roomID}/{eventID}", a.handleFederationSendLeave)
 
 	// A peer asked about an alias of this server. The alias is how the room is addressed,
 	// so the answer has to come from the server the alias names - a client that is told
@@ -123,6 +129,71 @@ func (a *App) handleFederationSendJoin(w http.ResponseWriter, r *http.Request) {
 		event, federation.Peer(r.Context()), v2, r.URL.Query().Get("omit_members") == "true")
 	if err != nil {
 		a.writeError(w, r, err)
+		return
+	}
+	if !v2 {
+		// Version 1 of the endpoint predates the convention of answering with the body
+		// alone, and a client that fell back to it expects the two element array.
+		writeJSON(w, http.StatusOK, []any{http.StatusOK, answer})
+		return
+	}
+	writeJSON(w, http.StatusOK, answer)
+}
+
+// handleFederationMakeLeave answers GET of make_leave: the room version, and the shape
+// of the leave event that would attach to this server's graph.
+//
+//	@Summary	Ask which events a leave must build on
+//	@Description	Serves a peer the room version and the leave-event template whose prev_events and auth_events come from this server's graph.
+//	@Tags	federation
+//	@Produce	json
+//	@Param	roomID	path	string	true	"Room ID"
+//	@Param	userID	path	string	true	"User leaving the room"
+//	@Success	200	{object}	matrix.Object	"room_version and event"
+//	@Failure	403	{object}	matrix.Error	"The room excludes that server"
+//	@Failure	404	{object}	matrix.Error	"No such room"
+//	@Router	/_matrix/federation/v1/make_leave/{roomID}/{userID} [get]
+//	@Router	/_matrix/federation/v2/make_leave/{roomID}/{userID} [get]
+func (a *App) handleFederationMakeLeave(w http.ResponseWriter, r *http.Request) {
+	answer, err := a.svc.ServeMakeLeave(r.Context(), r.PathValue("roomID"), r.PathValue("userID"),
+		federation.Peer(r.Context()))
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, answer)
+}
+
+// handleFederationSendLeave answers PUT of send_leave: a leave event a peer signed for a
+// room this server hosts, answered with agreement rather than with state - the leaving
+// server already has the room.
+//
+//	@Summary	Take a leave a peer signed
+//	@Description	Validates a leave event for a room hosted here, applies it, and relays it to the rest of the room.
+//	@Tags	federation
+//	@Accept	json
+//	@Produce	json
+//	@Param	roomID	path	string	true	"Room ID"
+//	@Param	eventID	path	string	true	"Event id of the leave event"
+//	@Success	200	{object}	matrix.Object	"empty, and agreed"
+//	@Failure	400	{object}	matrix.Error	"The event is not a leave by the sender of itself"
+//	@Failure	403	{object}	matrix.Error	"The room's rules refuse the leave"
+//	@Router	/_matrix/federation/v1/send_leave/{roomID}/{eventID} [put]
+//	@Router	/_matrix/federation/v2/send_leave/{roomID}/{eventID} [put]
+func (a *App) handleFederationSendLeave(w http.ResponseWriter, r *http.Request) {
+	event, err := federationBody(r)
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	answer, err := a.svc.ServeSendLeave(r.Context(), r.PathValue("roomID"), r.PathValue("eventID"),
+		event, federation.Peer(r.Context()))
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	if strings.Contains(r.URL.Path, "/federation/v1/") {
+		writeJSON(w, http.StatusOK, []any{http.StatusOK, answer})
 		return
 	}
 	writeJSON(w, http.StatusOK, answer)

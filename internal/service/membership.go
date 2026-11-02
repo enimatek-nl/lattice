@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"strings"
 
@@ -222,6 +223,18 @@ func (s *Service) LeaveRoom(ctx context.Context, roomID, userID, reason string) 
 	membership := s.MembershipOf(ctx, room.ID, userID)
 	if membership == "" || membership == matrix.MembershipLeave {
 		return matrix.ErrForbidden("you cannot leave a room you are not a member of")
+	}
+	if !s.LocalRoom(room.ID) {
+		// A room this server does not host is left through the server that does. The room's
+		// graph belongs to that server: a leave made here attaches to a copy of the graph,
+		// and the room's own server is left with a member it still thinks is present.
+		if err := s.LeaveFederatedRoom(ctx, room.ID, userID, reason); err == nil {
+			return nil
+		} else {
+			// The peer's refusal is not a reason to keep somebody in a room they have asked
+			// to leave, so the leave is recorded locally and relayed like any other event.
+			log.Printf("service: leaving %s over federation: %v", room.ID, err)
+		}
 	}
 	content := matrix.MemberContent{
 		Membership: matrix.MembershipLeave,

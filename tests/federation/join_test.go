@@ -172,6 +172,36 @@ func TestARoomCanBanAUserThatJoinedFromAnotherServer(t *testing.T) {
 	}
 }
 
+// TestAFederatedLeaveReachesTheRoomsServer checks that a user leaving from the server
+// they live on tells the server that hosts the room. A leave that stays on the leaver's
+// own server leaves the room holding a member who has gone: the room's server keeps
+// relaying itself to a server that stopped caring, and the room's own idea of who is in it
+// - which is who federation is sent to next - is wrong.
+func TestAFederatedLeaveReachesTheRoomsServer(t *testing.T) {
+	cluster := newCluster(t)
+	one, two := cluster.one(), cluster.two()
+	alice := one.register("alice", "wonderland")
+	bob := two.register("bob", "wonderland")
+	roomID := two.createRoom(bob, map[string]any{"preset": "public_chat"})
+
+	if got := joinVia(one, alice, roomID, two.name); got.Status != http.StatusOK {
+		t.Fatalf("%s could not join %s through %s: %d %s", alice.UserID, roomID, two.name, got.Status, got.Raw)
+	}
+	awaitMembership(t, two, roomID, alice.UserID, matrix.MembershipJoin)
+
+	one.mustDo(http.StatusOK, http.MethodPost, "/_matrix/client/v3/rooms/"+roomID+"/leave", alice.Token,
+		matrix.Object{"reason": "done here"})
+
+	// The room's own server holds the leave, and so does the leaver's: the leave is one
+	// event both have to agree on, and the handshake is what makes the room's server sign
+	// off on it rather than learn about it later, if at all.
+	awaitMembership(t, two, roomID, alice.UserID, matrix.MembershipLeave)
+	awaitMembership(t, one, roomID, alice.UserID, matrix.MembershipLeave)
+	if members := membersOf(t, two, roomID); !sameStrings(members, []string{bob.UserID}) {
+		t.Errorf("%s counts %v as members of %s after %s left", two.name, members, roomID, alice.UserID)
+	}
+}
+
 // awaitBannedInSync waits for a user's sync to report the room as left, with the ban
 // event among the events shown.
 func awaitBannedInSync(t *testing.T, s *server, u *session, roomID, since string) {

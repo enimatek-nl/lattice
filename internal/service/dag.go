@@ -235,6 +235,11 @@ func depthAfter(events persist.EventRepo, roomID string, prevIDs []string) (int6
 // cites something else has changed which rules apply to it.
 func selectAuthEvents(state persist.StateRepo, draft *EventDraft, version string) ([]string, error) {
 	var ids []string
+	// A membership event by a user about themselves names that user twice: once as the
+	// sender's membership and once as the target's, which is the same stored event. A
+	// room version from 3 onwards rejects an event whose auth events repeat an id, so the
+	// list is kept free of duplicates rather than left for the receiver to fault.
+	seen := map[string]bool{}
 	add := func(typ, stateKey string) error {
 		row, err := state.Get(draft.RoomID, typ, stateKey)
 		if err != nil {
@@ -243,7 +248,8 @@ func selectAuthEvents(state persist.StateRepo, draft *EventDraft, version string
 			}
 			return matrix.ErrInternal(err)
 		}
-		if row.EventID != "" {
+		if row.EventID != "" && !seen[row.EventID] {
+			seen[row.EventID] = true
 			ids = append(ids, row.EventID)
 		}
 		return nil
