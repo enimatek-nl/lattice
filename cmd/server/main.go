@@ -171,6 +171,17 @@ func main() {
 
 	handler := applyCORS(app.Handler(), *corsOrigin)
 
+	// A server name may carry a port - that is legal, and a name like localhost:8448 is
+	// ordinary. But the name is what every account and room ID ends with, so a port added
+	// to it makes a new server out of an existing one: accounts written under the name
+	// without the port stop being able to use it. The port peers should dial is a separate
+	// thing, and belongs in -federation-advertise.
+	if host, _, hasPort := federation.ServerNameParts(*serverName); hasPort {
+		log.Printf("warning: -server-name %s carries a port, so every account and room here ends with it; "+
+			"accounts created under %s cannot use this server. Where peers should reach this server is set "+
+			"with -federation-advertise, which does not change any ID", *serverName, host)
+	}
+
 	// Accounts are keyed by their full user ID, which carries the server name they were
 	// created for. Change -server-name over a database that already has accounts and every
 	// one of them keeps authenticating - the sessions are rows in this file - while being
