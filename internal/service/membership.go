@@ -144,7 +144,7 @@ func (s *Service) restrictedJoinAllowed(ctx context.Context, roomID, userID stri
 }
 
 // InviteRoom invites a user to a room.
-func (s *Service) InviteRoom(ctx context.Context, roomID, inviter, invitee string, reason string) error {
+func (s *Service) InviteRoom(ctx context.Context, roomID, inviter, invitee, reason string, extra matrix.Object) error {
 	room, err := s.MustRoom(ctx, roomID)
 	if err != nil {
 		return err
@@ -177,11 +177,29 @@ func (s *Service) InviteRoom(ctx context.Context, roomID, inviter, invitee strin
 	case matrix.MembershipBan:
 		return matrix.ErrForbidden("user is banned from this room")
 	}
+	// Whether the invitee's server is already part of the room is asked before the invite
+	// is written, because the invite itself puts that server in the room: asked afterwards,
+	// every invitation looks like one the room already reaches, and the endpoint that ships
+	// the authorising state is never used.
+	needsInvite := false
+	if !s.LocalUser(invitee) {
+		shares, err := s.roomSharesServer(ctx, room.ID, matrix.DomainOf(invitee))
+		if err != nil {
+			return err
+		}
+		needsInvite = !shares
+	}
 	content := matrix.MemberContent{
 		Membership:  matrix.MembershipInvite,
 		DisplayName: s.displayName(ctx, invitee),
 		AvatarURL:   s.avatarURL(ctx, invitee),
 		Reason:      reason,
+		// The keys of an invitation this server does not name belong to the client that
+		// sent it, and one of them decides how the room is read: is_direct is how a client
+		// knows a room is a conversation with one person rather than a group. Dropping it
+		// turns every direct chat into a group chat, in this server's view and in every
+		// server the invitation travels to.
+		Extra: extra,
 	}
 	if err := s.appendMember(ctx, room.ID, inviter, invitee, content); err != nil {
 		return err
@@ -190,19 +208,13 @@ func (s *Service) InviteRoom(ctx context.Context, roomID, inviter, invitee strin
 	// invite endpoint, which ships the invite together with the state that authorises it.
 	// The ordinary relay only reaches servers the room already talks to, and a room inviting
 	// somebody new is inviting a server it has never spoken to.
-	if !s.LocalUser(invitee) {
-		shares, err := s.roomSharesServer(ctx, room.ID, matrix.DomainOf(invitee))
-		if err != nil {
-			return err
-		}
-		if !shares {
-			if err := s.InviteRemoteServer(ctx, room.ID, invitee); err != nil {
-				// The invite stands here either way: the room has decided, and the event
-				// travels to that server as soon as it can be reached. Refusing the invite
-				// because a peer is not answering would be this server deciding the room's
-				// business on a peer's behalf.
-				log.Printf("service: inviting %s into %s over federation: %v", invitee, room.ID, err)
-			}
+	if needsInvite {
+		if err := s.InviteRemoteServer(ctx, room.ID, invitee); err != nil {
+			// The invite stands here either way: the room has decided, and the event
+			// travels to that server as soon as it can be reached. Refusing the invite
+			// because a peer is not answering would be this server deciding the room's
+			// business on a peer's behalf.
+			log.Printf("service: inviting %s into %s over federation: %v", invitee, room.ID, err)
 		}
 	}
 	return nil

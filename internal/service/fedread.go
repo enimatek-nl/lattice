@@ -76,14 +76,22 @@ func (s *Service) roomSharesServer(ctx context.Context, roomID, server string) (
 			return true, nil
 		}
 	}
-	// A room this server is the only member of still has to answer about itself, and a
-	// peer that was invited but has not joined yet is in the room for the purposes of
-	// reading what it was invited to.
-	invited, err := s.db.MembershipRepo.Members(roomID, matrix.MembershipInvite)
+	// A room this server is the only member of still has to answer about itself, and a peer
+	// that was invited but has not joined yet is in the room for the purposes of reading what
+	// it was invited to.
+	//
+	// Every membership counts, not only the standing ones. A server whose user has just been
+	// kicked, or is in the middle of leaving, is partway through a handshake it cannot finish
+	// without the room's events: refusing the auth chain of the leave it is signing leaves the
+	// room with a member it still thinks is present. Whatever a room has told a server already,
+	// it cannot un-tell by refusing the next read - and a server that never had anything from
+	// the room is still refused.
+	former, err := s.db.MembershipRepo.Members(roomID,
+		matrix.MembershipInvite, matrix.MembershipLeave, matrix.MembershipBan, matrix.MembershipKnock)
 	if err != nil {
 		return false, matrix.ErrInternal(err)
 	}
-	for _, member := range invited {
+	for _, member := range former {
 		if matrix.DomainOf(member.UserID) == server {
 			return true, nil
 		}

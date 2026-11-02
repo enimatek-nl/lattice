@@ -72,7 +72,15 @@ func (a *App) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, invitee := range body.Invite {
-		if err := a.svc.InviteRoom(r.Context(), room.ID, creator, invitee, ""); err != nil {
+		// A room created as a direct conversation says so in the invitations it makes, not
+		// only in the creator's account data: a client deciding whether a room is a DM reads
+		// is_direct off the membership event, and the other server - the one the invited user
+		// lives on - only ever sees that event.
+		var extra matrix.Object
+		if body.IsDirect {
+			extra = matrix.Object{"is_direct": true}
+		}
+		if err := a.svc.InviteRoom(r.Context(), room.ID, creator, invitee, "", extra); err != nil {
 			a.writeError(w, r, err)
 			return
 		}
@@ -183,23 +191,37 @@ func (a *App) handleForgetRoom(w http.ResponseWriter, r *http.Request) {
 //	@Success	200	{object}	map[string]any
 //	@Router		/_matrix/client/v3/rooms/{roomId}/invite [post]
 func (a *App) handleInvite(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		UserID           string        `json:"user_id"`
-		Reason           string        `json:"reason"`
-		ThirdPartySigned matrix.Object `json:"third_party_signed"`
-	}
+	// The body is read as an object rather than a fixed struct, because an invitation can
+	// carry keys this server does not name and they have to survive: is_direct in
+	// particular is how a client tells a direct conversation from a group, and it is read
+	// off the membership event the invitation becomes.
+	var body matrix.Object
 	if err := decodeBody(r, &body); err != nil {
 		a.writeError(w, r, err)
 		return
 	}
-	// A third-party invite only makes sense together with an identity server
-	// signature exchange, which Lattice does not speak. Saying so beats
-	// accepting a request that then invites nobody.
-	if len(body.ThirdPartySigned) > 0 {
+	invitee, _ := body["user_id"].(string)
+	reason, _ := body["reason"].(string)
+	if invitee == "" {
+		a.writeError(w, r, matrix.ErrInvalidParam("the invite names no user"))
+		return
+	}
+	extra := matrix.Object{}
+	for key, value := range body {
+		switch key {
+		case "user_id", "reason", "third_party_signed":
+			continue
+		}
+		extra[key] = value
+	}
+	if signed, ok := body["third_party_signed"].(matrix.Object); ok && len(signed) > 0 {
+		// A third-party invite only makes sense together with an identity server
+		// signature exchange, which Lattice does not speak. Saying so beats
+		// accepting a request that then invites nobody.
 		a.writeError(w, r, matrix.ErrInvalidParam("third-party invites are not supported"))
 		return
 	}
-	if err := a.svc.InviteRoom(r.Context(), r.PathValue("roomId"), auth.GetUserID(r), body.UserID, body.Reason); err != nil {
+	if err := a.svc.InviteRoom(r.Context(), r.PathValue("roomId"), auth.GetUserID(r), invitee, reason, extra); err != nil {
 		a.writeError(w, r, err)
 		return
 	}

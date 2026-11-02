@@ -114,6 +114,20 @@ func encodeCanonical(out *bytes.Buffer, value any, depth int) error {
 			encodeCanonicalString(out, item)
 		}
 		out.WriteByte(']')
+	case []Object:
+		// A list of events is one of the things a server signs - an invite ships the state
+		// that authorises it - and a slice whose element type is named rather than spelled
+		// out is not a reason the server cannot sign its own request.
+		out.WriteByte('[')
+		for i, item := range typed {
+			if i > 0 {
+				out.WriteByte(',')
+			}
+			if err := encodeCanonical(out, item, depth+1); err != nil {
+				return err
+			}
+		}
+		out.WriteByte(']')
 	default:
 		return fmt.Errorf("cannot canonically encode a %T", value)
 	}

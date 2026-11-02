@@ -174,10 +174,15 @@ func (s *Service) ServeSendLeave(ctx context.Context, roomID, eventID string, ev
 }
 
 // membershipForEndpoint checks the shape a membership handshake endpoint insists on: an
-// m.room.member event of the membership the endpoint is named for, for the sender
-// themselves, in the room the path names, under the id the path names. A kick is not
-// sent this way - a kick is an ordinary event from the kicking server - so a state key
-// that is not the sender's is answered as the misuse it is.
+// m.room.member event of the membership the endpoint is named for, in the room the path
+// names, under the id the path names. It answers with the state key, the user the event is
+// about.
+//
+// Join, leave and knock are about the sender: a kick is not sent this way - a kick is an
+// ordinary event from the kicking server - so a state key that is not the sender's is
+// answered as the misuse it is. An invitation is the exception, and the other way round: the
+// inviter signs an event whose state key is the user being invited, and an invitation to the
+// inviter themselves is the misuse there.
 func membershipForEndpoint(event matrix.Object, eventID, roomID, endpoint, want string) (string, error) {
 	if federation.EventField(event, "type") != matrix.TypeMember {
 		return "", matrix.ErrInvalidRequest("%s takes an m.room.member event, not %s",
@@ -188,20 +193,24 @@ func membershipForEndpoint(event matrix.Object, eventID, roomID, endpoint, want 
 	if !hasKey {
 		return "", matrix.ErrInvalidRequest("the m.room.member event sent to %s has no state key", endpoint)
 	}
-	if key != sender {
-		return sender, matrix.ErrInvalidRequest("%s cannot use %s to change the membership of %s", sender, endpoint, key)
+	if want == matrix.MembershipInvite {
+		if key == sender {
+			return key, matrix.ErrInvalidRequest("%s used %s to invite themselves to the room", sender, endpoint)
+		}
+	} else if key != sender {
+		return key, matrix.ErrInvalidRequest("%s cannot use %s to change the membership of %s", sender, endpoint, key)
 	}
 	if got := federation.EventField(event, "room_id"); got != roomID {
-		return sender, matrix.ErrInvalidRequest("the event is for room %s, not %s", got, roomID)
+		return key, matrix.ErrInvalidRequest("the event is for room %s, not %s", got, roomID)
 	}
 	content := objectOf(event, "content")
 	if membership, _ := content["membership"].(string); membership != want {
-		return sender, matrix.ErrInvalidRequest("%s takes a %s, not a %s", endpoint, want, membership)
+		return key, matrix.ErrInvalidRequest("%s takes a %s, not a %s", endpoint, want, membership)
 	}
 	if got := federation.EventField(event, "event_id"); got != "" && got != eventID {
-		return sender, matrix.ErrInvalidRequest("the path names %s and the event names %s", eventID, got)
+		return key, matrix.ErrInvalidRequest("the path names %s and the event names %s", eventID, got)
 	}
-	return sender, nil
+	return key, nil
 }
 
 // LeaveFederatedRoom tells the room's own server that a local user has left, for a room

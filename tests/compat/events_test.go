@@ -212,7 +212,7 @@ func TestStateEventsSayWhatTheyReplace(t *testing.T) {
 		"name":   "first",
 	})
 	server.MustDo(http.MethodPost, "/_matrix/client/v3/rooms/"+roomID+"/invite", alice.Token,
-		matrix.Object{"user_id": bob.UserID}, http.StatusOK)
+		matrix.Object{"user_id": bob.UserID, "is_direct": true}, http.StatusOK)
 
 	// A rename over a name: the new name event names the one it replaced.
 	server.MustDo(http.MethodPut, "/_matrix/client/v3/rooms/"+roomID+"/state/m.room.name", alice.Token,
@@ -241,9 +241,40 @@ func TestStateEventsSayWhatTheyReplace(t *testing.T) {
 	if previous["membership"] != matrix.MembershipInvite {
 		t.Errorf("the kick carries prev_content %v, want the invite it replaced: %v", unsigned["prev_content"], kick)
 	}
+	// is_direct is the client's own key, and it is how a client knows this room is a
+	// conversation with one person. It has to survive the invitation and come back with the
+	// membership it replaces.
 	content, _ := kick["content"].(map[string]any)
 	if content["membership"] != matrix.MembershipLeave {
 		t.Errorf("the kick records membership %v, want leave", content["membership"])
+	}
+	if direct, ok := previous["is_direct"].(bool); !ok || !direct {
+		t.Errorf("the invite the kick replaced carries no is_direct: %v", previous)
+	}
+
+	// A room created as a direct conversation says so in the invitations it makes, and the
+	// join that accepts one carries the invitation with it: the invited user's own client
+	// decides the room is a DM from the membership it is shown, and it is shown the join.
+	dm := server.CreateRoom(alice, map[string]any{
+		"preset":    "private_chat",
+		"invite":    []string{bob.UserID},
+		"is_direct": true,
+	})
+	server.MustDo(http.MethodPost, "/_matrix/client/v3/join/"+dm, bob.Token, nil, http.StatusOK)
+	joined := latestStateEvent(t, server, bob, dm, matrix.TypeMember)
+	if joined["state_key"] != bob.UserID {
+		t.Fatalf("the newest member event in %s is about %v, want %s", dm, joined["state_key"], bob.UserID)
+	}
+	if content, _ := joined["content"].(map[string]any); content["membership"] != matrix.MembershipJoin {
+		t.Fatalf("the newest member event in %s records %v, want join", dm, content["membership"])
+	}
+	unsigned, _ = joined["unsigned"].(map[string]any)
+	previous, _ = unsigned["prev_content"].(map[string]any)
+	if previous["membership"] != matrix.MembershipInvite {
+		t.Errorf("the join carries prev_content %v, want the invite it replaced: %v", unsigned["prev_content"], joined)
+	}
+	if direct, ok := previous["is_direct"].(bool); !ok || !direct {
+		t.Errorf("the invite the join replaced carries no is_direct: %v", previous)
 	}
 }
 

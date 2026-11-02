@@ -242,6 +242,39 @@ func TestALeaveReachesTheServersThatStayInTheRoom(t *testing.T) {
 	}
 }
 
+// TestAnInvitedUserCanRejectAFederatedInvite covers the one membership a room learns from a
+// server it has never been part of, answered in the other direction. The invitation is
+// shipped to a stranger, and the stranger turns it down: the invited server holds the room
+// only because the invite told it about the room, and the rejection has to reach the room's
+// own server. Otherwise the room keeps somebody it believes is invited, and the user keeps
+// seeing a room they refused.
+func TestAnInvitedUserCanRejectAFederatedInvite(t *testing.T) {
+	cluster := newClusterNamed(t, serverOne, serverTwo)
+	one, two := cluster.one(), cluster.two()
+	alice := one.register("alice", "wonderland")
+	bob := two.register("bob", "rubberduck")
+	roomID := one.createRoom(alice, map[string]any{"name": "Turned down"})
+
+	one.mustDo(http.StatusOK, http.MethodPost, "/_matrix/client/v3/rooms/"+roomID+"/invite", alice.Token,
+		matrix.Object{"user_id": bob.UserID})
+	awaitMembership(t, two, roomID, bob.UserID, matrix.MembershipInvite)
+
+	// The rejection travels back over the leave handshake: the invited server asks the
+	// room's server for the shape of a leave, signs it there, and the room's server accepts
+	// it into a graph that user never appeared in.
+	two.mustDo(http.StatusOK, http.MethodPost, "/_matrix/client/v3/rooms/"+roomID+"/leave", bob.Token,
+		matrix.Object{})
+	awaitMembership(t, two, roomID, bob.UserID, matrix.MembershipLeave)
+	awaitMembership(t, one, roomID, bob.UserID, matrix.MembershipLeave)
+
+	// The room's own member is told. A rejection the room never hears about is an invitation
+	// that still stands, and a client reading the room's members would count bob among them.
+	if members := membersOf(t, one, roomID); !sameStrings(members, []string{alice.UserID}) {
+		t.Errorf("%s lists the members of %s as %v after %s refused the invite, want only %s",
+			one.name, roomID, members, bob.UserID, alice.UserID)
+	}
+}
+
 // TestARelayedInviteReachesAServerNewToTheRoom invites a user whose server has never
 // been in the room, after the room has moved on without them. The invite reaches that
 // server as an ordinary event citing prev and auth events it has never been told about,
@@ -273,7 +306,10 @@ func TestARelayedInviteReachesAServerNewToTheRoom(t *testing.T) {
 
 	// The invited server holds the room's identity, not just the membership: the invite
 	// shipped the state it is authorised by, and a client has to be able to tell its user
-	// which room they have been invited to.
+	// which room they have been invited to. The power levels are deliberately not among it:
+	// the specification's stripped state names the room, how it is entered, and the two
+	// memberships the invitation is between, and a room's whole rule book is not something a
+	// stranger is handed before they have done anything.
 	state := stateOf(t, three, bob, roomID)
 	types := map[string]bool{}
 	for _, raw := range state {
@@ -283,7 +319,7 @@ func TestARelayedInviteReachesAServerNewToTheRoom(t *testing.T) {
 		}
 		types[fmt.Sprint(event["type"])] = true
 	}
-	for _, want := range []string{matrix.TypeCreate, matrix.TypeJoinRules, matrix.TypePowerLevels} {
+	for _, want := range []string{matrix.TypeCreate, matrix.TypeJoinRules, matrix.TypeMember} {
 		if !types[want] {
 			t.Errorf("%s holds no %s for %s, which the invite shipped: %v", three.name, want, roomID, types)
 		}
