@@ -12,7 +12,7 @@ re-derive were kept (below the plan).
 
 - A working homeserver with its **federation transport in production shape**:
   `make build vet lint` clean (`make lint` = golangci-lint, 0 issues),
-  `go test ./...` green — **114** compatibility tests (~52 s here, ~5½ min
+  `go test ./...` green — **117** compatibility tests (~52 s here, ~5½ min
   with `-race` on this machine), **65** offline unit tests in `tests/unit`
   (milliseconds), and **40** two-server tests in `tests/federation` (~13 s,
   ~56 s with `-race`). Coverage: **165 of the 234** indexed endpoints, 31 extra
@@ -910,6 +910,18 @@ which now works, plus the pieces named above).
   that never sees it. A duplicate arriving as something that happened here now promotes the
   event into the timeline at this moment: the content of the copy on disk stands, because it
   is the same event, but the timeline flag and the position are not somebody else's to keep.
+- **A changed `-server-name` locks every existing account out of federation, quietly.**
+  Accounts are keyed by their full user ID, which carries the name they were created for.
+  Set the name to something else over a database that already has accounts - a real case:
+  an operator adding the `:443` that federation needed put it on `-server-name` as well as
+  in the well-known document - and the sessions keep authenticating, because sessions are
+  rows in the same file, while every join answers
+  `403 M_FORBIDDEN: you must have an account to join a room`. The message is the problem as
+  much as the mistake: it sends the operator looking for an account that is sitting in the
+  database. The refusal now names the account and the name this server answers to; the
+  account is checked before the federation transport is blamed, so a session the server
+  cannot act for is not reported as a room it cannot reach; and the startup log counts the
+  accounts that belong to another name.
 - **A peer that cannot fetch this server's key refuses everything, and the client sees an
   authentication error.** A real deployment behind a reverse proxy on 443 answers peers on
   443, but the well-known document published `m.server: <server name>` - a name with no port,

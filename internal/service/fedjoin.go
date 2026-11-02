@@ -41,12 +41,15 @@ import (
 // reachable through any of the servers in it, and the specification's join is explicit
 // that the list of servers is a list of attempts.
 func (s *Service) JoinFederatedRoom(ctx context.Context, roomID, userID string, via []string) (*persist.Event, error) {
+	// The account is asked about before the transport: a session this server cannot act
+	// for is the reason the join cannot happen, and blaming the federation flag would send
+	// the operator to the wrong flag.
+	if problem := s.joinAccountProblem(ctx, userID); problem != nil {
+		return nil, problem
+	}
 	transport := s.federationTransport()
 	if transport == nil {
 		return nil, matrix.ErrNotFound("room %s is not hosted by this server and federation is off", roomID)
-	}
-	if !s.UserExists(ctx, userID) {
-		return nil, matrix.ErrForbidden("you must have an account to join a room")
 	}
 	for _, server := range joinServers(roomID, via) {
 		event, err := s.joinViaServer(ctx, transport, roomID, userID, server)

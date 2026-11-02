@@ -64,7 +64,17 @@ func NewServerWith(t *testing.T, cfg api.Config, opts ...service.Option) *Server
 	t.Helper()
 	// A file database keeps each test isolated; a shared in-memory
 	// cache would be visible to the other tests in the same process.
-	db, err := persist.NewDatabase(filepath.Join(t.TempDir(), "lattice.db"))
+	return NewServerWithDatabase(t, filepath.Join(t.TempDir(), "lattice.db"), cfg, opts...)
+}
+
+// NewServerWithDatabase starts a homeserver on a database file the caller picked.
+// Restarting a server over the same file under a different configuration is what an
+// operator does when they edit a flag, and some of the interesting failures only appear
+// that way - accounts written under one -server-name outliving the name they were written
+// for, for example.
+func NewServerWithDatabase(t *testing.T, path string, cfg api.Config, opts ...service.Option) *Server {
+	t.Helper()
+	db, err := persist.NewDatabase(path)
 	if err != nil {
 		t.Fatalf("opening database: %v", err)
 	}

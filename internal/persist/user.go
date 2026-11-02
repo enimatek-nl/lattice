@@ -33,6 +33,10 @@ type UserRepo interface {
 	Save(user *User) error
 	List(limit, offset int) ([]*User, error)
 	Count() (int64, error)
+	// CountOutsideDomain counts the accounts this server cannot act for: the ones
+	// whose user ID does not end in ":"+domain. A changed -server-name is what
+	// produces them, and they keep authenticating while being unable to join rooms.
+	CountOutsideDomain(domain string) (int64, error)
 	Deactivate(id string) error
 }
 
@@ -77,6 +81,17 @@ func (r *UserRepoImpl) List(limit, offset int) ([]*User, error) {
 func (r *UserRepoImpl) Count() (int64, error) {
 	var n int64
 	err := r.db.Model(&User{}).Where("deactivated = ?", false).Count(&n).Error
+	return n, err
+}
+
+// CountOutsideDomain implements [UserRepo]. The domain of a user ID is what follows
+// its first colon, since a localpart may not contain one; LIKE is used rather than a
+// dialect's string functions, with the wildcards of the name escaped so a name cannot
+// match an account it does not own.
+func (r *UserRepoImpl) CountOutsideDomain(domain string) (int64, error) {
+	var n int64
+	err := r.db.Model(&User{}).Where("deactivated = ?", false).
+		Where("id NOT LIKE ? ESCAPE '\\'", "%:"+escapeLike(domain)).Count(&n).Error
 	return n, err
 }
 

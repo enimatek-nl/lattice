@@ -170,6 +170,20 @@ func main() {
 	}
 
 	handler := applyCORS(app.Handler(), *corsOrigin)
+
+	// Accounts are keyed by their full user ID, which carries the server name they were
+	// created for. Change -server-name over a database that already has accounts and every
+	// one of them keeps authenticating - the sessions are rows in this file - while being
+	// unable to join a room, send an event or be invited. That is invisible until someone
+	// tries, and the failure reads like a missing account.
+	if total, err := db.UserRepo.Count(); err == nil && total > 0 {
+		if stray, err := db.UserRepo.CountOutsideDomain(*serverName); err == nil && stray > 0 {
+			log.Printf("warning: %d of %d accounts here are not accounts of %s: they can still "+
+				"sign in and read this server, but cannot join rooms or send events; -server-name has "+
+				"to be the name those accounts were created for", stray, total, *serverName)
+		}
+	}
+
 	if (*tlsCert == "") != (*tlsKey == "") {
 		log.Fatalf("-tls-cert and -tls-key are given together")
 	}

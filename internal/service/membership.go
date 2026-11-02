@@ -7,7 +7,36 @@ import (
 	"strings"
 
 	"github.com/enimatek-nl/lattice/internal/matrix"
+	"github.com/enimatek-nl/lattice/internal/persist"
 )
+
+// joinAccountProblem says whether the account a join is asked for is one this server can
+// act for, and names the reason when it is not. "You must have an account to join a room"
+// covers three different situations, and an operator cannot tell them apart from that
+// sentence: the account belongs to a different server name (which is what happens when
+// -server-name changes under a database that already has accounts - the old sessions still
+// authenticate, the client still looks logged in, and every join then fails), the account
+// is not in this database at all, or the account was deactivated.
+func (s *Service) joinAccountProblem(ctx context.Context, userID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !s.LocalUser(userID) {
+		return matrix.ErrForbidden("the session belongs to %s, which is not an account of this server (%s)"+
+			" - a changed -server-name leaves existing accounts able to read this server but unable to join rooms", userID, s.serverName)
+	}
+	user, err := s.db.UserRepo.GetByID(userID)
+	if persist.IsNotFound(err) || user == nil {
+		return matrix.ErrForbidden("the account %s is not registered on this server", userID)
+	}
+	if err != nil {
+		return matrix.ErrInternal(err)
+	}
+	if user.Deactivated {
+		return matrix.ErrForbidden("the account %s has been deactivated", userID)
+	}
+	return nil
+}
 
 // JoinRoom makes a user join a room by ID or alias and returns the room ID.
 //
@@ -63,8 +92,8 @@ func (s *Service) JoinRoom(ctx context.Context, idOrAlias, userID string, extra 
 	if current == matrix.MembershipBan {
 		return "", matrix.ErrForbidden("you are banned from this room")
 	}
-	if !s.UserExists(ctx, userID) {
-		return "", matrix.ErrForbidden("you must have an account to join a room")
+	if problem := s.joinAccountProblem(ctx, userID); problem != nil {
+		return "", problem
 	}
 
 	joinRule, err := s.db.StateRepo.JoinRule(room.ID)

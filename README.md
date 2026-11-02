@@ -19,7 +19,7 @@ user reaches the server that user lives on, and a leave reaches the server that 
 room. The end-to-end cryptography stays on
 the clients. **165 of
 the 234** endpoints indexed in [SPECS.md](SPECS.md) are implemented, plus 31
-extra routes (see [ENDPOINTS.md](ENDPOINTS.md)). 114 black-box compatibility
+extra routes (see [ENDPOINTS.md](ENDPOINTS.md)). 117 black-box compatibility
 tests, 65 offline unit tests and 40 two-server federation tests are green.
 `make build vet lint` clean (golangci-lint reports 0 issues).
 Implementation version `0.1.0`
@@ -85,7 +85,7 @@ registrations.
 | Flag                                   | Default                     | Meaning                                                                                                                            |
 | -------------------------------------- | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
 | `-addr`                                | `:8008`                     | listen address                                                                                                                     |
-| `-server-name`                         | `localhost`                 | homeserver name; user and room IDs end with it                                                                                     |
+| `-server-name`                         | `localhost`                 | homeserver name; user and room IDs end with it. Changing it over an existing database strands every account written under the old name — the port peers should use belongs in `-federation-advertise`, not here |
 | `-base-url`                            | `https://<-server-name>`    | URL published in `/.well-known/matrix/client`; set it when a proxy or tunnel fronts the server                                     |
 | `-db`                                  | `lattice.db`                | SQLite database file                                                                                                               |
 | `-jwt-secret`                          | _(empty)_                   | secret used to sign access tokens; **set it** — an empty value generates a fresh one per boot and logs every client out on restart |
