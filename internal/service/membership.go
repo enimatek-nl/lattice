@@ -183,7 +183,29 @@ func (s *Service) InviteRoom(ctx context.Context, roomID, inviter, invitee strin
 		AvatarURL:   s.avatarURL(ctx, invitee),
 		Reason:      reason,
 	}
-	return s.appendMember(ctx, room.ID, inviter, invitee, content)
+	if err := s.appendMember(ctx, room.ID, inviter, invitee, content); err != nil {
+		return err
+	}
+	// An invite to a user whose server is not part of the room has exactly one road: the
+	// invite endpoint, which ships the invite together with the state that authorises it.
+	// The ordinary relay only reaches servers the room already talks to, and a room inviting
+	// somebody new is inviting a server it has never spoken to.
+	if !s.LocalUser(invitee) {
+		shares, err := s.roomSharesServer(ctx, room.ID, matrix.DomainOf(invitee))
+		if err != nil {
+			return err
+		}
+		if !shares {
+			if err := s.InviteRemoteServer(ctx, room.ID, invitee); err != nil {
+				// The invite stands here either way: the room has decided, and the event
+				// travels to that server as soon as it can be reached. Refusing the invite
+				// because a peer is not answering would be this server deciding the room's
+				// business on a peer's behalf.
+				log.Printf("service: inviting %s into %s over federation: %v", invitee, room.ID, err)
+			}
+		}
+	}
+	return nil
 }
 
 // KnockRoom records a knock on a room, which is the request-to-join flow.

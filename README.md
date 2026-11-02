@@ -17,7 +17,7 @@ being able to read any of it.
 on one Lattice gets into a room on another, both hold the room, a room's decision about a
 user reaches the server that user lives on, and a leave reaches the server that hosts the
 room. The end-to-end cryptography stays on
-the clients. **163 of
+the clients. **165 of
 the 234** endpoints indexed in [SPECS.md](SPECS.md) are implemented, plus 31
 extra routes (see [ENDPOINTS.md](ENDPOINTS.md)). 113 black-box compatibility
 tests, 65 offline unit tests and 39 two-server federation tests are green.

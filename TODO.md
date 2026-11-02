@@ -15,7 +15,7 @@ re-derive were kept (below the plan).
   `go test ./...` green — **113** compatibility tests (~52 s here, ~5½ min
   with `-race` on this machine), **65** offline unit tests in `tests/unit`
   (milliseconds), and **39** two-server tests in `tests/federation` (~13 s,
-  ~56 s with `-race`). Coverage: **163 of the 234** indexed endpoints, 31 extra
+  ~56 s with `-race`). Coverage: **165 of the 234** indexed endpoints, 31 extra
   routes (`make endpoints`). Steps 1–10 are closed: rate limiting, the
   client-API correctness tails, batched reads, offline unit tests, the
   federation signing/transport ground, the **event DAG** (events hashed,
@@ -48,6 +48,9 @@ re-derive were kept (below the plan).
   `GET /_matrix/federation/v1/query/directory`,
   `GET /_matrix/federation/v1|v2/make_leave/{roomId}/{userId}`,
   `PUT /_matrix/federation/v1|v2/send_leave/{roomId}/{eventId}`,
+  `PUT /_matrix/federation/v1/invite/{roomId}/{eventId}` and its v2 counterpart, which
+  carry `invite_room_state` so a server that has never been in the room can still tell its
+  user they have been invited,
   an outbound client that signs, fetches an auth chain it is missing, and retries a
   queue, and inbound middleware that refuses anything it cannot attribute to a peer.
   Still deferred on purpose: SRV lookups, acting as a
@@ -854,6 +857,22 @@ which now works, plus the pieces named above).
   state the invite is authorised by, in a single request, and an invited server that is
   given it needs no fetches at all. Shipping that state, on both sides of the wire, is the
   next chunk.
+- **The invite endpoint is in, and the two invite tests fail on other things.** A room that
+  invites a user whose server is not in the room now ships the invite and its stripped
+  state over `PUT /v2/invite/{roomId}/{eventId}` (v1 as a fallback), and the invited server
+  keeps the room row, the state it was handed, and the membership - answered back signed by
+  both servers, since a signature is made over the event and not over somebody's copy of
+  it. A room version from 3 onwards carries no id inside the event, so the invited server
+  works the version out by hashing the invite under each version it speaks and keeping the
+  one that reproduces the id it was given. Locally, a three-server test shows the invited
+  server holding create, join rules and power levels, and its user syncing the room in the
+  `invite` bucket. Complement's remaining failures there are two separate gaps: the test
+  wants `unsigned.prev_content.membership` on a membership change, which Lattice has no
+  notion of at all (an unsigned field, so it can be written when the event is appended
+  without touching what is hashed), and a kick of a user who joined through another server
+  is refused with "is not a member of the room" while the logs hold a matching soft failure
+  saying he "is already join in the room" - membership bookkeeping across a join-and-kick
+  sequence, which is a task of its own.
 - **An event must not cite the same auth event twice, and a membership event about
   oneself does.** `selectAuthEvents` adds the sender's membership and the target's
   membership, which are one and the same stored event when the sender equals the state

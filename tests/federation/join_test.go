@@ -270,6 +270,38 @@ func TestARelayedInviteReachesAServerNewToTheRoom(t *testing.T) {
 		matrix.Object{"user_id": bob.UserID})
 
 	awaitMembership(t, three, roomID, bob.UserID, matrix.MembershipInvite)
+
+	// The invited server holds the room's identity, not just the membership: the invite
+	// shipped the state it is authorised by, and a client has to be able to tell its user
+	// which room they have been invited to.
+	state := stateOf(t, three, bob, roomID)
+	types := map[string]bool{}
+	for _, raw := range state {
+		event, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		types[fmt.Sprint(event["type"])] = true
+	}
+	for _, want := range []string{matrix.TypeCreate, matrix.TypeJoinRules, matrix.TypePowerLevels} {
+		if !types[want] {
+			t.Errorf("%s holds no %s for %s, which the invite shipped: %v", three.name, want, roomID, types)
+		}
+	}
+
+	// And the user is told. An invite that lives in a database is an invite nobody can
+	// accept, and the sync bucket it belongs in is invite rather than join.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		synced := three.mustDo(http.StatusOK, http.MethodGet, "/_matrix/client/v3/sync", bob.Token, nil)
+		if invited, _ := roomsContainMembership(synced.Body, "invite", roomID, bob.UserID, matrix.MembershipInvite); invited {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s never synced the invite of %s to %s: %s", three.name, bob.UserID, roomID, synced.Raw)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 }
 
 // awaitBannedInSync waits for a user's sync to report the room as left, with the ban
@@ -305,7 +337,7 @@ func roomsContainMembership(body matrix.Object, bucket, roomID, userID, membersh
 		return false, false
 	}
 	room, _ := raw.(map[string]any)
-	for _, section := range []string{"state", "timeline"} {
+	for _, section := range []string{"state", "timeline", "invite_state"} {
 		block, _ := room[section].(map[string]any)
 		events, _ := block["events"].([]any)
 		for _, entry := range events {

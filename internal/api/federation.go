@@ -72,6 +72,10 @@ func (a *App) registerFederationRoutes() {
 	a.federated("GET /_matrix/federation/v2/make_leave/{roomID}/{userID}", a.handleFederationMakeLeave)
 	a.federated("PUT /_matrix/federation/v1/send_leave/{roomID}/{eventID}", a.handleFederationSendLeave)
 	a.federated("PUT /_matrix/federation/v2/send_leave/{roomID}/{eventID}", a.handleFederationSendLeave)
+	// An invite is the one membership a server receives without asking for it, so it has
+	// its own endpoint: the inviting server ships the state the invite is authorised by.
+	a.federated("PUT /_matrix/federation/v1/invite/{roomID}/{eventID}", a.handleFederationInvite)
+	a.federated("PUT /_matrix/federation/v2/invite/{roomID}/{eventID}", a.handleFederationInvite)
 
 	// A peer asked about an alias of this server. The alias is how the room is addressed,
 	// so the answer has to come from the server the alias names - a client that is told
@@ -134,6 +138,42 @@ func (a *App) handleFederationSendJoin(w http.ResponseWriter, r *http.Request) {
 	if !v2 {
 		// Version 1 of the endpoint predates the convention of answering with the body
 		// alone, and a client that fell back to it expects the two element array.
+		writeJSON(w, http.StatusOK, []any{http.StatusOK, answer})
+		return
+	}
+	writeJSON(w, http.StatusOK, answer)
+}
+
+// handleFederationInvite answers PUT of invite: an invite a peer made for a user this
+// server hosts, with the stripped state that authorises it. The answer is the same invite
+// signed by this server as well, which is how the inviting server can later show that the
+// invitation landed.
+//
+//	@Summary	Take an invite for a local user
+//	@Description	Validates an invite event and the state shipped with it, stores the room it names, applies the membership, and answers with the invite signed by both servers.
+//	@Tags	federation
+//	@Accept	json
+//	@Produce	json
+//	@Param	roomID	path	string	true	"Room ID"
+//	@Param	eventID	path	string	true	"Event id of the invite"
+//	@Success	200	{object}	matrix.Object	"event, signed by this server too"
+//	@Failure	400	{object}	matrix.Error	"The event is not an invite of a local user"
+//	@Failure	403	{object}	matrix.Error	"The shipped state does not support the invite"
+//	@Router	/_matrix/federation/v1/invite/{roomID}/{eventID} [put]
+//	@Router	/_matrix/federation/v2/invite/{roomID}/{eventID} [put]
+func (a *App) handleFederationInvite(w http.ResponseWriter, r *http.Request) {
+	body, err := federationBody(r)
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	answer, err := a.svc.ServeInvite(r.Context(), r.PathValue("roomID"), r.PathValue("eventID"),
+		body, federation.Peer(r.Context()))
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	if strings.Contains(r.URL.Path, "/federation/v1/") {
 		writeJSON(w, http.StatusOK, []any{http.StatusOK, answer})
 		return
 	}
