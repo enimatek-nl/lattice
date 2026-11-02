@@ -14,7 +14,7 @@ re-derive were kept (below the plan).
   `make build vet lint` clean (`make lint` = golangci-lint, 0 issues),
   `go test ./...` green — **113** compatibility tests (~52 s here, ~5½ min
   with `-race` on this machine), **65** offline unit tests in `tests/unit`
-  (milliseconds), and **37** two-server tests in `tests/federation` (~10 s,
+  (milliseconds), and **38** two-server tests in `tests/federation` (~12 s,
   ~56 s with `-race`). Coverage: **163 of the 234** indexed endpoints, 31 extra
   routes (`make endpoints`). Steps 1–10 are closed: rate limiting, the
   client-API correctness tails, batched reads, offline unit tests, the
@@ -827,6 +827,17 @@ which now works, plus the pieces named above).
   `MembershipLeave` and never `MembershipBan`, so a ban that arrived over
   federation updated the database and said nothing to the client — the sync had no
   room at all, and the ban event, the only explanation, never reached anyone.
+- **An invite relayed as an ordinary event dies on an auth chain this server cannot
+  complete - and it should soft-fail instead.** `TestFederationRejectInvite` shows the
+  shape: hs1 hosts the room, hs2 has never been in it, and the invite arrives over `/send`
+  citing auth events hs2 does not hold. hs2 asks hs1 for them, hs1 answers, and the whole
+  exchange lands on a rejection because the chain could not be closed before the test ran
+  out. A room this server has never been in cannot have the authority to *reject* the
+  events of; the honest outcome is a soft failure - keep the event as an outlier, tell the
+  user they have been invited, and close the gap later - while a chain that cites an event
+  this server holds and has judged rejected stays a refusal. That distinction is the next
+  chunk, and it is what stands between the current membership handshakes and
+  `TestFederationRoomsInvite`/`TestFederationRejectInvite`.
 - **An event must not cite the same auth event twice, and a membership event about
   oneself does.** `selectAuthEvents` adds the sender's membership and the target's
   membership, which are one and the same stored event when the sender equals the state

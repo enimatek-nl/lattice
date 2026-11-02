@@ -202,6 +202,46 @@ func TestAFederatedLeaveReachesTheRoomsServer(t *testing.T) {
 	}
 }
 
+// TestALeaveReachesTheServersThatStayInTheRoom puts three servers in one room, has one
+// of the joining servers leave, and checks the room's own server tells the third. The
+// leave is made by the server that is going, but the room's server is the one that speaks
+// for it afterwards: a leave it accepts and does not relay leaves the rest of the room
+// with a member who has gone, still addressing that server as if it were present.
+func TestALeaveReachesTheServersThatStayInTheRoom(t *testing.T) {
+	cluster := newClusterNamed(t, serverOne, serverTwo, "three.example")
+	one, two, three := cluster.one(), cluster.two(), cluster.byName("three.example")
+	alice := one.register("alice", "wonderland")
+	bob := two.register("bob", "wonderland")
+	carol := three.register("carol", "wonderland")
+	roomID := two.createRoom(bob, map[string]any{"preset": "public_chat"})
+
+	// The room's server relays what it accepts, so its outbox has to be running.
+	stop := two.svc.StartFederationOutbox(context.Background(), 20*time.Millisecond)
+	defer stop()
+
+	for _, s := range []*server{one, three} {
+		sess := alice
+		if s == three {
+			sess = carol
+		}
+		if got := joinVia(s, sess, roomID, two.name); got.Status != http.StatusOK {
+			t.Fatalf("%s could not join %s through %s: %d %s", sess.UserID, roomID, two.name, got.Status, got.Raw)
+		}
+	}
+	awaitMembership(t, two, roomID, alice.UserID, matrix.MembershipJoin)
+	awaitMembership(t, three, roomID, alice.UserID, matrix.MembershipJoin)
+	awaitMembership(t, three, roomID, carol.UserID, matrix.MembershipJoin)
+
+	one.mustDo(http.StatusOK, http.MethodPost, "/_matrix/client/v3/rooms/"+roomID+"/leave", alice.Token,
+		matrix.Object{"reason": "done here"})
+
+	awaitMembership(t, two, roomID, alice.UserID, matrix.MembershipLeave)
+	awaitMembership(t, three, roomID, alice.UserID, matrix.MembershipLeave)
+	if members := membersOf(t, three, roomID); !sameStrings(members, []string{bob.UserID, carol.UserID}) {
+		t.Errorf("%s counts %v as members of %s after %s left", three.name, members, roomID, alice.UserID)
+	}
+}
+
 // awaitBannedInSync waits for a user's sync to report the room as left, with the ban
 // event among the events shown.
 func awaitBannedInSync(t *testing.T, s *server, u *session, roomID, since string) {
