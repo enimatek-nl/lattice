@@ -109,7 +109,8 @@ func (s *Service) joinViaServer(ctx context.Context, transport *federation.Trans
 	if problem := s.joinAllowed(ctx, roomID, userID, prevIDs, authIDs, version); problem != "" {
 		return nil, fmt.Errorf("%s", problem)
 	}
-	packet, err := s.buildRemotePDU(draft, version, s.NowMS(), depth, prevIDs, authIDs)
+	packet, err := s.buildRemotePDU(draft, version, s.NowMS(), depth, prevIDs, authIDs,
+		objectOf(proto, "unsigned"))
 	if err != nil {
 		return nil, err
 	}
@@ -236,7 +237,7 @@ func (s *Service) storeJoinedRoom(ctx context.Context, roomID, version string, p
 // is the right answer for a room hosted here and the wrong one for a room lived on
 // another server: the join has to attach to the graph the other server has, or the two
 // histories never meet.
-func (s *Service) buildRemotePDU(draft *EventDraft, version string, originServerTS, depth int64, prevIDs, authIDs []string) (*pdu, error) {
+func (s *Service) buildRemotePDU(draft *EventDraft, version string, originServerTS, depth int64, prevIDs, authIDs []string, unsigned matrix.Object) (*pdu, error) {
 	object := matrix.Object{
 		"type":             draft.Type,
 		"room_id":          draft.RoomID,
@@ -246,6 +247,13 @@ func (s *Service) buildRemotePDU(draft *EventDraft, version string, originServer
 		"depth":            depth,
 		"prev_events":      pduIDList(prevIDs),
 		"auth_events":      pduIDList(authIDs),
+	}
+	// What the room's own server annotated the template with travels with it. "unsigned"
+	// is not signed and not hashed, so carrying it is not this server vouching for a peer's
+	// words - it is the room saying what the membership was before, which only the server
+	// holding the room is in a position to know.
+	if len(unsigned) > 0 {
+		object["unsigned"] = unsigned
 	}
 	if !usesDerivedEventIDs(version) {
 		object["origin"] = s.serverName
@@ -384,9 +392,10 @@ func (s *Service) ServeMakeJoin(ctx context.Context, roomID, userID, peer string
 		}
 	}
 	var (
-		prevIDs []string
-		authIDs []string
-		depth   int64
+		prevIDs  []string
+		authIDs  []string
+		depth    int64
+		unsigned matrix.Object
 	)
 	err = s.db.Tx(func(tx *gorm.DB) error {
 		events := persist.NewEventRepo(tx)
@@ -400,6 +409,26 @@ func (s *Service) ServeMakeJoin(ctx context.Context, roomID, userID, peer string
 			return err
 		}
 		key := userID
+		// The membership the room holds for this user is what the join will replace, and
+		// the replacement is only legible next to what came before it: a client shown a
+		// join cannot tell an accepted invitation from a knock that was let in. The room's
+		// server is the one that knows, so it puts that in the shape it hands over - in
+		// "unsigned", which is not signed and is not part of what the joining server hashes.
+		if previous, err := persist.NewStateRepo(tx).Get(roomID, matrix.TypeMember, userID); err == nil {
+			unsigned = matrix.Object{}
+			var before matrix.Object
+			if err := matrix.DecodeContent(matrix.RawMessage(previous.Content), &before); err == nil && len(before) > 0 {
+				unsigned["prev_content"] = before
+			}
+			if previous.Sender != "" {
+				unsigned["prev_sender"] = previous.Sender
+			}
+			if len(unsigned) == 0 {
+				unsigned = nil
+			}
+		} else if !persist.IsNotFound(err) {
+			return matrix.ErrInternal(err)
+		}
 		// The membership is part of the draft because the membership decides which state
 		// the auth selection names: a join has to cite the room's join rule, and a draft
 		// without content reads as a membership change of no kind, which quietly answers
@@ -430,6 +459,9 @@ func (s *Service) ServeMakeJoin(ctx context.Context, roomID, userID, peer string
 		// marshals the content member of its proto event and fails on an empty one, so
 		// an answer that leaves it out cannot be signed at all.
 		"content": matrix.Object{"membership": matrix.MembershipJoin},
+	}
+	if unsigned != nil {
+		template["unsigned"] = unsigned
 	}
 	return matrix.Object{"room_version": version, "event": template}, nil
 }

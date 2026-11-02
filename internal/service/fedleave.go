@@ -52,9 +52,10 @@ func (s *Service) ServeMakeLeave(ctx context.Context, roomID, userID, peer strin
 	}
 	version := RoomVersionOf(room)
 	var (
-		prevIDs []string
-		authIDs []string
-		depth   int64
+		prevIDs  []string
+		authIDs  []string
+		depth    int64
+		unsigned matrix.Object
 	)
 	err = s.db.Tx(func(tx *gorm.DB) error {
 		events := persist.NewEventRepo(tx)
@@ -75,7 +76,29 @@ func (s *Service) ServeMakeLeave(ctx context.Context, roomID, userID, peer strin
 			Sender:   userID,
 			Content:  matrix.Encode(matrix.Object{"membership": matrix.MembershipLeave}),
 		}, version)
-		return err
+		if err != nil {
+			return err
+		}
+		// As with make_join: the room's server knows what the leave replaces, and a
+		// departure a client cannot see the difference from is a departure nobody can
+		// explain - a user who left, one whose invite was withdrawn, and one who was
+		// knocked out of a knock room all arrive as membership leave.
+		if previous, err := persist.NewStateRepo(tx).Get(roomID, matrix.TypeMember, userID); err == nil {
+			unsigned = matrix.Object{}
+			var before matrix.Object
+			if err := matrix.DecodeContent(matrix.RawMessage(previous.Content), &before); err == nil && len(before) > 0 {
+				unsigned["prev_content"] = before
+			}
+			if previous.Sender != "" {
+				unsigned["prev_sender"] = previous.Sender
+			}
+			if len(unsigned) == 0 {
+				unsigned = nil
+			}
+		} else if !persist.IsNotFound(err) {
+			return matrix.ErrInternal(err)
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, err
@@ -90,6 +113,9 @@ func (s *Service) ServeMakeLeave(ctx context.Context, roomID, userID, peer strin
 		"prev_events":      pduIDList(prevIDs),
 		"auth_events":      pduIDList(authIDs),
 		"content":          matrix.Object{"membership": matrix.MembershipLeave},
+	}
+	if unsigned != nil {
+		template["unsigned"] = unsigned
 	}
 	return matrix.Object{"room_version": version, "event": template}, nil
 }
@@ -241,7 +267,8 @@ func (s *Service) leaveViaServer(ctx context.Context, transport *federation.Tran
 		Sender:   userID,
 		Content:  matrix.Encode(content),
 	}
-	packet, err := s.buildRemotePDU(draft, version, s.NowMS(), depth, prevIDs, authIDs)
+	packet, err := s.buildRemotePDU(draft, version, s.NowMS(), depth, prevIDs, authIDs,
+		objectOf(proto, "unsigned"))
 	if err != nil {
 		return err
 	}

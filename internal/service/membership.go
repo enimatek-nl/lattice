@@ -277,7 +277,13 @@ func (s *Service) KickRoom(ctx context.Context, roomID, requester, target, reaso
 	if !s.Allow(ctx, room.ID, requester, "kick", PowerDefaultKick) {
 		return matrix.ErrForbidden("you do not have permission to kick users from this room")
 	}
-	if s.MembershipOf(ctx, room.ID, target) != matrix.MembershipJoin {
+	switch s.MembershipOf(ctx, room.ID, target) {
+	case matrix.MembershipJoin, matrix.MembershipInvite, matrix.MembershipKnock:
+		// A kick is how a room withdraws any standing it granted somebody: it throws out a
+		// member, and it takes back an invitation or a knock. Refusing the invited case is
+		// what strands an invite a room has already changed its mind about - the membership
+		// stays, the user keeps seeing the room, and only a ban clears it.
+	default:
 		// Kicking somebody who is not in the room is refused rather than reported as
 		// missing: the caller has the room, has the user id, and is not permitted to do
 		// this to them. Clients read 404 as "that user was never here", which is a

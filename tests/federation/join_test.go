@@ -295,12 +295,51 @@ func TestARelayedInviteReachesAServerNewToTheRoom(t *testing.T) {
 	for {
 		synced := three.mustDo(http.StatusOK, http.MethodGet, "/_matrix/client/v3/sync", bob.Token, nil)
 		if invited, _ := roomsContainMembership(synced.Body, "invite", roomID, bob.UserID, matrix.MembershipInvite); invited {
-			return
+			break
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("%s never synced the invite of %s to %s: %s", three.name, bob.UserID, roomID, synced.Raw)
 		}
 		time.Sleep(200 * time.Millisecond)
+	}
+
+	// Bob accepts. The join is built on the shape two.example hands over, and that shape
+	// carries what the join replaces: a client shown a membership of "join" cannot tell an
+	// accepted invitation from a knock that was let in, and only the server holding the room
+	// knows which it was.
+	joinVia(three, bob, roomID, two.name)
+	awaitMembership(t, two, roomID, bob.UserID, matrix.MembershipJoin)
+	// Each side is read by one of its own users: a stranger asking for another server's
+	// history is refused, and that refusal is correct rather than a bug to route around.
+	for _, side := range []struct {
+		s    *server
+		sess *session
+	}{{two, alice}, {three, bob}} {
+		server, sess := side.s, side.sess
+		page := server.mustDo(http.StatusOK, http.MethodGet,
+			"/_matrix/client/v3/rooms/"+roomID+"/messages?dir=b&limit=50", sess.Token, nil)
+		chunk, _ := page.Body["chunk"].([]any)
+		found := false
+		for _, entry := range chunk {
+			event, _ := entry.(map[string]any)
+			if event["type"] != matrix.TypeMember || event["state_key"] != bob.UserID {
+				continue
+			}
+			content, _ := event["content"].(map[string]any)
+			if content["membership"] != matrix.MembershipJoin {
+				continue
+			}
+			unsigned, _ := event["unsigned"].(map[string]any)
+			previous, _ := unsigned["prev_content"].(map[string]any)
+			if previous["membership"] != matrix.MembershipInvite {
+				t.Errorf("%s records %s's join without the invite it replaced: %v", server.name, bob.UserID, unsigned)
+			}
+			found = true
+			break
+		}
+		if !found {
+			t.Errorf("%s holds no join event for %s in the history of %s", server.name, bob.UserID, roomID)
+		}
 	}
 }
 

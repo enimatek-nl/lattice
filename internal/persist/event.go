@@ -141,6 +141,11 @@ func (e *Event) Matrix() matrix.Event {
 			if signatures, ok := pdu["signatures"].(matrix.Object); ok {
 				ev.Signatures = signatures
 			}
+			// What a server annotated an event with is kept: the content a state event
+			// replaced, and the sender of the event it replaced.
+			if unsigned, ok := pdu["unsigned"].(matrix.Object); ok && len(unsigned) > 0 {
+				ev.Unsigned = unsigned
+			}
 		}
 		// A redacted event is served from its columns, never from the stored copy:
 		// the stored copy still contains the content the redaction destroyed, and a
@@ -168,7 +173,14 @@ func (e *Event) Matrix() matrix.Event {
 	if age < 0 {
 		age = 0
 	}
-	ev.Unsigned = matrix.Object{"age": age}
+	// Age is derived, so it is written last and alone would overwrite what the stored copy
+	// carries: the content a state event replaced, and who made that one. Those belong to
+	// the event as its server signed it, and a client told about a membership change without
+	// being told what changed cannot show the difference.
+	if ev.Unsigned == nil {
+		ev.Unsigned = matrix.Object{}
+	}
+	ev.Unsigned["age"] = age
 	if e.Redacted {
 		evidence := matrix.Object{}
 		if e.RedactionReason != "" {
@@ -216,6 +228,9 @@ type EventRepo interface {
 	// MarkRedacted remembers the redaction evidence for an event and reports
 	// whether an unredacted event with that id existed.
 	MarkRedacted(eventID, reason, redactionEvent string) (bool, error)
+	// PromoteToTimeline moves an event that was kept as an outlier into a room's
+	// timeline at a new stream position, and reports whether it did so.
+	PromoteToTimeline(eventID string, streamPos uint64) (bool, error)
 	// RecentEventIDs returns the ids of the most recent events of a room,
 	// used to build prev_events.
 	RecentEventIDs(roomID string, limit int, excludeType string) ([]string, error)
@@ -412,6 +427,21 @@ func (r *EventRepoImpl) MarkRedacted(eventID, reason, redactionEvent string) (bo
 			"redacted":         true,
 			"redaction_reason": reason,
 			"redaction_event":  redactionEvent,
+		})
+	return result.RowsAffected > 0, result.Error
+}
+
+// PromoteToTimeline implements [EventRepo]. An event is an outlier because this server
+// learned it as somebody else's history - the state handed over by a join, a state event
+// named in another server's description of the room. When the same event arrives as part
+// of what happened here, it belongs in the timeline: an event a client is never shown is a
+// room's own history with a hole in it. The position moves because this server is only now
+// seeing the event happen.
+func (r *EventRepoImpl) PromoteToTimeline(eventID string, streamPos uint64) (bool, error) {
+	result := r.db.Model(&Event{}).Where("event_id = ? AND not_in_timeline = ?", eventID, true).
+		Updates(map[string]any{
+			"not_in_timeline": false,
+			"stream_pos":      streamPos,
 		})
 	return result.RowsAffected > 0, result.Error
 }

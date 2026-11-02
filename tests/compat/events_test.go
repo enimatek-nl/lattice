@@ -199,6 +199,70 @@ func TestRoomHistory(t *testing.T) {
 	}
 }
 
+// TestStateEventsSayWhatTheyReplace covers the unsigned annotation a state event carries:
+// the content it replaced and who made that one. A client shown a room renamed to "two" has
+// no way to tell it replaced "one" unless the room says so, and a membership change without
+// its previous membership is a change with no before.
+func TestStateEventsSayWhatTheyReplace(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	bob := server.Register("bob", "rubberduck")
+	roomID := server.CreateRoom(alice, map[string]any{
+		"preset": "private_chat",
+		"name":   "first",
+	})
+	server.MustDo(http.MethodPost, "/_matrix/client/v3/rooms/"+roomID+"/invite", alice.Token,
+		matrix.Object{"user_id": bob.UserID}, http.StatusOK)
+
+	// A rename over a name: the new name event names the one it replaced.
+	server.MustDo(http.MethodPut, "/_matrix/client/v3/rooms/"+roomID+"/state/m.room.name", alice.Token,
+		matrix.Object{"name": "second"}, http.StatusOK)
+	rename := latestStateEvent(t, server, alice, roomID, "m.room.name")
+	unsigned, _ := rename["unsigned"].(map[string]any)
+	previous, _ := unsigned["prev_content"].(map[string]any)
+	if previous["name"] != "first" {
+		t.Errorf("the rename carries prev_content %v, want the name it replaced: %v", unsigned["prev_content"], rename)
+	}
+	if unsigned["prev_sender"] != alice.UserID {
+		t.Errorf("the rename carries prev_sender %v, want %s", unsigned["prev_sender"], alice.UserID)
+	}
+
+	// A kick over an invite: the membership says what the membership was.
+	server.MustDo(http.MethodPost, "/_matrix/client/v3/rooms/"+roomID+"/kick", alice.Token,
+		matrix.Object{"user_id": bob.UserID}, http.StatusOK)
+	kick := latestStateEvent(t, server, alice, roomID, matrix.TypeMember)
+	// dir=b returns newest first, and the newest member event is bob's kick - alice's own
+	// join is older than the invite she sent.
+	if kick["state_key"] != bob.UserID {
+		t.Fatalf("the newest m.room.member event is about %v, want %s", kick["state_key"], bob.UserID)
+	}
+	unsigned, _ = kick["unsigned"].(map[string]any)
+	previous, _ = unsigned["prev_content"].(map[string]any)
+	if previous["membership"] != matrix.MembershipInvite {
+		t.Errorf("the kick carries prev_content %v, want the invite it replaced: %v", unsigned["prev_content"], kick)
+	}
+	content, _ := kick["content"].(map[string]any)
+	if content["membership"] != matrix.MembershipLeave {
+		t.Errorf("the kick records membership %v, want leave", content["membership"])
+	}
+}
+
+// latestStateEvent reads the newest event of a state type from the room's history.
+func latestStateEvent(t *testing.T, server *Server, who *Session, roomID, typ string) map[string]any {
+	t.Helper()
+	page := server.MustDo(http.MethodGet,
+		"/_matrix/client/v3/rooms/"+roomID+"/messages?dir=b&limit=50", who.Token, nil, http.StatusOK)
+	chunk, _ := page.Body["chunk"].([]any)
+	for _, entry := range chunk {
+		event, _ := entry.(map[string]any)
+		if event["type"] == typ {
+			return event
+		}
+	}
+	t.Fatalf("no %s event in the history of %s: %s", typ, roomID, page.Raw)
+	return nil
+}
+
 // TestRedaction covers PUT /rooms/{roomId}/redact/{eventId}/{txnId}.
 func TestRedaction(t *testing.T) {
 	server := NewServer(t)

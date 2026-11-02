@@ -520,6 +520,16 @@ func (s *Service) storeIncomingPDU(pdu matrix.Object, eventID, softFailure strin
 				// them again would be a second opinion on state this server has already
 				// resolved, and because a join that re-presents an event it already holds is
 				// a join that should simply succeed.
+				if !notInTimeline {
+					// One part of that is worth correcting. The copy on disk may have been
+					// kept as an outlier - a join handed this server its own join event as
+					// part of the room's state - and this arrival is the event happening here,
+					// not somebody's history of it. Outliers are kept out of a client's
+					// history, so the room would hold a hole where its own join sits.
+					if _, err := events.PromoteToTimeline(eventID, pos); err != nil {
+						return fmt.Errorf("bring the event %s into the timeline: %w", eventID, err)
+					}
+				}
 				return nil
 			}
 			return fmt.Errorf("insert the received event: %w", err)

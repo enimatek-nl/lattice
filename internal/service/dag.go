@@ -123,6 +123,27 @@ func (s *Service) BuildPDU(ctx context.Context, tx *gorm.DB, draft *EventDraft, 
 	}
 	if draft.StateKey != nil {
 		object["state_key"] = *draft.StateKey
+		// A state event replaces whatever stood at that key, and the room owes its clients
+		// the content it replaced. It rides in "unsigned", which is neither hashed nor
+		// signed: it is this server's answer about the event rather than part of the event
+		// another server would have to sign, which is why a membership change can say what
+		// the membership was without changing what the change itself means.
+		previous, err := state.Get(draft.RoomID, draft.Type, *draft.StateKey)
+		if err != nil && !persist.IsNotFound(err) {
+			return nil, matrix.ErrInternal(err)
+		} else if err == nil {
+			unsigned := matrix.Object{}
+			var before matrix.Object
+			if err := matrix.DecodeContent(matrix.RawMessage(previous.Content), &before); err == nil && len(before) > 0 {
+				unsigned["prev_content"] = before
+			}
+			if previous.Sender != "" {
+				unsigned["prev_sender"] = previous.Sender
+			}
+			if len(unsigned) > 0 {
+				object["unsigned"] = unsigned
+			}
+		}
 	}
 	if draft.Type == matrix.TypeRedaction {
 		// Before room version 11 the redaction target is a top level property of the
