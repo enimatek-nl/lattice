@@ -45,6 +45,9 @@ func init() {
 const (
 	serverOne = "one.example"
 	serverTwo = "two.example"
+	// serverStranger is a server that shares no room with the others, which is what a
+	// test about refusing strangers needs.
+	serverStranger = "stranger.example"
 )
 
 // cluster is a pair of running homeservers that know how to reach each other.

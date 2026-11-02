@@ -58,6 +58,19 @@ func (a *App) registerFederationRoutes() {
 	// is an auth chain it cannot run.
 	a.federated("GET /_matrix/federation/v1/event/{eventID}", a.handleFederationEvent)
 
+	// The room behind an event. A peer that was sent an event cannot judge it from the
+	// event alone: it needs the state the event was built on, the authority that
+	// authorised it, and the prev_events it was never sent. state_ids names the state,
+	// state hands one of them over, event_auth hands over an authority chain, and
+	// get_missing_events fills a gap in the graph. A server that cannot answer these is
+	// refused by peers that ask - the refusal reads as a complaint about the sender,
+	// because from the refusing side that is what happened.
+	a.federated("GET /_matrix/federation/v1/state_ids/{roomID}", a.handleFederationStateIDs)
+	a.federated("GET /_matrix/federation/v1/state/{roomID}/{eventID}", a.handleFederationRoomState)
+	a.federated("GET /_matrix/federation/v2/state/{roomID}/{eventID}", a.handleFederationRoomState)
+	a.federated("GET /_matrix/federation/v1/event_auth/{roomID}/{eventID}", a.handleFederationEventAuth)
+	a.federated("POST /_matrix/federation/v1/get_missing_events/{roomID}", a.handleFederationMissingEvents)
+
 	// The join handshake. A server joining a room it does not host cannot know which
 	// events its join has to build on, and cannot describe a room it has never been
 	// handed; make_join asks the first question and send_join answers the second. Both
@@ -479,6 +492,60 @@ func (a *App) handleFederationDirectory(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, body)
+}
+
+// handleFederationStateIDs answers GET /_matrix/federation/v1/state_ids/{roomID}.
+func (a *App) handleFederationStateIDs(w http.ResponseWriter, r *http.Request) {
+	answer, err := a.svc.ServeStateIDs(r.Context(), r.PathValue("roomID"), federation.Peer(r.Context()))
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, answer)
+}
+
+// handleFederationRoomState answers GET /_matrix/federation/v1|v2/state/{roomID}/{eventID}.
+// Version 1 answers the event and version 2 an object holding it, which is the same
+// difference the join handshake has between its two versions.
+func (a *App) handleFederationRoomState(w http.ResponseWriter, r *http.Request) {
+	answer, err := a.svc.ServeRoomStateEvent(r.Context(), r.PathValue("roomID"),
+		r.PathValue("eventID"), federation.Peer(r.Context()))
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	if strings.Contains(r.URL.Path, "/federation/v1/") {
+		writeJSON(w, http.StatusOK, answer["event"])
+		return
+	}
+	writeJSON(w, http.StatusOK, answer)
+}
+
+// handleFederationEventAuth answers GET /_matrix/federation/v1/event_auth/{roomID}/{eventID}.
+func (a *App) handleFederationEventAuth(w http.ResponseWriter, r *http.Request) {
+	answer, err := a.svc.ServeEventAuth(r.Context(), r.PathValue("roomID"),
+		r.PathValue("eventID"), federation.Peer(r.Context()))
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, answer)
+}
+
+// handleFederationMissingEvents answers POST /_matrix/federation/v1/get_missing_events/{roomID}.
+func (a *App) handleFederationMissingEvents(w http.ResponseWriter, r *http.Request) {
+	body, err := federationBody(r)
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	answer, err := a.svc.ServeMissingEvents(r.Context(), r.PathValue("roomID"),
+		federation.Peer(r.Context()), body)
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, answer)
 }
 
 func (a *App) handleFederationEvent(w http.ResponseWriter, r *http.Request) {

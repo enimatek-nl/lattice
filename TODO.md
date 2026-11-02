@@ -14,8 +14,8 @@ re-derive were kept (below the plan).
   `make build vet lint` clean (`make lint` = golangci-lint, 0 issues),
   `go test ./...` green — **117** compatibility tests (~52 s here, ~5½ min
   with `-race` on this machine), **65** offline unit tests in `tests/unit`
-  (milliseconds), and **41** two-server tests in `tests/federation` (~13 s,
-  ~56 s with `-race`). Coverage: **165 of the 234** indexed endpoints, 31 extra
+  (milliseconds), and **43** two-server tests in `tests/federation` (~13 s,
+  ~56 s with `-race`). Coverage: **168 of the 234** indexed endpoints, 33 extra
   routes (`make endpoints`). Steps 1–10 are closed: rate limiting, the
   client-API correctness tails, batched reads, offline unit tests, the
   federation signing/transport ground, the **event DAG** (events hashed,
@@ -40,7 +40,7 @@ re-derive were kept (below the plan).
   See _Complement_ below for how they run, what a run can hide, and what each remaining
   failure is waiting for. The transport itself is not among the reasons: most of
   what is left is a peer answering `M_UNRECOGNIZED` to a handshake Lattice does not
-  serve yet — leave, knock, invite, and the graph-reading queries of step 11.
+  serve yet — knock, and the rest of the graph-reading queries of step 11 (`backfill`, `timestamp_to_event`).
 - Federation is live behind `-federation` (default off): a persisted ed25519
   signing key, `/_matrix/key/v2/*`, `/_matrix/federation/v1/version`,
   `/_matrix/federation/v1/user/devices/{userId}`,
@@ -922,6 +922,21 @@ which now works, plus the pieces named above).
   account is checked before the federation transport is blamed, so a session the server
   cannot act for is not reported as a room it cannot reach; and the startup log counts the
   accounts that belong to another name.
+- **A peer refuses an event it cannot check, and blames the sender.** Sending into a room
+  hosted elsewhere stopped with `cluephone.org refused an event from this server: Your server
+  isn't divulging details about prev_events referenced in this event`, next to a fetch of
+  `/_matrix/federation/v1/state_ids/...` that never arrived. Both halves are the same thing:
+  a receiver does not accept an event on trust - it asks for the room's current state, the
+  state behind it, and the authority chain of the event - and a server that serves none of
+  those is refused for events that are perfectly correct. `state_ids`, `state/{roomId}/{eventId}`
+  (v1 and v2), `event_auth/{roomId}/{eventId}` and `get_missing_events/{roomId}` are served now,
+  to peers that are part of the room only, and a refusal to relay is logged with the sender of
+  the event named, so a relay of somebody else's event is not mistaken for a fault of this
+  server. Two things remain in this area: `backfill` and `timestamp_to_event`, and peers that
+  check an event's `origin` against its sender - room versions 11 and 12 have no `origin` in
+  the event, so a strict peer rejects a correctly relayed event and nothing on the sending
+  side can satisfy it without changing the event's hash.
+
 - **A room version this server does not speak is refused by name, not as a missing room.**
   A real join of a room on another homeserver failed with the peer answering
   `M_INCOMPATIBLE_ROOM_VERSION`, and Lattice reported

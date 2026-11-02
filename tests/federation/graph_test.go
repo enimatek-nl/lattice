@@ -1,6 +1,7 @@
 package federation
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/enimatek-nl/lattice/internal/eventcrypto"
+	"github.com/enimatek-nl/lattice/internal/federation"
 	"github.com/enimatek-nl/lattice/internal/matrix"
 )
 
@@ -324,6 +326,166 @@ func TestTheWireFormOfAnEventCarriesTheGraph(t *testing.T) {
 		}
 		if err := eventcrypto.VerifyContentHash(event, "11"); err != nil {
 			t.Errorf("the served event does not match its content hash: %v", err)
+		}
+	}
+}
+
+// federationGET signs a request as one server and sends it to another, which is the only
+// way a test can ask a server what it serves to its peers.
+func federationGET(t *testing.T, from *server, to *server, target string) response {
+	t.Helper()
+	key, err := from.svc.SigningKey(t.Context())
+	if err != nil {
+		t.Fatalf("the signing key of %s: %v", from.name, err)
+	}
+	authorization := signedWithMethod(t, key, http.MethodGet, from.name, to.name, target, nil)
+	return rawAuth(t, to.url(), http.MethodGet, target, authorization)
+}
+
+// federationPOST signs a request with a body, which is signed as part of the request
+// target a peer verifies.
+func federationPOST(t *testing.T, from, to *server, target string, body matrix.Object) response {
+	t.Helper()
+	key, err := from.svc.SigningKey(t.Context())
+	if err != nil {
+		t.Fatalf("the signing key of %s: %v", from.name, err)
+	}
+	fields, err := federation.SignAuthorization(key, http.MethodPost, target, from.name, to.name, body)
+	if err != nil {
+		t.Fatalf("signing a request: %v", err)
+	}
+	raw, err := matrix.CanonicalJSON(body)
+	if err != nil {
+		t.Fatalf("encoding the request body: %v", err)
+	}
+	request, err := http.NewRequest(http.MethodPost, to.url()+target, bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("building POST %s: %v", target, err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", fields.AuthorizationHeader())
+	return roundTrip(t, request)
+}
+
+// TestAPeerCanReadTheGraphBehindAnEvent covers the reads a peer makes before it accepts an
+// event: which events are the room's state, what one of them looks like, what authorised
+// another, and what it is missing in the graph between two points. A server that cannot
+// answer these is refused by peers that ask - and the refusal is worded as a complaint about
+// the sender, because from the refusing side the sender did not explain itself.
+func TestAPeerCanReadTheGraphBehindAnEvent(t *testing.T) {
+	c := newCluster(t)
+	one, two := c.one(), c.two()
+	alice := one.register("alice", "wonderland")
+	bob := two.register("bob", "wonderland")
+	roomID := one.createRoom(alice, map[string]any{"preset": "public_chat"})
+
+	if got := joinVia(two, bob, roomID, one.name); got.Status != http.StatusOK {
+		t.Fatalf("%s could not join %s: %d %s", bob.UserID, roomID, got.Status, got.Raw)
+	}
+	one.send(alice, roomID, "first")
+	latest := one.send(alice, roomID, "latest")
+
+	// Which events are the room's state, and what stands behind them.
+	roomPath := "/_matrix/federation/v1/state_ids/" + roomID
+	answer := federationGET(t, two, one, roomPath)
+	if answer.Status != http.StatusOK {
+		t.Fatalf("%s asking %s for the state ids of %s: %d %s", two.name, one.name, roomID, answer.Status, answer.Raw)
+	}
+	pduIDs, _ := answer.Body["pdu_ids"].([]any)
+	if len(pduIDs) < 3 {
+		t.Errorf("the state of %s is answered with %d ids, which cannot name create, join rules and the members",
+			roomID, len(pduIDs))
+	}
+	if chain, _ := answer.Body["auth_chain_ids"].([]any); len(chain) == 0 {
+		t.Errorf("the state ids of %s come with no auth chain, so a peer cannot check any of them", roomID)
+	}
+
+	// One of those ids, in the form the room version defines. The version 2 answer wraps the
+	// event; version 1 answers it directly.
+	createID := ""
+	for _, entryAny := range pduIDs {
+		entry, _ := entryAny.(string)
+		state := federationGET(t, two, one, "/_matrix/federation/v2/state/"+roomID+"/"+entry)
+		if state.Status != http.StatusOK {
+			t.Fatalf("%s asking for the state event %s of %s: %d %s", two.name, entry, roomID, state.Status, state.Raw)
+		}
+		event, _ := state.Body["event"].(matrix.Object)
+		if event == nil {
+			t.Fatalf("the state answer for %s holds no event: %s", entry, state.Raw)
+		}
+		if err := eventcrypto.VerifyContentHash(event, "11"); err != nil {
+			t.Errorf("the served state event %s does not match its own content hash: %v", entry, err)
+		}
+		if event["type"] == matrix.TypeCreate {
+			createID = entry
+		}
+	}
+	if createID == "" {
+		t.Fatalf("none of the %d state ids of %s names the create event", len(pduIDs), roomID)
+	}
+	if direct := federationGET(t, two, one, "/_matrix/federation/v1/state/"+roomID+"/"+createID); direct.Status != http.StatusOK ||
+		direct.Body["type"] != matrix.TypeCreate {
+		t.Errorf("the version 1 state answer for %s is not the event itself: %d %s", createID, direct.Status, direct.Raw)
+	}
+
+	// What authorised an event the peer was sent.
+	authPath := "/_matrix/federation/v1/event_auth/" + roomID + "/" + latest
+	chain := federationGET(t, two, one, authPath)
+	if chain.Status != http.StatusOK {
+		t.Fatalf("%s asking for the auth chain of %s: %d %s", two.name, latest, chain.Status, chain.Raw)
+	}
+	events, _ := chain.Body["auth_chain"].([]any)
+	if len(events) == 0 {
+		t.Fatalf("the auth chain of %s is answered empty", latest)
+	}
+
+	// The gap between two points in the graph. The create event is the oldest point of a
+	// room, and the newest message the newest: everything between them is what the peer is
+	// missing.
+	filled := federationPOST(t, two, one, "/_matrix/federation/v1/get_missing_events/"+roomID,
+		matrix.Object{"earliest_events": []any{createID}, "latest_events": []any{latest}, "limit": 10})
+	if filled.Status != http.StatusOK {
+		t.Fatalf("%s asking %s for what it is missing in %s: %d %s", two.name, one.name, roomID, filled.Status, filled.Raw)
+	}
+	found, _ := filled.Body["events"].([]any)
+	if len(found) == 0 {
+		t.Fatalf("no events between the create event and %s of %s, although a message was sent in between", latest, roomID)
+	}
+	for _, eventAny := range found {
+		event, _ := eventAny.(matrix.Object)
+		if event == nil {
+			t.Fatalf("the missing events of %s hold something that is not an event: %s", roomID, filled.Raw)
+		}
+		if event["room_id"] != roomID {
+			t.Errorf("an event from room %v came back from a request about %s", event["room_id"], roomID)
+		}
+	}
+}
+
+// TestTheGraphOfARoomIsNotPublishedToStrangers covers the other half of the reads above.
+// A server that shares no membership with a room has no claim on its state, its authority
+// chains or its history, and an event id is only a string to a stranger - so a stranger can
+// otherwise read a room it was never in, one event at a time.
+func TestTheGraphOfARoomIsNotPublishedToStrangers(t *testing.T) {
+	c := newClusterNamed(t, serverOne, serverTwo, serverStranger)
+	one, stranger := c.one(), c.byName(serverStranger)
+	alice := one.register("alice", "wonderland")
+	roomID := one.createRoom(alice, map[string]any{"preset": "public_chat"})
+	message := one.send(alice, roomID, "private garden")
+
+	state := federationGET(t, stranger, one, "/_matrix/federation/v1/state_ids/"+roomID)
+	if state.Status != http.StatusForbidden {
+		t.Errorf("%s was answered %d asking for the state ids of %s, want %d: %s",
+			serverStranger, state.Status, roomID, http.StatusForbidden, state.Raw)
+	}
+	for _, target := range []string{
+		"/_matrix/federation/v1/event_auth/" + roomID + "/" + message,
+		"/_matrix/federation/v2/state/" + roomID + "/" + message,
+	} {
+		got := federationGET(t, stranger, one, target)
+		if got.Status != http.StatusForbidden {
+			t.Errorf("%s was answered %d asking %s, want %d: %s",
+				serverStranger, got.Status, target, http.StatusForbidden, got.Raw)
 		}
 	}
 }

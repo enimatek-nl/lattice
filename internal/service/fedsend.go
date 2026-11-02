@@ -642,8 +642,24 @@ func (s *Service) attemptTransaction(ctx context.Context, transport *federation.
 	// understood, and the peer said what it did with each event. Retrying it would be
 	// wrong - the answer is the same every time - and staying silent would leave an
 	// operator with a room that is missing messages and no trace of why.
-	for _, problem := range answer.Rejections() {
-		log.Printf("federation: %s refused an event from this server: %s", txn.Destination, problem)
+	for eventID, result := range answer {
+		if result.Error == "" {
+			continue
+		}
+		// Which event it is and whose event it was are named, because the two look very
+		// different from an operator's side. An event this server made being refused is
+		// about this server; an event made elsewhere and relayed through here is about the
+		// peer that made it, the room's history, and how strict the refusing server is
+		// about relays - and the reason alone cannot tell them apart.
+		made := "an event this server did not make"
+		if event, err := s.db.EventRepo.Get(eventID); err == nil && event.Sender != "" {
+			if matrix.DomainOf(event.Sender) == s.serverName {
+				made = "sent by " + event.Sender
+			} else {
+				made = "relayed from " + event.Sender
+			}
+		}
+		log.Printf("federation: %s refused %s (%s): %s", txn.Destination, eventID, made, result.Error)
 	}
 	if err := s.db.OutboxRepo.Acknowledge(txn.Destination, txn.TxnID); err != nil {
 		return 1, matrix.ErrInternal(err)
