@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/enimatek-nl/lattice/internal/federation"
 	"github.com/enimatek-nl/lattice/internal/matrix"
@@ -56,6 +57,75 @@ func (a *App) registerFederationRoutes() {
 	// that judges arriving events can only refuse them: an auth chain it cannot complete
 	// is an auth chain it cannot run.
 	a.federated("GET /_matrix/federation/v1/event/{eventID}", a.handleFederationEvent)
+
+	// The join handshake. A server joining a room it does not host cannot know which
+	// events its join has to build on, and cannot describe a room it has never been
+	// handed; make_join asks the first question and send_join answers the second. Both
+	// are served for version 1 and version 2, which differ in the shape of the answer.
+	a.federated("GET /_matrix/federation/v1/make_join/{roomID}/{userID}", a.handleFederationMakeJoin)
+	a.federated("GET /_matrix/federation/v2/make_join/{roomID}/{userID}", a.handleFederationMakeJoin)
+	a.federated("PUT /_matrix/federation/v1/send_join/{roomID}/{eventID}", a.handleFederationSendJoin)
+	a.federated("PUT /_matrix/federation/v2/send_join/{roomID}/{eventID}", a.handleFederationSendJoin)
+
+	// A peer asked about an alias of this server. The alias is how the room is addressed,
+	// so the answer has to come from the server the alias names - a client that is told
+	// "not hosted here" about an alias it read somewhere has no way to go further.
+	a.federated("GET /_matrix/federation/v1/query/directory", a.handleFederationDirectory)
+}
+
+// handleFederationMakeJoin answers GET of make_join: the room version, and the shape of
+// the join event that would attach to this server's graph.
+//
+//	@Summary	Ask which events a join must build on
+//	@Description	Serves a peer the room version and the join-event template whose prev_events and auth_events come from this server's graph.
+//	@Tags	federation
+//	@Produce	json
+//	@Param	roomID	path	string	true	"Room ID"
+//	@Param	userID	path	string	true	"User joining the room"
+//	@Success	200	{object}	matrix.Object	"room_version and event"
+//	@Failure	403	{object}	matrix.Error	"The room excludes that server"
+//	@Failure	404	{object}	matrix.Error	"No such room"
+//	@Router	/_matrix/federation/v1/make_join/{roomID}/{userID} [get]
+//	@Router	/_matrix/federation/v2/make_join/{roomID}/{userID} [get]
+func (a *App) handleFederationMakeJoin(w http.ResponseWriter, r *http.Request) {
+	body, err := a.svc.ServeMakeJoin(r.Context(), r.PathValue("roomID"), r.PathValue("userID"),
+		federation.Peer(r.Context()), r.URL.Query()["ver"])
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, body)
+}
+
+// handleFederationSendJoin answers PUT of send_join: a join event a peer made for a room
+// this server hosts, answered with the room's state.
+//
+//	@Summary	Take a join and hand back the room's state
+//	@Description	Validates a join event for a room hosted here, applies it, and answers with the state - the servers in the room in version 2, the state and its auth chain in version 1.
+//	@Tags	federation
+//	@Accept	json
+//	@Produce	json
+//	@Param	roomID	path	string	true	"Room ID"
+//	@Param	eventID	path	string	true	"Event id of the join event"
+//	@Success	200	{object}	matrix.Object	"state, and auth_chain or servers_in_room"
+//	@Failure	400	{object}	matrix.Error	"The event is not a join for the server's own user"
+//	@Failure	403	{object}	matrix.Error	"The room's rules refuse the join"
+//	@Router	/_matrix/federation/v1/send_join/{roomID}/{eventID} [put]
+//	@Router	/_matrix/federation/v2/send_join/{roomID}/{eventID} [put]
+func (a *App) handleFederationSendJoin(w http.ResponseWriter, r *http.Request) {
+	event, err := federationBody(r)
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	v2 := strings.Contains(r.URL.Path, "/federation/v2/")
+	answer, err := a.svc.ServeSendJoin(r.Context(), r.PathValue("roomID"), r.PathValue("eventID"),
+		event, federation.Peer(r.Context()), v2, r.URL.Query().Get("omit_members") == "true")
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, answer)
 }
 
 // handleServerKeys answers GET /_matrix/key/v2/server.
@@ -278,6 +348,28 @@ func (a *App) handleFederationDevices(w http.ResponseWriter, r *http.Request) {
 //	@Failure\t403\t{object}\tmatrix.Error\t"The server is not part of the room"
 //	@Failure\t404\t{object}\tmatrix.Error\t"No such event"
 //	@Router\t/_matrix/federation/v1/event/{eventID} [get]
+//
+// handleFederationDirectory answers GET /_matrix/federation/v1/query/directory: what one
+// of this server's aliases points at, and which servers are in the room behind it.
+//
+//	@Summary	Resolve a room alias
+//	@Description	Serves a peer the room id an alias of this server maps to, with the servers that can be contacted for it.
+//	@Tags	federation
+//	@Produce	json
+//	@Param	room_alias	query	string	true	"Alias to resolve"
+//	@Success	200	{object}	matrix.Object	"room_id and servers"
+//	@Failure	403	{object}	matrix.Error	"The room excludes that server"
+//	@Failure	404	{object}	matrix.Error	"No such alias"
+//	@Router	/_matrix/federation/v1/query/directory [get]
+func (a *App) handleFederationDirectory(w http.ResponseWriter, r *http.Request) {
+	body, err := a.svc.DirectoryAnswer(r.Context(), r.URL.Query().Get("room_alias"), federation.Peer(r.Context()))
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, body)
+}
+
 func (a *App) handleFederationEvent(w http.ResponseWriter, r *http.Request) {
 	body, err := a.svc.FederatedEvent(r.Context(), r.PathValue("eventID"), federation.Peer(r.Context()))
 	if err != nil {

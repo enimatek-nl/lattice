@@ -63,7 +63,15 @@ type Event struct {
 	// chain but is kept anyway: a later event may still cite it, and what decides the
 	// room state is the resolution over the state at the event. RejectedReason marks
 	// an event that must never be used, with the reason kept for the operator who asks.
-	SoftFailed     bool   `json:"soft_failed"`
+	SoftFailed bool `json:"soft_failed"`
+	// NotInTimeline marks an event this server holds because the room's state names it,
+	// not because the event happened here: the state that arrives with a join into a room
+	// that lives elsewhere. Timeline reads skip them - a client reading the room's history
+	// must not see another server's year-old rename arrive as the newest thing in the room
+	// - while state reads, federation replies and the auth-chain work still see them. The
+	// flag is written the wrong way round on purpose: a "is in the timeline" flag would
+	// default to false for every event stored before it existed.
+	NotInTimeline  bool   `json:"not_in_timeline"`
 	RejectedReason string `json:"-" gorm:"size:255"`
 
 	gorm.Model
@@ -306,17 +314,20 @@ func (r *EventRepoImpl) ListByIDs(ids []string) ([]*Event, error) {
 	return events, err
 }
 
-// hideSoftFailed keeps events that failed their auth checks against the room's current
-// state out of what clients read. The specification is precise about this: such an
-// event is stored, and later events may cite it, but it is not sent to clients and not
-// applied to the state. Federation reads - which do have to pass these events on - do
-// not call this.
-func hideSoftFailed(q *gorm.DB) *gorm.DB { return q.Where("soft_failed = ?", false) }
+// hiddenFromTimeline keeps two kinds of event out of what clients read as a room's
+// history: events that failed their auth checks against the room's current state - the
+// specification is precise about that, they are stored and later events may cite them,
+// but they are not sent to clients and not applied to the state - and events that only
+// arrived as another server's state. Federation and state reads, which do have to see
+// both, do not call this.
+func hiddenFromTimeline(q *gorm.DB) *gorm.DB {
+	return q.Where("soft_failed = ? AND not_in_timeline = ?", false, false)
+}
 
 // History implements [EventRepo].
 func (r *EventRepoImpl) History(roomID string, from uint64, dir string, limit int, notBefore uint64) ([]*Event, error) {
 	var events []*Event
-	q := hideSoftFailed(r.db.Where("room_id = ?", roomID))
+	q := hiddenFromTimeline(r.db.Where("room_id = ?", roomID))
 	if from > 0 {
 		if dir == "f" {
 			q = q.Where("stream_pos > ?", from)
@@ -349,7 +360,7 @@ func (r *EventRepoImpl) TimelineFor(roomIDs []string, since uint64, limit int) (
 		return nil, nil
 	}
 	var events []*Event
-	q := hideSoftFailed(r.db.Where("room_id IN ? AND stream_pos > ?", roomIDs, since)).
+	q := hiddenFromTimeline(r.db.Where("room_id IN ? AND stream_pos > ?", roomIDs, since)).
 		Order("stream_pos asc")
 	if limit > 0 {
 		q = q.Limit(limit)
@@ -446,7 +457,7 @@ func (r *EventRepoImpl) AdvanceForwardExtremities(roomID string, consumed []stri
 // HistoryByTimestamp implements [EventRepo].
 func (r *EventRepoImpl) HistoryByTimestamp(roomID string, ts int64, dir string, limit int) ([]*Event, error) {
 	var events []*Event
-	q := hideSoftFailed(r.db.Where("room_id = ?", roomID))
+	q := hiddenFromTimeline(r.db.Where("room_id = ?", roomID))
 	order := "origin_server_ts desc"
 	switch dir {
 	case "f":
@@ -490,7 +501,7 @@ type RelationQuery struct {
 // /messages.
 func (r *EventRepoImpl) Relations(query RelationQuery) ([]*Event, error) {
 	var events []*Event
-	q := hideSoftFailed(r.db.Where("room_id = ? AND relates_to = ? AND redacted = ?",
+	q := hiddenFromTimeline(r.db.Where("room_id = ? AND relates_to = ? AND redacted = ?",
 		query.RoomID, query.EventID, false))
 	if query.RelType != "" {
 		q = q.Where("rel_type = ?", query.RelType)
@@ -532,7 +543,7 @@ func (r *EventRepoImpl) ByPositions(roomID string, positions []uint64) (map[uint
 		return out, nil
 	}
 	var events []*Event
-	if err := hideSoftFailed(r.db.Where("room_id = ? AND stream_pos IN ?", roomID, positions)).
+	if err := hiddenFromTimeline(r.db.Where("room_id = ? AND stream_pos IN ?", roomID, positions)).
 		Find(&events).Error; err != nil {
 		return nil, err
 	}
@@ -612,7 +623,7 @@ func (r *EventRepoImpl) Search(query SearchQuery) ([]*Event, error) {
 		return nil, nil
 	}
 	var events []*Event
-	q := hideSoftFailed(r.db.Where("room_id IN ? AND redacted = ?", query.RoomIDs, false))
+	q := hiddenFromTimeline(r.db.Where("room_id IN ? AND redacted = ?", query.RoomIDs, false))
 	if len(query.NotRooms) > 0 {
 		q = q.Where("room_id NOT IN ?", query.NotRooms)
 	}

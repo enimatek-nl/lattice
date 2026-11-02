@@ -13,36 +13,39 @@ re-derive were kept (below the plan).
 - A working homeserver with its **federation transport in production shape**:
   `make build vet lint` clean (`make lint` = golangci-lint, 0 issues),
   `go test ./...` green — **113** compatibility tests (~52 s here, ~5½ min
-  with `-race` on this machine), **64** offline unit tests in `tests/unit`
-  (milliseconds), and **34** two-server tests in `tests/federation` (~9 s,
-  ~56 s with `-race`). Coverage: **157 of the 234** indexed endpoints, 27 extra
-  routes (`make endpoints`). Steps 1–9 are closed: rate limiting, the
+  with `-race` on this machine), **65** offline unit tests in `tests/unit`
+  (milliseconds), and **36** two-server tests in `tests/federation` (~10 s,
+  ~56 s with `-race`). Coverage: **161 of the 234** indexed endpoints, 29 extra
+  routes (`make endpoints`). Steps 1–10 are closed: rate limiting, the
   client-API correctness tails, batched reads, offline unit tests, the
   federation signing/transport ground, the **event DAG** (events hashed,
   signed, identified by reference hash, stored with `prev_events`,
-  `auth_events` and their exact signed JSON), and **transactions** — inbound
+  `auth_events` and their exact signed JSON), **transactions** — inbound
   `PUT /send` with a replay-safe transaction log, EDU sinks for typing,
   receipts, to-device, device lists and cross-signing, an outbound per
   destination queue with retries, and `m.room.server_acl` enforced in both
-  directions. Step 9 is **closed except for one rule it cannot reach yet**: the room
-  version's authorization rules (`internal/authcheck`), state resolution v2
-  (`internal/stateres`), all of the receipt checks, and the applying of an accepted
-  event — state, graph, timeline and sync move because a peer sent an event.
-  The plan continues at **step 10**; steps 10 to 13 are driven
+  directions — and the **cross-server join**: `make_join`/`send_join` served and
+  sent, the state a peer hands over persisted and usable, remote aliases
+  resolved through `/query/directory`, and a room's decision about a user
+  (ban, unban, invite, kick) reaching the server that user lives on. The plan
+  continues at **step 11**; steps 11 to 13 are driven
   test-by-test against Complement's server-server suite, each naming the tests it
   is expected to turn green, and step 14 wraps the release.
 - Against [Complement](https://github.com/matrix-org/complement), the upstream
-  Matrix suite, **40 of 106** client-API tests fail (`make complement`) and **87 of
-  91** server-server tests fail (`make complement COMPLEMENT_PKG=./tests`). See
-  _Complement_ below for how they run, what a run can hide, and what each remaining
-  failure is waiting for. The transport itself is not among the reasons: those
-  failures are a peer answering `M_UNRECOGNIZED` to a handshake Lattice does not
-  serve yet, and one client-side fix (`GET /_matrix/key/v2/server` published as
-  canonical JSON) already turned a server-server test green.
+  Matrix suite, **40 of 106** client-API tests fail (`make complement`) and **74 of
+  91** server-server tests fail (`make complement COMPLEMENT_PKG=./tests`) — up from
+  4 green before step 10, all of them the join handshake and what hangs off it.
+  See _Complement_ below for how they run, what a run can hide, and what each remaining
+  failure is waiting for. The transport itself is not among the reasons: most of
+  what is left is a peer answering `M_UNRECOGNIZED` to a handshake Lattice does not
+  serve yet — leave, knock, invite, and the graph-reading queries of step 11.
 - Federation is live behind `-federation` (default off): a persisted ed25519
   signing key, `/_matrix/key/v2/*`, `/_matrix/federation/v1/version`,
   `/_matrix/federation/v1/user/devices/{userId}`,
   `PUT /_matrix/federation/v1/send/{txnId}`, `GET /_matrix/federation/v1/event/{eventID}`,
+  `GET /_matrix/federation/v1|v2/make_join/{roomId}/{userId}`,
+  `PUT /_matrix/federation/v1|v2/send_join/{roomId}/{eventId}`,
+  `GET /_matrix/federation/v1/query/directory`,
   an outbound client that signs, fetches an auth chain it is missing, and retries a
   queue, and inbound middleware that refuses anything it cannot attribute to a peer.
   Still deferred on purpose: SRV lookups, acting as a
@@ -729,40 +732,113 @@ makes it checkable in the meantime.
   on carry no id inside the event, so the only way to know a peer answered the question
   asked is to hash the answer and compare it with the id requested.
 
-### 10. Federation V — the first honest cross-server join (first Complement greens)
+### 10. Federation V — the first honest cross-server join — done (2026-11-02)
 
 The step the rest of federation waits for: a user on one Lattice gets into a room
-on another, and both hold the room afterwards.
+on another, and both hold the room afterwards. That now works in both directions,
+and it is the first step to turn Complement server-server tests green: **17 of the
+91** pass, up from 4.
 
-- [ ] Outbound: `_wellknownClient` directory lookup for `#alias:remote` →
-      `GET /v1/make_join/{roomId}/{userId}` (v2 form advertises supported room
-      versions) → `PUT /v2/send_join/{roomId}/{eventId}` with `omit_members=true`
-      → persist the returned state and its auth chain. Next candidate on
-      `M_UNABLE_TO_GRANT_JOIN`. The room's version comes from the handshake:
-      `fedrecv` records `DefaultRoomVersion` as a guess for an invite it has not
-      joined, and step 10 replaces that guess.
-- [ ] Inbound: serve `make_join` v1/v2 (partial state: the current state plus the
-      auth chain of the join event) and `send_join` v1/v2 (verify the join, return
-      the state the joining server needs), reusing the local power-level and
-      join-rule code, including `join_authorised_via_users_server` for restricted
-      rooms.
-- [ ] The same handshake for leave (`make_leave` v1/v2, `PUT /v2/send_leave` — the
-      leave event is signed by the leaving server) and for knock
-      (`make_knock`/`send_knock` v1/v2; the client-side knock already exists).
-- [ ] Invites: `PUT /v1/invite/{roomId}/{eventId}` and
-      `PUT /v2/invite/...`, whose `invite_room_state` must include
-      `m.room.create`; a local `/invite` reaching a remote user; a ban or unban
-      arriving as an invite, since that is what a ban is over the wire.
-- [ ] Guards a naive implementation passes and Complement does not let: a
-      `send_join` carrying something other than a `m.room.member` **join** is
-      refused, a `send_leave` carrying anything other than a **leave** is refused,
-      and a banned user cannot join.
-- [ ] Flip the room-creation default: `writeInitialState` currently hard-codes
-      `m.federate=false`, which was right while nothing federated and is wrong
-      now — a room is federated unless the creator says otherwise, with
-      `-no-federation` as the server-wide opt-out. Then the `LocalRoom` call sites
-      become "is this state in my DAG", and `walkHierarchy`'s remote-space skip
-      resolves through `/federation/v1/hierarchy` (step 12).
+- [x] Outbound: `#alias:remote` resolved through `GET /v1/query/directory` →
+      `GET /v1/make_join/{roomId}/{userId}` (falling back to v2) →
+      `PUT /v2/send_join/{roomId}/{eventId}` → the state and auth chain it answers
+      with are persisted, marked `not_in_timeline` because the peer's answer is a
+      description of the room and not traffic this server saw.
+- [x] Inbound: `make_join` v1/v2 answer with the room version and a join template
+      whose `prev_events` and `auth_events` come from this server's graph, judged
+      against the room's join rules and ACL; `send_join` v1/v2 verify the event,
+      apply it, and answer with the state — v2 with `servers_in_room` and, when
+      `omit_members=true` is asked for, the partial-state answer with
+      `members_omitted: true`.
+- [x] Guards Complement checks and a naive implementation fails: a `send_join`
+      carrying anything but a **join** is refused, a banned user's `send_join` is
+      refused, and a `send_join` whose event id does not match the path (or whose
+      hash does not match the id in a v3+ room) is refused.
+- [x] The room-creation default flipped: `m.federate` defaults to **true**, with
+      `-no-federation` the server-wide opt-out. While the default was false every
+      room this server made was silently un-federated.
+- [x] A membership change made by the room's server reaches the server of the user
+      it is about — a ban whose destination list is built from the membership the
+      ban already changed is a ban the banned user's own server never hears about.
+- [ ] The same handshake for leave (`make_leave` v1/v2, `PUT /v2/send_leave`) and
+      knock (`make_knock`/`send_knock` v1/v2): refused as `M_UNRECOGNIZED` today,
+      which is what `TestCannotSendNonLeaveViaSendLeaveV1/V2`, `TestKnocking*` and
+      `TestFederationRejectInvite` are waiting on. Owned by step 11's list below.
+- [ ] Invites over the dedicated endpoint: `PUT /v1|v2/invite/{roomId}/{eventId}`,
+      whose `invite_room_state` must carry `m.room.create`. A local `/invite` of a
+      remote user already reaches them today by the ordinary event relay, which is
+      enough for `TestUnbanViaInvite` (a room both servers are already in) but not
+      for `TestFederationRoomsInvite`, where the invited server is not in the room
+      yet and the invite endpoint is the only road. Also open: refusing an invite
+      for a local user who does not exist while allowing a remote name, which is
+      what `TestFederationRejectInvite` checks from the other side.
+
+`TestOutboundFederationSend` is green (steps 9 and 10 together), and so is
+`TestRemoteTyping`: a typing EDU is only delivered to a server that holds a
+membership for the user.
+
+Complement is green now: `TestJoinViaRoomIDAndServerName`,
+`TestJoinFederatedRoomFailOver`, `TestSendJoinPartialStateResponse`,
+`TestCannotSendNonJoinViaSendJoinV1`, `TestCannotSendNonJoinViaSendJoinV2`,
+`TestBannedUserCannotSendJoin`, `TestUnbanViaInvite`,
+`TestJoinFederatedRoomWithUnverifiableEvents`, `TestOutboundFederationSend`,
+`TestRemoteTyping`, `TestRemoteAliasRequestsUnderstandUnicode`,
+`TestInboundFederationRejectsEventsWithRejectedAuthEvents`.
+Still red from this list, and who owns them: `TestCannotSendNonLeaveViaSendLeaveV1`
+and `V2`, `TestFederationRoomsInvite`, `TestFederationRejectInvite` (leave and
+invite handshakes), `TestUserAppearsInChangedDeviceListOnJoinOverFederation`
+(step 13: the device-list EDU on join), `TestMessagesOverFederation` and
+`TestPushRuleRoomUpgrade` on the csapi side (they need a room two servers share,
+which now works, plus the pieces named above).
+
+### Findings worth not re-deriving (step 10)
+
+- **A stored event of a v3+ room carries no id inside itself, and a graph keyed by
+  id cannot hold it.** `authcheck.Graph.Add` drops an unnamed event, and the graph
+  then falls back to the state *summary* of the same event — which has no
+  `prev_events` and no `auth_events`. The chain walk stops early and the transitive
+  check reports an honest event as "cites no auth events of its own". Every
+  `graph.Add` of a stored event has to be `pduEvent(withEventID(json, row.EventID))`.
+- **`selectAuthEvents` reads the membership out of the draft's content.** The
+  `make_join` template is built from a draft with no content, so its membership is
+  the empty string, `m.room.join_rules` is left out of the template's auth events,
+  and the joining server's own rules then refuse the join it was handed. A template
+  for a join has to carry `"membership": "join"` in its draft.
+- **A room this server holds is not a room this server hosts.** Joining a room id
+  whose domain is another server has to go through that server again even when this
+  server already holds the room from an earlier join, a ban or an invite — which is
+  the second half of every leave-and-rejoin (`TestUnbanViaInvite`).
+- **Membership destinations.** `destinationsOfRoom` answers "who is in this room",
+  read after the event was applied. For a membership event that is the wrong
+  question: a ban, kick or leave removes its own target from the list, so the
+  server of the user it is about is never told. `membershipEventServers` adds the
+  target's and the sender's servers back, subject to the room's ACL.
+- **A banned user's rooms belong in `rooms.leave`.** `buildSync` queried
+  `MembershipLeave` and never `MembershipBan`, so a ban that arrived over
+  federation updated the database and said nothing to the client — the sync had no
+  room at all, and the ban event, the only explanation, never reached anyone.
+- **Partial state is the room before the join.** The state and the server list of a
+  `send_join` answer are read *before* the join is applied, and this server names
+  itself in `servers_in_room` because hosting the room is being in it. Following
+  Synapse: every non-member event, the joiner's membership as the room already had
+  it, and the heroes' memberships **only when the room has no name and no canonical
+  alias** — heroes are what a client shows for a nameless room. `members_omitted`
+  reports that memberships were left out of the answer, which is true whenever
+  partial state was asked for, even if every member of a small room is a name that
+  stayed.
+- **Room presets and `m.room.guest_access`.** Lattice wrote a guest-access event
+  into every room with the pre-spec value `can_connect`. The presets the ecosystem
+  agrees on give a `public_chat` room **no** guest-access event at all, and that
+  shows up over federation: a partial-state answer whose state carries an event no
+  one else's public rooms have fails a shape check written against everyone else.
+  `can_join`/`forbidden` are the spec values; `can_connect` is still read.
+- **`make_join` is asked for at v1 first.** v2 adds nothing v1 cannot carry (both
+  send `ver=`), and servers that have not implemented v2 answer `M_UNRECOGNIZED`,
+  which some deployments log as an unexpected request rather than a miss.
+- **Federation refusals have to be logged.** A rejected PDU's reason is stored in a
+  column nothing reads; the sender is told and the operator is not. Rejections and
+  soft failures now log the reason, which is how "why is this event not in my room"
+  gets answered without a database query.
 
 `TestOutboundFederationSend` (a message sent locally reaches the peer — it needs
 steps 9 and 10 together), and `TestACLs`/`TestACLsForEDUs`, whose rules step 8
@@ -941,8 +1017,9 @@ record** or to follow **SRV delegation**, both deferred.
 ## Complement — the upstream suite (running since 2026-11-01)
 
 Tally, complete run of 2026-11-02 against Complement `e3fcff1`: **40 of 106**
-client-API tests fail (44 deployments, no panics), and **87 of 91** server-server
-tests fail (126 deployments, no panics). The rest of this section is how to run
+client-API tests fail (44 deployments, no panics), and **74 of 91** server-server
+tests fail (108 deployments, no panics) — 17 server-server tests green, where the
+run before the join handshake had 4. The rest of this section is how to run
 it, what the run can hide, and what every remaining failure is waiting for.
 
 [Complement](https://github.com/matrix-org/complement) starts homeservers in
@@ -1007,6 +1084,31 @@ decision (`Service.unchangedState`, pinned by `TestWritingTheSameStateTwiceIsOne
 membership is excluded, because re-joining has to be a new event even when its content
 matches) — and `TestProfileAvatarURL`, which was a rootless-podman port conflict and
 went green on its own.
+
+The server-server run of 2026-11-02, after step 10, is green for
+`TestJoinViaRoomIDAndServerName`, `TestJoinFederatedRoomFailOver`,
+`TestJoinFederatedRoomWithUnverifiableEvents`, `TestSendJoinPartialStateResponse`,
+`TestCannotSendNonJoinViaSendJoinV1`, `TestCannotSendNonJoinViaSendJoinV2`,
+`TestBannedUserCannotSendJoin`, `TestUnbanViaInvite`, `TestOutboundFederationSend`,
+`TestRemoteTyping`, `TestRemoteAliasRequestsUnderstandUnicode`,
+`TestInboundFederationKeys`, `TestInboundFederationRejectsEventsWithRejectedAuthEvents`,
+`TestUnknownEndpoints`, `TestWriteMDirectAccountData`, `TestLocalPngThumbnail` and
+`TestSyncOmitsStateChangeOnFilteredEvents`. The client-API tally did **not** move when
+the room presets did (a `public_chat` room no longer gets an `m.room.guest_access`
+event), which is the check that the preset change was a fix rather than a regression.
+What the remaining 74 wait for, by group: `make_leave`/`send_leave` and
+`make_knock`/`send_knock` (leave, knock and the guards that go with them), the invite
+endpoint `PUT /v1|v2/invite` (`TestFederationRoomsInvite`,
+`TestFederationRejectInvite`), the graph-reading queries `event_auth`, `state_ids`,
+`state`, `get_missing_events`, `backfill`, `timestamp_to_event`
+(`TestEventAuth`, `TestGetMissingEventsGapFilling`, `TestInboundCanReturnMissingEvents`,
+`TestJumpToDateEndpoint`, `TestCorruptedAuthChain`), spaces and the hierarchy route
+(`TestFederatedClientSpaces`, `TestClientSpacesSummary*`), profile and device-list
+queries (`TestInboundFederationProfile`, `TestDeviceListsUpdateOverFederation*`),
+media federation (`TestContentMediaV1`, `TestFederationThumbnail`), room versions
+this server does not speak (`TestComplementCanCreateValidV12Rooms`), and the ACL tests
+(`TestACLs`, `TestACLsForEDUs`) which need a room two servers share — which now works —
+and the EDU paths that check it.
 
 The 40, grouped by what is actually missing — each group is a work item, and the
 suite's own skips are not hiding any of them:

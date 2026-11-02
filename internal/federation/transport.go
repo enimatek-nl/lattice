@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -191,9 +192,34 @@ func (t *Transport) do(ctx context.Context, destination, method, path string, qu
 		return nil, err
 	}
 
+	// A caller may hand over a path that already carries its query. Splitting it off
+	// and merging is not tidiness: appending a second "?" would leave the earlier
+	// parameters inside the path and glue the transport's own parameters onto the last
+	// value, so a make_join that offered room version 11 arrived offering "11?origin="
+	// and the peer answered that no version was shared.
+	if cut := strings.Index(path, "?"); cut >= 0 {
+		merged, err := url.ParseQuery(path[cut+1:])
+		if err != nil {
+			return nil, fmt.Errorf("the query of %s: %w", path, err)
+		}
+		if query == nil {
+			query = url.Values{}
+		}
+		for name, values := range merged {
+			query[name] = append(query[name], values...)
+		}
+		path = path[:cut]
+	}
+
 	target := path
 	if len(query) > 0 {
 		target += "?" + query.Encode()
+	}
+	// A request that is not a GET always carries a body, so it always signs one:
+	// a nil body would be signed as no content member while the receiver would
+	// parse the "null" that json.Marshal produces, and the two documents differ.
+	if method != http.MethodGet && body == nil {
+		body = matrix.Object{}
 	}
 	fields, err := SignAuthorization(key, method, target, t.identity.ServerName(), destination, body)
 	if err != nil {
@@ -431,9 +457,16 @@ func (t *Transport) rememberBase(serverName, baseURL string, expiresMS int64) {
 func (t *Transport) resolveBaseURL(ctx context.Context, serverName string) (string, error) {
 	host, _, hasPort := ServerNameParts(serverName)
 	if !hasPort {
+		// A well-known document that is missing, unparseable, or on a server that
+		// refuses the connection means "no delegation", not "this peer cannot be
+		// reached": the discovery rules fall back to the name itself on the registered
+		// federation port. Treating the lookup's failure as fatal makes every server
+		// that does not publish a delegation unreachable, which is most of them - and
+		// the failure arrives as a connection error rather than a 404, because the
+		// lookup goes to port 443 whether anything listens there or not.
 		delegated, err := t.wellKnownServer(ctx, host)
 		if err != nil {
-			return "", err
+			log.Printf("federation: no server delegation from %s, using the name as it stands: %v", host, err)
 		}
 		if delegated != "" {
 			serverName = delegated

@@ -95,9 +95,14 @@ type Alias string
 // String implements fmt.Stringer.
 func (a Alias) String() string { return string(a) }
 
-// Valid reports whether the alias has the shape "#localpart:domain".
+// Valid reports whether the alias is shaped like one: a "#", a local part, ":" and a
+// domain. The local part is checked loosely, because an alias is normally read after
+// another server made it, and a server that recognises only the aliases it would
+// itself have written cannot resolve rooms that exist - a room called
+// "#MissingSignatures:peer.example" is a room, and joining it is the point. The
+// stricter rule for aliases this server creates is [ValidAliasLocalpart].
 func (a Alias) Valid() bool {
-	return aliasRe.MatchString(string(a)) && ValidAliasLocalpart(a.Localpart())
+	return aliasRe.MatchString(string(a)) && aliasLocalpartReadable(a.Localpart())
 }
 
 // Localpart returns the local part of the alias without the leading "#".
@@ -130,6 +135,21 @@ func ValidLocalpart(localpart string) bool {
 	}
 	for _, r := range localpart {
 		if !userLocalpartRune(r) {
+			return false
+		}
+	}
+	return true
+}
+
+// aliasLocalpartReadable rejects only what would make an alias unreadable rather
+// than what this server would not have created: the characters the sigil and the
+// separator are made of, and anything a transport cannot carry.
+func aliasLocalpartReadable(localpart string) bool {
+	if localpart == "" {
+		return false
+	}
+	for _, r := range localpart {
+		if r == ' ' || r == '#' || r == ':' || unicode.IsControl(r) {
 			return false
 		}
 	}

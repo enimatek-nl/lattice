@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	"github.com/enimatek-nl/lattice/internal/matrix"
 )
@@ -11,13 +12,48 @@ import (
 //
 // The join is rejected when the room's join rule requires an invite, when the
 // user is banned, or when the room does not exist locally.
-func (s *Service) JoinRoom(ctx context.Context, idOrAlias, userID string, extra matrix.Object) (string, error) {
-	room, err := s.MustRoom(ctx, idOrAlias)
+func (s *Service) JoinRoom(ctx context.Context, idOrAlias, userID string, extra matrix.Object, via []string) (string, error) {
+	// An alias another server hosts names a room whose address only that server can
+	// give, and it is also one of the servers that can be asked for the join: the alias
+	// is published there, so a server that resolves the alias has just been told it is
+	// in the room.
+	target := idOrAlias
+	if strings.HasPrefix(idOrAlias, "#") {
+		if alias := matrix.Alias(idOrAlias); alias.Domain() != s.serverName {
+			roomID, err := s.ResolveRemoteAlias(ctx, alias)
+			if err != nil {
+				return "", err
+			}
+			target = roomID
+			if !containsServer(via, alias.Domain()) {
+				via = append(via, alias.Domain())
+			}
+		}
+	}
+	room, err := s.MustRoom(ctx, target)
 	if err != nil {
+		// A room this server has never heard of is not necessarily a room that does not
+		// exist: it may live on another server, and the servers to ask are the ones the
+		// client named. Asking is the only way to find out, and the answer is the room's
+		// state - which is what the join handshake is for.
+		//
+		// The miss is asked about as a spec error because MustRoom has already turned the
+		// storage miss into one: testing the storage error here would be a check that can
+		// only ever be false, which is how a join request came to answer 404 for a room
+		// the server had not yet tried to reach.
+		if matrix.HasCode(err, matrix.ErrCodeNotFound) && strings.HasPrefix(target, "!") {
+			if _, ferr := s.JoinFederatedRoom(ctx, target, userID, via); ferr != nil {
+				return "", ferr
+			}
+			return target, nil
+		}
 		return "", err
 	}
 	if !s.LocalRoom(room.ID) {
-		return "", matrix.ErrNotFound("room %s is not hosted by this server", room.ID)
+		if _, ferr := s.JoinFederatedRoom(ctx, room.ID, userID, via); ferr != nil {
+			return "", ferr
+		}
+		return room.ID, nil
 	}
 	current := s.MembershipOf(ctx, room.ID, userID)
 	if current == matrix.MembershipJoin {
@@ -118,7 +154,12 @@ func (s *Service) InviteRoom(ctx context.Context, roomID, inviter, invitee strin
 	if !s.Allow(ctx, room.ID, inviter, "invite", PowerDefaultInvite) {
 		return matrix.ErrForbidden("you do not have permission to invite users to this room")
 	}
-	if !s.UserExists(ctx, invitee) {
+	// A user this server hosts has to exist: inviting a name that owns no account here is a
+	// typo, and a typo is an error rather than an invitation nobody can use. A user on
+	// another server is an address rather than an account this server can look up - the
+	// server that owns the user decides whether it exists - so refusing a remote name is a
+	// room refusing to reach users it has not met yet.
+	if matrix.DomainOf(invitee) == s.serverName && !s.UserExists(ctx, invitee) {
 		return matrix.ErrNotFound("user %s does not exist", invitee)
 	}
 	if invitee == inviter {

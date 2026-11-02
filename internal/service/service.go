@@ -227,7 +227,11 @@ func (s *Service) RoomOrAlias(ctx context.Context, idOrAlias string) (string, er
 			return "", matrix.ErrInvalidRequest("invalid room alias %q", idOrAlias)
 		}
 		if alias.Domain() != s.serverName {
-			return "", matrix.ErrNotFound("alias %s is not hosted by this server", idOrAlias)
+			// The alias belongs to another server, which is the only one that knows what
+			// it points at. Asking is what the specification's alias resolution is: an
+			// answer of "not hosted here" without the question leaves a client with a room
+			// it cannot reach although it named it exactly.
+			return s.ResolveRemoteAlias(ctx, alias)
 		}
 		row, err := s.db.AliasRepo.Get(idOrAlias)
 		if err != nil {

@@ -107,7 +107,8 @@ func (s *Service) CreateRoom(ctx context.Context, params CreateRoomParams) (*per
 }
 
 // Preset holds the defaults derived from a creation preset plus explicit
-// overrides.
+// overrides. An empty guest access means the room gets no m.room.guest_access event
+// at all, which is how a room says "nobody decided about guests".
 type Preset struct {
 	JoinRule          string
 	HistoryVisibility string
@@ -116,21 +117,24 @@ type Preset struct {
 
 // presetDefaults resolves join rule, history visibility and guest access from
 // the preset and any explicit overrides.
+//
+// A public room gets no guest access event. Guests are not welcome in one by default,
+// and writing an event to say so - with a value the specification does not use - is how
+// this server's rooms came to differ from every other server's public rooms in what
+// their state looks like.
 func (s *Service) presetDefaults(params CreateRoomParams) Preset {
 	preset := Preset{
 		JoinRule:          matrix.JoinRulesInvite,
 		HistoryVisibility: matrix.HistoryShared,
-		GuestAccess:       "can_connect",
 	}
 	switch params.Preset {
 	case PresetPublicChat:
 		preset.JoinRule = matrix.JoinRulesPublic
 		preset.HistoryVisibility = matrix.HistoryShared
-		preset.GuestAccess = "can_connect"
 	case PresetPrivateChat, PresetTrustedPrivateChat:
 		preset.JoinRule = matrix.JoinRulesInvite
 		preset.HistoryVisibility = matrix.HistoryShared
-		preset.GuestAccess = "can_connect"
+		preset.GuestAccess = matrix.GuestAccessCanJoin
 	}
 	if params.JoinRule != "" {
 		preset.JoinRule = params.JoinRule
@@ -154,8 +158,12 @@ func (s *Service) writeInitialState(ctx context.Context, roomID string, params C
 	}
 	creation["creator"] = params.Creator
 	creation["room_version"] = params.RoomVersion
+	// A room is federated unless its creator says otherwise: the specification's
+	// create event makes m.federate default to true, and a server that defaults it to
+	// false quietly un-federates every room it creates - the creator then has to know
+	// to ask for federation, which is the opposite of how the feature is specified.
 	if _, ok := creation["m.federate"]; !ok {
-		creation["m.federate"] = false
+		creation["m.federate"] = true
 	}
 	if err := s.appendState(ctx, roomID, params.Creator, matrix.TypeCreate, creation); err != nil {
 		return err
@@ -198,9 +206,11 @@ func (s *Service) writeInitialState(ctx context.Context, roomID string, params C
 		matrix.Object{"history_visibility": preset.HistoryVisibility}); err != nil {
 		return err
 	}
-	if err := s.appendState(ctx, roomID, params.Creator, matrix.TypeGuestAccess,
-		matrix.Object{"guest_access": preset.GuestAccess}); err != nil {
-		return err
+	if preset.GuestAccess != "" {
+		if err := s.appendState(ctx, roomID, params.Creator, matrix.TypeGuestAccess,
+			matrix.Object{"guest_access": preset.GuestAccess}); err != nil {
+			return err
+		}
 	}
 	if params.Alias != "" {
 		// The event names the alias in full. A bare localpart is not an identifier:

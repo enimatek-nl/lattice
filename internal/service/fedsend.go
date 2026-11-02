@@ -222,6 +222,13 @@ func (s *Service) queueEventForPeersExcept(ctx context.Context, event *persist.E
 	if err != nil {
 		return
 	}
+	if event.Type == matrix.TypeMember {
+		acl, aclErr := s.roomServerACL(ctx, event.RoomID)
+		if aclErr != nil {
+			return
+		}
+		destinations = append(destinations, membershipEventServers(event, acl, s.serverName, destinations)...)
+	}
 	if event.Type == matrix.TypeServerACL {
 		// The ACL itself travels to every server in the room, including the ones it
 		// excludes. A ban the banned server is never told about is not a ban: that
@@ -262,6 +269,30 @@ func (s *Service) queueEventForPeersExcept(ctx context.Context, event *persist.E
 		})
 	}
 	s.queueForPeers(items...)
+}
+
+// membershipEventServers names the servers a membership event has to reach that the
+// room's current membership does not: the server of the user the event is about, and the
+// server it was sent from.
+//
+// This is not a courtesy. A ban, a kick or a leave takes its target out of the room, and
+// the destination list is built from the state the event has already changed - so the
+// server of the user who just left is no longer a server in the room, and never learns
+// why. The consequence is not cosmetic: that server keeps relaying the room's events, and
+// its own user keeps being treated as a member by software that was never told otherwise.
+func membershipEventServers(event *persist.Event, acl matrix.Object, self string, already []string) []string {
+	var out []string
+	for _, user := range []string{event.StateKey, event.Sender} {
+		server := matrix.DomainOf(user)
+		if server == "" || server == self || containsServer(already, server) || containsServer(out, server) {
+			continue
+		}
+		if len(acl) > 0 && !federation.ServerAllowed(acl, server) {
+			continue
+		}
+		out = append(out, server)
+	}
+	return out
 }
 
 // transportPDU renders a stored event as the PDU of its room version.

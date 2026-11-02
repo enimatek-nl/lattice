@@ -248,6 +248,19 @@ func ErrAs(err error, notFound func(error) bool) *Error {
 	return ErrInternal(err)
 }
 
+// HasCode reports whether err is, or wraps, a spec error carrying code. Service
+// methods turn storage misses into spec errors, so a caller that has to tell "this
+// room is unknown here" from "something is broken" asks about the code rather than
+// about a storage error that has already been converted. Comparing messages would
+// work until someone reworded an error, which is the sort of thing a rename does.
+func HasCode(err error, code ErrorCode) bool {
+	var merr *Error
+	if !errors.As(err, &merr) {
+		return false
+	}
+	return merr.Code == code
+}
+
 // ErrInternal returns a 500 M_UNKNOWN error wrapping the cause.
 func ErrInternal(err error) *Error {
 	e := newError(ErrCodeUnknown, http.StatusInternalServerError, "internal server error")

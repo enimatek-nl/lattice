@@ -26,10 +26,7 @@ func (s *Service) validateStateEvent(ctx context.Context, roomID, sender, typ, s
 			return matrix.ErrInternal(err)
 		}
 	case matrix.TypeMember:
-		if stateKey != sender {
-			return matrix.ErrForbidden("you cannot change the membership of another user this way")
-		}
-		return matrix.ErrUnrecognized("membership changes must go through the membership endpoints")
+		return s.validateMemberStateWrite(ctx, roomID, sender, stateKey, matrix.MustParseObject(content))
 	case matrix.TypePowerLevels:
 		return s.validatePowerLevels(ctx, roomID, sender, matrix.MustParseObject(content))
 	case matrix.TypeCanonicalAlias:
@@ -135,4 +132,54 @@ func intMap(value any) map[string]int64 {
 		}
 	}
 	return out
+}
+
+// validateMemberStateWrite judges a membership event written through the state
+// endpoint.
+//
+// The endpoint is allowed to carry m.room.member: it is how a room's moderators ban or
+// kick without the dedicated endpoints, and how a room is set up at all in some clients.
+// Refusing it outright was a guess at safety; what the specification actually asks is
+// that the membership decide which power level the sender must hold, so invite needs the
+// room's invite level, a kick its kick level and a ban its ban level. Two memberships
+// stay personal whatever the sender's power: joining and knocking are things only the
+// user in question can do, and no level buys them.
+func (s *Service) validateMemberStateWrite(ctx context.Context, roomID, sender, stateKey string, content matrix.Object) error {
+	membership, _ := content["membership"].(string)
+	if membership == "" {
+		return matrix.ErrInvalidRequest("an m.room.member event must state a membership")
+	}
+	switch membership {
+	case matrix.MembershipJoin, matrix.MembershipKnock:
+		if stateKey != sender {
+			return matrix.ErrForbidden("only the user themselves can join or knock on a room")
+		}
+		return nil
+	case matrix.MembershipLeave:
+		if stateKey == sender {
+			return nil
+		}
+		if !s.Allow(ctx, roomID, sender, "kick", PowerDefaultKick) {
+			return matrix.ErrForbidden("you need permission to remove another user from this room")
+		}
+		return nil
+	case matrix.MembershipInvite:
+		if stateKey == sender {
+			return matrix.ErrForbidden("you cannot invite yourself to a room")
+		}
+		if !s.Allow(ctx, roomID, sender, "invite", PowerDefaultInvite) {
+			return matrix.ErrForbidden("you need permission to invite users to this room")
+		}
+		return nil
+	case matrix.MembershipBan:
+		if stateKey == sender {
+			return matrix.ErrForbidden("you cannot ban yourself from a room this way")
+		}
+		if !s.Allow(ctx, roomID, sender, "ban", PowerDefaultBan) {
+			return matrix.ErrForbidden("you need permission to ban users from this room")
+		}
+		return nil
+	default:
+		return matrix.ErrInvalidRequest("%q is not a membership", membership)
+	}
 }

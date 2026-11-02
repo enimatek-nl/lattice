@@ -1,9 +1,13 @@
 package unit
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -292,28 +296,67 @@ func TestAuthorizationVerification(t *testing.T) {
 	}
 }
 
-// TestGETCarriesNoContent pins the rule that separates "no body" from "an empty
-// object" on a GET. A server that signs an empty object for a GET must be verified
-// against an empty object; inventing a different content makes every GET look
-// forged.
-func TestGETCarriesNoContent(t *testing.T) {
+// TestGETSignsNoContentMember pins the shape of a signed GET, because the two
+// implementations that matter sign it by leaving the content member out: Synapse
+// writes the member only for non-GETs, and gomatrixserverlib marshals the field
+// with "omitempty". A homeserver that invents an empty object there verifies a
+// different document from the one the peer signed, so it refuses every signed GET
+// that peer sends - make_join among them, which is where a federated join starts -
+// and gets its own signed GETs refused in return.
+func TestGETSignsNoContentMember(t *testing.T) {
 	t.Parallel()
 	key, err := federation.NewKeyPair()
 	if err != nil {
 		t.Fatalf("NewKeyPair: %v", err)
 	}
-	fields, err := federation.SignAuthorization(key, "GET", "/_matrix/federation/v1/query/profile?user_id=%40a%3Ah",
+	const uri = "/_matrix/federation/v1/make_join/%21room%3Aorigin.example/%40user%3Adestination.example?ver=10&ver=11"
+
+	// The document as a peer that omits empty fields signs it: no content member.
+	peer := matrix.Object{
+		"method":      "GET",
+		"uri":         uri,
+		"origin":      "origin.example",
+		"destination": "destination.example",
+	}
+	sig, err := key.Sign(peer)
+	if err != nil {
+		t.Fatalf("signing the peer's document: %v", err)
+	}
+	fields := federation.AuthFields{
+		Origin:      "origin.example",
+		Destination: "destination.example",
+		KeyID:       key.ID,
+		Signature:   sig,
+	}
+	if err := federation.VerifyAuthorization(fields, "GET", uri, nil, keyPairPublic(t, key)); err != nil {
+		t.Errorf("a peer's GET, which carries no content member, did not verify: %v", err)
+	}
+	// Content passed for a GET is ignored rather than invented into the signed
+	// document, so a caller that hands over a parsed body cannot break the check.
+	if err := federation.VerifyAuthorization(fields, "GET", uri, matrix.Object{}, keyPairPublic(t, key)); err != nil {
+		t.Errorf("a GET signed with no content did not verify against an empty object: %v", err)
+	}
+
+	// Lattice's own signed GET has to be the same document, not one with an empty
+	// object added.
+	mine, err := federation.SignAuthorization(key, "GET", uri, "origin.example", "destination.example", nil)
+	if err != nil {
+		t.Fatalf("SignAuthorization: %v", err)
+	}
+	if mine.Signature != sig {
+		t.Error("a signed GET is not the document a peer signs: Lattice adds something to it")
+	}
+
+	// A non-GET with nothing to send signs no member either, and must not be
+	// verified against an object that was never sent.
+	bodyless, err := federation.SignAuthorization(key, "PUT", "/_matrix/federation/v1/send_join/%21room%3Aorigin.example/$event",
 		"origin.example", "destination.example", nil)
 	if err != nil {
 		t.Fatalf("SignAuthorization: %v", err)
 	}
-	if err := federation.VerifyAuthorization(fields, "GET", "/_matrix/federation/v1/query/profile?user_id=%40a%3Ah",
-		matrix.Object{}, keyPairPublic(t, key)); err != nil {
-		t.Errorf("a GET signed with no content did not verify against an empty object: %v", err)
-	}
-	if err := federation.VerifyAuthorization(fields, "GET", "/_matrix/federation/v1/query/profile?user_id=%40a%3Ah",
-		matrix.Object{"surprise": true}, keyPairPublic(t, key)); err == nil {
-		t.Error("a GET verified against content that was never sent")
+	if err := federation.VerifyAuthorization(bodyless, "PUT", "/_matrix/federation/v1/send_join/%21room%3Aorigin.example/$event",
+		matrix.Object{}, keyPairPublic(t, key)); err == nil {
+		t.Error("a PUT with no body verified against a body that was never sent")
 	}
 }
 
@@ -593,4 +636,73 @@ func withField(object matrix.Object, field string, value any) matrix.Object {
 	}
 	out[field] = value
 	return out
+}
+
+// fixedIdentity is a server that always signs with one key: enough to drive the
+// transport, which only needs a name and a keypair.
+type fixedIdentity struct {
+	name string
+	key  federation.KeyPair
+}
+
+func (f fixedIdentity) ServerName() string { return f.name }
+
+func (f fixedIdentity) SigningKey(context.Context) (federation.KeyPair, error) { return f.key, nil }
+
+// TestTransportMergesAPathQuery pins that a request whose path already carries a
+// query goes out with one query string, not two. The transport adds its own origin
+// parameter, and appending it to a path that had a query glued it onto the last
+// value: a make_join offering room version 11 arrived offering "11?origin=", and the
+// peer answered that no room version was shared - which reads like a version
+// disagreement and is a malformed request.
+func TestTransportMergesAPathQuery(t *testing.T) {
+	key, err := federation.NewKeyPair()
+	if err != nil {
+		t.Fatalf("NewKeyPair: %v", err)
+	}
+	identity := fixedIdentity{name: "origin.example", key: key}
+
+	var target string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		target = r.URL.RequestURI()
+		fields, err := federation.ParseAuthorization(r.Header.Get("Authorization"))
+		if err != nil {
+			t.Errorf("the transport sent an unreadable authorization header: %v", err)
+		}
+		// The peer verifies over the target it received, so the transport has to
+		// have signed exactly this string.
+		if err := federation.VerifyAuthorization(fields, r.Method, target, nil, key.Public); err != nil {
+			t.Errorf("the transport's own signature does not verify over %s: %v", target, err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"room_version":"11","event":{}}`))
+	}))
+	defer server.Close()
+
+	transport := federation.NewTransport(identity, federation.Config{
+		PeerBaseURLs: map[string]string{"peer.example": server.URL},
+	})
+	query := url.Values{}
+	path := "/_matrix/federation/v1/make_join/%21room%3Apeer.example/%40user%3Aorigin.example?"
+	for _, version := range []string{"1", "11"} {
+		query.Add("ver", version)
+		path += "ver=" + version + "&"
+	}
+	if _, err := transport.Get(context.Background(), "peer.example", strings.TrimSuffix(path, "&"), nil); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	if got := strings.Count(target, "?"); got != 1 {
+		t.Fatalf("the request target carries %d query separators: %s", got, target)
+	}
+	parsed, err := url.ParseRequestURI(target)
+	if err != nil {
+		t.Fatalf("parsing the request target %s: %v", target, err)
+	}
+	if got := parsed.Query()["ver"]; len(got) != 2 || got[0] != "1" || got[1] != "11" {
+		t.Errorf("the room versions arrived as %q, wanted [1 11]", got)
+	}
+	if got := parsed.Query().Get("origin"); got != "origin.example" {
+		t.Errorf("the query named origin %q, wanted the sending server", got)
+	}
 }

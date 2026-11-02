@@ -37,10 +37,31 @@ func TestCreateRoom(t *testing.T) {
 		typ, _ := event["type"].(string)
 		types[typ] = true
 	}
-	for _, want := range []string{"m.room.create", "m.room.member", "m.room.power_levels", "m.room.join_rules", "m.room.history_visibility", "m.room.guest_access", "m.room.name", "m.room.topic"} {
+	for _, want := range []string{"m.room.create", "m.room.member", "m.room.power_levels", "m.room.join_rules", "m.room.history_visibility", "m.room.name", "m.room.topic"} {
 		if !types[want] {
 			t.Errorf("the initial state is missing %s (got %v)", want, keys(types))
 		}
+	}
+	// A public room says nothing about guests. Writing an m.room.guest_access event here
+	// would be a local invention: the presets the ecosystem agrees on leave a public room
+	// with no opinion about guests, and a room whose state carries an extra event answers
+	// differently from everyone else's when a peer describes it over federation.
+	if types["m.room.guest_access"] {
+		t.Errorf("a public room carries %s, which its preset does not ask for", "m.room.guest_access")
+	}
+	privateID := server.CreateRoom(alice, map[string]any{"preset": "private_chat"})
+	private := server.MustDo(http.MethodGet, "/_matrix/client/v3/rooms/"+privateID+"/state", alice.Token, nil, http.StatusOK)
+	found := ""
+	for _, raw := range private.Array {
+		event, _ := raw.(map[string]any)
+		if event["type"] != "m.room.guest_access" {
+			continue
+		}
+		content, _ := event["content"].(map[string]any)
+		found, _ = content["guest_access"].(string)
+	}
+	if found != "can_join" {
+		t.Errorf("a private room's guest access = %q, want can_join", found)
 	}
 
 	public := server.MustDo(http.MethodGet, "/_matrix/client/v3/publicRooms", alice.Token, nil, http.StatusOK)

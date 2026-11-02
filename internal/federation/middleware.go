@@ -75,7 +75,7 @@ func (t *Transport) Authenticate(next http.Handler) http.Handler {
 			}
 		}
 
-		content := matrix.Object{}
+		var content matrix.Object
 		if r.Method != http.MethodGet {
 			decoded, failure := t.contentToVerify(body)
 			if failure != nil {
@@ -102,12 +102,13 @@ func (t *Transport) Authenticate(next http.Handler) http.Handler {
 // Canonical decoding is not a nicety here: a timestamp that goes through float64
 // can come out with different digits, and then a correctly signed request fails
 // its own signature check.
+//
+// An absent body signs no content member, so it decodes to nil rather than to an
+// empty object: that is what a sender with nothing to send signs, and adding a
+// member would verify a different document.
 func (t *Transport) contentToVerify(body []byte) (matrix.Object, *matrix.Error) {
 	if len(bytes.TrimSpace(body)) == 0 {
-		// Every POST and PUT endpoint requires a JSON body, but an empty object
-		// is what a sender signs when it has nothing to send, so an absent body is
-		// treated as that rather than refused.
-		return matrix.Object{}, nil
+		return nil, nil
 	}
 	decoded, err := matrix.DecodeCanonical(body)
 	if err != nil {

@@ -109,11 +109,31 @@ func TestStateEndpoints(t *testing.T) {
 		t.Errorf("state with a key = %s", one.Raw)
 	}
 
-	// Membership may not be edited through the state endpoint.
-	if resp := server.Do(http.MethodPut, "/_matrix/client/v3/rooms/"+roomID+"/state/m.room.member/"+alice.UserID, alice.Token,
-		map[string]any{"membership": "leave"}); resp.Status == http.StatusOK {
-		t.Errorf("membership was written through the state endpoint: %s", resp.Raw)
+	// A membership written through the state endpoint is judged by the room's power
+	// levels rather than refused outright: your own membership is yours to write, and
+	// changing somebody else's needs the level that membership asks for - the ban level
+	// for a ban, the kick level for a kick, the invite level for an invite. Joining and
+	// knocking stay personal: no power level buys the right to join a room as somebody
+	// else.
+	bob := server.Register("bob", "wonderland")
+	if resp := server.Do(http.MethodPut, "/_matrix/client/v3/rooms/"+roomID+"/state/m.room.member/"+bob.UserID, bob.Token,
+		map[string]any{"membership": "ban"}); resp.Status != http.StatusForbidden {
+		t.Errorf("a user with no power banned another user: %d %s", resp.Status, resp.Raw)
 	}
+	if resp := server.Do(http.MethodPut, "/_matrix/client/v3/rooms/"+roomID+"/state/m.room.member/"+bob.UserID, alice.Token,
+		map[string]any{"membership": "join"}); resp.Status == http.StatusOK {
+		t.Errorf("a room's creator joined it as another user: %d %s", resp.Status, resp.Raw)
+	}
+	server.MustDo(http.MethodPut, "/_matrix/client/v3/rooms/"+roomID+"/state/m.room.member/"+bob.UserID, alice.Token,
+		map[string]any{"membership": "ban"}, http.StatusOK)
+	banned := server.MustDo(http.MethodGet, "/_matrix/client/v3/rooms/"+roomID+"/state/m.room.member/"+bob.UserID,
+		alice.Token, nil, http.StatusOK)
+	if banned.String("membership") != "ban" {
+		t.Errorf("the ban written through the state endpoint reads as %s", banned.Raw)
+	}
+	server.MustDo(http.MethodPut, "/_matrix/client/v3/rooms/"+roomID+"/state/m.room.member/"+alice.UserID, alice.Token,
+		map[string]any{"membership": "leave"}, http.StatusOK)
+
 	if resp := server.Do(http.MethodPut, "/_matrix/client/v3/rooms/"+roomID+"/state/m.room.create/", alice.Token,
 		map[string]any{"creator": alice.UserID}); resp.Status == http.StatusOK {
 		t.Errorf("m.room.create was replaced: %s", resp.Raw)

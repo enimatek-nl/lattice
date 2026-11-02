@@ -13,11 +13,13 @@ in the clients; Lattice relays the key material, verifies the cross-signing keys
 that decide what a client trusts, and stores encrypted room-key backups without
 being able to read any of it.
 
-**Status:** working homeserver whose federation transport delivers events between two
-servers and applies them; the end-to-end cryptography stays on the clients. **157 of
-the 234** endpoints indexed in [SPECS.md](SPECS.md) are implemented, plus 27
+**Status:** working homeserver whose federation joins rooms across servers: a user on
+one Lattice gets into a room on another, both hold the room, and the room's decisions
+about a user reach the server that user lives on. The end-to-end cryptography stays on
+the clients. **161 of
+the 234** endpoints indexed in [SPECS.md](SPECS.md) are implemented, plus 29
 extra routes (see [ENDPOINTS.md](ENDPOINTS.md)). 113 black-box compatibility
-tests, 64 offline unit tests and 34 two-server federation tests are green.
+tests, 65 offline unit tests and 36 two-server federation tests are green.
 `make build vet lint` clean (golangci-lint reports 0 issues).
 Implementation version `0.1.0`
 (reported by `GET /_matrix/client/versions` as `Lattice/0.1.0`).
@@ -369,9 +371,10 @@ the upstream Matrix test suite, against a container built from `bin/lattice` by
 itself, which is not a module dependency because its own `go.mod` owns the test
 binaries. Point the target at that checkout (`COMPLEMENT=~/complement make
 complement`), narrow it with `COMPLEMENT_RUN='TestRoomAlias|TestRoomCreate'`, and
-use `COMPLEMENT_PKG=./tests` for the server-server suite — 91 tests, 87 of them
-red, waiting on the federation handshake of TODO steps 9–10 rather than on the
-transport, which already carries signed requests between two containers. Where
+use `COMPLEMENT_PKG=./tests` for the server-server suite — 91 tests, 74 of them
+red, 17 green: the join handshake and what hangs off it is green, and the rest
+waits on the handshakes Lattice does not serve yet — leave, knock, invite, and the
+graph-reading queries of TODO step 11. Where
 Lattice stands, and what each remaining failure is missing, is written up under
 _Complement_ in [TODO.md](TODO.md).
 

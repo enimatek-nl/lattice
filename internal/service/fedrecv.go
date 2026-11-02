@@ -212,6 +212,15 @@ func (s *Service) queuePDU(ctx context.Context, peer, txnID string, pdu matrix.O
 	if err := s.db.ReceivedPDURepo.Mark(eventID, outcome, reason); err != nil {
 		log.Printf("federation: the outcome of %s could not be recorded: %v", eventID, err)
 	}
+	// A refusal is logged because the sender is told about it and the operator otherwise
+	// is not: the reason lives in a database column that nothing reads, and "why is this
+	// event not in my room" is the first question asked of a federation problem.
+	switch outcome {
+	case OutcomeRejected:
+		log.Printf("federation: %s sent %s for %s, which this room refuses: %s", peer, eventID, roomID, reason)
+	case OutcomeSoftFailed:
+		log.Printf("federation: %s is kept but not applied to %s: %s", eventID, roomID, reason)
+	}
 	switch outcome {
 	case OutcomeStored, OutcomeSoftFailed:
 		stored, err := s.db.EventRepo.Get(eventID)

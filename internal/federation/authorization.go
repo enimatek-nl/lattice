@@ -3,6 +3,7 @@ package federation
 import (
 	"crypto/ed25519"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/enimatek-nl/lattice/internal/matrix"
@@ -155,19 +156,27 @@ func readQuoted(value string) (string, string, error) {
 //
 // The uri is the path plus query as it is sent - no scheme, no host - because the
 // peer verifies over the target it received, so a transport that re-encoded the
-// query string on the way out would fail its own signature. content is the parsed
-// body, or an empty object for a GET, which has no body to sign.
+// query string on the way out would fail its own signature.
+//
+// content is the parsed body, and nil means the request has no body and therefore
+// signs no content member at all. A GET is always in that case, whatever the
+// caller passes, and this is not a detail: Synapse leaves the member out of a GET's
+// signed object and gomatrixserverlib marshals it with "omitempty", so a server
+// that substitutes an empty object verifies a different document from the one the
+// peer signed. It then refuses every signed GET that peer makes - including the
+// make_join a federated join begins with - and has its own signed GETs refused in
+// return. Both sides were tested against each other before this was written down.
 func requestObject(method, uri, origin, destination string, content matrix.Object) matrix.Object {
-	if content == nil {
-		content = matrix.Object{}
-	}
-	return matrix.Object{
+	object := matrix.Object{
 		"method":      strings.ToUpper(method),
 		"uri":         uri,
 		"origin":      origin,
 		"destination": destination,
-		"content":     content,
 	}
+	if content != nil && strings.ToUpper(method) != http.MethodGet {
+		object["content"] = content
+	}
+	return object
 }
 
 // SignAuthorization produces the header for an outgoing request.
@@ -187,7 +196,8 @@ func SignAuthorization(key KeyPair, method, uri, origin, destination string, con
 
 // VerifyAuthorization checks the signature of an incoming request against the
 // public key the caller resolved for fields.KeyID. content follows the same rule
-// as when signing: an empty object for a GET, the parsed body otherwise.
+// as when signing: nil for a GET or a request with no body, the parsed body
+// otherwise.
 //
 // The signature is checked over an object whose signatures member holds the value
 // being verified, which is how matrix.VerifyEd25519Signature reads it: that helper

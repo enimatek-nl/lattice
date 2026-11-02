@@ -236,6 +236,20 @@ type GuestAccessContent struct {
 	GuestAccess string `json:"guest_access"`
 }
 
+// The guest access levels an m.room.guest_access event can name. "can_connect" is the
+// pre-spec spelling of "can_join" and is still read, because a room created by an early
+// Synapse says that and nothing else.
+const (
+	GuestAccessCanJoin   = "can_join"
+	GuestAccessForbidden = "forbidden"
+	guestAccessLegacy    = "can_connect"
+)
+
+// GuestAccessAllows reports whether a guest access value lets a guest in.
+func GuestAccessAllows(value string) bool {
+	return value == GuestAccessCanJoin || value == guestAccessLegacy
+}
+
 // CanonicalAliasContent is the content of an m.room.canonical_alias event.
 type CanonicalAliasContent struct {
 	Alias      string   `json:"alias,omitempty"`

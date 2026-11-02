@@ -100,7 +100,8 @@ func (a *App) handleJoinRoom(w http.ResponseWriter, r *http.Request) {
 	if target == "" {
 		target = r.PathValue("roomId")
 	}
-	roomID, err := a.svc.JoinRoom(r.Context(), target, auth.GetUserID(r), bodyObject(r))
+	via := r.URL.Query()["server_name"]
+	roomID, err := a.svc.JoinRoom(r.Context(), target, auth.GetUserID(r), bodyObject(r), via)
 	if err != nil {
 		a.writeError(w, r, err)
 		return

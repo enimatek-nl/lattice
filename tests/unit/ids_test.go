@@ -27,6 +27,8 @@ func TestAliases(t *testing.T) {
 		{alias: "#lattice/dev:example.com", valid: true, name: "lattice/dev", domain: "example.com",
 			comment: "a slash nests an alias, which the specification allows"},
 		{alias: "#room-1_2=3:example.com", valid: true, name: "room-1_2=3", domain: "example.com"},
+		{alias: "#MissingSignatures:peer.example", valid: true, name: "MissingSignatures", domain: "peer.example",
+			comment: "another server named this room; recognising it is not this server's to refuse"},
 		{alias: "#", valid: false, name: "", domain: "", comment: "no localpart and no domain"},
 		{alias: "lattice:example.com", valid: false, name: "lattice", domain: "example.com",
 			comment: "invalid, but readable: the sigil is what makes an alias an alias"},

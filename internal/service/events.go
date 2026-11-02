@@ -213,8 +213,19 @@ func (s *Service) applySideEffects(tx *gorm.DB, draft *EventDraft, event *persis
 			return fmt.Errorf("update join rule: %w", err)
 		}
 	case matrix.TypeCreate:
-		// The creator's membership is recorded when the room is created; no
-		// extra work here.
+		// The creator's membership is recorded when the room is created; what is
+		// recorded here is the creator itself, which a room joined from another server
+		// learns from the create event rather than from having made the room.
+		var content matrix.CreateContent
+		if err := matrix.DecodeContent(matrix.RawMessage(event.Content), &content); err == nil && content.Creator != "" {
+			rooms := persist.NewRoomRepo(tx)
+			if room, err := rooms.Get(draft.RoomID); err == nil && room.Creator == "" {
+				room.Creator = content.Creator
+				if err := rooms.Save(room); err != nil {
+					return fmt.Errorf("record the room's creator: %w", err)
+				}
+			}
+		}
 	}
 	return nil
 }

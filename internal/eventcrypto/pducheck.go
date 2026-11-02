@@ -99,7 +99,14 @@ func PDUCheck(event matrix.Object, roomVersion string) error {
 		}
 	}
 
-	// The properties that only old room versions have, and the ones they lost.
+	// The properties only old room versions have. Newer versions define no origin and
+	// no prev_state, but that is a list of what a sender has to send rather than a list
+	// of what it may not: an event carrying an extra member is still the event that was
+	// signed, because the hash and the signature cover the members that are there. A
+	// receiver that refuses one over a member the version dropped is refusing a room it
+	// could otherwise read - gomatrixserverlib puts origin in every event it builds,
+	// room version 11 and all, which is how this was found: the state of a room joined
+	// over federation could not be stored.
 	if legacy {
 		if origin, ok := event["origin"].(string); !ok || origin == "" {
 			return fmt.Errorf("a PDU in room version %d must name the server it came from in origin", version)
@@ -109,12 +116,6 @@ func PDUCheck(event matrix.Object, roomVersion string) error {
 		}
 		if _, ok := event["event_id"].(string); !ok {
 			return fmt.Errorf("a PDU in room version %d must carry an event id the origin server chose", version)
-		}
-	} else {
-		for _, field := range []string{"origin", "prev_state"} {
-			if _, present := event[field]; present {
-				return fmt.Errorf("a PDU in room version %d must not carry %s", version, field)
-			}
 		}
 	}
 

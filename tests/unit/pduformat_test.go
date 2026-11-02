@@ -260,14 +260,17 @@ func TestPDUFormat(t *testing.T) {
 			},
 		},
 		{
-			name:    "a version 3 event may not carry the fields version 2 had",
-			version: "3",
+			// The version 3 format has no origin, and a sender that sends one anyway has
+			// still signed the event it sent. gomatrixserverlib does exactly this - its
+			// event builder writes origin into every room version - so refusing it here
+			// meant the state of a federated room could not be stored at all.
+			name:    "a version 11 event carrying origin anyway is still the event that was signed",
+			version: "11",
 			event: func(t *testing.T) matrix.Object {
 				event := pduBase(t)
 				event["origin"] = "alice.example"
 				return event
 			},
-			want: "must not carry origin",
 		},
 		{
 			name:    "a version 2 event has to name its origin server",

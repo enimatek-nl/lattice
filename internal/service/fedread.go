@@ -3,7 +3,10 @@ package service
 import (
 	"context"
 	"log"
+	"net/url"
+	"strings"
 
+	"github.com/enimatek-nl/lattice/internal/federation"
 	"github.com/enimatek-nl/lattice/internal/matrix"
 	"github.com/enimatek-nl/lattice/internal/persist"
 )
@@ -86,4 +89,64 @@ func (s *Service) roomSharesServer(ctx context.Context, roomID, server string) (
 		}
 	}
 	return false, nil
+}
+
+// ResolveRemoteAlias asks the server an alias carries which room it points at: GET of
+// /_matrix/federation/v1/query/directory.
+//
+// An alias this server does not host is still an address. The only way to learn what it
+// addresses is to ask the server whose name it carries, and a server that skips the
+// question answers "no such room" about a room that exists a hop away - which is how a
+// join by alias of a room on another server fails without ever reaching that server.
+func (s *Service) ResolveRemoteAlias(ctx context.Context, alias matrix.Alias) (string, error) {
+	transport := s.federationTransport()
+	if transport == nil {
+		return "", matrix.ErrNotFound("alias %s is not hosted by this server and federation is off", alias)
+	}
+	body, err := transport.Get(ctx, alias.Domain(), "/_matrix/federation/v1/query/directory",
+		url.Values{"room_alias": []string{string(alias)}})
+	if err != nil {
+		return "", err
+	}
+	roomID, _ := body["room_id"].(string)
+	if roomID == "" {
+		return "", matrix.ErrNotFound("%s answered no room for the alias %s", alias.Domain(), alias)
+	}
+	if !strings.HasPrefix(roomID, "!") {
+		return "", matrix.ErrNotFound("%s answered the alias %s with %q, which is not a room id",
+			alias.Domain(), alias, roomID)
+	}
+	return roomID, nil
+}
+
+// DirectoryAnswer answers a peer asking what one of this server's aliases points at:
+// GET of /_matrix/federation/v1/query/directory.
+//
+// An alias is a public identifier - that is what makes it an address - so the answer is
+// not restricted to servers already in the room. What is restricted is what a room that
+// excluded the peer has to offer: an ACL is the room's own statement about who may be
+// told anything about it.
+func (s *Service) DirectoryAnswer(ctx context.Context, alias string, peer string) (matrix.Object, error) {
+	row, err := s.db.AliasRepo.Get(alias)
+	if err != nil {
+		if persist.IsNotFound(err) {
+			return nil, matrix.ErrNotFound("this server hosts no alias %s", alias)
+		}
+		return nil, matrix.ErrInternal(err)
+	}
+	acl, err := s.roomServerACL(ctx, row.RoomID)
+	if err != nil {
+		return nil, err
+	}
+	if !federation.ServerAllowed(acl, peer) {
+		return nil, matrix.ErrForbidden("this room excludes %s", peer)
+	}
+	servers, err := s.destinationsOfRoomIgnoringACL(ctx, row.RoomID)
+	if err != nil {
+		return nil, err
+	}
+	return matrix.Object{
+		"room_id": row.RoomID,
+		"servers": servers,
+	}, nil
 }

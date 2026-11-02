@@ -85,6 +85,15 @@ func (s *Service) buildSync(ctx context.Context, params SyncParams, filter *Sync
 	if err != nil {
 		return nil, false, matrix.ErrInternal(err)
 	}
+	// A banned user is told about the room as well. The leave bucket is where "you are not
+	// in this room any more" is reported, and a ban is exactly that; a sync that says
+	// nothing leaves a client showing a room its user was thrown out of, and the ban event
+	// - the only explanation of the change - never reaches them.
+	banned, err := s.db.MembershipRepo.RoomsFor(userID, matrix.MembershipBan)
+	if err != nil {
+		return nil, false, matrix.ErrInternal(err)
+	}
+	left = append(left, banned...)
 
 	response := &matrix.SyncResponse{
 		NextBatch: s.Token(pos),

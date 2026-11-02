@@ -120,7 +120,7 @@ func (s *Service) applyIncomingPDU(ctx context.Context, pdu matrix.Object, versi
 		return OutcomeRejected, problem, nil
 	}
 
-	if err := s.storeIncomingPDU(pdu, eventID, softFailure); err != nil {
+	if err := s.storeIncomingPDU(pdu, eventID, softFailure, false); err != nil {
 		return "", "", err
 	}
 	if softFailure != "" {
@@ -161,7 +161,14 @@ func (s *Service) gatherAuthChain(ctx context.Context, graph *authcheck.Graph, p
 		}
 		found := map[string]bool{}
 		for _, row := range stored {
-			graph.Add(pduEvent(matrix.MustParseObject([]byte(row.JSON))))
+			// A stored event of a room version from 3 onwards carries no id inside itself -
+			// the id is the hash of the event, and writing it in would change what it hashes
+			// to. The graph keys events by id, so the id has to be put back before the copy
+			// is added: an unnamed event is dropped, and the graph then falls back to the
+			// state summary of the same event, which carries no prev_events and no
+			// auth_events. That looks like an event that cites no auth events, and the room
+			// refuses an honest ban over it.
+			graph.Add(pduEvent(withEventID(matrix.MustParseObject([]byte(row.JSON)), row.EventID)))
 			complete[row.EventID] = true
 			found[row.EventID] = true
 		}
@@ -269,7 +276,9 @@ func (s *Service) readCurrentState(roomID string, graph *authcheck.Graph, comple
 		return nil, matrix.ErrInternal(err)
 	}
 	for _, row := range stored {
-		graph.Add(pduEvent(matrix.MustParseObject([]byte(row.JSON))))
+		// Named for the same reason as in gatherAuthChain: the id is not inside the event
+		// in the newer room versions, and the graph cannot hold an event it cannot name.
+		graph.Add(pduEvent(withEventID(matrix.MustParseObject([]byte(row.JSON)), row.EventID)))
 		complete[row.EventID] = true
 	}
 	for _, row := range rows {
@@ -339,7 +348,9 @@ func withEventID(pdu matrix.Object, eventID string) matrix.Object {
 // in the graph, and the state and side effects it carries when the rules allowed it.
 // A soft-failed event is written and nothing else - that is what makes it a claim the
 // room does not currently apply.
-func (s *Service) storeIncomingPDU(pdu matrix.Object, eventID, softFailure string) error {
+// notInTimeline says whether the event belongs to this room's timeline. The state that
+// arrives with a join from another server does not: see [persist.Event.NotInTimeline].
+func (s *Service) storeIncomingPDU(pdu matrix.Object, eventID, softFailure string, notInTimeline bool) error {
 	roomID := federation.EventField(pdu, "room_id")
 	encoded := matrix.Encode(objectOf(pdu, "content"))
 	pos := s.nextStreamPos()
@@ -363,6 +374,7 @@ func (s *Service) storeIncomingPDU(pdu matrix.Object, eventID, softFailure strin
 		PrevEvents:     encodedIDs(idsOfPDUList(pdu, "prev_events")),
 		AuthEvents:     encodedIDs(idsOfPDUList(pdu, "auth_events")),
 		SoftFailed:     softFailure != "",
+		NotInTimeline:  notInTimeline,
 	}
 	if key, ok := pdu["state_key"].(string); ok {
 		event.StateKey = key
@@ -374,6 +386,15 @@ func (s *Service) storeIncomingPDU(pdu matrix.Object, eventID, softFailure strin
 	return s.db.Tx(func(tx *gorm.DB) error {
 		events := persist.NewEventRepo(tx)
 		if err := events.Create(event); err != nil {
+			if persist.IsDuplicate(err) {
+				// The event is already here: some other path reached it first - the state a
+				// join handed over, an event relayed by a peer, the same delivery twice.
+				// The copy on disk wins and the side effects are skipped, because running
+				// them again would be a second opinion on state this server has already
+				// resolved, and because a join that re-presents an event it already holds is
+				// a join that should simply succeed.
+				return nil
+			}
 			return fmt.Errorf("insert the received event: %w", err)
 		}
 		if softFailure != "" {

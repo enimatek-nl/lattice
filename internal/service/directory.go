@@ -266,7 +266,7 @@ func (s *Service) guestsCanConnect(ctx context.Context, roomID string) bool {
 	if err := matrix.DecodeContent(raw, &content); err != nil {
 		return false
 	}
-	return content.GuestAccess == "can_connect"
+	return matrix.GuestAccessAllows(content.GuestAccess)
 }
 
 // GuestsCanRead reports whether an unauthenticated request may read a room: a
