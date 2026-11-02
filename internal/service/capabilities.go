@@ -74,8 +74,8 @@ func (s *Service) LoginFlows() map[string]any {
 // Lattice creates and stores every version it lists here and applies one set of
 // state and redaction rules to all of them; it does not vary them per version.
 func (s *Service) Capabilities() matrix.Object {
-	available := make(map[string]string, len(SupportedRoomVersions))
-	for _, version := range SupportedRoomVersions {
+	available := make(map[string]string, len(s.roomVersions))
+	for _, version := range s.roomVersions {
 		available[version] = "stable"
 	}
 	return matrix.Object{

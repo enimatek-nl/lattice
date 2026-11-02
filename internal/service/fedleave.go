@@ -254,7 +254,7 @@ func (s *Service) leaveViaServer(ctx context.Context, transport *federation.Tran
 	if err != nil {
 		return err
 	}
-	if !roomVersionIsSupported(version) {
+	if !s.roomVersionIsSupported(version) {
 		return fmt.Errorf("the room is version %s, which this server cannot speak", version)
 	}
 	proto, _ := proposal["event"].(matrix.Object)

@@ -44,6 +44,11 @@ type Service struct {
 	// the stages a client has already completed.
 	uiaMu       sync.Mutex
 	uiaSessions map[string]*authSession
+	// roomVersions are the room versions this server speaks: the ones it will create,
+	// the ones it offers in a make_join, and the ones it will hold a room in. It is
+	// configuration rather than a constant because the list grows with the specification,
+	// and a deployment may want to offer fewer than it understands.
+	roomVersions []string
 	// federationEnabled is set by -federation. It decides whether the API layer
 	// mounts the server-server routes and whether the outbox queues anything; the
 	// signing key exists either way, because events are signed where they are created.
@@ -114,6 +119,14 @@ func WithFederation(enabled bool) Option {
 	return func(s *Service) { s.federationEnabled = enabled }
 }
 
+// WithRoomVersions replaces the room versions this server speaks. Versions this
+// server does not speak are refused at creation, and a room in a version it does not
+// speak cannot be joined - which is why the join handshake says so by name rather than
+// as a room it could not find.
+func WithRoomVersions(versions ...string) Option {
+	return func(s *Service) { s.roomVersions = versions }
+}
+
 // New builds a service for the given database and server name.
 func New(db *persist.Database, serverName string, tokens *auth.TokenService, opts ...Option) (*Service, error) {
 	s := &Service{
@@ -124,6 +137,7 @@ func New(db *persist.Database, serverName string, tokens *auth.TokenService, opt
 		now:               time.Now,
 		maxUploadSize:     DefaultMaxUploadSize,
 		reservationWindow: DefaultMediaReservationWindow,
+		roomVersions:      append([]string(nil), SupportedRoomVersions...),
 		uiaSessions:       map[string]*authSession{},
 	}
 	for _, opt := range opts {

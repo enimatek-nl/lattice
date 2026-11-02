@@ -461,3 +461,32 @@ func sameStrings(a, b []string) bool {
 	}
 	return true
 }
+
+// TestAJoinOfARoomThisServerCannotSpeakNamesTheVersion covers the refusal a server gives
+// when a room is in a room version it does not speak. This is not a missing room and not a
+// server that would not answer: the peer knows exactly what is wrong and says which version
+// the room is in. Flatten that into "no server in the list could complete the join" and the
+// operator is left comparing servers that are both fine, looking for a network fault.
+func TestAJoinOfARoomThisServerCannotSpeakNamesTheVersion(t *testing.T) {
+	cluster := newClusterSpeaking(t, map[string][]string{serverTwo: {"1"}}, serverOne, serverTwo)
+	one, two := cluster.one(), cluster.two()
+
+	alice := one.register("alice", "wonderland")
+	bob := two.register("bob", "wonderland")
+	roomID := one.createRoom(alice, map[string]any{"preset": "public_chat"})
+
+	// The peer holds the room in a version the joining server was configured not to
+	// speak, so it refuses the template and names the version.
+	refused := joinVia(two, bob, roomID, one.name)
+	if refused.Status != http.StatusBadRequest || refused.errCode() != string(matrix.ErrCodeIncompatibleRoomVer) {
+		t.Fatalf("%s was answered %d for joining %s, want 400 %s: %s",
+			bob.UserID, refused.Status, roomID, matrix.ErrCodeIncompatibleRoomVer, refused.Raw)
+	}
+	version, _ := refused.Body["room_version"].(string)
+	if version == "" {
+		t.Fatalf("the refusal for %s does not name the room version the room is in: %s", roomID, refused.Raw)
+	}
+	if version == "1" {
+		t.Errorf("%s named the version %s, which is the one %s was configured to speak", roomID, version, two.name)
+	}
+}

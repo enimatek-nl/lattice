@@ -3,8 +3,10 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"net/url"
 	"sort"
 	"strings"
@@ -51,12 +53,26 @@ func (s *Service) JoinFederatedRoom(ctx context.Context, roomID, userID string, 
 	if transport == nil {
 		return nil, matrix.ErrNotFound("room %s is not hosted by this server and federation is off", roomID)
 	}
+	// A room in a version this server does not speak is a different answer from a room
+	// nobody would talk about, and it is the one the client can act on: the version is
+	// named, so the operator knows what to add rather than hunting for a missing room.
+	var incompatible error
 	for _, server := range joinServers(roomID, via) {
 		event, err := s.joinViaServer(ctx, transport, roomID, userID, server)
 		if err == nil {
 			return event, nil
 		}
 		log.Printf("federation: joining %s through %s failed: %v", roomID, server, err)
+		if matrix.HasCode(err, matrix.ErrCodeIncompatibleRoomVer) {
+			incompatible = err
+			if version, _ := roomVersionOfError(err); version != "" {
+				log.Printf("federation: %s says %s is room version %s; this server speaks %s",
+					server, roomID, version, strings.Join(s.roomVersions, ", "))
+			}
+		}
+	}
+	if incompatible != nil {
+		return nil, incompatible
 	}
 	return nil, matrix.ErrNotFound("no server in the list could complete the join of %s for %s", roomID, userID)
 }
@@ -76,7 +92,7 @@ func (s *Service) joinViaServer(ctx context.Context, transport *federation.Trans
 	if err != nil {
 		return nil, err
 	}
-	if !roomVersionIsSupported(version) {
+	if !s.roomVersionIsSupported(version) {
 		return nil, fmt.Errorf("the room is version %s, which this server cannot speak", version)
 	}
 	// The proposal is a shape, not an authorisation: the sender, the state key and the
@@ -147,7 +163,7 @@ func (s *Service) requestMakeJoin(ctx context.Context, transport *federation.Tra
 	escapedUser := url.PathEscape(userID)
 	for _, version := range []string{"v1", "v2"} {
 		query := url.Values{}
-		for _, supported := range SupportedRoomVersions {
+		for _, supported := range s.roomVersions {
 			query.Add("ver", supported)
 		}
 		path := fmt.Sprintf("/_matrix/federation/%s/make_join/%s/%s", version, escapedRoom, escapedUser)
@@ -278,6 +294,18 @@ func containsServer(servers []string, server string) bool {
 	return false
 }
 
+// roomVersionOfError returns the room version a peer named in a refusal, which the
+// specification carries for M_INCOMPATIBLE_ROOM_VERSION, and the status the refusal
+// arrived with.
+func roomVersionOfError(err error) (string, int) {
+	var merr *matrix.Error
+	if !errors.As(err, &merr) {
+		return "", 0
+	}
+	version, _ := merr.Extra["room_version"].(string)
+	return version, merr.Status
+}
+
 // joinServers orders the servers a join may be attempted through: the ones the client
 // named, in order, and then the server the room id itself names. The room id's server is
 // last rather than first on purpose - it is the server that made the room, which is also
@@ -326,8 +354,8 @@ func (s *Service) joinAllowed(ctx context.Context, roomID, userID string, prevID
 }
 
 // roomVersionIsSupported reports whether a room version is one this server can speak.
-func roomVersionIsSupported(version string) bool {
-	for _, supported := range SupportedRoomVersions {
+func (s *Service) roomVersionIsSupported(version string) bool {
+	for _, supported := range s.roomVersions {
 		if supported == version {
 			return true
 		}
@@ -390,8 +418,13 @@ func (s *Service) ServeMakeJoin(ctx context.Context, roomID, userID, peer string
 			}
 		}
 		if !agreed {
-			return nil, matrix.ErrInvalidRequest("this room is version %s and %s speaks none of the versions offered",
-				version, peer)
+			// The specification names this refusal M_INCOMPATIBLE_ROOM_VERSION and carries the
+			// room's version with it, because "no version in common" is only useful once the
+			// other side knows which version was missing.
+			err := matrix.NewError(matrix.ErrCodeIncompatibleRoomVer, http.StatusBadRequest,
+				fmt.Sprintf("this room is version %s and %s speaks none of the versions offered", version, peer))
+			err.Extra = matrix.Object{"room_version": version}
+			return nil, err
 		}
 	}
 	var (

@@ -59,7 +59,7 @@ func (s *Service) ServeInvite(ctx context.Context, roomID, eventID string, body 
 	if err != nil {
 		return nil, err
 	}
-	if !roomVersionIsSupported(version) {
+	if !s.roomVersionIsSupported(version) {
 		return nil, matrix.ErrForbidden("the room is version %s, which this server cannot speak", version)
 	}
 	if problem := s.inviteIsBackedByTheRoom(event, state, roomID); problem != "" {
@@ -137,7 +137,7 @@ func (s *Service) roomVersionOfInvite(ctx context.Context, event matrix.Object, 
 	}
 	matches := 0
 	version := ""
-	for _, candidate := range SupportedRoomVersions {
+	for _, candidate := range s.roomVersions {
 		derived, err := eventcrypto.EventID(withEventID(event, eventID), candidate)
 		if err != nil || derived != eventID {
 			continue

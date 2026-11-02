@@ -363,7 +363,7 @@ func (s *Service) UpgradeRoom(ctx context.Context, roomID, requester, newVersion
 	if newVersion == "" {
 		return "", matrix.ErrInvalidParam("a new room version is required")
 	}
-	if !versionSupported(newVersion) {
+	if !s.versionSupported(newVersion) {
 		return "", matrix.NewError(matrix.ErrCodeIncompatibleRoomVer, 400,
 			"this room cannot be upgraded to version "+newVersion)
 	}

@@ -20,7 +20,7 @@ room. The end-to-end cryptography stays on
 the clients. **165 of
 the 234** endpoints indexed in [SPECS.md](SPECS.md) are implemented, plus 31
 extra routes (see [ENDPOINTS.md](ENDPOINTS.md)). 117 black-box compatibility
-tests, 65 offline unit tests and 40 two-server federation tests are green.
+tests, 65 offline unit tests and 41 two-server federation tests are green.
 `make build vet lint` clean (golangci-lint reports 0 issues).
 Implementation version `0.1.0`
 (reported by `GET /_matrix/client/versions` as `Lattice/0.1.0`).

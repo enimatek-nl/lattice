@@ -114,6 +114,15 @@ func newCluster(t *testing.T) *cluster {
 // newClusterNamed starts a cluster of the given server names.
 func newClusterNamed(t *testing.T, names ...string) *cluster {
 	t.Helper()
+	return newClusterSpeaking(t, nil, names...)
+}
+
+// newClusterSpeaking starts a cluster in which a named server speaks only the given room
+// versions. A server cannot hold a room in a version it does not speak, and what it has to
+// say when asked for one is the version, so the tests about that need a server configured
+// to know fewer versions than its peer.
+func newClusterSpeaking(t *testing.T, speaking map[string][]string, names ...string) *cluster {
+	t.Helper()
 	c := &cluster{t: t, servers: map[string]*server{}, holders: map[string]*lazyHandler{}, order: names}
 	holders := map[string]*lazyHandler{}
 	listeners := map[string]*httptest.Server{}
@@ -130,7 +139,8 @@ func newClusterNamed(t *testing.T, names ...string) *cluster {
 		peers[name] = httpServer.URL
 	}
 	for _, name := range names {
-		c.servers[name] = c.start(name, holders[name], listeners[name], peers, filepath.Join(directory, name+".db"))
+		c.servers[name] = c.start(name, holders[name], listeners[name], peers,
+			filepath.Join(directory, name+".db"), speaking[name])
 	}
 	return c
 }
@@ -167,7 +177,7 @@ func (c *cluster) restore(name string) {
 func (c *cluster) dbPathOf(name string) string { return c.servers[name].dbPath }
 
 // start builds one homeserver and installs it behind its listener.
-func (c *cluster) start(name string, holder *lazyHandler, httpServer *httptest.Server, peers map[string]string, dbPath string) *server {
+func (c *cluster) start(name string, holder *lazyHandler, httpServer *httptest.Server, peers map[string]string, dbPath string, roomVersions []string) *server {
 	c.t.Helper()
 	db, err := persist.NewDatabase(dbPath)
 	if err != nil {
@@ -175,7 +185,11 @@ func (c *cluster) start(name string, holder *lazyHandler, httpServer *httptest.S
 	}
 	c.t.Cleanup(func() { _ = db.Close() })
 	tokens := authTokens(name)
-	svc, err := service.New(db, name, tokens, service.WithFederation(true))
+	options := []service.Option{service.WithFederation(true)}
+	if len(roomVersions) > 0 {
+		options = append(options, service.WithRoomVersions(roomVersions...))
+	}
+	svc, err := service.New(db, name, tokens, options...)
 	if err != nil {
 		c.t.Fatalf("building service for %s: %v", name, err)
 	}

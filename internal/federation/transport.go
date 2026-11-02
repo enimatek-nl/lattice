@@ -284,8 +284,9 @@ func (t *Transport) do(ctx context.Context, destination, method, path string, qu
 // into a string loses the only part of it that is actionable.
 func peerError(status int, raw []byte, destination string) error {
 	var body struct {
-		Errcode string `json:"errcode"`
-		Error   string `json:"error"`
+		Errcode     string `json:"errcode"`
+		Error       string `json:"error"`
+		RoomVersion string `json:"room_version"`
 	}
 	if err := json.Unmarshal(raw, &body); err == nil && body.Errcode != "" {
 		if body.Errcode == string(matrix.ErrCodeUnauthorized) {
@@ -307,11 +308,18 @@ func peerError(status int, raw []byte, destination string) error {
 				Status:  http.StatusBadGateway,
 			}
 		}
-		return &matrix.Error{
+		err := &matrix.Error{
 			Code:    matrix.ErrorCode(body.Errcode),
 			Message: body.Error,
 			Status:  status,
 		}
+		if body.RoomVersion != "" {
+			// M_INCOMPATIBLE_ROOM_VERSION is meaningless without the version it refused.
+			// The specification puts the room's version in the body for exactly that reason:
+			// the answer to "we cannot speak to this room" is the version the room is in.
+			err.Extra = matrix.Object{"room_version": body.RoomVersion}
+		}
+		return err
 	}
 	return &matrix.Error{
 		Code:    matrix.ErrCodeUnknown,

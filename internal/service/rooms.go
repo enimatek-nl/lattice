@@ -49,7 +49,7 @@ func (s *Service) CreateRoom(ctx context.Context, params CreateRoomParams) (*per
 	if version == "" {
 		version = DefaultRoomVersion
 	}
-	if !versionSupported(version) {
+	if !s.versionSupported(version) {
 		return nil, matrix.NewError(matrix.ErrCodeUnsupportedRoomVer, 400,
 			"room version "+version+" is not supported by this homeserver")
 	}
@@ -305,8 +305,8 @@ func (s *Service) appendMember(ctx context.Context, roomID, sender, target strin
 }
 
 // versionSupported reports whether the server can create a room version.
-func versionSupported(version string) bool {
-	for _, v := range SupportedRoomVersions {
+func (s *Service) versionSupported(version string) bool {
+	for _, v := range s.roomVersions {
 		if v == version {
 			return true
 		}

@@ -14,7 +14,7 @@ re-derive were kept (below the plan).
   `make build vet lint` clean (`make lint` = golangci-lint, 0 issues),
   `go test ./...` green — **117** compatibility tests (~52 s here, ~5½ min
   with `-race` on this machine), **65** offline unit tests in `tests/unit`
-  (milliseconds), and **40** two-server tests in `tests/federation` (~13 s,
+  (milliseconds), and **41** two-server tests in `tests/federation` (~13 s,
   ~56 s with `-race`). Coverage: **165 of the 234** indexed endpoints, 31 extra
   routes (`make endpoints`). Steps 1–10 are closed: rate limiting, the
   client-API correctness tails, batched reads, offline unit tests, the
@@ -922,6 +922,22 @@ which now works, plus the pieces named above).
   account is checked before the federation transport is blamed, so a session the server
   cannot act for is not reported as a room it cannot reach; and the startup log counts the
   accounts that belong to another name.
+- **A room version this server does not speak is refused by name, not as a missing room.**
+  A real join of a room on another homeserver failed with the peer answering
+  `M_INCOMPATIBLE_ROOM_VERSION`, and Lattice reported
+  `404 no server in the list could complete the join` - a sentence that sends an operator to
+  compare two healthy servers. The version now travels: a peer's refusal carries
+  `room_version`, this server keeps it and answers the client with
+  `M_INCOMPATIBLE_ROOM_VERSION` plus that version, and its own `make_join` answers the same
+  way when asked for versions none of which it holds. The room in the field was version 12,
+  which Lattice does not speak: **room version 12 is the next room-format step**, and it is
+  more than adding a number to the list. It drops the domain from room IDs (the room in the
+  field was `!HgwqGE1...` with no `:host`, which several paths in this server read as a
+  malformed ID), it gives `m.room.create.content.creators` power over the power levels, and
+  it measures event limits in bytes. The list of versions a server speaks is configuration
+  now (`service.WithRoomVersions`), which is what made the refusal testable: a cluster where
+  one server speaks only version 1, joining a version 11 room.
+
 - **A peer that cannot fetch this server's key refuses everything, and the client sees an
   authentication error.** A real deployment behind a reverse proxy on 443 answers peers on
   443, but the well-known document published `m.server: <server name>` - a name with no port,
