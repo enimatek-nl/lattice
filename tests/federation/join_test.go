@@ -242,6 +242,36 @@ func TestALeaveReachesTheServersThatStayInTheRoom(t *testing.T) {
 	}
 }
 
+// TestARelayedInviteReachesAServerNewToTheRoom invites a user whose server has never
+// been in the room, after the room has moved on without them. The invite reaches that
+// server as an ordinary event citing prev and auth events it has never been told about,
+// and it still has to end up holding the invite: a user who is not told they have been
+// invited cannot answer, and a room that invites into the void has no invite at all.
+func TestARelayedInviteReachesAServerNewToTheRoom(t *testing.T) {
+	cluster := newClusterNamed(t, serverOne, serverTwo, "three.example")
+	two, three := cluster.two(), cluster.byName("three.example")
+	alice := two.register("alice", "wonderland")
+	bob := three.register("bob", "wonderland")
+	roomID := two.createRoom(alice, map[string]any{"preset": "private_chat"})
+
+	stop := two.svc.StartFederationOutbox(context.Background(), 20*time.Millisecond)
+	defer stop()
+
+	// The room moves on before the invite is sent, so the invite the invited server is
+	// handed builds on events that server has never been given. It will ask for them, and
+	// the asking is part of the test.
+	for i := 0; i < 3; i++ {
+		two.mustDo(http.StatusOK, http.MethodPut,
+			fmt.Sprintf("/_matrix/client/v3/rooms/%s/send/m.room.message/%s", roomID, matrix.NewEventID()),
+			alice.Token, matrix.Object{"msgtype": "m.text", "body": "before you arrived"})
+	}
+
+	two.mustDo(http.StatusOK, http.MethodPost, "/_matrix/client/v3/rooms/"+roomID+"/invite", alice.Token,
+		matrix.Object{"user_id": bob.UserID})
+
+	awaitMembership(t, three, roomID, bob.UserID, matrix.MembershipInvite)
+}
+
 // awaitBannedInSync waits for a user's sync to report the room as left, with the ban
 // event among the events shown.
 func awaitBannedInSync(t *testing.T, s *server, u *session, roomID, since string) {

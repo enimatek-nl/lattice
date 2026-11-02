@@ -7,10 +7,19 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/enimatek-nl/lattice/internal/auth"
 	"github.com/enimatek-nl/lattice/internal/matrix"
 )
+
+// verifyBudget is how long this server spends fetching the key a peer's request is
+// signed with. The fetch runs on a clock of its own rather than the request's: a peer that
+// stops waiting for an answer does not make the answer worthless - the key document it
+// gives is signed by the key it describes, it goes in the cache, and the retry that
+// follows is answered from there instead of starting another fetch that the same
+// impatience cancels.
+const verifyBudget = 10 * time.Second
 
 // maxRequestBody caps how much of a peer's request body is buffered for the
 // signature check. A transaction is bounded by the specification at 50 PDUs and
@@ -85,7 +94,9 @@ func (t *Transport) Authenticate(next http.Handler) http.Handler {
 			content = decoded
 		}
 
-		publicKey, err := t.VerifyKeyOf(r.Context(), fields.Origin, fields.KeyID)
+		verifyCtx, cancelVerify := context.WithTimeout(context.WithoutCancel(r.Context()), verifyBudget)
+		defer cancelVerify()
+		publicKey, err := t.VerifyKeyOf(verifyCtx, fields.Origin, fields.KeyID)
 		if err != nil {
 			t.refuse(w, r, matrix.ErrUnauthorized("%v", err))
 			return

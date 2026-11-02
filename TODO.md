@@ -14,7 +14,7 @@ re-derive were kept (below the plan).
   `make build vet lint` clean (`make lint` = golangci-lint, 0 issues),
   `go test ./...` green — **113** compatibility tests (~52 s here, ~5½ min
   with `-race` on this machine), **65** offline unit tests in `tests/unit`
-  (milliseconds), and **38** two-server tests in `tests/federation` (~12 s,
+  (milliseconds), and **39** two-server tests in `tests/federation` (~13 s,
   ~56 s with `-race`). Coverage: **163 of the 234** indexed endpoints, 31 extra
   routes (`make endpoints`). Steps 1–10 are closed: rate limiting, the
   client-API correctness tails, batched reads, offline unit tests, the
@@ -827,17 +827,33 @@ which now works, plus the pieces named above).
   `MembershipLeave` and never `MembershipBan`, so a ban that arrived over
   federation updated the database and said nothing to the client — the sync had no
   room at all, and the ban event, the only explanation, never reached anyone.
-- **An invite relayed as an ordinary event dies on an auth chain this server cannot
-  complete - and it should soft-fail instead.** `TestFederationRejectInvite` shows the
-  shape: hs1 hosts the room, hs2 has never been in it, and the invite arrives over `/send`
-  citing auth events hs2 does not hold. hs2 asks hs1 for them, hs1 answers, and the whole
-  exchange lands on a rejection because the chain could not be closed before the test ran
-  out. A room this server has never been in cannot have the authority to *reject* the
-  events of; the honest outcome is a soft failure - keep the event as an outlier, tell the
-  user they have been invited, and close the gap later - while a chain that cites an event
-  this server holds and has judged rejected stays a refusal. That distinction is the next
-  chunk, and it is what stands between the current membership handshakes and
-  `TestFederationRoomsInvite`/`TestFederationRejectInvite`.
+- **What a room cites, a server keeps.** An auth-chain fetch used to be consulted and
+  thrown away: the events were added to the in-memory graph, used for one judgement, and
+  forgotten. That left a server unable to read the rules of a room it was never handed - an
+  invite relayed to a server that is not in the room cites the inviter's membership, and
+  without it the invite reads as one made by somebody who is not in the room, so it is
+  soft-failed and the user is never told. Fetched events are kept now, as outliers: event
+  row, state row where the room had none for that key, membership side effects - signature
+  and hash checked on the way in, never overwriting state this server already resolved,
+  never advancing the graph's leaves. The room row is created too, because a server can now
+  hear of a room from an event somebody cites as authority, and a state event whose room
+  does not exist fails its own side effects with "record not found".
+- **A delivery is not unmade by the server that made it impatient.** Applying an event can
+  mean asking the peer that delivered it for the events the chain cites; when that asking
+  ran on the inbound request's context, a sender that gave up canceled the fetch halfway
+  through and the event was refused for it. The same holds for key verification: a key
+  document a peer hands over is worth caching even if the peer has stopped waiting, or the
+  retry that follows starts another fetch the same impatience cancels. Both run on their
+  own bounded clocks now - 20 s to apply an event, 10 s to verify a signature.
+- **An invite still costs one round trip per event the invited server lacks.** With the
+  above landed, `TestFederationRoomsInvite` and `TestFederationRejectInvite` get further
+  and still fail: the chain of an invite in a room that has been talking cites several
+  events the invited server has never been told about, and each one asks for its own HTTPS
+  round trip - each of which first needs the peer's key. That is what the invite endpoint
+  is *for*: `PUT /v2/invite/{roomId}/{eventId}` carries `invite_room_state`, the stripped
+  state the invite is authorised by, in a single request, and an invited server that is
+  given it needs no fetches at all. Shipping that state, on both sides of the wire, is the
+  next chunk.
 - **An event must not cite the same auth event twice, and a membership event about
   oneself does.** `selectAuthEvents` adds the sender's membership and the target's
   membership, which are one and the same stored event when the sender equals the state

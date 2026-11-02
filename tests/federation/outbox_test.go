@@ -248,13 +248,15 @@ func TestLocalEventsTravelToThePeersOfARoom(t *testing.T) {
 		t.Errorf("the received event is %s from %s, want %s from %s",
 			received[0].RoomID, received[0].Origin, roomID, one.name)
 	}
-	// The event was judged as it arrived, and this server's answer is a soft failure:
-	// two holds the room as a row and a membership, but nothing ever handed it the
-	// room's state - that is the join handshake, a later step - so the rules read an
-	// empty state and the message is kept as a claim rather than applied to a room.
-	if received[0].Outcome != service.OutcomeSoftFailed {
+	// The event was judged as it arrived, and this server's answer is that it stands.
+	// The room's state was never handed to two - no join handshake put it there - but the
+	// event cites its own authority, two asks for what it does not hold, and what comes
+	// back is signature-checked, hash-checked and kept as an outlier. A room whose state
+	// this server has not been told about is no longer a reason to distrust an event that
+	// names its authority out loud.
+	if received[0].Outcome != service.OutcomeStored {
 		t.Errorf("%s decided %q for the event, want %q: %s",
-			two.name, received[0].Outcome, service.OutcomeSoftFailed, received[0].Reason)
+			two.name, received[0].Outcome, service.OutcomeStored, received[0].Reason)
 	}
 
 	// The event that arrives carries no event id of its own, because the room version

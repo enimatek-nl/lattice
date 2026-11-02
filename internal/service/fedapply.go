@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/url"
+	"time"
 
 	"github.com/enimatek-nl/lattice/internal/authcheck"
 	"github.com/enimatek-nl/lattice/internal/eventcrypto"
@@ -41,6 +42,12 @@ const maxAuthChainEvents = 64
 // very unusual history or somebody testing what this server spends.
 const maxAuthChainDepth = 4
 
+// applyWorkBudget is how long this server keeps working on an event that arrived, on its
+// own clock rather than the delivery request's. The work can mean outbound fetches, and a
+// sender that stops waiting is not a reason to abandon a judgement half made - but a
+// budget keeps an unreachable peer from occupying a server indefinitely.
+const applyWorkBudget = 20 * time.Second
+
 // applyIncomingPDU is the consuming half of the federation queue. The event has
 // arrived, and its format, signature and content hash have been judged; now the
 // room's own rules decide whether it may be in the room and what it does to the
@@ -68,6 +75,13 @@ func (s *Service) applyIncomingPDU(ctx context.Context, pdu matrix.Object, versi
 	if eventID == "" || roomID == "" {
 		return OutcomeRejected, "the event names no id or no room", nil
 	}
+	// Applying an event can mean asking the peer that delivered it for the events the
+	// chain cites, and a context that belongs to the inbound request has that asking - and
+	// the judgement that depends on it - canceled the moment the sender stops waiting for
+	// an answer it already has. A delivery is not unmade by the server that made it
+	// impatient, so this work runs on its own bounded clock.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), applyWorkBudget)
+	defer cancel()
 	if _, err := s.db.EventRepo.Get(eventID); err == nil {
 		return OutcomeDuplicate, "", nil
 	} else if !persist.IsNotFound(err) {
@@ -95,9 +109,18 @@ func (s *Service) applyIncomingPDU(ctx context.Context, pdu matrix.Object, versi
 	if err != nil {
 		return "", "", err
 	}
-	chain, problem := s.gatherAuthChain(ctx, graph, named, peer, complete)
+	chain, learned, problem := s.gatherAuthChain(ctx, graph, named, peer, complete)
 	if problem != "" {
 		return OutcomeRejected, problem, nil
+	}
+	// A chain walk that had to fetch has also taught this server state it did not hold.
+	// The second check reads the room's current state, so that state is read again: a rule
+	// looked up against the state as it stood before the chain arrived would soft-fail an
+	// event this server can now see is authorised.
+	if learned {
+		if current, err = s.readCurrentState(roomID, graph, complete); err != nil {
+			return "", "", err
+		}
 	}
 
 	event := graph.Lookup(eventID)
@@ -138,9 +161,12 @@ func (s *Service) applyIncomingPDU(ctx context.Context, pdu matrix.Object, versi
 //
 // It returns the ids it walked, which is what the transitive check reads: the room's
 // current state is in the graph too, but those events are not this event's chain and
-// are not checked as if they were.
-func (s *Service) gatherAuthChain(ctx context.Context, graph *authcheck.Graph, pdu matrix.Object, peer string, complete map[string]bool) (map[string]bool, string) {
+// are not checked as if they were. The second answer says whether any of it had to be
+// fetched and kept, which is state this server did not have when its current state was
+// read.
+func (s *Service) gatherAuthChain(ctx context.Context, graph *authcheck.Graph, pdu matrix.Object, peer string, complete map[string]bool) (map[string]bool, bool, string) {
 	chain := map[string]bool{}
+	learned := false
 	want := idsOfPDUList(pdu, "auth_events")
 	for depth := 0; depth < maxAuthChainDepth && len(want) > 0; depth++ {
 		next := make([]string, 0, len(want))
@@ -152,12 +178,12 @@ func (s *Service) gatherAuthChain(ctx context.Context, graph *authcheck.Graph, p
 			next = append(next, id)
 		}
 		if len(chain) > maxAuthChainEvents {
-			return chain, fmt.Sprintf("the auth chain of the event is larger than %d events", maxAuthChainEvents)
+			return chain, learned, fmt.Sprintf("the auth chain of the event is larger than %d events", maxAuthChainEvents)
 		}
 		want = nil
 		stored, err := s.db.EventRepo.ListByIDs(next)
 		if err != nil {
-			return chain, fmt.Sprintf("reading the events the auth chain cites: %v", err)
+			return chain, learned, fmt.Sprintf("reading the events the auth chain cites: %v", err)
 		}
 		found := map[string]bool{}
 		for _, row := range stored {
@@ -187,33 +213,134 @@ func (s *Service) gatherAuthChain(ctx context.Context, graph *authcheck.Graph, p
 					want = append(want, summary.AuthIDs...)
 					continue
 				}
-				return chain, fmt.Sprintf("the auth chain cites %s, which %s could not give: %v", id, peer, fetchErr)
+				return chain, learned, fmt.Sprintf("the auth chain cites %s, which %s could not give: %v", id, peer, fetchErr)
 			}
 			judged, problem := s.judgeFetchedEvent(ctx, obj, graph.Version, peer)
 			if problem != "" {
-				return chain, problem
+				return chain, learned, problem
 			}
 			// The peer is asked for one id and has to answer with that event. A room
 			// version from 3 onwards does not carry an id inside the event, so what the
 			// peer sent is hashed and compared: an event that hashes to something else is
 			// not the event that was asked for, whoever sent it.
 			if got := federation.EventField(judged, "event_id"); got != "" && got != id {
-				return chain, fmt.Sprintf("this server asked %s for %s and was given %s", peer, id, got)
+				return chain, learned, fmt.Sprintf("this server asked %s for %s and was given %s", peer, id, got)
 			} else if got == "" {
 				derived, err := eventcrypto.EventID(judged, graph.Version)
 				if err != nil {
-					return chain, fmt.Sprintf("the event %s sent for %s cannot be named: %v", peer, id, err)
+					return chain, learned, fmt.Sprintf("the event %s sent for %s cannot be named: %v", peer, id, err)
 				}
 				if derived != id {
-					return chain, fmt.Sprintf("%s sent an event that hashes to %s when %s was asked for", peer, derived, id)
+					return chain, learned, fmt.Sprintf("%s sent an event that hashes to %s when %s was asked for", peer, derived, id)
 				}
 			}
 			graph.Add(pduEvent(withEventID(judged, id)))
 			complete[id] = true
+			// What a peer hands over as authority is kept, not merely consulted: this
+			// server is being told what the room's rules and memberships were, and a room
+			// whose state cannot be read is a room whose future events cannot be judged.
+			if kept, err := s.keepCitedState(judged, id, graph.Version); err != nil {
+				return chain, learned, fmt.Sprintf("keeping an event the auth chain cites: %v", err)
+			} else if kept {
+				learned = true
+			}
 			want = append(want, idsOfPDUList(judged, "auth_events")...)
 		}
 	}
-	return chain, ""
+	return chain, learned, ""
+}
+
+// keepCitedState holds on to a state event a peer handed over as the authority for an
+// event it sent, so that the next event from that room is read against a state this
+// server has already been told about. It never overwrites what this server holds: a peer
+// citing an old power-level event to authorise something of its own is not announcing
+// that the room's rules changed, and this server's idea of a room's state comes from the
+// room's graph rather than from whoever mentioned an event first.
+//
+// Keeping nothing is not neutral either. A server that has never been in a room cannot
+// read that room's rules: an invite relayed to it cites the inviter's membership, and
+// without that membership the invite reads as one made by somebody who is not in the room
+// - true on this server alone, and the reason an honest invite is soft-failed into a
+// corner nobody has to look at. The kept event is an outlier: it is state this server can
+// consult, and not history it will hand to anybody as its own.
+func (s *Service) keepCitedState(pdu matrix.Object, eventID, version string) (bool, error) {
+	key, isState := pdu["state_key"].(string)
+	if !isState {
+		return false, nil
+	}
+	roomID := federation.EventField(pdu, "room_id")
+	typ := federation.EventField(pdu, "type")
+	if _, err := s.db.StateRepo.Get(roomID, typ, key); err == nil {
+		// The room already describes this piece of its state. Whichever event the room
+		// itself resolved is the one that stays.
+		return false, nil
+	} else if !persist.IsNotFound(err) {
+		return false, matrix.ErrInternal(err)
+	}
+	pos := s.nextStreamPos()
+	encoded := matrix.Encode(objectOf(pdu, "content"))
+	draft := &EventDraft{
+		Kind:     "room_event",
+		RoomID:   roomID,
+		Type:     typ,
+		StateKey: &key,
+		Sender:   federation.EventField(pdu, "sender"),
+		Content:  encoded,
+	}
+	event := &persist.Event{
+		EventID:        eventID,
+		RoomID:         roomID,
+		StreamPos:      pos,
+		Type:           typ,
+		Sender:         draft.Sender,
+		OriginServerTS: numberField(pdu, "origin_server_ts"),
+		Content:        string(encoded),
+		Depth:          numberField(pdu, "depth"),
+		JSON:           string(matrix.Encode(pdu)),
+		PrevEvents:     encodedIDs(idsOfPDUList(pdu, "prev_events")),
+		AuthEvents:     encodedIDs(idsOfPDUList(pdu, "auth_events")),
+		StateKey:       key,
+		IsState:        true,
+		NotInTimeline:  true,
+	}
+	event.RelatesTo, event.RelType = relationOf(encoded)
+	err := s.db.Tx(func(tx *gorm.DB) error {
+		// The room row comes before its state, because what a state event means is
+		// written onto the room: the join rule, the creator, who is in it. A server that
+		// first hears of a room from an event somebody cites has no room row at all.
+		if err := persist.NewRoomRepo(tx).Create(&persist.Room{
+			ID:          roomID,
+			RoomVersion: version,
+			JoinRule:    matrix.JoinRulesInvite,
+		}); err != nil && !persist.IsDuplicate(err) {
+			return fmt.Errorf("keep the room a cited event belongs to: %w", err)
+		}
+		if err := persist.NewEventRepo(tx).Create(event); err != nil && !persist.IsDuplicate(err) {
+			return fmt.Errorf("keep the event a room cited: %w", err)
+		}
+		if err := persist.NewStateRepo(tx).Upsert(&persist.RoomState{
+			RoomID:    roomID,
+			Type:      typ,
+			StateKey:  key,
+			EventID:   eventID,
+			StreamPos: pos,
+			Sender:    event.Sender,
+			Content:   event.Content,
+		}); err != nil {
+			return fmt.Errorf("keep the state a room cited: %w", err)
+		}
+		// The side effects run, because the point of keeping a membership is that the
+		// room knows who is in it. The graph leaves are not touched: an event cited as
+		// authority is not a leaf this server should build on.
+		if err := s.applySideEffects(tx, draft, event, pos); err != nil {
+			log.Printf("federation: the side effects of the cited event %s could not be applied: %v", eventID, err)
+		}
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // authChainIsAuthorised puts every event of the chain this server holds in full through
