@@ -1,5 +1,5 @@
 // Package coverage diffs the routes an API layer registers against the endpoint
-// index in SPECS.md, which is how the project keeps ENDPOINTS.md honest.
+// index in internal/coverage/SPECS.md, which is how the project keeps its coverage report honest.
 //
 // Matching is segment based and treats every {placeholder} as a wildcard,
 // because a route pattern such as
@@ -17,7 +17,7 @@ import (
 	"strings"
 )
 
-// SpecRow matches one row of the endpoint index table in SPECS.md: a path in
+// SpecRow matches one row of the endpoint index table in internal/coverage/SPECS.md: a path in
 // backticks, a method, and whatever note follows.
 var SpecRow = regexp.MustCompile("(?m)^\\s+`(/[^`]*)`\\s+(GET|POST|PUT|DELETE)\\s+(.*?)\\s*$")
 
@@ -46,7 +46,7 @@ func Routes(patterns []string) []Endpoint {
 	return routes
 }
 
-// ParseSpec reads the endpoint index table out of SPECS.md.
+// ParseSpec reads the endpoint index table out of internal/coverage/SPECS.md.
 func ParseSpec(path string) ([]Endpoint, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -55,7 +55,7 @@ func ParseSpec(path string) ([]Endpoint, error) {
 	return ParseSpecRows(string(data)), nil
 }
 
-// ParseSpecRows reads the index table out of the text of SPECS.md.
+// ParseSpecRows reads the index table out of the text of the endpoint index.
 func ParseSpecRows(text string) []Endpoint {
 	var rows []Endpoint
 	for _, match := range SpecRow.FindAllStringSubmatch(text, -1) {

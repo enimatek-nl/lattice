@@ -26,10 +26,11 @@ that decide what a client trusts, and stores room-key backups it cannot read.
 | **You need** | a binary and a writable directory |
 | **Storage** | one SQLite file — back it up by copying it |
 | **Binary** | static, no cgo: ~21 MB stripped |
-| **Client API** | [168 of the 234](ENDPOINTS.md) indexed spec endpoints, plus 33 extra routes |
+| **Client API** | 168 of the 234 indexed spec endpoints, plus 33 extra routes (`make endpoints`) |
 | **Federation** | keys, signed requests, join / leave / invite, events, typing, receipts, device lists, state and graph reads — behind `-federation` |
 | **Room versions** | 1–11 (11 is the default; room upgrades supported) |
 | **Tests** | 117 client-API compatibility, 43 two-server federation, 65 unit |
+| **Licence** | MIT |
 
 ---
 
@@ -188,7 +189,7 @@ make test           # unit + compatibility suite
 make race           # the same under -race
 make vet lint fmt   # go vet, golangci-lint, gofmt -s
 make run            # dev server on 127.0.0.1:8008
-make endpoints      # regenerate ENDPOINTS.md (generated - do not hand-edit)
+make endpoints      # endpoint coverage table -> ENDPOINTS.md (generated, untracked)
 make complement     # the upstream Matrix suite (needs Docker/Podman and a Complement checkout)
 ```
 
@@ -230,10 +231,10 @@ I/O.
 
 ## Where the plan lives
 
-[PLAN.md](PLAN.md) is the goal and the phases, [TODO.md](TODO.md) is the working
-hand-off — verified facts, what is done, what each remaining failure is waiting for —
-[SPECS.md](SPECS.md) is the endpoint index taken from the specification, and
-[ENDPOINTS.md](ENDPOINTS.md) is the generated implemented/missing table.
+[TODO.md](TODO.md) is the one planning document: the idea and the way of working, what
+is verified and done, and — under *Complement* — what each remaining failure is waiting
+for. The endpoint index taken from the specification lives beside the tool that reads it
+at `internal/coverage/SPECS.md`; `make endpoints` compares it with the route table and
+writes `ENDPOINTS.md`, which is generated and not committed.
 
-No licence is declared in this repository yet; say so in the issue tracker if you want
-to use Lattice somewhere that needs one.
+Lattice is under the [MIT licence](LICENSE).

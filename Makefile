@@ -7,7 +7,7 @@ GO      ?= go
 BIN_DIR ?= bin
 BINARY  ?= lattice
 
-SPEC      ?= SPECS.md
+SPEC      ?= internal/coverage/SPECS.md
 ENDPOINTS ?= ENDPOINTS.md
 SWAG_DIR  ?= docs/swagger
 
@@ -49,7 +49,7 @@ lint: ## golangci-lint across every package
 	}
 	golangci-lint run ./...
 
-endpoints: ## Regenerate ENDPOINTS.md from the endpoint index in SPECS.md
+endpoints: ## Regenerate ENDPOINTS.md from internal/coverage/SPECS.md (generated, not committed)
 	$(GO) run ./cmd/endpoints -spec $(SPEC) -out $(ENDPOINTS)
 
 run: build ## Run a development server (see the variables above)

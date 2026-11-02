@@ -1,12 +1,27 @@
 # TODO / working state
 
-Hand-off document for Lattice (minimal Matrix homeserver in Go). Read
-[README.md](README.md) for what the server does today, [PLAN.md](PLAN.md) for
-the goal, [ENDPOINTS.md](ENDPOINTS.md) for generated coverage. This file is
-now a **release plan: work the steps in order, one at a time**. Steps 1-5 are
-done, so the next one is **step 6**; federation is steps 6-12. The history that
+Hand-off document for Lattice (minimal Matrix homeserver in Go) - the only
+planning document in the repository. [README.md](README.md) is what the server
+does today for a stranger; the endpoint index the specification asks for is
+[internal/coverage/SPECS.md](internal/coverage/SPECS.md) and `make endpoints`
+writes the generated implemented/missing table to `ENDPOINTS.md` (generated, not
+committed). This file is
+now a **release plan: work the steps in order, one at a time**. Steps 1-10 are
+done, so the next one is **step 11**; federation is steps 6-12. The history that
 used to fill this file lives in git; only facts a future session must not
 re-derive were kept (below the plan).
+
+## The idea, and the way of working
+
+The goal has not changed since the first commit: a drop-in implementation of
+https://spec.matrix.org/latest/ in Go on SQLite, small enough that one binary and one
+file are a homeserver. The method is what makes it checkable: **implement an endpoint,
+add its functional test, see whether it behaves, move on** - tests never sit next to the
+code they test, so "which endpoint is already covered?" has an answer (`make endpoints`).
+A holistic user-script test - account, room, message, upload - was added later and lives
+in `tests/compat/user_script_test.go`. Phases (bare POC, everyday endpoints, the E2EE key
+layer, federation) are complete or described by the steps below; the old PLAN.md is gone
+because it said nothing these steps do not.
 
 ## Current state (verified 2026-11-02)
 
@@ -251,7 +266,7 @@ the house rules).
       count matching, action tweaks — was `service/pushnotify.go`),
       `internal/power` (`Defaults`, `ApplyDefaults`, `Level`, `EventRequired`,
       `ActionRequired`, `ChangeRequired` — was `service/power.go` and
-      `stateguards.go`), and `internal/coverage` (the SPECS.md matcher and report
+      `stateguards.go`), and `internal/coverage` (the internal/coverage/SPECS.md matcher and report
       — was `cmd/endpoints/main.go`, which is now a thin `main`). The service
       keeps the storage plumbing and aliases the constants
       (`PushRuleKinds = push.Kinds`, `PowerAdmin = power.Admin`), and
@@ -1035,8 +1050,9 @@ able to name the events the other is missing and to prove an event's authority.
       Unverifiable events in room versions that tolerate them are a separate rule,
       and `TestJoinFederatedRoomWithUnverifiableEvents` checks it.
 
-Complement turns green: `TestEventAuth`, `TestGetMissingEventsGapFilling`,
-`TestInboundCanReturnMissingEvents`,
+Complement turns green: `TestEventAuth` (done - it is green as of the graph reads).
+`TestGetMissingEventsGapFilling` needs the outbound half, and
+`TestInboundCanReturnMissingEvents` needs history-visibility redaction,
 `TestOutboundFederationIgnoresMissingEventWithBadJSONForRoomVersion6`,
 `TestOutboundFederationEventSizeGetMissingEvents`, `TestCorruptedAuthChain`,
 `TestUnrejectRejectedEvents`, `TestInboundFederationRejectsEventsWithRejectedAuthEvents`,
@@ -1177,10 +1193,15 @@ record** or to follow **SRV delegation**, both deferred.
 ## Complement — the upstream suite (running since 2026-11-01)
 
 Tally, complete run of 2026-11-02 against Complement `e3fcff1`: **40 of 106**
-client-API tests fail (44 deployments, no panics), and **72 of 91** server-server
-tests fail (108 deployments, no panics) — 19 server-server tests green, where the
-run before the membership handshake had 4. The rest of this section is how to run
-it, what the run can hide, and what every remaining failure is waiting for.
+client-API tests fail (the graph reads change nothing there), and **68 of 91**
+server-server tests fail — **23 green**, where the run before the membership handshake
+had 4 and the run before the graph-reading endpoints had 22. `TestEventAuth` is the new
+one, and it is precisely the read a Synapse peer makes before it accepts an event.
+`TestInboundCanReturnMissingEvents` is still red as a whole, but its `world_readable`
+and `shared` subtests pass now that `get_missing_events` answers in the order the room
+was built and honours `min_depth`; `joined` and `invited` wait on redacting what predates
+the asking server. The rest of this section is how to run it, what the run can hide, and
+what every remaining failure is waiting for.
 
 [Complement](https://github.com/matrix-org/complement) starts homeservers in
 containers and drives them over the client-server API. It is a second opinion on
@@ -1338,7 +1359,7 @@ federation failure reads as a protocol failure rather than a certificate one.
 - A real **Element click-through** against a running Lattice (the whole key
   setup chain is chain-tested, but "does the browser stop complaining" is
   unconfirmed; watch the interactive-auth log lines README describes).
-- `SPECS.md` references a spec corpus that is **not** in this workspace;
+- `internal/coverage/SPECS.md` references a spec corpus that is **not** in this workspace;
   anything needing exact spec wording should quote the matrix-spec tag it
   was read from (e.g. `cross_signing.yaml` @ v1.19) or fetch the corpus.
 
@@ -1601,7 +1622,7 @@ maintenance`. First registered account = administrator.
 make build vet lint                       # compiles, vet, golangci-lint
 make test                                 # unit + compat suites (~45 s here)
 make race                                 # same with -race
-make endpoints                            # coverage report -> ENDPOINTS.md
+make endpoints                            # coverage report -> ENDPOINTS.md (generated, untracked)
 make run                                  # dev server, 127.0.0.1:8008, /tmp/lattice.db
 make swagger                              # docs/swagger/{swagger.json,swagger.yaml}
 go test ./tests/compat/ -race

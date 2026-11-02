@@ -1,11 +1,11 @@
 // Command endpoints reports which endpoints from the specification index in
-// SPECS.md the server implements. It builds the API layer, enumerates the
+// the endpoint index in internal/coverage/SPECS.md the server implements. It builds the API layer, enumerates the
 // registered route patterns and hands both to internal/coverage, which holds the
 // matching rules and the report.
 //
 // Usage:
 //
-//	go run ./cmd/endpoints [-out ENDPOINTS.md] [-spec SPECS.md] [-all]
+//	go run ./cmd/endpoints [-out ENDPOINTS.md] [-spec internal/coverage/SPECS.md] [-all]
 package main
 
 import (
@@ -23,7 +23,7 @@ import (
 
 func main() {
 	var (
-		specPath = flag.String("spec", "SPECS.md", "path to the endpoint index")
+		specPath = flag.String("spec", "internal/coverage/SPECS.md", "path to the endpoint index")
 		outPath  = flag.String("out", "", "write a markdown report to this path")
 		showAll  = flag.Bool("all", false, "list every endpoint instead of only the summary")
 	)
