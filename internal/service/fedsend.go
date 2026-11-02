@@ -208,6 +208,13 @@ func (s *Service) queueForPeers(items ...*persist.OutboxItem) {
 // client-facing copy has one added on the way out. Sending that copy would describe an
 // event whose id is part of its own hash.
 func (s *Service) queueEventForPeers(ctx context.Context, event *persist.Event, version string) {
+	s.queueEventForPeersExcept(ctx, event, version, "")
+}
+
+// queueEventForPeersExcept relays an event to the servers that share the room, skipping
+// one. The server an event arrived from is skipped: relaying an event back to where it
+// came from is a round trip that tells that server nothing it did not already know.
+func (s *Service) queueEventForPeersExcept(ctx context.Context, event *persist.Event, version, except string) {
 	if !s.outboxWanted() || event == nil || event.JSON == "" {
 		return
 	}
@@ -240,6 +247,9 @@ func (s *Service) queueEventForPeers(ctx context.Context, event *persist.Event, 
 	}
 	items := make([]*persist.OutboxItem, 0, len(destinations))
 	for _, destination := range destinations {
+		if destination == except {
+			continue
+		}
 		items = append(items, &persist.OutboxItem{
 			Destination: destination,
 			Kind:        "pdu",

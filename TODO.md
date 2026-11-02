@@ -12,11 +12,11 @@ re-derive were kept (below the plan).
 
 - A working homeserver with its **federation transport in production shape**:
   `make build vet lint` clean (`make lint` = golangci-lint, 0 issues),
-  `go test ./...` green — **111** compatibility tests (~50 s here, ~5½ min
+  `go test ./...` green — **113** compatibility tests (~52 s here, ~5½ min
   with `-race` on this machine), **64** offline unit tests in `tests/unit`
-  (milliseconds), and **31** two-server tests in `tests/federation` (~9 s,
-  ~56 s with `-race`). Coverage: **156 of the 234** indexed endpoints, 27 extra
-  routes (`make endpoints`). Steps 1–8 are closed: rate limiting, the
+  (milliseconds), and **34** two-server tests in `tests/federation` (~9 s,
+  ~56 s with `-race`). Coverage: **157 of the 234** indexed endpoints, 27 extra
+  routes (`make endpoints`). Steps 1–9 are closed: rate limiting, the
   client-API correctness tails, batched reads, offline unit tests, the
   federation signing/transport ground, the **event DAG** (events hashed,
   signed, identified by reference hash, stored with `prev_events`,
@@ -24,14 +24,15 @@ re-derive were kept (below the plan).
   `PUT /send` with a replay-safe transaction log, EDU sinks for typing,
   receipts, to-device, device lists and cross-signing, an outbound per
   destination queue with retries, and `m.room.server_acl` enforced in both
-  directions. Step 9 is **half closed**: the room version's authorization rules
-  (`internal/authcheck`), state resolution v2 (`internal/stateres`) and the first
-  three receipt checks on the inbound path are in; consuming the queue is the next
-  piece of work. The plan continues at **step 9**; steps 9 to 13 are driven
+  directions. Step 9 is **closed except for one rule it cannot reach yet**: the room
+  version's authorization rules (`internal/authcheck`), state resolution v2
+  (`internal/stateres`), all of the receipt checks, and the applying of an accepted
+  event — state, graph, timeline and sync move because a peer sent an event.
+  The plan continues at **step 10**; steps 10 to 13 are driven
   test-by-test against Complement's server-server suite, each naming the tests it
   is expected to turn green, and step 14 wraps the release.
 - Against [Complement](https://github.com/matrix-org/complement), the upstream
-  Matrix suite, **41 of 106** client-API tests fail (`make complement`) and **87 of
+  Matrix suite, **40 of 106** client-API tests fail (`make complement`) and **87 of
   91** server-server tests fail (`make complement COMPLEMENT_PKG=./tests`). See
   _Complement_ below for how they run, what a run can hide, and what each remaining
   failure is waiting for. The transport itself is not among the reasons: those
@@ -41,18 +42,21 @@ re-derive were kept (below the plan).
 - Federation is live behind `-federation` (default off): a persisted ed25519
   signing key, `/_matrix/key/v2/*`, `/_matrix/federation/v1/version`,
   `/_matrix/federation/v1/user/devices/{userId}`,
-  `PUT /_matrix/federation/v1/send/{txnId}`, an outbound client that signs and a
-  queue that retries it, and inbound middleware that refuses anything it cannot
-  attribute to a peer. Still deferred on purpose: SRV lookups, acting as a
+  `PUT /_matrix/federation/v1/send/{txnId}`, `GET /_matrix/federation/v1/event/{eventID}`,
+  an outbound client that signs, fetches an auth chain it is missing, and retries a
+  queue, and inbound middleware that refuses anything it cannot attribute to a peer.
+  Still deferred on purpose: SRV lookups, acting as a
   *client* of someone else's notary, key rotation, and per-peer budgets for the
   volume routes that arrive with the read-side queries of step 11.
 - What federation does **not** do yet, so a two-server test is not mistaken for a
-  working join: an arriving event is now judged — its shape against the room version,
-  its signature against the author's published key, its content hash — and then
-  **queued but not applied**: no room on this server changes because a peer sent an
-  event (the rest of step 9), and no room can be joined across servers yet (step 10).
-  Two Lattice servers can already exchange messages, typing, receipts, room keys and
-  device list updates for rooms that both are in.
+  working join: no room can be joined across servers (step 10), so the rooms of every
+  two-server test are shared by hand. What an arriving event does is no longer faked:
+  it is judged — shape, signature, content hash, then the room's rules against its own
+  auth chain and against this server's state — and the outcome decides what happens:
+  accepted moves the state, the graph and the timeline; soft-failed is stored, relayed
+  and hidden; refused is kept only as a receipt with its reason. Two Lattice servers
+  already exchange messages, typing, receipts, room keys and device list updates for
+  rooms that both are in.
 - The E2EE trust layer is done end-to-end: device keys, cross-signing
   (verified server-side over canonical JSON), key signatures, room key
   backup. The Element "unable to set up keys" thread is **closed** — pinned
@@ -585,36 +589,65 @@ Half of it is in, on 2026-11-02.
       `TestEventsAreQueuedAndAnswered` now ships a genuinely signed PDU over the real
       transport and shows all three outcomes.
 
-What is left of step 9:
+The rest closed on 2026-11-02, and with it the step:
 
-- [ ] The remaining receipt checks: auth rules against the event's own `auth_events`
-      (needs the auth chain fetched), against the state at the event, and against the
-      current resolved state — the last one producing a **soft failure** rather than a
-      rejection.
-- [ ] The two rules `authcheck` hands back to its caller because no state snapshot
-      holds a public key: the **authorising user's server signature** on a restricted
-      join (`join_authorised_via_users_server` has to be signed by that user's homeserver,
-      or "my friend let me in" is a claim anybody can make), and the third-party invite
-      signature, which `authcheck` can check because the keys travel in the room's own
-      `m.room.third_party_invite` event.
-- [ ] Semantics of the two outcomes: rejected = kept out of state, never relayed as a
-      parent, never a forward extremity; soft-failed = stored, relayed as a parent,
-      hidden from clients. `persist.Event` already has the columns; nothing writes them.
-- [ ] Consume the queue: `ReceivedPDURepo.Pending` is read by nobody today, so an event
-      that passes the checks above is stored and never applied. Applying it means the
-      room row appearing because an event said so (not because a test inserted it), the
-      state entries moving, forward extremities advancing, and sync noticing — the same
-      path a local event takes, with the signature already checked.
-- [ ] `tests/federation/intake_test.go`: the cluster signs a PDU, ships it, and the
-      receiver's decision is visible — an accepted event reaches `/sync` and
-      `/messages` there, a rejected one is never shown, a soft-failed one is stored and
-      relayed as a parent but hidden. **The new two-server cases must stop seeding
-      rows**: step 8's tests insert `Room` and `RoomMembership` rows directly, which is
-      fine for testing storage and useless for testing whether a room can be joined.
+- [x] **The remaining receipt checks.** `Service.applyIncomingPDU` reads the room's
+      rules twice: against the events the arriving event cites as its `auth_events`
+      (which includes the rule that the set it cites is exactly the set the selection
+      algorithm names — the one that catches a sender picking friendlier rules for
+      itself), and against this server's current state of the room. The first refusal is
+      a **rejection**; the second is a **soft failure**.
+- [x] **The auth chain is fetched when it is not held.** `gatherAuthChain` walks the
+      chain, reads what this server has, and asks the delivering peer for the rest over
+      `GET /_matrix/federation/v1/event/{eventID}` — served for the first time in the
+      same change (`Service.FederatedEvent`), because a chain this server cannot complete
+      is a chain it can only refuse. A fetched event goes through the same intake checks
+      as a pushed one, and its id is recomputed and compared: a peer asked for one event
+      cannot answer with another. Every event in the chain is then put through the rules
+      against its own chain, so an arriving event cannot be judged by a power levels
+      event nobody ever authorised.
+- [x] **Both outcomes have their semantics.** Rejected: no event row, no state, no leaf,
+      no client ever sees it — the receipt row keeps it with the reason, which is where
+      "why is this event not in my room" is answered. Soft-failed: stored, relayed to the
+      other servers in the room, kept out of the state, out of the forward extremities and
+      out of every client read — `History`, `Timeline`, `ByPositions`, `Relations`,
+      `Search`, `HistoryByTimestamp` and `GET /rooms/{roomID}/event/{eventID}` all filter
+      it. A local send after a soft-failed event does not cite it.
+- [x] **The queue is consumed**, inline as each event arrives, and that is a decision
+      rather than a shortcut: the transaction answer a peer waits for is the answer to
+      "what did you decide about this event", a retry has to get the same answer, and the
+      state of a room must not depend on when this server gets round to its backlog.
+      `ReceivedPDURepo.Pending`/`Count` remain for an operator asking what is waiting, and
+      `List` was added for what has arrived at all.
+- [x] **`tests/federation/intake_test.go`**: three cases, no fake events. An accepted
+      message from the other server appears in the receiver's `/messages`, advances the
+      forward extremities and leaves the state alone; a message from a user this server
+      has banned and the sender's server has not is stored, hidden, and not a leaf; a
+      message that cites a set of rules of its own choosing is refused with a reason, and
+      is nowhere a client can reach.
+
+Still open from step 9, deliberately:
+
+- [ ] The **authorising user's server signature** on a restricted join
+      (`join_authorised_via_users_server` has to be signed by that user's homeserver, or
+      "my friend let me in" is a claim anybody can make). `authcheck` checks everything
+      about it that a state snapshot can carry; the signature needs the join handshake of
+      step 10 to have anything to check. The third-party invite signature needs no such
+      thing — its keys travel in the room's own `m.room.third_party_invite` event — and
+      `authcheck` checks it.
+- [ ] **There is no per-event state snapshot**, so "the state at the event" is judged as
+      the events the sender cites plus this server's own state, rather than as a state
+      this server computed for that point in the graph. That is enough to enforce the
+      rules, and not enough to *re-derive* the auth event set for an event whose state
+      this server never saw. Snapshots come with the read side of the graph (step 11:
+      `state_ids`, `get_missing_events`, backfill), which is where they are needed for a
+      reason other than this one.
 
 Done when: an event created on server B appears on server A with A's own decision
-recorded, and A and B resolve the same state after a deliberate fork — the second half
-of which `internal/stateres` now makes checkable rather than aspirational.
+recorded — done, and pinned by `intake_test.go`. The other half of the sentence, "and A
+and B resolve the same state after a deliberate fork", waits for a fork two servers can
+actually build, which is step 10's join plus step 11's graph reads; `internal/stateres`
+makes it checkable in the meantime.
 
 ### Findings worth not re-deriving (step 9)
 
@@ -666,6 +699,35 @@ of which `internal/stateres` now makes checkable rather than aspirational.
   Step 9 turns no test green by design — Complement cannot reach event judgement until a
   join exists — so a run that stays flat while the intake gets stricter is the result
   that says nothing else broke.
+
+- **A state summary in the graph can shadow the real event.** `readCurrentState` first
+  added a room's state entries to the graph from the state rows, which carry no
+  `prev_events` or `auth_events`; the chain walk then believed the chain was complete,
+  and the transitive check refused every event in the room ("cites no auth events of its
+  own"). State entries are now read as events where this server has them, and the graph
+  tracks which entries are held in full: a summary is enough to read a rule against and
+  not enough to check a chain with.
+- **A fetched auth-chain event is deliberately not stored.** Synapse and Dendrite persist
+  the auth chain they fetch. Lattice's `/messages` reads event rows, so persisting a
+  fetched auth event would put an event into a room's timeline that is not part of the
+  room's state — which is the opposite of what the state rules just decided. The chain is
+  re-fetched per judgement instead; if that becomes too slow, the fix is a table for auth
+  chains, not the events table.
+- **Redaction strips the graph.** In room version 11 the keys a redaction keeps do not
+  include `auth_events` or `prev_events`, so an event kept as its redacted copy (a content
+  hash that did not match) cannot be used as a link in an auth chain. The intake keeps the
+  redacted copy because the spec says to, and the chain then has to be fetched again.
+- **"Hidden from clients" is a property of every read, not of one.** A soft-failed event
+  is in the events table, so `/messages`, `/sync`, `/context`, relations, search,
+  timestamp-to-event and `GET /rooms/{roomID}/event/{eventID}` each had to learn to filter
+  it. Any new read path over that table has to decide the same question again.
+- **Answering `GET /event` is what made judging possible.** Two Lattice servers could not
+  exchange an accepted event at all before it: each cited auth events the other had never
+  been sent. It is served only to a server that shares the room by membership, ACL-read
+  the same way the outbox reads it, so an excluded server cannot fetch its way back in.
+- **Fetched events are verified against the id that was asked for.** Room versions from 3
+  on carry no id inside the event, so the only way to know a peer answered the question
+  asked is to hash the answer and compare it with the id requested.
 
 ### 10. Federation V — the first honest cross-server join (first Complement greens)
 
@@ -878,7 +940,9 @@ record** or to follow **SRV delegation**, both deferred.
 
 ## Complement — the upstream suite (running since 2026-11-01)
 
-Tally: **41 of 106** client-API tests fail. The rest of this section is how to run
+Tally, complete run of 2026-11-02 against Complement `e3fcff1`: **40 of 106**
+client-API tests fail (44 deployments, no panics), and **87 of 91** server-server
+tests fail (126 deployments, no panics). The rest of this section is how to run
 it, what the run can hide, and what every remaining failure is waiting for.
 
 [Complement](https://github.com/matrix-org/complement) starts homeservers in
@@ -916,6 +980,16 @@ Two harness facts that cost an hour each:
   the `--- FAIL` count understates the truth. Count the `: Server logs:` blocks
   (one per deployment) before believing a tally: two runs in a row were read as
   "25 then 44 failures, improving" when both had aborted.
+- **A fresh Complement checkout changes the tally on its own.** The checkout is
+  not pinned — it is a clone, and its own tests move. The current runs use
+  `e3fcff1`, which added a subtest (`Setting state twice is idempotent`, from
+  sytest parity) that made a previously green test fail for a reason that had
+  nothing to do with the last Lattice change. Diff the *names*, not the counts,
+  and keep the checkout's commit next to the numbers.
+- **Rootless podman fails a deployment now and then.** `Deploy: ... ContainerStart:
+  Error response from daemon: rootlessport conflict`, and the test fails without
+  Lattice ever being asked anything. One such failure per long run has been seen;
+  re-run the named test before writing it down as a Lattice failure.
 
 Tally, complete run of 2026-11-01 (`tests/csapi`, 106 top-level tests): **41
 failing**. The complete run before the current round of fixes failed 43; that
@@ -926,7 +1000,15 @@ body validation, filter validation, canonical-alias guards, Unicode aliases,
 media reservation states, key-backup replace rules) took the aborted pair from 50
 to 44.
 
-The 41, grouped by what is actually missing — each group is a work item, and the
+The run of 2026-11-02 failed **40**. Two names left the list: `TestRoomCreationReports-
+EventsToMyself`, which needed state writes to be idempotent — writing the state a room
+already holds now answers with the event it holds rather than appending a copy of one
+decision (`Service.unchangedState`, pinned by `TestWritingTheSameStateTwiceIsOneEvent`;
+membership is excluded, because re-joining has to be a new event even when its content
+matches) — and `TestProfileAvatarURL`, which was a rootless-podman port conflict and
+went green on its own.
+
+The 40, grouped by what is actually missing — each group is a work item, and the
 suite's own skips are not hiding any of them:
 
 | Missing | Tests |

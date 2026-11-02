@@ -50,6 +50,12 @@ func (a *App) registerFederationRoutes() {
 	// ephemeral messages arrive in batches, and the transaction id is what makes a retry
 	// mean the same thing the first attempt did.
 	a.federated("PUT /_matrix/federation/v1/send/{txnId}", a.handleSendTransaction)
+
+	// A peer that was sent an event citing another event - as an auth event, or as a
+	// parent - has to be able to ask for the one it is missing. Without this, a server
+	// that judges arriving events can only refuse them: an auth chain it cannot complete
+	// is an auth chain it cannot run.
+	a.federated("GET /_matrix/federation/v1/event/{eventID}", a.handleFederationEvent)
 }
 
 // handleServerKeys answers GET /_matrix/key/v2/server.
@@ -255,6 +261,28 @@ func (a *App) handleFederationDevices(w http.ResponseWriter, r *http.Request) {
 		if object != nil {
 			body[key] = object
 		}
+	}
+	writeJSON(w, http.StatusOK, body)
+}
+
+// handleFederationEvent answers GET /_matrix/federation/v1/event/{eventID}: one event,
+// in the form its room version defines, to a server that shares the room.
+//
+//	@Summary\tOne event by id
+//	@Description\tServes a peer an event it needs to complete the auth chain or the graph of an event it was sent.
+//	@Tags\tfederation
+//	@Produce\tjson
+//	@Param\teventID\tpath\tstring\ttrue\t"Event id"
+//	@Success\t200\t{object}\tmatrix.Object\t"origin and pdus"
+//	@Failure\t401\t{object}\tmatrix.Error\t"The request carries no valid peer signature"
+//	@Failure\t403\t{object}\tmatrix.Error\t"The server is not part of the room"
+//	@Failure\t404\t{object}\tmatrix.Error\t"No such event"
+//	@Router\t/_matrix/federation/v1/event/{eventID} [get]
+func (a *App) handleFederationEvent(w http.ResponseWriter, r *http.Request) {
+	body, err := a.svc.FederatedEvent(r.Context(), r.PathValue("eventID"), federation.Peer(r.Context()))
+	if err != nil {
+		a.writeError(w, r, err)
+		return
 	}
 	writeJSON(w, http.StatusOK, body)
 }

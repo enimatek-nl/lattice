@@ -112,6 +112,11 @@ func (s *Service) RoomEvent(ctx context.Context, roomID, eventID, userID string)
 		}
 		return nil, matrix.ErrInternal(err)
 	}
+	if event.SoftFailed {
+		// An event this server's state does not support is not this room's history as
+		// far as clients are concerned, whichever way they ask for it by id.
+		return nil, matrix.ErrNotFound("no event %s in room %s", eventID, roomID)
+	}
 	wire := event.Matrix()
 	// MSC2675 lists GET /rooms/{roomId}/event/{eventId} among the endpoints that
 	// bundle a thread's summary, so a client opening one event sees the same

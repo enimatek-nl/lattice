@@ -14,10 +14,10 @@ that decide what a client trusts, and stores encrypted room-key backups without
 being able to read any of it.
 
 **Status:** working homeserver whose federation transport delivers events between two
-servers; the end-to-end cryptography stays on the clients. **156 of
+servers and applies them; the end-to-end cryptography stays on the clients. **157 of
 the 234** endpoints indexed in [SPECS.md](SPECS.md) are implemented, plus 27
-extra routes (see [ENDPOINTS.md](ENDPOINTS.md)). 111 black-box compatibility
-tests, 64 offline unit tests and 31 two-server federation tests are green.
+extra routes (see [ENDPOINTS.md](ENDPOINTS.md)). 113 black-box compatibility
+tests, 64 offline unit tests and 34 two-server federation tests are green.
 `make build vet lint` clean (golangci-lint reports 0 issues).
 Implementation version `0.1.0`
 (reported by `GET /_matrix/client/versions` as `Lattice/0.1.0`).
@@ -225,15 +225,22 @@ in the room, and putting it there — see the next section.
   leaves open: a device key signature is only checked when Lattice holds the key
   that made it, and none of this has been run against a real
   client test suite.
-- **Federation carries traffic but does not yet apply it, and only behind
+- **Federation judges and applies what arrives, but cannot join yet, and only behind
   `-federation`.** Two Lattice servers can exchange room events, typing, read
   receipts, room keys and device list updates for rooms both are in, and each
   refuses what the other cannot prove — an arriving event is checked against the room
   version's event format, against the author's signing key and against its own content
-  hash before it is stored. What no server can do yet is *act* on an incoming event: it
-  is queued, but not judged against the room's authorization rules or merged into the
-  room's state, and no room can be joined across servers. So a user still cannot read a
-  room that lives somewhere else.
+  hash, and then against the room's authorization rules: twice, once against the events
+  the sender cites as its auth events and once against this server's own state of the
+  room. Those two readings have different outcomes, and the difference is the point. A
+  refusal keeps the event out of the room entirely, with the reason recorded beside the
+  receipt for an operator to read. A *soft failure* — the sender's chain supports the
+  event and this server's state does not — stores it, relays it onward, and hides it from
+  every client read and from the room's state. An accepted event moves the state, the
+  graph and the timeline, exactly as a local one does; missing auth events are fetched
+  from the peer over `GET /_matrix/federation/v1/event/{eventID}`, which this server also
+  serves. What no server can do yet is *join* a room across servers, so a user still
+  cannot read a room that lives somewhere else.
   Deferred by decision rather than by omission: SRV lookups (a name is resolved by
   its well-known delegation or on port 8448), acting as a client of somebody
   else's notary server, and signing key rotation.

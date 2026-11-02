@@ -13,6 +13,7 @@ import (
 	"github.com/enimatek-nl/lattice/internal/eventcrypto"
 	"github.com/enimatek-nl/lattice/internal/matrix"
 	"github.com/enimatek-nl/lattice/internal/persist"
+	"github.com/enimatek-nl/lattice/internal/service"
 )
 
 // A transaction is what live activity looks like on the wire: a signed batch named by a
@@ -433,23 +434,33 @@ func TestEventsAreQueuedAndAnswered(t *testing.T) {
 		t.Errorf("the event is answered under %s, but the bytes hash to %s", eventID, derived)
 	}
 
-	queued, err := two.db.ReceivedPDURepo.Count()
-	if err != nil {
-		t.Fatalf("counting the queued events: %v", err)
-	}
-	if queued != 1 {
-		t.Fatalf("%s queued %d events, want the one that was sent", two.name, queued)
+	received := receipts(t, two)
+	if len(received) != 1 {
+		t.Fatalf("%s received %d events, want the one that was sent", two.name, len(received))
 	}
 	stored, err := two.db.ReceivedPDURepo.Get(eventID)
 	if err != nil {
-		t.Fatalf("reading the queued event: %v", err)
+		t.Fatalf("reading the received event: %v", err)
 	}
 	if stored.RoomID != roomID || stored.Origin != one.name || stored.TxnID != "events-1" {
-		t.Errorf("the queued event is %s from %s in transaction %s, want %s from %s in events-1",
+		t.Errorf("the received event is %s from %s in transaction %s, want %s from %s in events-1",
 			stored.RoomID, stored.Origin, stored.TxnID, roomID, one.name)
 	}
-	if stored.Processed {
-		t.Errorf("the queued event is marked processed with outcome %q, which has not been decided yet", stored.Outcome)
+	// Delivery and judgement are two different things, and the receipt row carries both.
+	// This event cites no auth events, so the rules that read them cannot run and the
+	// event is refused - while the transaction still answered it without a problem,
+	// which is what stops a peer retrying a refusal forever.
+	if !stored.Processed {
+		t.Error("the received event was not judged")
+	}
+	if stored.Outcome != service.OutcomeRejected || stored.Reason == "" {
+		t.Errorf("the event was decided %q (%s), want rejected with a reason", stored.Outcome, stored.Reason)
+	}
+	if _, err := two.db.EventRepo.Get(eventID); !persist.IsNotFound(err) {
+		t.Errorf("a refused event reached the room's events: %v", err)
+	}
+	if visible(t, two, bob, roomID)[eventID] {
+		t.Error("a refused event is visible to a client reading the room")
 	}
 
 	// The same event by another transaction id is the same event: two peers, or one
@@ -458,8 +469,8 @@ func TestEventsAreQueuedAndAnswered(t *testing.T) {
 	if _, failure := sendTransaction(t, one, two.name, "events-2", transactionBody(one.name, matrix.Array{pdu}, nil)); failure != nil {
 		t.Fatalf("the second delivery was refused: %d %s", failure.Status, failure.Message)
 	}
-	if count, err := two.db.ReceivedPDURepo.Count(); err != nil || count != 1 {
-		t.Errorf("after the same event arrived twice, %d events are queued, want 1", count)
+	if got := receipts(t, two); len(got) != 1 {
+		t.Errorf("after the same event arrived twice, %d events were received, want 1", len(got))
 	}
 
 	// An event that the sending server did not sign is not an event that server made.

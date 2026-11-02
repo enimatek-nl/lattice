@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -346,6 +347,14 @@ func (s *Service) SetRoomState(ctx context.Context, roomID, sender, typ, stateKe
 	if err := s.validateStateEvent(ctx, roomID, sender, typ, stateKey, content); err != nil {
 		return nil, err
 	}
+	// Writing the state the room already has is not a second statement about the room,
+	// and answering it with a new event would let a client that saved twice - or retried
+	// after losing the answer - push the room's history forward with copies of one
+	// decision. Membership is left out on purpose: re-joining has to be a new event even
+	// when its content matches, because what changed is the graph, not the content.
+	if existing, same := s.unchangedState(roomID, typ, stateKey, sender, content); same {
+		return existing, nil
+	}
 	return s.AppendEvent(ctx, &EventDraft{
 		RoomID:   roomID,
 		Type:     typ,
@@ -355,6 +364,40 @@ func (s *Service) SetRoomState(ctx context.Context, roomID, sender, typ, stateKe
 		TxnID:    txnID,
 		Kind:     "state",
 	})
+}
+
+// unchangedState reports whether the state a client is about to write is the state the
+// room already holds: same type, same state key, same sender, and content that is equal
+// once canonicalised, so a reordered object or a different number spelling is still the
+// same statement. The event it names is returned so the caller can answer with it.
+func (s *Service) unchangedState(roomID, typ, stateKey, sender string, content matrix.RawMessage) (*persist.Event, bool) {
+	if typ == matrix.TypeMember || typ == matrix.TypeCreate {
+		return nil, false
+	}
+	row, err := s.db.StateRepo.Get(roomID, typ, stateKey)
+	if err != nil || row.Sender != sender {
+		return nil, false
+	}
+	var wanted, held any
+	if err := json.Unmarshal(content, &wanted); err != nil {
+		return nil, false
+	}
+	if err := json.Unmarshal([]byte(row.Content), &held); err != nil {
+		return nil, false
+	}
+	wantedJSON, err := matrix.CanonicalJSON(wanted)
+	if err != nil {
+		return nil, false
+	}
+	heldJSON, err := matrix.CanonicalJSON(held)
+	if err != nil || !bytes.Equal(wantedJSON, heldJSON) {
+		return nil, false
+	}
+	existing, err := s.db.EventRepo.GetInRoom(roomID, row.EventID)
+	if err != nil {
+		return nil, false
+	}
+	return existing, true
 }
 
 // RedactEvent appends an m.room.redaction event and strips the target event.

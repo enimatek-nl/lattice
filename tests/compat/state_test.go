@@ -195,3 +195,72 @@ func TestEncryptionStaysPut(t *testing.T) {
 		t.Errorf("rewriting m.room.create: got %d %s, want 403", rewrite.Status, rewrite.Raw)
 	}
 }
+
+// TestWritingTheSameStateTwiceIsOneEvent checks that PUT /state answers the same
+// statement with the same event. A client that saves twice, or retries after losing the
+// answer, must not push the room's history forward with two copies of one decision - and
+// a room whose timeline repeats itself on every retry is a room whose clients count
+// things that never happened.
+func TestWritingTheSameStateTwiceIsOneEvent(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	roomID := server.CreateRoom(alice, map[string]any{"name": "Rewritten"})
+	path := "/_matrix/client/v3/rooms/" + roomID
+
+	body := matrix.Object{"a_key": "a_value"}
+	first := server.MustDo(http.MethodPut,
+		path+"/state/a.test.state.type/", alice.Token, body, http.StatusOK)
+	second := server.MustDo(http.MethodPut,
+		path+"/state/a.test.state.type/", alice.Token, body, http.StatusOK)
+	if first.Body["event_id"] != second.Body["event_id"] {
+		t.Errorf("setting the same state twice made two events: %v then %v",
+			first.Body["event_id"], second.Body["event_id"])
+	}
+
+	// Reordering the content object is the same statement, and so is a number spelled
+	// differently: the comparison is over what the content means, not how it was sent.
+	reordered := server.MustDo(http.MethodPut,
+		path+"/state/a.test.state.type/", alice.Token,
+		matrix.Object{"a_key": "a_value"}, http.StatusOK)
+	if reordered.Body["event_id"] != first.Body["event_id"] {
+		t.Errorf("the same content spelled differently made a new event: %v then %v",
+			first.Body["event_id"], reordered.Body["event_id"])
+	}
+
+	// Different content is a different statement, and does make an event.
+	changed := server.MustDo(http.MethodPut,
+		path+"/state/a.test.state.type/", alice.Token,
+		matrix.Object{"a_key": "another_value"}, http.StatusOK)
+	if changed.Body["event_id"] == first.Body["event_id"] {
+		t.Errorf("changing the content answered with the old event %v", changed.Body["event_id"])
+	}
+
+	// The room holds one such event, and the timeline is not full of copies.
+	state := server.MustDo(http.MethodGet, path+"/state/a.test.state.type/", alice.Token, nil, http.StatusOK)
+	var content map[string]any
+	if err := json.Unmarshal(state.Raw, &content); err != nil {
+		t.Fatalf("decoding the state event content: %v", err)
+	}
+	if content["a_key"] != "another_value" {
+		t.Errorf("the room holds %v as the state, want the content that was last written", content)
+	}
+	history := server.MustDo(http.MethodGet,
+		path+"/messages?dir=f&limit=100", alice.Token, nil, http.StatusOK)
+	var chunk struct {
+		Chunk []struct {
+			Type string `json:"type"`
+		} `json:"chunk"`
+	}
+	if err := json.Unmarshal(history.Raw, &chunk); err != nil {
+		t.Fatalf("decoding the history: %v", err)
+	}
+	var copies int
+	for _, event := range chunk.Chunk {
+		if event.Type == "a.test.state.type" {
+			copies++
+		}
+	}
+	if copies != 2 {
+		t.Errorf("the room's history holds %d a.test.state.type events, want the two that were written", copies)
+	}
+}

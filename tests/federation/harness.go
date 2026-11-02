@@ -316,6 +316,36 @@ func (c *cluster) doAs(name, method, path, token string, body any) response {
 }
 
 // mustDo performs a request and fails the test unless the status is the wanted one.
+// visible lists the events a client sees when it reads a room's history. The point of
+// it is the events that are *not* in the list: an event can be stored in a server's
+// database and still not be part of the room as clients see it.
+func visible(t *testing.T, s *server, sess *session, roomID string) map[string]bool {
+	t.Helper()
+	got := s.mustDo(http.StatusOK, http.MethodGet,
+		"/_matrix/client/v3/rooms/"+roomID+"/messages?dir=f&limit=100", sess.Token, nil)
+	var body struct {
+		Chunk []struct {
+			EventID string `json:"event_id"`
+		} `json:"chunk"`
+	}
+	if err := json.Unmarshal(got.Raw, &body); err != nil {
+		t.Fatalf("decoding the history of %s on %s: %v", roomID, s.name, err)
+	}
+	out := map[string]bool{}
+	for _, event := range body.Chunk {
+		out[event.EventID] = true
+	}
+	return out
+}
+
+// stateOf reads the state events of a room as a client does, keyed by type and state
+// key. Tests that need a second server to know a room's state copy it from here.
+func stateOf(t *testing.T, s *server, sess *session, roomID string) []any {
+	t.Helper()
+	got := s.mustDo(http.StatusOK, http.MethodGet, "/_matrix/client/v3/rooms/"+roomID+"/state", sess.Token, nil)
+	return got.Array
+}
+
 func (s *server) mustDo(want int, method, path, token string, body any) response {
 	s.t.Helper()
 	got := s.do(method, path, token, body)

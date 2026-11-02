@@ -306,10 +306,17 @@ func (r *EventRepoImpl) ListByIDs(ids []string) ([]*Event, error) {
 	return events, err
 }
 
+// hideSoftFailed keeps events that failed their auth checks against the room's current
+// state out of what clients read. The specification is precise about this: such an
+// event is stored, and later events may cite it, but it is not sent to clients and not
+// applied to the state. Federation reads - which do have to pass these events on - do
+// not call this.
+func hideSoftFailed(q *gorm.DB) *gorm.DB { return q.Where("soft_failed = ?", false) }
+
 // History implements [EventRepo].
 func (r *EventRepoImpl) History(roomID string, from uint64, dir string, limit int, notBefore uint64) ([]*Event, error) {
 	var events []*Event
-	q := r.db.Where("room_id = ?", roomID)
+	q := hideSoftFailed(r.db.Where("room_id = ?", roomID))
 	if from > 0 {
 		if dir == "f" {
 			q = q.Where("stream_pos > ?", from)
@@ -342,7 +349,7 @@ func (r *EventRepoImpl) TimelineFor(roomIDs []string, since uint64, limit int) (
 		return nil, nil
 	}
 	var events []*Event
-	q := r.db.Where("room_id IN ? AND stream_pos > ?", roomIDs, since).
+	q := hideSoftFailed(r.db.Where("room_id IN ? AND stream_pos > ?", roomIDs, since)).
 		Order("stream_pos asc")
 	if limit > 0 {
 		q = q.Limit(limit)
@@ -439,7 +446,7 @@ func (r *EventRepoImpl) AdvanceForwardExtremities(roomID string, consumed []stri
 // HistoryByTimestamp implements [EventRepo].
 func (r *EventRepoImpl) HistoryByTimestamp(roomID string, ts int64, dir string, limit int) ([]*Event, error) {
 	var events []*Event
-	q := r.db.Where("room_id = ?", roomID)
+	q := hideSoftFailed(r.db.Where("room_id = ?", roomID))
 	order := "origin_server_ts desc"
 	switch dir {
 	case "f":
@@ -483,8 +490,8 @@ type RelationQuery struct {
 // /messages.
 func (r *EventRepoImpl) Relations(query RelationQuery) ([]*Event, error) {
 	var events []*Event
-	q := r.db.Where("room_id = ? AND relates_to = ? AND redacted = ?",
-		query.RoomID, query.EventID, false)
+	q := hideSoftFailed(r.db.Where("room_id = ? AND relates_to = ? AND redacted = ?",
+		query.RoomID, query.EventID, false))
 	if query.RelType != "" {
 		q = q.Where("rel_type = ?", query.RelType)
 	}
@@ -525,7 +532,7 @@ func (r *EventRepoImpl) ByPositions(roomID string, positions []uint64) (map[uint
 		return out, nil
 	}
 	var events []*Event
-	if err := r.db.Where("room_id = ? AND stream_pos IN ?", roomID, positions).
+	if err := hideSoftFailed(r.db.Where("room_id = ? AND stream_pos IN ?", roomID, positions)).
 		Find(&events).Error; err != nil {
 		return nil, err
 	}
@@ -605,7 +612,7 @@ func (r *EventRepoImpl) Search(query SearchQuery) ([]*Event, error) {
 		return nil, nil
 	}
 	var events []*Event
-	q := r.db.Where("room_id IN ? AND redacted = ?", query.RoomIDs, false)
+	q := hideSoftFailed(r.db.Where("room_id IN ? AND redacted = ?", query.RoomIDs, false))
 	if len(query.NotRooms) > 0 {
 		q = q.Where("room_id NOT IN ?", query.NotRooms)
 	}

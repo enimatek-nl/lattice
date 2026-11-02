@@ -12,6 +12,7 @@ import (
 
 	"github.com/enimatek-nl/lattice/internal/matrix"
 	"github.com/enimatek-nl/lattice/internal/persist"
+	"github.com/enimatek-nl/lattice/internal/service"
 )
 
 // The other half of a transaction is the side that sends it. What these tests hold is the
@@ -50,6 +51,18 @@ func shareRoom(t *testing.T, s *server, roomID, userID string) {
 	}); err != nil {
 		t.Fatalf("seeding the membership of %s on %s: %v", userID, s.name, err)
 	}
+}
+
+// receipts reads what a server has been sent over federation, judged or not. The
+// receipt row is the record of delivery; what the server decided about the event is a
+// separate question, and answered by its outcome.
+func receipts(t *testing.T, s *server) []*persist.ReceivedPDU {
+	t.Helper()
+	rows, err := s.db.ReceivedPDURepo.List(50)
+	if err != nil {
+		t.Fatalf("reading the receipts of %s: %v", s.name, err)
+	}
+	return rows
 }
 
 // flush drains a server's outbox, which is what the background loop does on a timer.
@@ -223,44 +236,39 @@ func TestLocalEventsTravelToThePeersOfARoom(t *testing.T) {
 	sent := one.send(alice, roomID, "across the wire")
 	flush(t, one)
 
-	queued, err := two.db.ReceivedPDURepo.Count()
-	if err != nil {
-		t.Fatalf("counting the queued events on %s: %v", two.name, err)
+	received := receipts(t, two)
+	if len(received) != 1 {
+		t.Fatalf("%s received %d events, want the one message", two.name, len(received))
 	}
-	if queued != 1 {
-		t.Fatalf("%s queued %d events, want the one message", two.name, queued)
-	}
-	stored, err := two.db.ReceivedPDURepo.Pending(10)
-	if err != nil || len(stored) == 0 {
-		t.Fatalf("reading the queued events: %v (%d)", err, len(stored))
-	}
-	if stored[0].EventID != sent {
+	if received[0].EventID != sent {
 		t.Errorf("%s names the event %s, but the sending server named it %s: the two servers disagree about the id",
-			two.name, stored[0].EventID, sent)
+			two.name, received[0].EventID, sent)
 	}
-	if stored[0].RoomID != roomID || stored[0].Origin != one.name {
-		t.Errorf("the queued event is %s from %s, want %s from %s",
-			stored[0].RoomID, stored[0].Origin, roomID, one.name)
+	if received[0].RoomID != roomID || received[0].Origin != one.name {
+		t.Errorf("the received event is %s from %s, want %s from %s",
+			received[0].RoomID, received[0].Origin, roomID, one.name)
+	}
+	// The event was judged as it arrived, and this server's answer is a soft failure:
+	// two holds the room as a row and a membership, but nothing ever handed it the
+	// room's state - that is the join handshake, a later step - so the rules read an
+	// empty state and the message is kept as a claim rather than applied to a room.
+	if received[0].Outcome != service.OutcomeSoftFailed {
+		t.Errorf("%s decided %q for the event, want %q: %s",
+			two.name, received[0].Outcome, service.OutcomeSoftFailed, received[0].Reason)
 	}
 
 	// The event that arrives carries no event id of its own, because the room version
 	// does not define one: an id inside the event would be part of what its own hash is
 	// computed over.
-	if _, found := mustDecodeObject(t, stored[0].JSON)["event_id"]; found {
-		t.Errorf("the delivered event carries an event id, which the room version does not define: %s", stored[0].JSON)
+	if _, found := mustDecodeObject(t, received[0].JSON)["event_id"]; found {
+		t.Errorf("the delivered event carries an event id, which the room version does not define: %s", received[0].JSON)
 	}
 
-	// A second flush sends nothing: the queue is empty and the event has been
-	// acknowledged, so a peer must not be asked the same question again.
-	before, err := two.db.ReceivedPDURepo.Count()
-	if err != nil {
-		t.Fatalf("counting again: %v", err)
-	}
+	// A second flush sends nothing: the event has been acknowledged, so a peer must not
+	// be asked the same question again.
+	before := len(receipts(t, two))
 	flush(t, one)
-	after, err := two.db.ReceivedPDURepo.Count()
-	if err != nil {
-		t.Fatalf("counting a last time: %v", err)
-	}
+	after := len(receipts(t, two))
 	if before != after {
 		t.Errorf("a second flush delivered the event again: %d became %d", before, after)
 	}
@@ -433,8 +441,8 @@ func TestARoomCanExcludeAServer(t *testing.T) {
 	// room allowed the server.
 	before := one.send(alice, roomID, "before the door closed")
 	flush(t, one)
-	if queued, err := two.db.ReceivedPDURepo.Count(); err != nil || queued != 1 {
-		t.Fatalf("the peer queued %d events before the exclusion: %v", queued, err)
+	if got := receipts(t, two); len(got) != 1 {
+		t.Fatalf("the peer received %d events before the exclusion, want 1", len(got))
 	}
 
 	one.mustDo(http.StatusOK, http.MethodPut,
@@ -447,10 +455,7 @@ func TestARoomCanExcludeAServer(t *testing.T) {
 	if kept, err := two.db.ReceivedPDURepo.Get(before); err != nil || kept == nil {
 		t.Errorf("%s forgot the event it had already accepted: %v", two.name, err)
 	}
-	pending, err := two.db.ReceivedPDURepo.Pending(20)
-	if err != nil {
-		t.Fatalf("reading the queued events: %v", err)
-	}
+	pending := receipts(t, two)
 	sawACL := false
 	for _, row := range pending {
 		if strings.Contains(row.JSON, `"m.room.server_acl"`) {
@@ -467,8 +472,8 @@ func TestARoomCanExcludeAServer(t *testing.T) {
 	if count, err := one.db.OutboxRepo.Count(); err != nil || count != 0 {
 		t.Errorf("%s still has %d items queued for a server the room excluded", one.name, count)
 	}
-	if queued, err := two.db.ReceivedPDURepo.Count(); err != nil || queued != 2 {
-		t.Errorf("%s queued %d events after the exclusion, want the two that were sent before it", two.name, queued)
+	if got := receipts(t, two); len(got) != 2 {
+		t.Errorf("%s received %d events after the exclusion, want the two that were sent before it", two.name, len(got))
 	}
 
 	// The other direction: a server the room excludes cannot push events into it. The
@@ -513,8 +518,8 @@ func TestARoomCanExcludeAServer(t *testing.T) {
 	if stored, err := one.db.ReceivedPDURepo.Get(eventID); err == nil && stored != nil {
 		t.Errorf("%s accepted an event from a server the room excluded", one.name)
 	}
-	if queued, err := one.db.ReceivedPDURepo.Count(); err != nil || queued != 0 {
-		t.Errorf("%s queued %d events from the server it excludes", one.name, queued)
+	if got := receipts(t, one); len(got) != 0 {
+		t.Errorf("%s took in %d events from the server it excludes", one.name, len(got))
 	}
 }
 
@@ -532,8 +537,8 @@ func TestARoomNobodyHereIsIn(t *testing.T) {
 	// Server two has never heard of the room, and nothing is told to it.
 	message := one.send(alice, roomID, "into the void")
 	flush(t, one)
-	if queued, err := two.db.ReceivedPDURepo.Count(); err != nil || queued != 0 {
-		t.Errorf("%s queued %d events for a room it is not in", two.name, queued)
+	if got := receipts(t, two); len(got) != 0 {
+		t.Errorf("%s took in %d events for a room it is not in", two.name, len(got))
 	}
 	// The sending server is not told the transaction failed: the events are answered
 	// per event, and the sending server's queue is empty either way.

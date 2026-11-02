@@ -127,6 +127,10 @@ type ReceivedPDURepo interface {
 	Pending(limit int) ([]*ReceivedPDU, error)
 	// Get returns one queued event by id.
 	Get(eventID string) (*ReceivedPDU, error)
+	// List returns the receipts this server holds, newest first, processed or not.
+	// Pending answers "what is still waiting"; this answers "what have peers sent me",
+	// which is the question that matters once an event is judged as it arrives.
+	List(limit int) ([]*ReceivedPDU, error)
 	// Mark records what processing decided.
 	Mark(eventID, outcome, reason string) error
 	// Count reports how many events are waiting, which is the number an operator
@@ -165,6 +169,17 @@ func (r *ReceivedPDURepoImpl) Pending(limit int) ([]*ReceivedPDU, error) {
 }
 
 // Get implements [ReceivedPDURepo].
+// List implements [ReceivedPDURepo].
+func (r *ReceivedPDURepoImpl) List(limit int) ([]*ReceivedPDU, error) {
+	var rows []*ReceivedPDU
+	q := r.db.Order("received desc, id desc")
+	if limit > 0 {
+		q = q.Limit(limit)
+	}
+	err := q.Find(&rows).Error
+	return rows, err
+}
+
 func (r *ReceivedPDURepoImpl) Get(eventID string) (*ReceivedPDU, error) {
 	var pdu ReceivedPDU
 	if err := r.db.Where("event_id = ?", eventID).First(&pdu).Error; err != nil {

@@ -197,6 +197,38 @@ func (s *Service) queuePDU(ctx context.Context, peer, txnID string, pdu matrix.O
 		// and the answer is the same both times.
 		log.Printf("federation: %s sent %s again", peer, eventID)
 	}
+	// The queue is consumed here rather than by a later loop, and that is a decision
+	// rather than a shortcut. The answer a peer is waiting for is the answer to "what
+	// did you decide about this event", a retry of the same transaction has to get the
+	// same answer, and the state of a room must not depend on when this server gets
+	// round to its backlog. The row stays either way: an event this server refused is
+	// kept with the reason, because "why is this event not in my room" is the first
+	// question an operator asks about a federation problem.
+	outcome, reason, err := s.applyIncomingPDU(ctx, pdu, version, peer, eventID)
+	if err != nil {
+		log.Printf("federation: %s could not be judged: %v", eventID, err)
+		return eventID, "this server could not process the event"
+	}
+	if err := s.db.ReceivedPDURepo.Mark(eventID, outcome, reason); err != nil {
+		log.Printf("federation: the outcome of %s could not be recorded: %v", eventID, err)
+	}
+	switch outcome {
+	case OutcomeStored, OutcomeSoftFailed:
+		stored, err := s.db.EventRepo.Get(eventID)
+		if err != nil {
+			break
+		}
+		// A soft-failed event is relayed on. This server's state does not support it,
+		// and the servers whose state might are the ones that have to hear about it;
+		// refusing to pass it on is how a room ends up forked on one server's opinion.
+		s.queueEventForPeersExcept(ctx, stored, version, peer)
+		if outcome == OutcomeStored {
+			s.Notify()
+			if err := s.notifyParticipants(ctx, roomID, stored); err != nil {
+				log.Printf("push rule evaluation for the received event %s failed: %v", eventID, err)
+			}
+		}
+	}
 	return eventID, ""
 }
 
