@@ -149,6 +149,15 @@ func main() {
 		if key, err := svc.SigningKey(context.Background()); err == nil {
 			log.Printf("federation on: signing as %s with key %s", *serverName, key.ID)
 		}
+		// And where a peer will look for that key. Every federation request this server
+		// sends is signed, and a peer that cannot fetch the key document refuses the request
+		// - which reaches the operator as a peer answering an error, and reaches their client
+		// as a room that will not open. The address is not this server's to choose: it comes
+		// from the server name, and from what /.well-known/matrix/server at that name says.
+		log.Printf("federation: peers verify requests from this server against "+
+			"https://%s/_matrix/key/v2/server, or against the host and port that "+
+			"/.well-known/matrix/server at %s names - that address has to answer over TLS, and "+
+			"serve the key route, or no peer will believe anything sent from here", *serverName, *serverName)
 	}
 
 	handler := applyCORS(app.Handler(), *corsOrigin)

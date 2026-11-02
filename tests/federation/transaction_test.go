@@ -314,8 +314,17 @@ func TestATransactionClaimingAnotherOriginIsRefused(t *testing.T) {
 	if failure == nil {
 		t.Fatalf("%s accepted a transaction signed by %s but claiming to be three.example", two.name, one.name)
 	}
-	if failure.Status != http.StatusUnauthorized || failure.Code != matrix.ErrCodeUnauthorized {
-		t.Errorf("claiming another origin: got %d %s, want 401 %s", failure.Status, failure.Code, matrix.ErrCodeUnauthorized)
+	// What one is told is a bad gateway rather than the peer's M_UNAUTHORIZED. That code
+	// means "your authentication is no good", and a refusal between two servers is neither
+	// of their clients' authentication problem - a client handed it logs its user out over a
+	// room that would not open. The peer's words are kept inside the message, which is what
+	// an operator needs; the refusal itself is the assertion above.
+	if failure.Status != http.StatusBadGateway || failure.Code != matrix.ErrCodeUnknown {
+		t.Errorf("claiming another origin: got %d %s, want %d %s: %s",
+			failure.Status, failure.Code, http.StatusBadGateway, matrix.ErrCodeUnknown, failure.Message)
+	}
+	if !strings.Contains(failure.Message, two.name) {
+		t.Errorf("the refusal %q does not name the server that refused", failure.Message)
 	}
 }
 

@@ -288,6 +288,25 @@ func peerError(status int, raw []byte, destination string) error {
 		Error   string `json:"error"`
 	}
 	if err := json.Unmarshal(raw, &body); err == nil && body.Errcode != "" {
+		if body.Errcode == string(matrix.ErrCodeUnauthorized) {
+			// A peer refusing to believe this server's signature is not the client's
+			// authentication failing, and M_UNAUTHORIZED is exactly the code a client reads as
+			// "your access token is no good" - a client logs its user out over it, and the
+			// message it shows names a server the user has never heard of. What the answer
+			// means is that the peer could not identify this server, which is an operator's
+			// problem: a peer checks a request from here against
+			// https://<this server>/_matrix/key/v2/server at its federation port, and one that
+			// cannot reach that document has no way to believe anything sent from here.
+			log.Printf("federation: %s answered %d with M_UNAUTHORIZED: %s - a peer that cannot "+
+				"fetch this server's /_matrix/key/v2/server cannot verify a request from it; check "+
+				"that the federation port answers over TLS and that /.well-known/matrix/server "+
+				"names the host and port peers should use", destination, status, body.Error)
+			return &matrix.Error{
+				Code:    matrix.ErrCodeUnknown,
+				Message: fmt.Sprintf("%s would not accept a request signed by this server: %s", destination, body.Error),
+				Status:  http.StatusBadGateway,
+			}
+		}
 		return &matrix.Error{
 			Code:    matrix.ErrorCode(body.Errcode),
 			Message: body.Error,

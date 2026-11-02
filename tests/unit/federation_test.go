@@ -706,3 +706,41 @@ func TestTransportMergesAPathQuery(t *testing.T) {
 		t.Errorf("the query named origin %q, wanted the sending server", got)
 	}
 }
+
+// TestPeerAuthRefusalIsNotOurOwn covers what a client is told when another homeserver
+// refuses to believe this server's signature. The peer answers M_UNAUTHORIZED, meaning
+// "I cannot identify you"; a client handed that code unchanged reads it as "your access
+// token is no good" and acts on it - logging the user out over a room that would not open.
+// The refusal is about this server, so it is answered as a bad gateway that names the peer.
+func TestPeerAuthRefusalIsNotOurOwn(t *testing.T) {
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"errcode":"M_UNAUTHORIZED","error":"no signing keys available for origin.example"}`))
+	}))
+	defer peer.Close()
+
+	key, err := federation.NewKeyPair()
+	if err != nil {
+		t.Fatalf("NewKeyPair: %v", err)
+	}
+	transport := federation.NewTransport(fixedIdentity{name: "origin.example", key: key}, federation.Config{
+		PeerBaseURLs: map[string]string{"peer.example": peer.URL},
+	})
+	if _, err := transport.Get(context.Background(), "peer.example",
+		"/_matrix/federation/v1/query/directory", nil); err == nil {
+		t.Fatal("the transport reported no error for a refusal from the peer")
+	} else if matrix.HasCode(err, matrix.ErrCodeUnauthorized) {
+		t.Errorf("a peer's M_UNAUTHORIZED was passed on as this server's: %v", err)
+	} else if peerErr, ok := err.(*matrix.Error); !ok {
+		t.Errorf("the transport returned %T, want a *matrix.Error", err)
+	} else {
+		if peerErr.Status != http.StatusBadGateway {
+			t.Errorf("the client is answered with %d, want %d: %s",
+				peerErr.Status, http.StatusBadGateway, peerErr.Message)
+		}
+		if !strings.Contains(peerErr.Message, "peer.example") {
+			t.Errorf("the answer %q does not name the server that refused", peerErr.Message)
+		}
+	}
+}
