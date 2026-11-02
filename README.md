@@ -20,7 +20,7 @@ room. The end-to-end cryptography stays on
 the clients. **165 of
 the 234** endpoints indexed in [SPECS.md](SPECS.md) are implemented, plus 31
 extra routes (see [ENDPOINTS.md](ENDPOINTS.md)). 113 black-box compatibility
-tests, 65 offline unit tests and 39 two-server federation tests are green.
+tests, 65 offline unit tests and 40 two-server federation tests are green.
 `make build vet lint` clean (golangci-lint reports 0 issues).
 Implementation version `0.1.0`
 (reported by `GET /_matrix/client/versions` as `Lattice/0.1.0`).
@@ -372,9 +372,10 @@ the upstream Matrix test suite, against a container built from `bin/lattice` by
 itself, which is not a module dependency because its own `go.mod` owns the test
 binaries. Point the target at that checkout (`COMPLEMENT=~/complement make
 complement`), narrow it with `COMPLEMENT_RUN='TestRoomAlias|TestRoomCreate'`, and
-use `COMPLEMENT_PKG=./tests` for the server-server suite — 91 tests, 72 of them
-red, 19 green: the membership handshake and what hangs off it is green, and the rest
-waits on the handshakes Lattice does not serve yet — knock, invite, and the
+use `COMPLEMENT_PKG=./tests` for the server-server suite — 91 tests, 69 of them
+red, 22 green: the membership handshake — join, leave, and invite shipped with the
+state that authorises it — is green, and the rest
+waits on the handshakes Lattice does not serve yet — knock, and the
 graph-reading queries of TODO step 11. Where
 Lattice stands, and what each remaining failure is missing, is written up under
 _Complement_ in [TODO.md](TODO.md).

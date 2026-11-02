@@ -14,7 +14,7 @@ re-derive were kept (below the plan).
   `make build vet lint` clean (`make lint` = golangci-lint, 0 issues),
   `go test ./...` green — **113** compatibility tests (~52 s here, ~5½ min
   with `-race` on this machine), **65** offline unit tests in `tests/unit`
-  (milliseconds), and **39** two-server tests in `tests/federation` (~13 s,
+  (milliseconds), and **40** two-server tests in `tests/federation` (~13 s,
   ~56 s with `-race`). Coverage: **165 of the 234** indexed endpoints, 31 extra
   routes (`make endpoints`). Steps 1–10 are closed: rate limiting, the
   client-API correctness tails, batched reads, offline unit tests, the
@@ -32,9 +32,11 @@ re-derive were kept (below the plan).
   test-by-test against Complement's server-server suite, each naming the tests it
   is expected to turn green, and step 14 wraps the release.
 - Against [Complement](https://github.com/matrix-org/complement), the upstream
-  Matrix suite, **40 of 106** client-API tests fail (`make complement`) and **72 of
+  Matrix suite, **40 of 106** client-API tests fail (`make complement`) and **69 of
   91** server-server tests fail (`make complement COMPLEMENT_PKG=./tests`) — up from
-  4 green before step 10, all of them the membership handshake and what hangs off it.
+  4 green before step 10. The membership handshakes are green — join, leave, and the
+  invitation shipped with the state that authorises it — along with the guards that
+  refuse a wrong membership at each of those doors.
   See _Complement_ below for how they run, what a run can hide, and what each remaining
   failure is waiting for. The transport itself is not among the reasons: most of
   what is left is a peer answering `M_UNRECOGNIZED` to a handshake Lattice does not
@@ -865,14 +867,49 @@ which now works, plus the pieces named above).
   it. A room version from 3 onwards carries no id inside the event, so the invited server
   works the version out by hashing the invite under each version it speaks and keeping the
   one that reproduces the id it was given. Locally, a three-server test shows the invited
-  server holding create, join rules and power levels, and its user syncing the room in the
-  `invite` bucket. Complement's remaining failures there are two separate gaps: the test
-  wants `unsigned.prev_content.membership` on a membership change, which Lattice has no
-  notion of at all (an unsigned field, so it can be written when the event is appended
-  without touching what is hashed), and a kick of a user who joined through another server
-  is refused with "is not a member of the room" while the logs hold a matching soft failure
-  saying he "is already join in the room" - membership bookkeeping across a join-and-kick
-  sequence, which is a task of its own.
+  server holding create, join rules and the memberships the invitation is between, and its
+  user syncing the room in the `invite` bucket. Both tests then failed on further gaps, and
+  those are now closed: `unsigned.prev_content` and `unsigned.prev_sender` exist (see the
+  next finding), and kicking reaches invited and knocking users rather than only joined ones.
+  `TestFederationRejectInvite` is green.
+- **A chain event re-judged against the room's present state refuses an honest event.**
+  `TestFederationRoomsInvite` is the one invite test still red, and its refusal reads
+  "the auth chain carries $..., which the rules refuse: @user cannot leave a room it is not
+  in (membership: none)". The chain event is a leave the room had already soft-failed, and
+  the transitive check reads the room's membership as it stands *now* rather than as the
+  state that event's own auth events describe. An auth event is a statement about a moment,
+  not about the room today: a leave cites the membership that stood when it was signed, and
+  judging it against a later state says something the room never claimed. Reading each chain
+  event against the state its own auth set names - which is what `stateOfAuthIDs` was meant
+  to do - is the next thing to get right, and it gates more than this test.
+- **The invite's room-version trick works locally and not in Complement.** An invited server
+  with no room row hashes the invite under each version it speaks and keeps the one that
+  reproduces the id it was given. Locally that matches; against Complement's servers every
+  invite logs "names an id no room version this server speaks reproduces" and falls back to
+  the default, which happens to be right there. The fallback is safe and the log is honest,
+  but the mismatch means the derivation is not doing its job, and a room of an older version
+  would be guessed wrong until the join handshake asks.
+- **A state event that does not say what it replaced is a change with no before.**
+  `unsigned.prev_content` and `unsigned.prev_sender` did not exist in Lattice at all: a
+  client shown a membership of "join" cannot tell an accepted invitation from a knock that
+  was let in, and a rename without the name it replaced is a rename nobody can explain. The
+  field is unsigned, so it is written when the event is built without touching what is
+  hashed or signed - which also lets the room's own server annotate a `make_join` and
+  `make_leave` template with what the membership there replaces, since only that server
+  knows. Three places had to cooperate for it to arrive: the joining server had to carry the
+  template's annotation instead of rebuilding the event without it, the client rendering
+  path had to merge its derived `age` into the stored `unsigned` instead of replacing it, and
+  `createRoom`'s `is_direct` had to reach the invitations it makes - a client decides a room
+  is a direct conversation by reading that key off the membership event, and the other
+  server only ever sees that event.
+- **An event kept as an outlier was left out of the room's own history.** A join hands this
+  server its own join event inside the room's state, so that event arrives marked as another
+  server's history; the join then stores the same event itself, the write is a duplicate, and
+  the duplicate was ignored - leaving a room with a hole where its own join belongs, a
+  history read that cannot find the event that made the server part of the room, and a client
+  that never sees it. A duplicate arriving as something that happened here now promotes the
+  event into the timeline at this moment: the content of the copy on disk stands, because it
+  is the same event, but the timeline flag and the position are not somebody else's to keep.
 - **An event must not cite the same auth event twice, and a membership event about
   oneself does.** `selectAuthEvents` adds the sender's membership and the target's
   membership, which are one and the same stored event when the sender equals the state
