@@ -21,7 +21,7 @@ JWT_SECRET  ?= dev
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build test race vet fmt lint endpoints run swagger clean complement-image complement
+.PHONY: help build image test race vet fmt lint endpoints run swagger clean complement-image complement
 
 help: ## List the available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -29,6 +29,14 @@ help: ## List the available targets
 
 build: ## Build the homeserver into bin/lattice
 	$(GO) build -o $(BIN_DIR)/$(BINARY) ./cmd/server
+
+# The image a release publishes: the Dockerfile at the root of the repository, which
+# .github/workflows/image.yml builds and pushes to ghcr.io when a tag is pushed.
+# Building it locally is how a Dockerfile change is found before a release is.
+IMAGE ?= lattice:latest
+
+image: ## Build the container image that a release publishes
+	docker build --build-arg REVISION="$(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)" -t $(IMAGE) .
 
 test: ## Run all tests: unit plus the compatibility suite
 	$(GO) test ./...

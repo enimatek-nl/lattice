@@ -1122,6 +1122,10 @@ Complement turns green: `TestDeviceListsUpdateOverFederation`,
       certificate, `-federation-address`, `-federation-peer`, `-insecure`, and the
       fact that rooms federate by default with `-no-federation` to opt out.
 - [ ] Decide `0.2.0` (client API complete) / `1.0.0` (with federation) tagging.
+      The release machinery exists since 2026-11-03 (`Dockerfile`,
+      `.github/workflows/image.yml`): pushing `vX.Y.Z` publishes the multi-arch
+      image, and the job refuses a tag that is not `LatticeVersion` — so a release is
+      "bump the constant, commit, tag", whichever number is chosen.
 ### What else the server-server package holds, and who owns it
 
 Steps 9 to 13 name 37 of the 87 red. The other 50 sit in that package because
@@ -1616,6 +1620,109 @@ maintenance`. First registered account = administrator.
   typing" `m.typing`); `handleTyping` uses the token user but 403s when the
   path `{userId}` differs.
 
+### Packaging, the image, and the release tag (added 2026-11-03)
+
+- **Every flag is an environment variable already**: `LATTICE_` + flag name,
+  upper-cased, dashes to underscores (`internal/config/env.go`). Nothing registers a
+  name per setting, so a new flag in `cmd/server/main.go` is configurable in a
+  container the moment it exists. Precedence is **command line > environment >
+  default**; a variable set to blank counts as unset (compose writes `KEY=` for a key
+  left blank), and `-version` is excluded — it is a question, not a setting, and an
+  orchestrator carrying `LATTICE_VERSION` for its own bookkeeping would otherwise turn
+  every start into a printout. What arrived from the environment is named at startup.
+  `tests/unit/configenv_test.go` pins all of it; note that the flag package leaves a
+  numeric or duration value at **zero** after a failed `Set`, which is why a bad
+  variable stops the start rather than being logged and carried on.
+- **Two images, deliberately.** `Dockerfile` (root) is what a release publishes:
+  built inside the image, no entrypoint script, configuration through the
+  environment. `deploy/complement/Dockerfile` is the test image: binary built outside
+  (that image is rebuilt for every suite run) and a shell entrypoint that mints the CA
+  certificate. `.dockerignore` keeps `bin/` and `deploy/` in the context so
+  `make complement-image` keeps working.
+- **The image runs as uid 10001** and owns `/data`. A *bind* mount keeps the host's
+  ownership, so an unprivileged container answers `permission denied` opening the
+  database unless the host directory is `chown 10001:10001`'d; named volumes need
+  nothing. Verified end to end: register + whoami against a named volume, WAL files
+  and media included, health route answering.
+- **Cross-architecture**: the build stage is `--platform=$BUILDPLATFORM` and reads
+  `TARGETOS`/`TARGETARCH`, so the Go compile stays native even for an arm64 image
+  (checked: static aarch64 binary built on amd64). Only the Alpine runtime stage needs
+  emulation, for `apk` and `adduser`; `docker/setup-qemu-action` registers it in CI.
+  Rootless podman without binfmt cannot build that stage for a foreign platform —
+  local `make image` builds for the host's architecture, which is the point.
+- **A tag is the version**: the release job compares `GITHUB_REF_NAME` with
+  `LatticeVersion` in `internal/service/capabilities.go` (a `-rc` suffix is allowed),
+  because an image tagged `0.2.0` that answers `0.1.0` on `/_matrix/client/versions`
+  costs a week of debugging aimed at the proxy. `v0.1.0` publishes `0.1.0`, `0.1` and
+  `latest`, for `linux/amd64` and `linux/arm64`. Do **not** add an explicit
+  `type=raw,value=latest` to the metadata step: `latest` comes from that action's auto
+  flavour, which is what keeps it off a prerelease — `v0.2.0-rc1` publishes only
+  `0.2.0-rc1` and moves nothing (verified against the action's own test table).
+
+### Account management from the terminal (added 2026-11-03)
+
+- **One binary, two halves.** `cmd/server/main.go` looks at `os.Args[1]`: a flag starts
+  the homeserver (every existing start form — README, Makefile, container entrypoint —
+  begins with a flag), a known word runs an operator command from `internal/cli`. A word
+  that is *not* a known command is refused with the list, **not** treated as a plain
+  `lattice`: `lattice adduser` typoed would otherwise open a listening port and write a
+  fresh `lattice.db` into whatever directory the operator was standing in. `cli.IsCommand`
+  is the single classifier; `tests/unit/cli_test.go` pins which words are commands.
+- **The service layer has one account path each way**, and both halves use it:
+  `service.CreateAccount(ctx, AccountParams)` (`internal/service/account.go`) is what the
+  HTTP `Register` calls *and* what `add-user` calls, so a CLI account gets the same bcrypt
+  cost, the same default push rules, the same guest and first-account-admin rules. On the
+  way out, `service.DeactivateLocalAccount` (`internal/service/devices.go`) is the
+  unauthenticated operator path; `DeactivateAccount` is the user-interactive-auth endpoint
+  wrapper around it. Do not add a second place that creates or tears down an account.
+- **Go's `flag` stops parsing at the first positional**, so `add-user alice -db path` read
+  `-db`, the path and everything after them as more account names. `inOrder` in
+  `internal/cli/cli.go` moves a command's flags ahead of its names, using the flag set's
+  own knowledge (`IsBoolFlag`) to know whether a word after a flag belongs to it, and puts
+  a typed `--` back in front of the names so a name that looks like a flag stays a name.
+  It is unexported on purpose: pin the behaviour through `cli.RunWithEnv` with the name
+  first, which is what every test does.
+- **A password is asked for, never read from the environment.** `-password`, `-admin`,
+  `-display-name`, `-yes`, `-limit`, `-all` are excluded from the `LATTICE_*` mapping in
+  `internal/config/env.go`: a `LATTICE_PASSWORD` in a container's environment would become
+  the password of whichever account somebody adds next, and `LATTICE_ADMIN` would make it
+  an administrator. The exclusion is a table case in `configenv_test.go`. On a terminal the
+  password is read twice with the echo off (`golang.org/x/term`); in a pipe it is one line,
+  and an empty line is refused with the three ways to supply it. A blank `-password ""`
+  means "not given" (same blank-is-unset rule as everywhere else).
+- **Validate before asking for a secret**: `add-user` checks the name is one this server
+  can hold *before* prompting, so nobody types a password twice for a name that was never
+  going to work. It also warns when a capitalised name will be stored lower case, and
+  trims spaces (a keyboard allows both; a client's JSON body does not).
+- **Deactivation, not deletion.** `remove-user` clears sessions, device keys,
+  cross-signing keys, key backups and room-key backups, forgets the memberships, and marks
+  the row: the ID stays taken on purpose, because it is written into every event that
+  account ever sent and a freed name would inherit them. `add-user` refuses to reuse it,
+  and says so. Deactivated accounts drop out of `UserRepo.List`, so `users` counts them
+  with a separate query (`deactivatedCount`, through `db.GORM()`); a list that showed only
+  sign-in-able accounts would leave an operator hunting for one that is merely gone.
+- **Confirmation is for a terminal, not for a pipe.** `remove-user` asks for the user ID
+  back; with no terminal on stdin nothing is asked and the command proceeds, because
+  `echo x | lattice remove-user` and `docker exec` without `-t` have no way to answer. `-yes`
+  is the explicit script form. Getting this backwards either blocks every pipeline or skips
+  the only check in front of a destructive command.
+- **Both commands work against a running server, on the same file**, and that is the point
+  (`tests/compat/operator_test.go` runs a live server and a second `persist.Database`
+  handle side by side). Users and sessions are rows the middleware reads per request, so an
+  account created by another process signs in immediately and `remove-user` kills a token a
+  live server had already accepted — no restart, no shared state. SQLite WAL plus the busy
+  timeout in `persist.NewDatabase` is what makes the second writer safe.
+- **In a container the commands need no flags**: the image sets `LATTICE_DB` and
+  `LATTICE_SERVER_NAME`, so `docker exec -it lattice lattice add-user alice` finds the
+  right file and the right name. Verified by hand: closed registration, account added with
+  `docker exec`, login from the host as `@sanne:matrix.example.org`, removal, refusal to
+  reuse the name.
+- **Output plumbing**: `say`, `sayLine`, `sayText` in `internal/cli` are the only writers
+  and they drop fmt's error deliberately (a pipe closed by `| head` changes nothing about
+  what reached the database); that keeps errcheck quiet without `_ =` noise at each site.
+  Error paths print one sentence, not the whole usage block — the sentence is the
+  interface, and `-h` prints the block.
+
 ## Commands
 
 ```sh
@@ -1624,10 +1731,16 @@ make test                                 # unit + compat suites (~45 s here)
 make race                                 # same with -race
 make endpoints                            # coverage report -> ENDPOINTS.md (generated, untracked)
 make run                                  # dev server, 127.0.0.1:8008, /tmp/lattice.db
+make image                                # the release image (Dockerfile) -> lattice:latest
+make complement-image                     # bin/lattice with CGO off, then the Complement image
 make swagger                              # docs/swagger/{swagger.json,swagger.yaml}
 go test ./tests/compat/ -race
+go test ./tests/compat/ -run 'TestAnOperator|TestOperator'   # the account commands alone
 bin/lattice --addr 127.0.0.1:8008 --server-name localhost:8008 \
     --db /tmp/lattice.db --jwt-secret dev      # what `make run` executes
+bin/lattice add-user alice -db /tmp/lattice.db -server-name localhost    # operator command
+bin/lattice users -db /tmp/lattice.db -server-name localhost
+bin/lattice remove-user alice -db /tmp/lattice.db -yes
 ```
 
 Note: the compat (and future federation) suites bind loopback ports, so they

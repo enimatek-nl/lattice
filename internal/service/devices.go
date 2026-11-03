@@ -187,42 +187,63 @@ func (s *Service) DeactivateAccount(ctx context.Context, userID string, auth mat
 	if err := s.checkAuthFlow(ctx, auth, matrix.LocalpartOf(userID)); err != nil {
 		return nil, err
 	}
-	if !s.LocalUser(userID) {
-		return nil, matrix.ErrNotFound("no such user %s", userID)
-	}
-	if err := s.db.UserRepo.Deactivate(userID); err != nil {
-		return nil, matrix.ErrInternal(err)
-	}
-	if err := s.db.SessionRepo.DeleteByUser(userID); err != nil {
-		return nil, matrix.ErrInternal(err)
-	}
-	// The key material of a deactivated account goes with it: nobody should be
-	// able to start an end-to-end session with an account that no longer exists.
-	// That includes the cross-signing keys, which would otherwise keep vouching
-	// for a user who is gone, and the backed up room keys.
-	if err := s.DropDeviceKeys(ctx, userID); err != nil {
+	if err := s.DeactivateLocalAccount(ctx, userID); err != nil {
 		return nil, err
-	}
-	if err := s.DropCrossSigning(ctx, userID); err != nil {
-		return nil, err
-	}
-	if err := s.DropKeyBackups(ctx, userID); err != nil {
-		return nil, err
-	}
-	rooms, err := s.db.MembershipRepo.RoomsFor(userID)
-	if err != nil {
-		return nil, matrix.ErrInternal(err)
-	}
-	for _, roomID := range rooms {
-		if err := s.db.MembershipRepo.Forget(roomID, userID); err != nil {
-			return nil, matrix.ErrInternal(err)
-		}
 	}
 	return matrix.Object{
 		"id_server":               nil,
 		"3pids_disconnected_json": "[]",
 		"unbind_credentials":      matrix.Object{"id_server": nil, "id_access_token": nil},
 	}, nil
+}
+
+// DeactivateLocalAccount is deactivation on its own, without the User-Interactive Auth
+// the endpoint asks for first: the account stops authenticating, its sessions, keys and
+// backups go with it, and it forgets every room it was in. It establishes nothing about
+// the caller, because it is for someone who has already established that they may act -
+// the owner through the flow above, or the operator at a keyboard over a file they own.
+//
+// The account row stays, marked deactivated with its password cleared, rather than
+// being deleted. A Matrix user ID is written into every event that account ever sent,
+// so the name has to stay taken: delete the row and a later account can be created
+// under the same ID, in rooms that still show the old account's messages as belonging
+// to it.
+func (s *Service) DeactivateLocalAccount(ctx context.Context, userID string) error {
+	if !s.LocalUser(userID) {
+		return matrix.ErrNotFound("no such user %s", userID)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := s.db.UserRepo.Deactivate(userID); err != nil {
+		return matrix.ErrInternal(err)
+	}
+	if err := s.db.SessionRepo.DeleteByUser(userID); err != nil {
+		return matrix.ErrInternal(err)
+	}
+	// The key material of a deactivated account goes with it: nobody should be
+	// able to start an end-to-end session with an account that no longer exists.
+	// That includes the cross-signing keys, which would otherwise keep vouching
+	// for a user who is gone, and the backed up room keys.
+	if err := s.DropDeviceKeys(ctx, userID); err != nil {
+		return err
+	}
+	if err := s.DropCrossSigning(ctx, userID); err != nil {
+		return err
+	}
+	if err := s.DropKeyBackups(ctx, userID); err != nil {
+		return err
+	}
+	rooms, err := s.db.MembershipRepo.RoomsFor(userID)
+	if err != nil {
+		return matrix.ErrInternal(err)
+	}
+	for _, roomID := range rooms {
+		if err := s.db.MembershipRepo.Forget(roomID, userID); err != nil {
+			return matrix.ErrInternal(err)
+		}
+	}
+	return nil
 }
 
 // SetAccountFlag locks or suspends an account. flag is "lock" or "suspend".

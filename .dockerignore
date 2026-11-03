@@ -1,0 +1,52 @@
+# What the release image does not need. The build only reads go.mod, go.sum, cmd and
+# internal, so everything else stays out of the build context: a Dockerfile that
+# copies fewer files caches better, and a stray database or private key in the
+# context is a secret that ends up one COPY away from a published image.
+#
+# bin/ and deploy/ stay in, because `make complement-image` builds its own image from
+# this same context and needs the binary it built and its own entrypoint script.
+
+.git
+.github
+assets
+docs
+tests
+TODO.md
+README.md
+ENDPOINTS.md
+LICENSE
+Makefile
+Dockerfile
+.dockerignore
+
+# Runtime state and local configuration: never in an image, never in a context that
+# can publish one.
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.pem
+*.key
+.env
+.env.*
+/data/
+/media/
+/tmp/
+/secrets/
+*.log
+
+# Build and test leftovers.
+/dist/
+/server
+/lattice
+*.exe
+*.test
+*.out
+coverage.out
+coverage.html
+/profile/
+*.pprof
+/.idea/
+/.vscode/
+.DS_Store

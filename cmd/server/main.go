@@ -20,6 +20,8 @@ import (
 
 	"github.com/enimatek-nl/lattice/internal/api"
 	"github.com/enimatek-nl/lattice/internal/auth"
+	"github.com/enimatek-nl/lattice/internal/cli"
+	"github.com/enimatek-nl/lattice/internal/config"
 	"github.com/enimatek-nl/lattice/internal/federation"
 	"github.com/enimatek-nl/lattice/internal/matrix"
 	"github.com/enimatek-nl/lattice/internal/persist"
@@ -27,6 +29,29 @@ import (
 )
 
 func main() {
+	// The binary has two halves. With flags in front of it, it is the homeserver - which
+	// is how README, the Makefile and the container entrypoint start it, and how it stays
+	// started. With a command word in front of them, it is one of the operator utilities
+	// in internal/cli: the same settings read the same way, working on the database
+	// instead of serving it. That is what lets a server run with -disable-registration
+	// and still gain an account.
+	if len(os.Args) > 1 && !strings.HasPrefix(os.Args[1], "-") {
+		// A first word that is not a command is a typo, and it is never the homeserver.
+		// Every way of starting the server begins with a flag, while `lattice adduser`
+		// misspelled would otherwise open a listening port and write a fresh database
+		// into whatever directory the operator happened to be standing in.
+		if !cli.IsCommand(os.Args[1]) {
+			fmt.Fprintf(os.Stderr, "lattice: %q is not a command\n", os.Args[1])
+			cli.Usage(os.Stderr)
+			os.Exit(2)
+		}
+		if err := cli.Run(os.Args[1], os.Args[2:], os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "lattice:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	var (
 		addr              = flag.String("addr", ":8008", "address to listen on")
 		serverName        = flag.String("server-name", "localhost", "homeserver name; user and room IDs end with it")
@@ -78,6 +103,13 @@ func main() {
 			"how often federation traffic waiting for a peer is retried; 0 delivers only on demand")
 		showVersion = flag.Bool("version", false, "print the version and exit")
 	)
+	flag.CommandLine.Usage = func() {
+		flag.Usage()
+		// The operator commands belong in the same help output as the flags, because
+		// everyone who reads one is looking for the other.
+		_, _ = fmt.Fprintln(flag.CommandLine.Output())
+		cli.Usage(flag.CommandLine.Output())
+	}
 	flag.Parse()
 
 	if *showVersion {
@@ -85,14 +117,30 @@ func main() {
 		return
 	}
 
+	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
+	log.SetPrefix("lattice: ")
+
+	// Every flag above can also be given as LATTICE_<NAME>: -server-name as
+	// LATTICE_SERVER_NAME, -federation-advertise as LATTICE_FEDERATION_ADVERTISE. The
+	// container image is configured that way, because a container gets variables
+	// rather than a command line, and an operator writing a systemd unit gets the same
+	// interface. The command line still wins, so a flag typed by hand overrides what
+	// the image or the orchestrator set.
+	takenFromEnv, err := config.ApplyEnvDefaults(flag.CommandLine, os.LookupEnv)
+	if err != nil {
+		log.Fatalf("configuration: %v", err)
+	}
+	if len(takenFromEnv) > 0 {
+		// Worth one line: the difference between "my token stopped working on restart"
+		// and an answer is knowing whether LATTICE_JWT_SECRET ever arrived.
+		log.Printf("settings taken from the environment: %s", strings.Join(takenFromEnv, " "))
+	}
+
 	secret := *jwtSecret
 	if secret == "" {
 		secret = randomSecret()
 		log.Print("no --jwt-secret given; generated an ephemeral one, access tokens stop working on restart")
 	}
-
-	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
-	log.SetPrefix("lattice: ")
 
 	db, err := persist.NewDatabase(*dbPath)
 	if err != nil {

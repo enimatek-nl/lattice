@@ -43,6 +43,82 @@ type RegisterParams struct {
 	CallerAdmin bool
 }
 
+// AccountParams are the fields of an account this homeserver stores: what a client
+// supplies in a registration, and what an operator supplies to `lattice add-user`.
+type AccountParams struct {
+	// Username is the localpart; the user ID is it with this server's name on the end.
+	Username string
+	// Password is stored as a bcrypt hash and never kept in plain text.
+	Password string
+	// DisplayName seeds the m.displayname profile entry of the new account.
+	DisplayName string
+	// Admin marks the account an administrator. The first account on a fresh
+	// server is one whatever this says.
+	Admin bool
+	// Guest marks an account created for a throwaway session.
+	Guest bool
+}
+
+// CreateAccount validates a name, hashes a password and stores a new local account.
+// It authenticates nobody and opens no session: it is the part of registration that
+// is still there once the client exchange is taken away, which is what lets
+// `lattice add-user` put an account on a server that has closed self-service
+// registration with -disable-registration.
+//
+// [Service.Register] has already checked the name before it gets here. The checks are
+// repeated rather than trusted because this is an entry point in its own right: a
+// caller that never went through the authentication exchange must still not be able to
+// store an account with a name this server could never hold, or one that shadows an
+// account already in the file.
+//
+// The first account on a fresh server becomes an administrator, so that
+// administrative endpoints can be reached without out-of-band setup.
+func (s *Service) CreateAccount(ctx context.Context, params AccountParams) (*persist.User, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	localpart := strings.ToLower(params.Username)
+	if !matrix.ValidLocalpart(localpart) {
+		return nil, matrix.ErrInvalidUsername("user ID @%s:%s is invalid", localpart, s.serverName)
+	}
+	if _, err := s.db.UserRepo.GetByLocalpart(localpart); err == nil {
+		return nil, matrix.ErrUserInUse("user ID is already taken")
+	} else if !persist.IsNotFound(err) {
+		return nil, matrix.ErrInternal(err)
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(params.Password), bcrypt.DefaultCost)
+	if err != nil {
+		return nil, matrix.ErrInternal(err)
+	}
+	existing, err := s.db.UserRepo.Count()
+	if err != nil {
+		return nil, matrix.ErrInternal(err)
+	}
+	user := &persist.User{
+		ID:           matrix.UserMxid(localpart, s.serverName),
+		Localpart:    localpart,
+		PasswordHash: string(hash),
+		Guest:        params.Guest,
+		Admin:        params.Admin || existing == 0,
+	}
+	if err := s.db.UserRepo.Create(user); err != nil {
+		if persist.IsDuplicate(err) {
+			return nil, matrix.ErrUserInUse("user ID is already taken")
+		}
+		return nil, matrix.ErrInternal(err)
+	}
+	if params.DisplayName != "" {
+		if err := s.db.ProfileRepo.Set(user.ID, ProfileDisplayName, params.DisplayName); err != nil {
+			return nil, matrix.ErrInternal(err)
+		}
+	}
+	if err := s.SeedPushRules(ctx, user.ID); err != nil {
+		return nil, err
+	}
+	return user, nil
+}
+
 // Register creates an account, a device and an access token.
 //
 // Registration sits behind a User-Interactive Auth exchange: a request with no
@@ -97,34 +173,14 @@ func (s *Service) Register(ctx context.Context, params RegisterParams) (*Session
 	if params.Guest {
 		password = matrix.NewToken()
 	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	user, err := s.CreateAccount(ctx, AccountParams{
+		Username:    localpart,
+		Password:    password,
+		DisplayName: params.DisplayName,
+		Admin:       params.Admin,
+		Guest:       params.Guest,
+	})
 	if err != nil {
-		return nil, matrix.ErrInternal(err)
-	}
-
-	existing, err := s.db.UserRepo.Count()
-	if err != nil {
-		return nil, matrix.ErrInternal(err)
-	}
-	user := &persist.User{
-		ID:           matrix.UserMxid(localpart, s.serverName),
-		Localpart:    localpart,
-		PasswordHash: string(hash),
-		Guest:        params.Guest,
-		Admin:        params.Admin || existing == 0,
-	}
-	if err := s.db.UserRepo.Create(user); err != nil {
-		if persist.IsDuplicate(err) {
-			return nil, matrix.ErrUserInUse("user ID is already taken")
-		}
-		return nil, matrix.ErrInternal(err)
-	}
-	if params.DisplayName != "" {
-		if err := s.db.ProfileRepo.Set(user.ID, ProfileDisplayName, params.DisplayName); err != nil {
-			return nil, matrix.ErrInternal(err)
-		}
-	}
-	if err := s.SeedPushRules(ctx, user.ID); err != nil {
 		return nil, err
 	}
 	return s.newSession(ctx, user, params.DeviceID, params.DeviceDisplayName)
