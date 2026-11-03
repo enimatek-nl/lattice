@@ -450,6 +450,12 @@ func (s *Service) ServeMakeJoin(ctx context.Context, roomID, userID, peer string
 			return nil, err
 		}
 	}
+	// A room joined through another room is joined on the word of somebody who is already in it
+	// and may invite. The room's own server is the only place that can say whose word that is,
+	// and a joining server left without a name cannot make the join at all: refusing at send_join
+	// would be refusing after the other server had already signed an event and spent its attempt,
+	// with nothing to show for failing over to another server.
+	authorised := s.joinAuthoriser(ctx, roomID, userID)
 	var (
 		prevIDs  []string
 		authIDs  []string
@@ -492,12 +498,21 @@ func (s *Service) ServeMakeJoin(ctx context.Context, roomID, userID, peer string
 		// the auth selection names: a join has to cite the room's join rule, and a draft
 		// without content reads as a membership change of no kind, which quietly answers
 		// make_join with an auth set the joining server's own rules then refuse.
+		// The witness belongs in the auth events. A join that names the user who vouched for it
+		// cites that user's membership as part of what authorises it, and a chain built as though
+		// the claim were not there is a chain the room's own rules refuse the next time they are
+		// read - which is not at make_join, but later, when the join is cited as authority for
+		// something else.
+		draft := matrix.Object{"membership": matrix.MembershipJoin}
+		if authorised != "" {
+			draft["join_authorised_via_users_server"] = authorised
+		}
 		authIDs, err = selectAuthEvents(persist.NewStateRepo(tx), &EventDraft{
 			RoomID:   roomID,
 			Type:     matrix.TypeMember,
 			StateKey: &key,
 			Sender:   userID,
-			Content:  matrix.Encode(matrix.Object{"membership": matrix.MembershipJoin}),
+			Content:  matrix.Encode(draft),
 		}, version)
 		return err
 	})
@@ -517,18 +532,16 @@ func (s *Service) ServeMakeJoin(ctx context.Context, roomID, userID, peer string
 		// join waiting to be signed but a shape a peer cannot finish: gomatrixserverlib
 		// marshals the content member of its proto event and fails on an empty one, so
 		// an answer that leaves it out cannot be signed at all.
-		"content": matrix.Object{"membership": matrix.MembershipJoin},
+		"content": func() matrix.Object {
+			content := matrix.Object{"membership": matrix.MembershipJoin}
+			if authorised != "" {
+				content["join_authorised_via_users_server"] = authorised
+			}
+			return content
+		}(),
 	}
 	if unsigned != nil {
 		template["unsigned"] = unsigned
-	}
-	// A room joined through another room is joined on the word of somebody who is already in it
-	// and may invite. The room's own server is the only place that can say whose word that is,
-	// and a joining server that is left without an answer cannot make the join at all: naming
-	// nobody would only move the refusal to send_join, where the joining server has already
-	// signed an event and has to fail over to another server with nothing to show for it.
-	if authorised := s.joinAuthoriser(ctx, roomID, userID); authorised != "" {
-		template["content"].(matrix.Object)["join_authorised_via_users_server"] = authorised
 	}
 	return matrix.Object{"room_version": version, "event": template}, nil
 }
@@ -764,6 +777,13 @@ func (s *Service) restrictedJoinIsAdmitted(ctx context.Context, roomID string, e
 				admitted = true
 			}
 		}
+	}
+	// An invitation is its own admission. The room invited this user, which is the room saying
+	// it wants them; requiring them to also belong to one of the rooms the rule reads would
+	// contradict the room's own answer.
+	if current, err := s.db.MembershipRepo.Get(roomID, joiner); err == nil &&
+		(current.Membership == matrix.MembershipInvite || current.Membership == matrix.MembershipJoin) {
+		admitted = true
 	}
 	if hosted > 0 && !admitted {
 		return fmt.Sprintf("%s is not a member of any of the rooms %s admits people through", joiner, roomID)

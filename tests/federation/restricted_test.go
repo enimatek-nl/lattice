@@ -45,6 +45,13 @@ func TestARestrictedRoomNamesWhoLetTheJoinerIn(t *testing.T) {
 	if authorised, _ := content["join_authorised_via_users_server"].(string); authorised != alice.UserID {
 		t.Errorf("the room records the join as authorised by %q, want %q: %v", authorised, alice.UserID, content)
 	}
+	// The leave has to travel back. A leave cites the join that put the user in the room, and a
+	// join whose witness is missing from its auth events is a join the room's rules refuse the
+	// second time they are read - so the leave of a restricted join is the test that the witness
+	// was cited properly.
+	hs2.mustDo(http.StatusOK, http.MethodPost, "/_matrix/client/v3/rooms/"+room+"/leave", bob.Token, map[string]any{})
+	awaitMembership(t, hs1, room, bob.UserID, "leave")
+
 }
 
 // TestARestrictedRoomRefusesWhenNobodyCanVouch is the same join with nobody to vouch for it. The
