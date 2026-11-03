@@ -70,6 +70,7 @@ const applyWorkBudget = 20 * time.Second
 // chain, and the arriving event is refused if any of them fails. That is the
 // difference between "the room's rules allowed this" and "the sender says the room's
 // rules allowed this".
+
 func (s *Service) applyIncomingPDU(ctx context.Context, pdu matrix.Object, version, peer, eventID string) (string, string, error) {
 	roomID := federation.EventField(pdu, "room_id")
 	if eventID == "" || roomID == "" {
@@ -126,6 +127,15 @@ func (s *Service) applyIncomingPDU(ctx context.Context, pdu matrix.Object, versi
 	event := graph.Lookup(eventID)
 	if event == nil {
 		return OutcomeRejected, "the event is not in the graph built for it", nil
+	}
+	// An event that builds on an event this server refused is refused the same way: the
+	// branch it stands on is not part of the room, and a peer cannot grow one upwards. This
+	// is bounded to events this server *decided* about - a parent that is merely unknown is
+	// a gap the question above may yet fill, and refusing for that would refuse a room this
+	// server has only been told the state of.
+	if refused := s.refusedParents(idsOfPDUList(pdu, "prev_events")); len(refused) > 0 {
+		return OutcomeRejected, fmt.Sprintf(
+			"the event builds on %d events this room refused: %v", len(refused), refused), nil
 	}
 	// Check one: the room's rules against the events the arriving event cites as its
 	// auth events - including the rule that the set it cites is exactly the set the

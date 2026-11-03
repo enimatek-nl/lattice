@@ -1029,33 +1029,66 @@ on the peer), `TestUserAppearsInChangedDeviceListOnJoinOverFederation` (the join
 plus the device-list EDU), and on the csapi side `TestMessagesOverFederation` and
 `TestPushRuleRoomUpgrade` once steps 9 and 10 combine.
 
-### 11. Federation VI — the read side of the graph: auth chains and gap filling
+### 11. Federation VI — the read side of the graph: auth chains and gap filling — **done (2026-11-03)**
 
 Two servers that were apart have to agree afterwards, which means each has to be
 able to name the events the other is missing and to prove an event's authority.
 
-- [ ] Persist and read the auth chain as a query (the arrays are stored per event
+- [x] Persist and read the auth chain as a query (the arrays are stored per event
       since step 7; the walk is what is missing).
-- [ ] Serve `GET /event_auth/{roomId}/{eventId}`, `GET /event/{eventId}`,
+- [x] Serve `GET /event_auth/{roomId}/{eventId}`, `GET /event/{eventId}`,
       `GET /state_ids/{roomId}` (including the partial-state form `send_join`
       uses) and `GET /state/{roomId}/{eventId}` for one event.
-- [ ] Serve `POST /get_missing_events/{roomId}` (bounded by `limit`, only events
+- [x] Serve `POST /get_missing_events/{roomId}` (bounded by `limit`, only events
       the requester may see) **and** request it: on a gap, ask, receive the events
       through `/send`, apply them through step 9. Gap filling is also what makes
       soft-fail and rejected events observable in practice.
-- [ ] Serve `GET /backfill/{roomId}` (older history with its state, depth-bounded)
+- [x] Serve `GET /backfill/{roomId}` (older history with its state, depth-bounded)
       and `POST /timestamp_to_event/{roomId}` (MSC3030).
-- [ ] Events whose auth chain is broken, or that hang off a rejected event:
+- [x] Events whose auth chain is broken, or that hang off a rejected event:
       refused, and reported in the per-PDU answer rather than retried forever.
       Unverifiable events in room versions that tolerate them are a separate rule,
       and `TestJoinFederatedRoomWithUnverifiableEvents` checks it.
 
+What the step settled on, beyond the list:
+
+- History visibility is enforced on the *read* side, not only on `/send`.
+  `/event`, `get_missing_events` and `backfill` hand a server an event with its
+  signature and hashes intact and, when the room says the asking server was not
+  entitled to it, with its content gone — the same `Redact` step 5 built for
+  `/redact` and `/event`, with the event's own auth events as the state the
+  decision is made against. The membership half is read as of the event; the
+  visibility half is read from the room as it stands, because this server keeps
+  no state snapshot per event and a room that never changed its visibility —
+  almost every room — has the one answer either way.
+- Three reads stay whole: `state_ids`, `state` and `event_auth`. A peer cannot
+  judge an event without the rules and memberships it cites as authority, and a
+  membership with its content stripped cannot say whether the asking server's
+  user was in the room — the question the redaction itself rests on. Stripping
+  those produces refusals of honest events, which is how Synapse's
+  `TestEventAuth` ends up asserting that an *invite* is answered unredacted.
+- The gap is asked about before the event is judged, and the asking is bounded:
+  three rounds per arriving event, twenty events per round, ten seconds. A round
+  that answers and lands nothing stops the asking rather than repeating it — the
+  peer would answer the same way — and the reason is logged. Gap-filled events
+  are applied oldest-first (a parent before the event that cites it) and relayed
+  to nobody: every other server in the room can ask the same question now that
+  this one holds the answer.
+- A refusal travels one step and no further. An event whose parent this server
+  decided about and refused is refused too, with the parent named in the answer;
+  a parent that is merely unknown is a gap, not a verdict, and is not held
+  against the event above it — which is the difference between "this room said
+  no" and "nobody has told me yet", and the distinction
+  `TestUnrejectRejectedEvents` is about.
+
 Complement turns green: `TestEventAuth` (done - it is green as of the graph reads).
-`TestGetMissingEventsGapFilling` needs the outbound half, and
-`TestInboundCanReturnMissingEvents` needs history-visibility redaction,
-`TestOutboundFederationIgnoresMissingEventWithBadJSONForRoomVersion6`,
-`TestOutboundFederationEventSizeGetMissingEvents`, `TestCorruptedAuthChain`,
-`TestUnrejectRejectedEvents`, `TestInboundFederationRejectsEventsWithRejectedAuthEvents`,
+The outbound half of `TestGetMissingEventsGapFilling` and the visibility redaction of
+`TestInboundCanReturnMissingEvents` are the two this step was waiting on;
+`TestOutboundFederationEventSizeGetMissingEvents` also pins `earliest_events` to the
+sending server's own newest event, which is what `fillGraphGap` names.
+Still unread as a whole: `TestOutboundFederationIgnoresMissingEventWithBadJSONForRoomVersion6`,
+`TestCorruptedAuthChain`, `TestUnrejectRejectedEvents`,
+`TestInboundFederationRejectsEventsWithRejectedAuthEvents`,
 `TestJoinFederatedRoomWithUnverifiableEvents`, `TestFederationRedactSendsWithoutEvent`,
 `TestNetworkPartitionOrdering`.
 

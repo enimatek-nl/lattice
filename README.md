@@ -28,7 +28,7 @@ that decide what a client trusts, and stores room-key backups it cannot read.
 | **Binary** | static, no cgo: ~21 MB stripped |
 | **Container** | `ghcr.io/enimatek-nl/lattice` — multi-arch, published from a tag; `make image` builds it locally |
 | **Client API** | 168 of the 234 indexed spec endpoints, plus 33 extra routes (`make endpoints`) |
-| **Federation** | keys, signed requests, join / leave / invite, events, typing, receipts, device lists, state and graph reads — behind `-federation` |
+| **Federation** | keys, signed requests, join / leave / invite, events, typing, receipts, device lists, state and graph reads, gap filling — behind `-federation` |
 | **Room versions** | 1–11 (11 is the default; room upgrades supported) |
 | **Tests** | 117 client-API compatibility, 43 two-server federation, 68 unit |
 | **Licence** | MIT |
@@ -155,7 +155,18 @@ Off by default, on with `-federation`. What it gives you:
   relayed but hidden from clients, as the specification asks.
 - **Graph reads**, so a peer can check what you send: `state_ids`,
   `state/{roomId}/{eventId}`, `event_auth/{roomId}/{eventId}`, `event/{eventId}`,
-  `get_missing_events/{roomId}`.
+  `get_missing_events/{roomId}`, `backfill/{roomId}` and `timestamp_to_event/{roomId}`.
+- **History decides what a peer is told.** An event served to another server arrives with
+  its signature and hashes intact and, when `m.room.history_visibility` says that server
+  was not entitled to it, with its content removed — the same redaction `/redact` and
+  `/event` do. The reads a peer needs in order to *judge* an event (its state, its
+  authority chain) are served whole: stripping a membership's content would make "was this
+  user in the room then?" unanswerable, and the answer decides the stripping.
+- **Gap filling both ways.** An event citing a parent Lattice was never sent is a hole in
+  the room, so Lattice asks the sender for what lies between its own newest event and the
+  one it was given, applies what comes back oldest-first, and does not re-ask a peer that
+  answered nothing useful. An event built on an event this room refused is refused too,
+  with the parent named in the per-event answer.
 - **Delivery that survives a peer being down.** Outbound traffic goes through a queue,
   retried with the same transaction id and the same bytes, backing off from five
   seconds to ten minutes. `m.room.server_acl` is honoured in both directions.
@@ -194,10 +205,9 @@ server, and signing-key rotation.
   with `M_INCOMPATIBLE_ROOM_VERSION`, which names the version rather than pretending the
   room is gone. v12 is the next format step: it removes the domain from room IDs, gives
   `m.room.create` creators power over the power levels, and counts event limits in bytes.
-- **Federation tails**: knock handshakes, `backfill`, `timestamp_to_event`, history
-  visibility redaction on what is served to peers, and asking a peer to fill a gap Lattice
-  itself noticed. Application services, bridges, SSO / `m.login.token`, email recovery,
-  TURN for calls.
+- **Federation tails**: knock handshakes, and cross-server end-to-end encryption —
+  device list updates, to-device messaging, signing-key relays. Application services,
+  bridges, SSO / `m.login.token`, email recovery, TURN for calls.
 - **Notarised key trust**: Lattice verifies a peer's own key document and re-signs it; it
   does not consult a notary such as `matrix.org`. A brand-new server whose DNS or TLS is
   half-broken therefore looks unreachable until it is not.

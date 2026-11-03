@@ -171,6 +171,16 @@ func (s *Service) queuePDU(ctx context.Context, peer, txnID string, pdu matrix.O
 	if problem != "" {
 		return eventID, problem
 	}
+	// The event is genuine; whether the room around it is complete is a separate question,
+	// and a hole is not something this server may paper over by guessing. Asking the peer
+	// that sent the event for the parents it was not given is what keeps a room that was
+	// apart reading as one history - and it happens before the verdict, because a parent
+	// that arrives first is a rule the arriving event can be judged against.
+	if filled, why := s.fillGraphGap(ctx, pdu, version, peer, eventID); filled > 0 {
+		log.Printf("federation: %s filled a gap of %d events in %s for %s", peer, filled, roomID, eventID)
+	} else if why != "" {
+		log.Printf("federation: the gap before %s in %s stays open: %s", eventID, roomID, why)
+	}
 	// A server may deliver an event whose sender lives somewhere else entirely: it is
 	// relaying what the origin server signed, and the signature - checked before this
 	// point - is what says so. The sender is therefore not required to be a user of the

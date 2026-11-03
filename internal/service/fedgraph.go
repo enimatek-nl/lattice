@@ -189,7 +189,10 @@ func (s *Service) ServeMissingEvents(ctx context.Context, roomID string, peer st
 		if len(events) >= limit {
 			break
 		}
-		pdu, err := transportPDU(event.JSON, version)
+		// The events in a gap are history, and history is what history visibility
+		// governs: a peer that joined a room last week is handed its own beginning with
+		// the content gone, which is the room's answer rather than this server's.
+		pdu, err := s.servedEvent(ctx, event, version, peer)
 		if err != nil {
 			continue
 		}

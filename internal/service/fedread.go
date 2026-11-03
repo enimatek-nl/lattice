@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"log"
 	"net/url"
 	"strings"
 
@@ -48,9 +47,11 @@ func (s *Service) FederatedEvent(ctx context.Context, eventID, peer string) (mat
 	if !shares {
 		return nil, matrix.ErrForbidden("the server %s is not part of room %s", peer, event.RoomID)
 	}
-	pdu, err := transportPDU(event.JSON, RoomVersionOf(room))
+	// One event by id is a read of history, so it carries the room's answer about what
+	// the asking server may see: the event arrives with its signature intact and, for a
+	// server that was not here when it was sent, without its content.
+	pdu, err := s.servedEvent(ctx, event, RoomVersionOf(room), peer)
 	if err != nil {
-		log.Printf("federation: the event %s cannot be prepared for %s: %v", eventID, peer, err)
 		return nil, matrix.ErrInternal(err)
 	}
 	return matrix.Object{

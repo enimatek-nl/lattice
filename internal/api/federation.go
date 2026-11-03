@@ -70,6 +70,12 @@ func (a *App) registerFederationRoutes() {
 	a.federated("GET /_matrix/federation/v2/state/{roomID}/{eventID}", a.handleFederationRoomState)
 	a.federated("GET /_matrix/federation/v1/event_auth/{roomID}/{eventID}", a.handleFederationEventAuth)
 	a.federated("POST /_matrix/federation/v1/get_missing_events/{roomID}", a.handleFederationMissingEvents)
+	// Older history, and the event nearest a moment. Backfill is how a server that joined
+	// an old room learns what happened before it was here; timestamp_to_event (MSC3030)
+	// is how a peer names a window in that history when it already knows roughly when the
+	// thing it is looking for happened.
+	a.federated("GET /_matrix/federation/v1/backfill/{roomID}", a.handleFederationBackfill)
+	a.federated("POST /_matrix/federation/v1/timestamp_to_event/{roomID}", a.handleFederationTimestampToEvent)
 
 	// The join handshake. A server joining a room it does not host cannot know which
 	// events its join has to build on, and cannot describe a room it has never been
@@ -555,6 +561,43 @@ func (a *App) handleFederationEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, body)
+}
+
+// handleFederationBackfill answers GET /_matrix/federation/v1/backfill/{roomID}.
+func (a *App) handleFederationBackfill(w http.ResponseWriter, r *http.Request) {
+	limit := 0
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil {
+			a.writeError(w, r, matrix.ErrInvalidParam(`"limit" must be a whole number`))
+			return
+		}
+		limit = parsed
+	}
+	answer, err := a.svc.ServeBackfill(r.Context(), r.PathValue("roomID"),
+		federation.Peer(r.Context()), limit, r.URL.Query().Get("since"))
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, answer)
+}
+
+// handleFederationTimestampToEvent answers POST
+// /_matrix/federation/v1/timestamp_to_event/{roomID}.
+func (a *App) handleFederationTimestampToEvent(w http.ResponseWriter, r *http.Request) {
+	body, err := federationBody(r)
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	answer, err := a.svc.ServeTimestampToEvent(r.Context(), r.PathValue("roomID"),
+		federation.Peer(r.Context()), body)
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, answer)
 }
 
 // handleSendTransaction answers PUT /_matrix/federation/v1/send/{txnId}.

@@ -481,11 +481,25 @@ func TestTheGraphOfARoomIsNotPublishedToStrangers(t *testing.T) {
 	for _, target := range []string{
 		"/_matrix/federation/v1/event_auth/" + roomID + "/" + message,
 		"/_matrix/federation/v2/state/" + roomID + "/" + message,
+		// Older history and the event nearest a moment are reads of a room too: a server
+		// that shares no membership has no claim on the room's past, and an event id it
+		// guessed is only a string.
+		"/_matrix/federation/v1/backfill/" + roomID + "?limit=10",
 	} {
 		got := federationGET(t, stranger, one, target)
 		if got.Status != http.StatusForbidden {
 			t.Errorf("%s was answered %d asking %s, want %d: %s",
 				serverStranger, got.Status, target, http.StatusForbidden, got.Raw)
 		}
+	}
+	if named := federationPOST(t, stranger, one, "/_matrix/federation/v1/timestamp_to_event/"+roomID,
+		matrix.Object{"dir": "f", "ts": int64(1_000_000_000_000)}); named.Status != http.StatusForbidden {
+		t.Errorf("%s was answered %d asking for the event of %s nearest a moment, want %d: %s",
+			serverStranger, named.Status, roomID, http.StatusForbidden, named.Raw)
+	}
+	if gap := federationPOST(t, stranger, one, "/_matrix/federation/v1/get_missing_events/"+roomID,
+		matrix.Object{"earliest_events": []any{message}, "latest_events": []any{message}, "limit": 5}); gap.Status != http.StatusForbidden {
+		t.Errorf("%s was answered %d asking for the gap in %s, want %d: %s",
+			serverStranger, gap.Status, roomID, http.StatusForbidden, gap.Raw)
 	}
 }
