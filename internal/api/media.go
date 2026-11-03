@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/enimatek-nl/lattice/internal/auth"
 	"github.com/enimatek-nl/lattice/internal/matrix"
@@ -102,8 +103,8 @@ func (a *App) handleMediaCommit(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, matrix.Object{})
 }
 
-// handleMediaDownload implements GET /_matrix/media/v3/download/{serverName}/{mediaId}
-// and the authenticated /_matrix/client/v1/media variant.
+// handleMediaDownload implements GET /_matrix/media/v3/download/{serverName}/{mediaId} and the
+// same path with a trailing file name, plus the authenticated /_matrix/client/v1/media forms.
 //
 //	@Summary	Download media
 //	@Tags		media
@@ -112,6 +113,7 @@ func (a *App) handleMediaCommit(w http.ResponseWriter, r *http.Request) {
 //	@Param		mediaId		path	string	true	"Media ID"
 //	@Success	200			{file}	binary
 //	@Router		/_matrix/client/v1/media/download/{serverName}/{mediaId} [get]
+//	@Router		/_matrix/media/v3/download/{serverName}/{mediaId} [get]
 func (a *App) handleMediaDownload(w http.ResponseWriter, r *http.Request) {
 	media, err := a.svc.Media(r.Context(), r.PathValue("serverName"), r.PathValue("mediaId"))
 	if err != nil {
@@ -121,12 +123,25 @@ func (a *App) handleMediaDownload(w http.ResponseWriter, r *http.Request) {
 	if media.ContentType != "" {
 		w.Header().Set("Content-Type", media.ContentType)
 	}
-	if media.FileName != "" {
-		w.Header().Set("Content-Disposition", contentDisposition(media.FileName))
+	// A download may name the file it wants. The name is a suggestion from whoever asked, not a
+	// fact about the content, so it never decides which bytes are served - it only labels them.
+	if name := downloadName(r.PathValue("fileName"), media.FileName); name != "" {
+		w.Header().Set("Content-Disposition", contentDisposition(name))
 	}
 	w.Header().Set("Content-Length", strconv.FormatInt(int64(len(media.Blob)), 10))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(media.Blob)
+}
+
+// downloadName chooses the name a download is labelled with: the one the requester asked for, or
+// the one the uploader gave the content. Separators are dropped from the requested name because a
+// careless client turns whatever it is handed into a path.
+func downloadName(requested, stored string) string {
+	if requested == "" {
+		return stored
+	}
+	requested = strings.ReplaceAll(requested, "/", "_")
+	return strings.ReplaceAll(requested, "\\", "_")
 }
 
 // handleMediaThumbnail implements GET /_matrix/media/v3/thumbnail/{serverName}/{mediaId}.

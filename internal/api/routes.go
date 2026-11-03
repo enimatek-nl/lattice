@@ -208,6 +208,9 @@ func (a *App) registerMediaRoutes() {
 	a.authenticated("POST /_matrix/media/v3/create", a.handleMediaCreate)
 	a.authenticated("POST /_matrix/media/v3/commit/{serverName}/{mediaId}", a.handleMediaCommit)
 	a.handle("GET /_matrix/media/v3/download/{serverName}/{mediaId}", a.handleMediaDownload)
+	// The name suffix is the requester's suggestion for what the file should be called when it
+	// is saved; it does not change which content is served.
+	a.handle("GET /_matrix/media/v3/download/{serverName}/{mediaId}/{fileName}", a.handleMediaDownload)
 	a.handle("GET /_matrix/media/v3/thumbnail/{serverName}/{mediaId}", a.handleMediaThumbnail)
 	a.authenticated("GET /_matrix/client/v1/media/download/{serverName}/{mediaId}", a.handleMediaDownload)
 	a.authenticated("GET /_matrix/client/v1/media/thumbnail/{serverName}/{mediaId}", a.handleMediaThumbnail)

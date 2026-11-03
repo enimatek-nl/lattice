@@ -47,8 +47,8 @@ because it said nothing these steps do not.
   table runs through the join handshake rather than through rows a test wrote, and both
   Complement packages have a recorded tally.
 - Against [Complement](https://github.com/matrix-org/complement), the upstream
-  Matrix suite, **40 of 107** client-API tests fail (`make complement`) and **53 of
-  91** server-server tests fail — 38 green, up from 4 green before step 10 and 22 green
+  Matrix suite, **40 of 107** client-API tests fail (`make complement`) and **51 of
+  91** server-server tests fail — 40 green, up from 4 green before step 10 and 22 green
   before step 11. Green now: the membership handshakes and their guards, the graph and
   state reads a peer needs to judge what it is sent, gap filling both ways, profiles and
   the room directory, spaces and `/hierarchy`, OpenID exchange, device lists, key
@@ -57,9 +57,8 @@ because it said nothing these steps do not.
   failure is waiting for. The transport itself is not among the reasons: the bulk is
   knocking and restricted rooms (client-side join rules and the space summary that
   authorises them), room versions past v11, application services, and presence. The
-  one exception worth naming is
-  `TestMediaFilenames` / `TestMediaWithoutFileName` (see the outbox bug under step 14:
-  the same root cause, a retired row holding its unique index).
+  The federation
+  media cases are green; see step 16.
 - The three bugs the federation suite found were not federation bugs: access tokens died
   at every restart (the signing secret was per process, the sessions are in the
   database), the event stream counter was re-seeded from the events table alone (so a
@@ -1279,16 +1278,17 @@ backoff tests (`tests/federation/timer_test.go`) do not reproduce.
       2026-11-03 against Complement v1.19 at `/tmp/complement`, image
       `localhost/lattice-complement:latest`, and re-measured after the outbox fix:
       * `tests/csapi` — **40 red of 107** (67 green).
-      * `tests` (server-server) — **53 red of 91** (38 green), against 4 green before
+      * `tests` (server-server) — **51 red of 91** (40 green), against 4 green before
         step 10 and 22 green before step 11. Green includes the join/leave/invite
         handshakes, the graph and state reads, `backfill` and `timestamp_to_event`,
         profiles, the room directory and `publicRooms`, `/hierarchy`, OpenID exchange,
         `TestDeviceListsUpdateOverFederation` (all three connectivity cases),
         `TestFederationKeyUploadQuery`, `TestToDeviceMessagesOverFederation` with good
-        connectivity, and `TestContentMediaV1`. The 53 red are dominated by knocking and
+        connectivity, and `TestContentMediaV1`, and after step 16 the whole media set. The
+        51 red are dominated by knocking and
         restricted rooms (~17), room versions past v11 (~13), application services and
         presence; the ones that are Lattice's own federation bugs are
-        `TestMediaFilenames`, `TestMediaWithoutFileName` and `TestACLsForEDUs`.
+        `TestACLsForEDUs` and the media thumbnail cases.
 - [x] Regenerate `ENDPOINTS.md`: **177 of 234** indexed endpoints implemented, 37 extra
       routes (the admin aliases, `/_synapse/admin/*`, the refresh and device flows that
       the index lists under other names). Federation is near-complete; what is left in
@@ -2376,3 +2376,46 @@ Complement: all three `TestToDeviceMessagesOverFederation` cases green, and the 
 package moved from 37 to 38 green with nothing newly red. `TestMediaFilenames` /
 `TestMediaWithoutFileName` are the same class of bug in a different table — a retired media
 row keeping its `(server_name, media_id)` — and are the next thing to look at.
+
+### 16. Federation XI — media: which door, and what the file is called
+
+The two media cases left red by step 15 turned out to be two unrelated bugs, and neither was
+in the media *content* path.
+
+**Which door is answered on.** `TestMediaWithoutFileName` failed with
+`asking host.docker.internal:1054 for the media PlainTextFile: M_UNKNOWN: answered 400`.
+Lattice asked only `/_matrix/federation/v1/media/download/{mediaId}` — where the
+specification puts media now, and where no origin is named because the mxc URI the client is
+holding already says whose content it is. A server that predates that change has no such
+route. Complement is not being obscure: it is a peer that only answers the legacy
+unauthenticated path, `/_matrix/media/v3/download/{serverName}/{mediaId}`, which carries the
+origin in the URL. A user on such a peer would have seen a broken avatar until the *other*
+server caught up, which is not their problem to fix. `RemoteMedia` and `RemoteThumbnail` now
+walk both paths, newest first, and try the next one after any failure — a peer without the
+authenticated endpoint reports it as M_UNRECOGNIZED, a 404, or an error page, and one extra
+request to a server that genuinely has no such content is cheaper than content that never
+arrives.
+
+**What the file is called.** `TestMediaFilenames` failed as `filename did not match, expected
+'☕', got '🐔'`, and on two subtests with `M_UNRECOGNIZED`. The route with a trailing
+`{fileName}` was registered on the authenticated endpoint only, and even there the handler
+labelled the response with the name the *uploader* had given the content, ignoring the name
+that was asked for. The suffix is the requester's suggestion for how the download should be
+saved; it never decides which bytes are served. Both endpoints now take the suffix
+(`/_matrix/media/v3/download/{serverName}/{mediaId}/{fileName}` and the
+`/_matrix/client/v1/media` form), `downloadName` prefers the requested name and flattens path
+separators in it — the name comes from whoever is asking, and a careless client turns
+whatever it is handed into a path.
+
+Tests: `TestMediaUploadAndDownload` (`tests/compat/userdata_test.go`) now asserts the
+`Content-Disposition` name on three shapes of download — no suffix (the uploader's name), an
+unauthenticated suffix, an authenticated suffix with a space and a semicolon in it — and fails
+against the handler that used the stored name. Complement is the only place the two-door
+problem shows up, so that is where it is covered.
+
+Re-measured: `tests` (server-server) **51 red of 91**, 40 green; every media and thumbnail
+case in that package is now green (`TestMediaFilenames`, `TestMediaWithoutFileName`,
+`TestMediaWithoutFileNameCSMediaV1`, `TestContentMediaV1`, `TestLocalPngThumbnail`,
+`TestRemotePngThumbnail`, `TestFederationThumbnail`) and nothing is newly red. The red list is
+knocking and restricted rooms, room versions past v11, application services, presence, and
+`TestACLsForEDUs`.

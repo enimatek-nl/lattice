@@ -867,6 +867,26 @@ func TestMediaUploadAndDownload(t *testing.T) {
 		}
 	}
 
+	// A download that asks to be saved under another name is labelled with that name, on the
+	// unauthenticated endpoint as on the authenticated one. The name is the requester's suggestion:
+	// it does not decide which bytes are served. With no suffix, the uploader's name is used.
+	for path, want := range map[string]string{
+		"/_matrix/media/v3/download/test.server/" + mediaID:                   "note.txt",
+		"/_matrix/media/v3/download/test.server/" + mediaID + "/other.txt":    "other.txt",
+		"/_matrix/client/v1/media/download/test.server/" + mediaID + "/a b;c": "a b;c",
+	} {
+		resp := server.Do(http.MethodGet, path, alice.Token, nil)
+		if resp.Status != http.StatusOK {
+			t.Errorf("download of %s: %d %s", path, resp.Status, resp.Raw)
+			continue
+		}
+		disposition := resp.Headers.Get("Content-Disposition")
+		if !strings.Contains(disposition, "filename=\""+want+"\"") {
+			t.Errorf("%s answered Content-Disposition %q, want the name %q",
+				path, disposition, want)
+		}
+	}
+
 	// Unknown media ids and foreign origins are not served here.
 	if resp := server.Do(http.MethodGet, "/_matrix/media/v3/download/test.server/nosuchid", "", nil); resp.Status != http.StatusNotFound {
 		t.Errorf("an unknown media id: %d %s, want 404", resp.Status, resp.Raw)
