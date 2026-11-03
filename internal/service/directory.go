@@ -194,6 +194,10 @@ type PublicRoom struct {
 	GuestCanJoin     bool     `json:"guest_can_join"`
 	AvatarURL        string   `json:"avatar_url,omitempty"`
 	RoomType         string   `json:"room_type,omitempty"`
+	// JoinRule is how the room is entered. The directory is a list of rooms the reader has
+	// not joined, and a room listed as public invites a click that a room listed as knock or
+	// restricted will refuse; the room's identity is not enough to decide what joining it asks.
+	JoinRule string `json:"join_rule,omitempty"`
 }
 
 // PublicRoomsResult is a page of the public room directory.
@@ -242,6 +246,7 @@ func (s *Service) PublicRooms(ctx context.Context, filter string, limit int, sin
 			WorldReadable:    s.HistoryVisibility(ctx, room.ID) == matrix.HistoryWorldReadable,
 			GuestCanJoin:     s.guestsCanConnect(ctx, room.ID),
 			AvatarURL:        s.roomAvatarURL(ctx, room.ID),
+			JoinRule:         s.joinRuleOf(ctx, room.ID),
 		}
 		chunk = append(chunk, entry)
 	}
@@ -472,4 +477,14 @@ func (s *Service) lastCreateEventID(roomID string) string {
 		return ""
 	}
 	return state.EventID
+}
+
+// joinRuleOf reads how a room is entered, for the directory entry. A room that says nothing
+// is entered the way the specification says a room without join rules is.
+func (s *Service) joinRuleOf(ctx context.Context, roomID string) string {
+	rule, err := s.db.StateRepo.JoinRule(roomID)
+	if err != nil || rule == "" {
+		return matrix.JoinRulesPublic
+	}
+	return rule
 }
