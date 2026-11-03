@@ -1146,11 +1146,32 @@ Still unread as a whole: `TestOutboundFederationIgnoresMissingEventWithBadJSONFo
       tests: only the minting server answers, a stranger's server refuses, and the
       token is not a session (`/whoami` refuses it).)*
 
-Complement turns green: `TestRemoteAliasRequestsUnderstandUnicode`,
-`TestInboundFederationProfile`, `TestOutboundFederationProfile`,
-`TestFederatedClientSpaces`, `TestClientSpacesSummary`,
-`TestClientSpacesSummaryJoinRules` — `TestClientSpacesSummary*` still needs
-`GET /_matrix/client/v1/spaces`, which is a client-side step, not this one.
+Complement turns green — all six, verified against the image built from this commit:
+`TestRemoteAliasRequestsUnderstandUnicode`, `TestInboundFederationProfile` (both
+subtests, including the one that rejects a server name whose port is not a number,
+which is what `matrix.ValidServerName` is for), `TestOutboundFederationProfile`,
+`TestFederatedClientSpaces`, `TestClientSpacesSummary` (all five subtests) and
+`TestClientSpacesSummaryJoinRules`.
+
+Serving the federation half of the hierarchy exposed three things the client half had
+been getting quietly wrong, and Complement is precise about them:
+
+- **No default depth.** The specification names none, and Synapse walks the whole space
+  when the caller does not say. A client that asked for a space and was handed one level
+  of it was being shown a room with no children, so an unnamed window now means the whole
+  space, bounded at twelve levels and a thousand rooms to stop a space that links itself.
+  `max_depth=0` is still an answer: the room and nothing below it.
+- **Depth first, not breadth.** The endpoint is specified as paginating the tree depth
+  first, and the pages prove it: `limit=4` over Complement's space is Root, R1, SS1, SS2 —
+  one branch finished — where a breadth-first walk hands over the shallowest rooms and the
+  room a client is looking for lands on page seven. The walk is now a stack, with each
+  room's links pushed back to front so the space's own ordering survives.
+- **`suggested_only` and removed links.** A link without `suggested: true` takes its whole
+  branch out when the short list is asked for — links in `children_state` included, since
+  showing a door and refusing to walk through it is worse than no door. A link that has
+  been emptied (how a child is taken out of a space, because state events are not deleted)
+  is not shown at all: it is a branch the space closed, and offering it lists the same room
+  twice whenever another space still names it.
 
 ### 13. Federation VIII — cross-server E2EE, device lists, to-device and media
 
@@ -1737,18 +1758,28 @@ One deployment failed in that run with a podman limit - `allocating lock for new
 allocation failed; exceeded num_locks (2048)`, from roughly two thousand anonymous
 volumes left behind by earlier runs - so the named test was re-run alone and failed for
 its real reason. `podman volume prune -f` between long runs is now part of the routine.
-What the remaining 72 wait for, by group: `make_knock`/`send_knock` (knock and its
+
+The named federation runs of 2026-11-03, after step 12, added six to the green side:
+`TestRemoteAliasRequestsUnderstandUnicode`, `TestInboundFederationProfile` (including
+the subtest that rejects a server name whose port is not a number),
+`TestOutboundFederationProfile`, `TestFederatedClientSpaces`, `TestClientSpacesSummary`
+(all five subtests: whole graph, `max_depth`, `suggested_only`, pagination, redacted
+link) and `TestClientSpacesSummaryJoinRules`. The client-API package was run in full
+alongside them and stayed at the same 40 failures, which is the check that the change
+to the hierarchy's default depth and walk order was a fix and not a swing.
+What the remaining federation failures wait for, by group: `make_knock`/`send_knock` (knock and its
 guards), the invite endpoint `PUT /v1|v2/invite` (`TestFederationRoomsInvite`,
 `TestFederationRejectInvite`), the graph-reading queries `event_auth`, `state_ids`,
 `state`, `get_missing_events`, `backfill`, `timestamp_to_event`
 (`TestEventAuth`, `TestGetMissingEventsGapFilling`, `TestInboundCanReturnMissingEvents`,
-`TestJumpToDateEndpoint`, `TestCorruptedAuthChain`), spaces and the hierarchy route
-(`TestFederatedClientSpaces`, `TestClientSpacesSummary*`), profile and device-list
-queries (`TestInboundFederationProfile`, `TestDeviceListsUpdateOverFederation*`),
+`TestJumpToDateEndpoint`, `TestCorruptedAuthChain`), device-list
+queries (`TestDeviceListsUpdateOverFederation*`),
 media federation (`TestContentMediaV1`, `TestFederationThumbnail`), room versions
 this server does not speak (`TestComplementCanCreateValidV12Rooms`), and the ACL tests
 (`TestACLs`, `TestACLsForEDUs`) which need a room two servers share — which now works —
-and the EDU paths that check it.
+and the EDU paths that check it. Spaces, the hierarchy route and the profile queries came
+off that list with step 12; the count is not restated here until the whole federation
+package is run end to end again, which is step 14's first task.
 
 The 40, grouped by what is actually missing — each group is a work item, and the
 suite's own skips are not hiding any of them:

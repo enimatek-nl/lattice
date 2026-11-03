@@ -40,9 +40,23 @@ func worldReadable(t *testing.T, s *server, sess *session, roomID string) {
 // that says whether the walk had to leave something out.
 func clientHierarchy(t *testing.T, s *server, sess *session, roomID string, maxDepth int, query ...string) ([]matrix.Object, bool) {
 	t.Helper()
-	path := fmt.Sprintf("/_matrix/client/v1/rooms/%s/hierarchy?max_depth=%d", roomID, maxDepth)
+	// A negative depth means the caller did not name one, which is a different request from
+	// max_depth=0 and the one that matters for the whole-space reading.
+	path := fmt.Sprintf("/_matrix/client/v1/rooms/%s/hierarchy", roomID)
+	start := true
+	appendParam := func(param string) {
+		if start {
+			path += "?" + param
+			start = false
+			return
+		}
+		path += "&" + param
+	}
+	if maxDepth >= 0 {
+		appendParam(fmt.Sprintf("max_depth=%d", maxDepth))
+	}
 	for _, extra := range query {
-		path += "&" + extra
+		appendParam(extra)
 	}
 	got := s.mustDo(http.StatusOK, http.MethodGet, path, sess.Token, nil)
 	body, ok := decoded(t, got.Raw).(matrix.Object)
@@ -145,6 +159,51 @@ func TestASpaceThatSpansTwoServersIsWalkedFromOneSide(t *testing.T) {
 	}
 	if seen[farSpace] != 1 {
 		t.Errorf("%s is listed %d times in the hierarchy of %s", farSpace, seen[farSpace], root)
+	}
+}
+
+// TestASpaceWalkedWithoutSayingHowDeep reaches the far side of a space and back. The
+// specification names no default depth for this endpoint, and a caller that did not name one
+// is asking to see the space, so the walk goes the length of it - including a branch that
+// leaves this server, hangs under somebody else's room, and comes back to a room of our own
+// that we only learn about because the other server's answer named it and then asked us about
+// it. Naming a window is honoured exactly: the same tree at max_depth=1 stops at the doors.
+func TestASpaceWalkedWithoutSayingHowDeep(t *testing.T) {
+	c := newCluster(t)
+	one, two := c.one(), c.two()
+	alice := one.register("alice", "wonderland")
+	bob := two.register("bob", "wonderland")
+
+	root := one.createRoom(alice, map[string]any{
+		"name":             "The root",
+		"creation_content": map[string]any{"type": "m.space"},
+	})
+	farSpace := two.createRoom(bob, map[string]any{
+		"name":             "A space over there",
+		"creation_content": map[string]any{"type": "m.space"},
+	})
+	near := one.createRoom(alice, map[string]any{"preset": "public_chat", "name": "A room back home"})
+	worldReadable(t, two, bob, farSpace)
+	for _, room := range []string{root, near} {
+		worldReadable(t, one, alice, room)
+	}
+	linkSpace(t, one, alice, root, farSpace, two.name)
+	linkSpace(t, two, bob, farSpace, near, one.name)
+
+	asked, _ := clientHierarchy(t, one, alice, root, 1, "")
+	if _, found := roomsOf(asked)[near]; found {
+		t.Errorf("max_depth=1 lists %s, which is three levels down from %s: %v", near, root, asked)
+	}
+
+	walked, incomplete := clientHierarchy(t, one, alice, root, -1, "")
+	if incomplete {
+		t.Errorf("a walk that named no depth reports an incomplete chain for a space both servers can describe: %v", walked)
+	}
+	found := roomsOf(walked)
+	for _, want := range []string{root, farSpace, near} {
+		if _, ok := found[want]; !ok {
+			t.Errorf("a walk of %s that named no depth leaves out %s: %v", root, want, walked)
+		}
 	}
 }
 

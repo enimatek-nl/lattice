@@ -385,6 +385,21 @@ func queryInt(r *http.Request, key string, fallback int) (int, error) {
 	return parsed, nil
 }
 
+// queryBool returns a boolean query parameter or its default. "true" is true and anything
+// else is the default, which is what the specification's boolean query parameters do: a
+// client that sends a value this server does not understand is not sent an error over a flag.
+func queryBool(r *http.Request, key string, fallback bool) bool {
+	value := r.URL.Query().Get(key)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
 // queryDurationMS returns a millisecond query parameter as a duration.
 func queryDurationMS(r *http.Request, key string, fallback time.Duration) (time.Duration, error) {
 	value := r.URL.Query().Get(key)

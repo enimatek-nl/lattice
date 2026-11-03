@@ -5,16 +5,28 @@ import (
 	"log"
 
 	"github.com/enimatek-nl/lattice/internal/matrix"
+	"github.com/enimatek-nl/lattice/internal/persist"
 )
 
-// Hierarchy defaults: a page holds at most hierarchyLimitRooms rooms and the
-// walk never digs deeper than hierarchyMaxDepth.
+// Hierarchy bounds: a page holds at most hierarchyLimitRooms rooms, a walk never lists
+// more than hierarchyHardCap of them, and it never digs deeper than hierarchyMaxDepth.
+//
+// The specification names no default depth for this endpoint, and the two readings that
+// follow from that differ a lot: one level, or the whole space. A whole space is what is
+// walked when the caller does not say, because a client drawing a space out of one level of
+// it draws a box with no children in it, and every client that draws spaces asks without
+// saying. hierarchyMaxDepth is not a policy about what a caller deserves; it is what stops a
+// space that links itself - which any pair of rooms can be made to do - from spinning here
+// and in the requests this walk sends.
 const (
 	hierarchyDefaultRooms = 50
 	hierarchyLimitRooms   = 100
-	hierarchyDefaultDepth = 1
 	hierarchyMaxDepth     = 12
 	hierarchyHardCap      = 1000
+	// hierarchyUnbounded is what the API layers pass when the caller did not name a depth
+	// window, as distinct from the caller naming zero - which is a real answer, meaning the
+	// room itself and nothing below it.
+	HierarchyUnbounded = -1
 )
 
 // HierarchyParams captures the query parameters of
@@ -23,11 +35,14 @@ type HierarchyParams struct {
 	RoomID string
 	UserID string
 	Limit  int
-	// MaxDepth and MinDepth bound the distance from the requested room; the
-	// room itself sits at depth 0.
+	// MaxDepth and MinDepth bound the distance from the requested room; the room itself
+	// sits at depth 0. MaxDepth of HierarchyUnbounded means the caller named no window and
+	// the space is walked to the bound the walk keeps for itself.
 	MaxDepth int
 	MinDepth int
 	From     string
+	// SuggestedOnly keeps only the branches a space marks as worth showing.
+	SuggestedOnly bool
 }
 
 // HierarchyRoom is one room of a space hierarchy.
@@ -60,10 +75,15 @@ type HierarchyResult struct {
 // a client where the tree continues.
 var hierarchyStateTypes = []string{matrix.TypeSpaceChild}
 
-// RoomHierarchy walks the m.space.child edges of a room breadth first and returns a page
-// of the rooms it finds. The room itself is at depth 0, and the page is bounded by the
-// caller's limit, depth window and token - all of which [Service.hierarchyPage] shares with
-// the federation answer, so a peer and a client see the same tree shaped the same way.
+// RoomHierarchy walks the m.space.child edges of a room depth first and returns a page of
+// the rooms it finds. The room itself is at depth 0, and the page is bounded by the caller's
+// limit, depth window and token - all of which [Service.hierarchyPage] shares with the
+// federation answer, so a peer and a client see the same tree shaped the same way.
+//
+// Depth first is not a detail: the caller asks for a page at a time, and a page of a
+// breadth-first walk holds the top of the space and none of its branches, so the first two
+// pages of a wide space are its two shallowest corridors and the room a client is looking for
+// is on page seven.
 func (s *Service) RoomHierarchy(ctx context.Context, params HierarchyParams) (*HierarchyResult, error) {
 	room, err := s.MustRoom(ctx, params.RoomID)
 	if err != nil {
@@ -75,7 +95,17 @@ func (s *Service) RoomHierarchy(ctx context.Context, params HierarchyParams) (*H
 	return s.hierarchyPage(ctx, room.ID, reader{userID: params.UserID}, params)
 }
 
-// walkHierarchy lists the reachable rooms breadth first, starting at the room itself.
+// walkWindow is how far down a hierarchy walk goes and which of its branches it takes.
+type walkWindow struct {
+	maxDepth int
+	minDepth int
+	// suggestedOnly keeps the branches a space marks as worth showing - the `suggested`
+	// flag on an m.space.child link - and drops the rest, links included, so that a client
+	// asking for the short list is not shown the long one with a note.
+	suggestedOnly bool
+}
+
+// walkHierarchy lists the reachable rooms depth first, starting at the room itself.
 //
 // A child this server does not hold is asked about rather than dropped: the link that names
 // it also names the servers that can serve it, and the tree below a remote space belongs to
@@ -84,7 +114,7 @@ func (s *Service) RoomHierarchy(ctx context.Context, params HierarchyParams) (*H
 // fetched - a server that is down, a link that names nobody reachable, a walk that has spent
 // its budget of questions - leaves the chain incomplete, which the answer says out loud
 // instead of quietly presenting a smaller space than the one that exists.
-func (s *Service) walkHierarchy(ctx context.Context, rootID string, r reader, maxDepth, minDepth int) ([]HierarchyRoom, bool, error) {
+func (s *Service) walkHierarchy(ctx context.Context, rootID string, r reader, w walkWindow) ([]HierarchyRoom, bool, error) {
 	type node struct {
 		roomID string
 		depth  int
@@ -97,29 +127,35 @@ func (s *Service) walkHierarchy(ctx context.Context, rootID string, r reader, ma
 	// listed nowhere at all.
 	visited := map[string]bool{rootID: true}
 	described := map[string]bool{rootID: true}
-	queue := []node{{roomID: rootID, depth: 0}}
+	stack := []node{{roomID: rootID, depth: 0}}
 	out := make([]HierarchyRoom, 0, 8)
 	incomplete := false
 	asked := 0
 
-	for len(queue) > 0 && len(out) < hierarchyHardCap {
-		current := queue[0]
-		queue = queue[1:]
-		if current.depth >= minDepth {
-			entry, err := s.hierarchyEntry(ctx, current.roomID)
+	for len(stack) > 0 && len(out) < hierarchyHardCap {
+		current := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if current.depth >= w.minDepth {
+			entry, err := s.hierarchyEntry(ctx, current.roomID, w)
 			if err != nil {
 				return nil, false, err
 			}
 			out = append(out, entry)
 		}
-		if current.depth >= maxDepth {
+		if current.depth >= w.maxDepth {
 			continue
 		}
 		children, err := s.spaceLinks(ctx, current.roomID)
 		if err != nil {
 			return nil, false, err
 		}
-		for _, link := range children {
+		// Last in, first out: the links are pushed back to front so the first child a space
+		// names is the first one walked, which is the order the space was written in.
+		for i := len(children) - 1; i >= 0; i-- {
+			link := children[i]
+			if w.suggestedOnly && !link.suggested {
+				continue
+			}
 			if visited[link.roomID] {
 				continue
 			}
@@ -133,7 +169,7 @@ func (s *Service) walkHierarchy(ctx context.Context, rootID string, r reader, ma
 				}
 				asked++
 				remote, err := s.RemoteHierarchy(ctx, link.roomID, link.via, hierarchyDefaultRooms,
-					maxDepth-current.depth-1, minDepth-current.depth-1)
+					w.maxDepth-current.depth-1, w.minDepth-current.depth-1, w.suggestedOnly)
 				if err != nil {
 					log.Printf("federation: the space below %s cannot be read: %v", link.roomID, err)
 					incomplete = true
@@ -168,14 +204,14 @@ func (s *Service) walkHierarchy(ctx context.Context, rootID string, r reader, ma
 				incomplete = true
 				continue
 			}
-			queue = append(queue, node{roomID: link.roomID, depth: current.depth + 1})
+			stack = append(stack, node{roomID: link.roomID, depth: current.depth + 1})
 		}
 	}
 	return out, incomplete, nil
 }
 
 // hierarchyEntry renders one room of the hierarchy.
-func (s *Service) hierarchyEntry(ctx context.Context, roomID string) (HierarchyRoom, error) {
+func (s *Service) hierarchyEntry(ctx context.Context, roomID string, w walkWindow) (HierarchyRoom, error) {
 	joinRule, err := s.db.StateRepo.JoinRule(roomID)
 	if err != nil {
 		joinRule = matrix.JoinRulesInvite
@@ -195,19 +231,35 @@ func (s *Service) hierarchyEntry(ctx context.Context, roomID string) (HierarchyR
 		NumJoinedMembers: joined,
 		WorldReadable:    s.HistoryVisibility(ctx, roomID) == matrix.HistoryWorldReadable,
 		GuestsCanJoin:    s.guestsCanConnect(ctx, roomID),
-		ChildrenState:    s.hierarchyStateEvents(ctx, roomID),
+		ChildrenState:    s.hierarchyStateEvents(ctx, roomID, w),
 	}
 	return entry, nil
 }
 
-// hierarchyStateEvents returns the stripped state events the specification
-// asks a hierarchy entry to describe a room with.
-func (s *Service) hierarchyStateEvents(ctx context.Context, roomID string) []matrix.Event {
+// hierarchyStateEvents returns the state events a hierarchy entry carries so that whoever
+// reads the entry knows where the tree continues.
+//
+// A link with an empty body is not shown. That is what a removed child looks like - the room
+// stays in the space's state with its content gone, because state events are not deleted - and
+// showing it would tell a client to walk into a branch the space took away, and offer the same
+// room twice: once as a child of this space, once as a child of whatever still lists it.
+func (s *Service) hierarchyStateEvents(ctx context.Context, roomID string, w walkWindow) []matrix.Event {
 	rows, err := s.db.StateRepo.List(roomID, hierarchyStateTypes, "")
 	if err != nil {
 		return []matrix.Event{}
 	}
-	events, err := s.stateEventsWire(rows, nil)
+	kept := make([]*persist.RoomState, 0, len(rows))
+	for _, row := range rows {
+		content := matrix.MustParseObject([]byte(row.Content))
+		if len(content) == 0 {
+			continue
+		}
+		if w.suggestedOnly && content["suggested"] != true {
+			continue
+		}
+		kept = append(kept, row)
+	}
+	events, err := s.stateEventsWire(kept, nil)
 	if err != nil {
 		return []matrix.Event{}
 	}

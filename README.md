@@ -30,7 +30,7 @@ that decide what a client trusts, and stores room-key backups it cannot read.
 | **Client API** | 168 of the 234 indexed spec endpoints, plus 33 extra routes (`make endpoints`) |
 | **Federation** | keys, signed requests, join / leave / invite, events, typing, receipts, device lists, state and graph reads, gap filling, profiles, room directories, spaces — behind `-federation` |
 | **Room versions** | 1–11 (11 is the default; room upgrades supported) |
-| **Tests** | 123 client-API compatibility, 60 two-server federation, 70 unit |
+| **Tests** | 123 client-API compatibility, 61 two-server federation, 70 unit |
 | **Licence** | MIT |
 
 ---

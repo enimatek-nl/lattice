@@ -26,7 +26,7 @@ func (a *App) handleRoomHierarchy(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, r, err)
 		return
 	}
-	maxDepth, err := queryInt(r, "max_depth", 0)
+	maxDepth, err := queryInt(r, "max_depth", service.HierarchyUnbounded)
 	if err != nil {
 		a.writeError(w, r, err)
 		return
@@ -43,6 +43,8 @@ func (a *App) handleRoomHierarchy(w http.ResponseWriter, r *http.Request) {
 		MaxDepth: maxDepth,
 		MinDepth: minDepth,
 		From:     queryValue(r, "from", ""),
+
+		SuggestedOnly: queryBool(r, "suggested_only", false),
 	})
 	if err != nil {
 		a.writeError(w, r, err)

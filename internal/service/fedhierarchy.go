@@ -74,7 +74,7 @@ func (s *Service) ServeHierarchy(ctx context.Context, roomID, peer string, param
 // The depth limits are translated before the question is sent: the servers are asked for
 // what lies below *their* room, so the page they return is already filtered for the window
 // this walk is in and this server does not have to guess how deep each entry sat.
-func (s *Service) RemoteHierarchy(ctx context.Context, roomID string, via []string, limit, maxDepth, minDepth int) (*HierarchyResult, error) {
+func (s *Service) RemoteHierarchy(ctx context.Context, roomID string, via []string, limit, maxDepth, minDepth int, suggestedOnly bool) (*HierarchyResult, error) {
 	transport := s.federationTransport()
 	if transport == nil {
 		return nil, matrix.ErrNotFound("this server does not federate, so the space below %s cannot be read", roomID)
@@ -92,6 +92,9 @@ func (s *Service) RemoteHierarchy(ctx context.Context, roomID string, via []stri
 	query.Set("max_depth", strconv.Itoa(maxDepth))
 	if minDepth > 0 {
 		query.Set("min_depth", strconv.Itoa(minDepth))
+	}
+	if suggestedOnly {
+		query.Set("suggested_only", "true")
 	}
 	var lastFailure string
 	for _, server := range servers {
@@ -152,19 +155,24 @@ func (s *Service) hierarchyPage(ctx context.Context, rootID string, r reader, pa
 	if limit <= 0 || limit > hierarchyLimitRooms {
 		limit = hierarchyDefaultRooms
 	}
+	w := walkWindow{minDepth: params.MinDepth, suggestedOnly: params.SuggestedOnly}
 	maxDepth := params.MaxDepth
-	if maxDepth <= 0 {
-		maxDepth = hierarchyDefaultDepth
+	if maxDepth == HierarchyUnbounded {
+		// The caller named no window, so the space is walked. The ceiling that still
+		// applies is the one this server keeps against a graph that links itself, not a
+		// decision about how much of somebody's space they get to see.
+		maxDepth = hierarchyMaxDepth
 	}
 	if maxDepth > hierarchyMaxDepth {
 		maxDepth = hierarchyMaxDepth
 	}
-	if params.MinDepth < 0 {
+	if w.minDepth < 0 {
 		return nil, matrix.ErrInvalidParam("min_depth must not be negative")
 	}
-	if params.MinDepth > maxDepth {
+	if w.minDepth > maxDepth {
 		return nil, matrix.ErrInvalidParam("min_depth must not exceed max_depth")
 	}
+	w.maxDepth = maxDepth
 	offset := 0
 	if params.From != "" {
 		parsed, err := strconv.Atoi(params.From)
@@ -174,7 +182,7 @@ func (s *Service) hierarchyPage(ctx context.Context, rootID string, r reader, pa
 		offset = parsed
 	}
 
-	rooms, incomplete, err := s.walkHierarchy(ctx, rootID, r, maxDepth, params.MinDepth)
+	rooms, incomplete, err := s.walkHierarchy(ctx, rootID, r, w)
 	if err != nil {
 		return nil, err
 	}
@@ -231,6 +239,9 @@ func (s *Service) readableBy(ctx context.Context, roomID string, r reader) bool 
 type spaceLink struct {
 	roomID string
 	via    []string
+	// suggested is the space saying this branch is worth showing on a short list. A space
+	// full of rooms that are merely filed is a space whose important children get lost.
+	suggested bool
 }
 
 // spaceLinks returns the child edges of a room. A child whose content is an empty object
@@ -246,7 +257,7 @@ func (s *Service) spaceLinks(ctx context.Context, roomID string) ([]spaceLink, e
 		if len(content) == 0 {
 			continue
 		}
-		link := spaceLink{roomID: row.StateKey}
+		link := spaceLink{roomID: row.StateKey, suggested: content["suggested"] == true}
 		if listed, ok := content["via"].([]any); ok {
 			for _, entry := range listed {
 				if server, isText := entry.(string); isText {

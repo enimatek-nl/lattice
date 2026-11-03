@@ -15,6 +15,67 @@ func (s *Server) linkSpace(session *Session, spaceID, childID string) {
 		session.Token, map[string]any{"via": []string{"test.server"}}, http.StatusOK)
 }
 
+// linkSpaceSuggested adds a child link the space marks as worth showing on a short list.
+func (s *Server) linkSpaceSuggested(session *Session, spaceID, childID string) {
+	s.t.Helper()
+	s.MustDo(http.MethodPut,
+		fmt.Sprintf("/_matrix/client/v3/rooms/%s/state/m.space.child/%s", spaceID, url.PathEscape(childID)),
+		session.Token, map[string]any{"via": []string{"test.server"}, "suggested": true}, http.StatusOK)
+}
+
+// unlinkSpace takes a child out of a space, which is an empty body on the same state key
+// rather than a deletion: state events are not removed, they are emptied.
+func (s *Server) unlinkSpace(session *Session, spaceID, childID string) {
+	s.t.Helper()
+	s.MustDo(http.MethodPut,
+		fmt.Sprintf("/_matrix/client/v3/rooms/%s/state/m.space.child/%s", spaceID, url.PathEscape(childID)),
+		session.Token, map[string]any{}, http.StatusOK)
+}
+
+// sameOrder compares two lists of ids, order included.
+func sameOrder(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// hierarchyOrder lists the room ids of a hierarchy page in the order they were given.
+func hierarchyOrder(rooms []map[string]any) []string {
+	ids := make([]string, 0, len(rooms))
+	for _, room := range rooms {
+		id, _ := room["room_id"].(string)
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// childrenOf lists the state keys of a hierarchy entry's children_state, which are the rooms
+// the space says it contains.
+func childrenOf(t *testing.T, entry map[string]any) []string {
+	t.Helper()
+	raw, ok := entry["children_state"].([]any)
+	if !ok {
+		t.Fatalf("a hierarchy entry carries no children_state: %v", entry)
+	}
+	keys := make([]string, 0, len(raw))
+	for _, event := range raw {
+		child, ok := event.(map[string]any)
+		if !ok {
+			t.Fatalf("children_state holds something that is not an event: %v", event)
+		}
+		if key, _ := child["state_key"].(string); key != "" {
+			keys = append(keys, key)
+		}
+	}
+	return keys
+}
+
 // hierarchyRooms extracts the rooms array of a hierarchy response.
 func hierarchyRooms(t *testing.T, body map[string]any) []map[string]any {
 	t.Helper()
@@ -42,15 +103,27 @@ func TestSpaceHierarchy(t *testing.T) {
 	first := server.CreateRoom(alice, map[string]any{"name": "Tomatoes", "preset": "public_chat"})
 	second := server.CreateRoom(alice, map[string]any{"name": "Herbs", "preset": "public_chat"})
 	grandchild := server.CreateRoom(alice, map[string]any{"name": "Basil", "preset": "public_chat"})
-	server.linkSpace(alice, space, first)
+	underneath := server.CreateRoom(alice, map[string]any{"name": "Aphid", "preset": "public_chat"})
+	server.linkSpaceSuggested(alice, space, first)
 	server.linkSpace(alice, space, second)
 	server.linkSpace(alice, second, grandchild)
+	server.linkSpace(alice, first, underneath)
 
 	resp := server.MustDo(http.MethodGet, "/_matrix/client/v1/rooms/"+url.PathEscape(space)+"/hierarchy",
 		alice.Token, nil, http.StatusOK)
 	rooms := hierarchyRooms(t, resp.Body)
-	if len(rooms) != 3 {
-		t.Fatalf("hierarchy holds %d rooms, want the space and its two children: %s", len(rooms), resp.Raw)
+	// The specification names no default depth, and a caller that did not name one is
+	// asking to see the space rather than a slice of it: the grandchild is part of the
+	// space, so it is here. A caller who wants one level says max_depth=1.
+	if len(rooms) != 5 {
+		t.Fatalf("hierarchy holds %d rooms, want the whole space: %s", len(rooms), resp.Raw)
+	}
+	// Depth first, in the order the space names its children: a caller paging through a
+	// space gets one branch finished before the next is started, which is what makes the
+	// first pages of a wide space useful rather than shallow.
+	want := []string{space, first, underneath, second, grandchild}
+	if got := hierarchyOrder(rooms); !sameOrder(got, want) {
+		t.Errorf("the walk of %s lists %v, want %v (depth first)", space, got, want)
 	}
 	if id, _ := rooms[0]["room_id"].(string); id != space {
 		t.Errorf("the first room of the walk = %v, want the space itself", rooms[0]["room_id"])
@@ -67,46 +140,55 @@ func TestSpaceHierarchy(t *testing.T) {
 	if joinRules, _ := rooms[0]["join_rules"].(string); joinRules != "public" {
 		t.Errorf("join_rules = %v", rooms[0]["join_rules"])
 	}
-	children, ok := rooms[0]["children_state"].([]any)
-	if !ok || len(children) != 2 {
+	children := childrenOf(t, rooms[0])
+	if len(children) != 2 {
 		t.Fatalf("children_state = %v, want the two m.space.child events", rooms[0]["children_state"])
 	}
-	child, _ := children[0].(map[string]any)
+	child, _ := rooms[0]["children_state"].([]any)[0].(map[string]any)
 	if child["type"] != "m.space.child" {
 		t.Errorf("children_state entry type = %v", child["type"])
 	}
 	if _, hasStateKey := child["state_key"]; !hasStateKey {
 		t.Errorf("children_state entry has no state key: %v", child)
 	}
-	if id, _ := rooms[2]["room_id"].(string); id != second && id != first {
-		t.Errorf("the third room of the walk = %v", rooms[2]["room_id"])
-	}
 	// A room without children carries an empty list.
 	for _, room := range rooms {
 		id, _ := room["room_id"].(string)
-		state, _ := room["children_state"].([]any)
-		if id == first && len(state) != 0 {
-			t.Errorf("the leaf %s has children_state: %v", id, state)
-		}
-		if id == second && len(state) != 1 {
-			t.Errorf("%s links one child, got %v", id, state)
+		state := childrenOf(t, room)
+		switch id {
+		case first, second:
+			if len(state) != 1 {
+				t.Errorf("%s links one child, got %v", id, state)
+			}
+		case grandchild, underneath:
+			if len(state) != 0 {
+				t.Errorf("the leaf %s has children_state: %v", id, state)
+			}
 		}
 	}
 	if _, hasMore := resp.Body["next_batch"]; hasMore {
 		t.Errorf("a complete walk still returned next_batch: %v", resp.Body["next_batch"])
 	}
 
-	// max_depth reaches the grandchild, min_depth skips the space itself.
+	// An explicit window is honoured exactly: one level is the space and its two children,
+	// two levels reaches the grandchild.
+	resp = server.MustDo(http.MethodGet,
+		"/_matrix/client/v1/rooms/"+url.PathEscape(space)+"/hierarchy?max_depth=1", alice.Token, nil, http.StatusOK)
+	if got := len(hierarchyRooms(t, resp.Body)); got != 3 {
+		t.Errorf("max_depth=1 found %d rooms, want 3", got)
+	}
 	resp = server.MustDo(http.MethodGet,
 		"/_matrix/client/v1/rooms/"+url.PathEscape(space)+"/hierarchy?max_depth=2", alice.Token, nil, http.StatusOK)
-	if got := len(hierarchyRooms(t, resp.Body)); got != 4 {
-		t.Errorf("max_depth=2 found %d rooms, want 4", got)
+	if got := len(hierarchyRooms(t, resp.Body)); got != 5 {
+		t.Errorf("max_depth=2 found %d rooms, want 5", got)
 	}
+	// min_depth skips the space itself, and says nothing about how deep to go: the rest of
+	// the space is still the rest of the space.
 	resp = server.MustDo(http.MethodGet,
 		"/_matrix/client/v1/rooms/"+url.PathEscape(space)+"/hierarchy?min_depth=1", alice.Token, nil, http.StatusOK)
 	rooms = hierarchyRooms(t, resp.Body)
-	if len(rooms) != 2 {
-		t.Fatalf("min_depth=1 found %d rooms, want 2", len(rooms))
+	if len(rooms) != 4 {
+		t.Fatalf("min_depth=1 found %d rooms, want the space's four descendants", len(rooms))
 	}
 	if id, _ := rooms[0]["room_id"].(string); id == space {
 		t.Errorf("min_depth=1 still includes the space itself")
@@ -131,6 +213,43 @@ func TestSpaceHierarchy(t *testing.T) {
 	}
 	if id, _ := hierarchyRooms(t, next.Body)[0]["room_id"].(string); id == rooms[0]["room_id"] {
 		t.Errorf("paging returned the same room twice: %s", id)
+	}
+
+	// A page is a run of the depth-first walk, not the shallowest rooms: the first three are
+	// the space, its first child and that child's own child.
+	resp = server.MustDo(http.MethodGet,
+		"/_matrix/client/v1/rooms/"+url.PathEscape(space)+"/hierarchy?limit=3", alice.Token, nil, http.StatusOK)
+	if got := hierarchyOrder(hierarchyRooms(t, resp.Body)); !sameOrder(got, []string{space, first, underneath}) {
+		t.Errorf("the first page of three holds %v, want %v", got, []string{space, first, underneath})
+	}
+
+	// suggested_only keeps the branches the space marks as worth showing, links included, so
+	// a client asking for the short list is not handed the long one and told which to ignore.
+	resp = server.MustDo(http.MethodGet,
+		"/_matrix/client/v1/rooms/"+url.PathEscape(space)+"/hierarchy?suggested_only=true", alice.Token, nil, http.StatusOK)
+	rooms = hierarchyRooms(t, resp.Body)
+	// A link that is not suggested takes its whole branch out, not just the room: the short
+	// list is the space with the unimportant branches removed, not the same space with some
+	// of them labelled.
+	if got := hierarchyOrder(rooms); !sameOrder(got, []string{space, first}) {
+		t.Errorf("suggested_only lists %v, want the space and its suggested child", got)
+	}
+	if got := childrenOf(t, rooms[0]); !sameOrder(got, []string{first}) {
+		t.Errorf("suggested_only still shows the space's other links: %v", got)
+	}
+
+	// Taking a child out of a space is an empty body on the link, not a deleted event. The
+	// branch goes - both the room below it and the link itself, which would otherwise offer
+	// the client a door into a room the space closed.
+	server.unlinkSpace(alice, space, second)
+	resp = server.MustDo(http.MethodGet, "/_matrix/client/v1/rooms/"+url.PathEscape(space)+"/hierarchy",
+		alice.Token, nil, http.StatusOK)
+	rooms = hierarchyRooms(t, resp.Body)
+	if got := hierarchyOrder(rooms); !sameOrder(got, []string{space, first, underneath}) {
+		t.Errorf("after unlinking %s the walk lists %v", second, got)
+	}
+	if got := childrenOf(t, rooms[0]); !sameOrder(got, []string{first}) {
+		t.Errorf("the removed link is still in children_state: %v", got)
 	}
 
 	// A child that does not exist makes the chain incomplete instead of
