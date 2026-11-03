@@ -217,6 +217,8 @@ type EventRepo interface {
 	// Timeline returns the events of a room with a stream position greater than
 	// since, oldest first.
 	Timeline(roomID string, since uint64, limit int) ([]*Event, error)
+	// TimelineCount counts the events a timeline read would cover.
+	TimelineCount(roomID string, since uint64) (int, error)
 	// TimelineFor returns timeline events for a set of rooms.
 	TimelineFor(roomIDs []string, since uint64, limit int) ([]*Event, error)
 	// LatestStreamPos returns the highest stream position in use.
@@ -369,19 +371,44 @@ func (r *EventRepoImpl) Timeline(roomID string, since uint64, limit int) ([]*Eve
 	return r.TimelineFor([]string{roomID}, since, limit)
 }
 
+// TimelineCount counts the events a timeline read of a room would cover. It is how a sync decides
+// whether to say "limited": the answer is about how much there is, not about how much a probe
+// happened to bring back.
+func (r *EventRepoImpl) TimelineCount(roomID string, since uint64) (int, error) {
+	var count int64
+	err := hiddenFromTimeline(r.db.Model(&Event{})).
+		Where("room_id = ? AND stream_pos > ?", roomID, since).
+		Count(&count).Error
+	return int(count), err
+}
+
 // TimelineFor implements [EventRepo].
+// TimelineFor reads the events of rooms that came after a position, newest window first.
+//
+// A limit on a timeline means "the end of it", which is what makes a first /sync usable: a client
+// that has never seen the room is shown what happened last and given a token to walk backwards.
+// Cutting the other end off hands that client the room's first ten events, calls the rest
+// "limited", and points prev_batch at the beginning - so the room looks like it stopped moving
+// years ago.
 func (r *EventRepoImpl) TimelineFor(roomIDs []string, since uint64, limit int) ([]*Event, error) {
 	if len(roomIDs) == 0 {
 		return nil, nil
 	}
 	var events []*Event
-	q := hiddenFromTimeline(r.db.Where("room_id IN ? AND stream_pos > ?", roomIDs, since)).
-		Order("stream_pos asc")
+	q := hiddenFromTimeline(r.db.Where("room_id IN ? AND stream_pos > ?", roomIDs, since))
 	if limit > 0 {
-		q = q.Limit(limit)
+		q = q.Order("stream_pos desc").Limit(limit)
+	} else {
+		q = q.Order("stream_pos asc")
 	}
 	err := q.Find(&events).Error
-	return events, err
+	if err != nil {
+		return nil, err
+	}
+	for left, right := 0, len(events)-1; left < right; left, right = left+1, right-1 {
+		events[left], events[right] = events[right], events[left]
+	}
+	return events, nil
 }
 
 // LatestStreamPos implements [EventRepo].

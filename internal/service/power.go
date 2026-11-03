@@ -115,6 +115,15 @@ func (s *Service) roomReplacement(ctx context.Context, roomID string) string {
 
 // RequireState rejects requests that may not set a specific state type.
 func (s *Service) RequireState(ctx context.Context, roomID, userID, typ string) error {
+	// m.room.member is judged by its membership rather than by the default level of the event
+	// type. The specification gives m.room.member a default of 50, which is right for inviting
+	// somebody else and wrong for joining oneself: a room whose members may not write their own
+	// membership cannot carry a display name at all. validateMemberStateWrite makes that
+	// distinction - invite, kick and ban against their levels, join and knock against the room's
+	// join rule - and repeating the check here would only add a second place to get wrong.
+	if typ == matrix.TypeMember {
+		return nil
+	}
 	levels := s.powerLevels(ctx, roomID)
 	return s.requireLevel(ctx, levels, roomID, userID, typ, true, PowerDefaultState)
 }

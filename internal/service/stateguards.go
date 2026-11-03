@@ -154,7 +154,15 @@ func (s *Service) validateMemberStateWrite(ctx context.Context, roomID, sender, 
 		if stateKey != sender {
 			return matrix.ErrForbidden("only the user themselves can join or knock on a room")
 		}
-		return nil
+		// A membership written through the state endpoint is still an entry into the room, so
+		// the room's join rule decides it. Checking only the power level here would let a room
+		// moderator walk a stranger into an invite-only room, and checking nothing at all would
+		// make the state endpoint a door with no guard.
+		current := s.MembershipOf(ctx, roomID, sender)
+		if membership == matrix.MembershipJoin {
+			return s.joinRuleProblem(ctx, roomID, sender, current)
+		}
+		return s.knockProblem(ctx, roomID, current)
 	case matrix.MembershipLeave:
 		if stateKey == sender {
 			return nil

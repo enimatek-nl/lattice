@@ -275,6 +275,23 @@ func ValidServerName(name string) bool {
 	return true
 }
 
+// ValidRoomID reports whether the string is shaped like a room ID: an exclamation
+// mark, a local part, a colon and a server name. A room ID is the one identifier in
+// Matrix that a server mints for itself and never reuses, so its shape is checked
+// before it is used as a key - an allow rule that names "invalid" is not a room that
+// anybody can be a member of, and treating it as one would let a typo decide who may
+// join.
+func ValidRoomID(id string) bool {
+	if !strings.HasPrefix(id, "!") {
+		return false
+	}
+	local, server, found := strings.Cut(id[1:], ":")
+	if local == "" || !found {
+		return false
+	}
+	return ValidServerName(server)
+}
+
 // UserMxid builds a user ID from a localpart and server name.
 func UserMxid(localpart, serverName string) string {
 	if !strings.HasPrefix(localpart, "@") {

@@ -329,16 +329,16 @@ func (s *Service) membershipAfter(roomID, userID string, since uint64) bool {
 	return event.StreamPos > since
 }
 
-// timelineLimited reports whether more events exist than were returned.
+// timelineLimited reports whether events exist that this response did not carry.
 func (s *Service) timelineLimited(roomID string, since uint64, returned, limit int) (bool, error) {
 	if limit == 0 {
 		return false, nil
 	}
-	rest, err := s.db.EventRepo.Timeline(roomID, since, limit+1)
+	total, err := s.db.EventRepo.TimelineCount(roomID, since)
 	if err != nil {
 		return false, matrix.ErrInternal(err)
 	}
-	return len(rest) > returned, nil
+	return total > returned, nil
 }
 
 // annotateThreads attaches the m.thread summary of a thread root to the

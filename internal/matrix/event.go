@@ -214,6 +214,13 @@ type TopicContent struct {
 }
 
 // JoinRulesContent is the content of an m.room.join_rules event.
+//
+// It is decoded by hand rather than by encoding/json because the allow list is a place where
+// servers put things that are not rules at all: a bare string, an object with no room, the whole
+// key replaced by a scalar. Those are not a client's error to make - the room is stating its
+// rules - and refusing the event would let one bad sentence lock everyone out of the room. Each
+// unusable entry is dropped, which is also what the tests of the other implementations expect: a
+// room whose allow list carries nothing usable is a room that needs an invite.
 type JoinRulesContent struct {
 	JoinRule      string      `json:"join_rule"`
 	Allow         []AllowRule `json:"allow,omitempty"`
@@ -221,9 +228,64 @@ type JoinRulesContent struct {
 }
 
 // AllowRule describes a room based restriction for restricted join rules.
+//
+// Type names the kind of restriction. The specification spells the room-shaped one "m.space", and
+// the implementations that grew the feature first spelled it "m.room_membership"; both mean the
+// same thing - this join is authorised by membership of that room - so both are accepted and the
+// distinction is not kept.
 type AllowRule struct {
 	Type   string `json:"type,omitempty"`
 	RoomID string `json:"room_id,omitempty"`
+}
+
+// JoinRuleRoomMembership is the allow rule type that means "joined to this room".
+const (
+	AllowRuleSpace          = "m.space"
+	AllowRuleRoomMembership = "m.room_membership"
+)
+
+// UnmarshalJSON reads a join rules event, keeping the rules that can be acted on.
+func (c *JoinRulesContent) UnmarshalJSON(data []byte) error {
+	var raw Object
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	c.JoinRule, _ = raw["join_rule"].(string)
+	if flag, ok := raw["m.restricted_allow_appservice_implicit"].(bool); ok {
+		c.RequireAppsvc = flag
+	}
+	entries, ok := raw["allow"].([]any)
+	if !ok {
+		return nil
+	}
+	for _, entry := range entries {
+		rule, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		roomID, _ := rule["room_id"].(string)
+		if !ValidRoomID(roomID) {
+			continue
+		}
+		kind, _ := rule["type"].(string)
+		switch kind {
+		case AllowRuleSpace, AllowRuleRoomMembership:
+		default:
+			continue
+		}
+		c.Allow = append(c.Allow, AllowRule{Type: AllowRuleRoomMembership, RoomID: roomID})
+	}
+	return nil
+}
+
+// GrantsAccessTo reports whether the allow list admits a user given the rooms they are joined to.
+func (c JoinRulesContent) GrantsAccessTo(joined func(roomID string) bool) bool {
+	for _, rule := range c.Allow {
+		if rule.Type == AllowRuleRoomMembership && joined(rule.RoomID) {
+			return true
+		}
+	}
+	return false
 }
 
 // HistoryVisibilityContent is the content of an m.room.history_visibility event.
