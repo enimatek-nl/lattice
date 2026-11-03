@@ -2419,3 +2419,50 @@ case in that package is now green (`TestMediaFilenames`, `TestMediaWithoutFileNa
 `TestRemotePngThumbnail`, `TestFederationThumbnail`) and nothing is newly red. The red list is
 knocking and restricted rooms, room versions past v11, application services, presence, and
 `TestACLsForEDUs`.
+
+### 17. Federation XII — knocking and restricted rooms (in progress)
+
+Aimed at the knock/restricted block of the Complement red list, and explicitly **not** at
+MSC3787 (`...InMSC3787Room` — restricted rooms back-ported to room versions 1-3), MSC4289
+privileged creators, room versions past v11, application services or presence: the first two
+are drafts the implementations treat as experimental, the rest is a different feature.
+
+Done so far:
+
+- **Join rules read leniently.** `m.room.join_rules` is decoded by hand: an `allow` entry that
+  is not an object, or names something that is not a room, is dropped; a whole `allow` key that
+  is a scalar is dropped. The room keeps working and joining falls back to needing an invite,
+  which is what the other implementations do and what `Join should fail with mangled join
+  rules` checks. Both spellings of the room-shaped rule are accepted: the spec's `m.space` and
+  the older `m.room_membership` the implementations grew up with.
+- **A membership written through the state endpoint is judged by its membership.** The spec
+  gives `m.room.member` a default power level of 50, which is right for inviting somebody else
+  and wrong for joining oneself, so the generic state-level check now stands aside for
+  `validateMemberStateWrite`, and that checks a self join against the room's join rule (the
+  state endpoint must not be a door with no guard).
+- **A limited timeline is the end of the room.** `TimelineFor` ordered ascending with a LIMIT,
+  so a fresh `/sync` of a room with more than the limit returned its *oldest* events, marked the
+  rest limited, and pointed `prev_batch` at the start of the room. Fixed to the newest window;
+  `limited` is now decided by counting. This was the cause of a state event never reaching a
+  syncing client in `TestRestrictedRoomsLocalJoin`.
+- `TestRestrictedRoomsLocalJoin` is green in Complement (all five subtests).
+
+Still red, and what each needs:
+
+- `TestRestrictedRoomsRemoteJoin`, `...LocalUser`, `...FailOver`,
+  `...NoCreatorsUsesPowerLevelsV11`: the authorising user. The server **answering** `make_join`
+  for a restricted room has to name a user it can vouch for — local to itself, joined to the
+  room, holding the room's invite level, and joined to one of the allowed rooms — return it in
+  the `make_join` response (`org.matrix.msc2175.join_authorised_via_users_server`), and check it
+  when the `send_join` arrives. Our outbound join has to copy that value into the member event.
+  Our current error for the case is "the room is joined through a space, and the event names no
+  authorising user". If the answering server has nobody to vouch for, `make_join` must refuse so
+  the joining client fails over to another server.
+- `TestRestrictedRoomsSpacesSummaryLocal/Federation`: the space summary a restricted join is
+  authorised through, for a space this server does not host.
+- `TestKnocking`, `TestCannotSendNonKnockViaSendKnock`, `TestKnockRoomsInPublicRoomsDirectory`:
+  knocking over federation — `GET /_matrix/federation/v1/make_knock/{roomID}/{userID}` (and v2)
+  and `PUT /_matrix/federation/v1/send_knock/{roomID}/{eventID}` (and v2), inbound and outbound,
+  with the knock's `reason` and the invite that answers it. `TestKnocking` also invites a user
+  on Complement's stub server and our invite got `404`: the stub answers `v2/invite` (the signed
+  form), so our outbound invite has to try that form.
