@@ -235,6 +235,19 @@ func (s *Service) invitedRoomSync(ctx context.Context, userID, roomID string,
 	}, s.membershipAfter(roomID, userID, since), nil
 }
 
+// knockedRoomSync renders the knock section of a sync response: the state of a room a
+// user has knocked on and is waiting to be let into. Like an invitation, a knock is a
+// standing state rather than an event stream, so it is reported until the room answers it;
+// only a knock made after the token counts as new, or the long poll would return at once
+// forever. The knocker's own membership is part of the state shown, because it is the
+// event that says the knock was made.
+func (s *Service) knockedRoomSync(ctx context.Context, userID, roomID string,
+	since uint64) (*matrix.KnockedRoom, bool, error) {
+	return &matrix.KnockedRoom{
+		KnockState: matrix.State{Events: s.strippedState(ctx, roomID, userID)},
+	}, s.membershipAfter(roomID, userID, since), nil
+}
+
 // leftRoomSync renders the leave section of a sync response. A room is only
 // included when it has events after the token, so leaving does not reappear on
 // every subsequent sync.

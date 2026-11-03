@@ -85,6 +85,14 @@ func (s *Service) buildSync(ctx context.Context, params SyncParams, filter *Sync
 	if err != nil {
 		return nil, false, matrix.ErrInternal(err)
 	}
+	// A knock is an outstanding question, and a question nobody answers is still open: the
+	// room belongs in the sync of the user who knocked, with the state of the room they are
+	// waiting to be let into. Leaving it out leaves a client that has knocked showing
+	// nothing, and a user who cannot tell whether they asked.
+	knocked, err := s.db.MembershipRepo.RoomsFor(userID, matrix.MembershipKnock)
+	if err != nil {
+		return nil, false, matrix.ErrInternal(err)
+	}
 	// A banned user is told about the room as well. The leave bucket is where "you are not
 	// in this room any more" is reported, and a ban is exactly that; a sync that says
 	// nothing leaves a client showing a room its user was thrown out of, and the ban event
@@ -101,6 +109,7 @@ func (s *Service) buildSync(ctx context.Context, params SyncParams, filter *Sync
 			Join:   map[string]*matrix.JoinedRoom{},
 			Invite: map[string]*matrix.InvitedRoom{},
 			Leave:  map[string]*matrix.LeftRoom{},
+			Knock:  map[string]*matrix.KnockedRoom{},
 		},
 	}
 	changed := false
@@ -123,6 +132,14 @@ func (s *Service) buildSync(ctx context.Context, params SyncParams, filter *Sync
 		}
 		response.Rooms.Invite[roomID] = room
 		changed = changed || inviteChanged
+	}
+	for _, roomID := range knocked {
+		room, knockChanged, err := s.knockedRoomSync(ctx, userID, roomID, since)
+		if err != nil {
+			return nil, false, err
+		}
+		response.Rooms.Knock[roomID] = room
+		changed = changed || knockChanged
 	}
 	for _, roomID := range left {
 		room, roomChanged, err := s.leftRoomSync(ctx, userID, roomID, since, params.Limit)
