@@ -108,4 +108,12 @@ func TestAKnockerIsSeenByTheRoomBeforeItIsAnswered(t *testing.T) {
 
 	hs2.mustDo(http.StatusOK, http.MethodPost, "/_matrix/client/v3/join/"+room, charlie.Token, map[string]any{})
 	awaitMembership(t, hs1, room, charlie.UserID, "join")
+
+	// In the room already: the room answered this user, and a knock is a question that has
+	// been answered. The refusal is this server's to make - it holds the membership - and it
+	// has to reach the client as the room's answer rather than as a failure of the wiring.
+	after := hs2.do(http.MethodPost, "/_matrix/client/v3/knock/"+room, charlie.Token, map[string]any{"reason": "let me in again"})
+	if after.Status != http.StatusForbidden {
+		t.Fatalf("charlie knocking on a room they are in: status %d (body %s), want 403", after.Status, after.Raw)
+	}
 }

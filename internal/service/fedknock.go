@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/url"
@@ -31,11 +32,25 @@ func (s *Service) KnockFederatedRoom(ctx context.Context, roomID, userID, reason
 	if transport == nil {
 		return "", matrix.ErrNotFound("this server holds no room %s, and does not speak to other servers", roomID)
 	}
+	// What this server already knows about the user is enough to refuse: the room's answer
+	// cannot make a user who is in the room, invited, or banned into somebody who has a knock
+	// to make, and asking a server for an answer this server has already been given is a round
+	// trip that can only end in the same place.
+	if problem := s.knownMembershipBlocksKnock(ctx, roomID, userID); problem != nil {
+		return "", matrix.ErrForbidden("%v", problem)
+	}
 	var lastErr error
 	for _, server := range s.knockServers(ctx, roomID) {
 		if err := s.knockViaServer(ctx, transport, roomID, userID, reason, server); err != nil {
 			lastErr = err
 			log.Printf("service: knocking on %s through %s: %v", roomID, server, err)
+			var peerErr *matrix.Error
+			if errors.As(err, &peerErr) && peerErr.Code != "" && peerErr.Code != matrix.ErrCodeNotFound {
+				// The room said no, in the room's words. Swapping that for a sentence of this
+				// server's own would lose why: a person turned away from a room learns the
+				// reason from the room, not from the middleman.
+				return "", peerErr
+			}
 			continue
 		}
 		return roomID, nil
@@ -43,7 +58,7 @@ func (s *Service) KnockFederatedRoom(ctx context.Context, roomID, userID, reason
 	if lastErr == nil {
 		lastErr = fmt.Errorf("no server holds room %s to knock on", roomID)
 	}
-	return "", fmt.Errorf("none of the servers of room %s would take the knock of %s: %w", roomID, userID, lastErr)
+	return "", matrix.ErrForbidden("none of the servers of room %s would take the knock of %s: %v", roomID, userID, lastErr)
 }
 
 // knockServers names the servers a knock is offered to: the ones this server already
@@ -331,6 +346,19 @@ func (s *Service) acceptKnock(ctx context.Context, roomID, eventID string, event
 		s.queueEventForPeersExcept(ctx, stored, version, peer)
 	}
 	return matrix.Object{}, nil
+}
+
+// knownMembershipBlocksKnock refuses a knock this server can already refuse without
+// asking anybody: a user it knows to be in the room, invited, or banned has no knock to
+// make. The room's join rule is deliberately not consulted - a server that holds a copy of
+// a room may hold a stale or partial copy of its rules, and "I cannot see a knock rule" is
+// not the same question as "the room has none".
+func (s *Service) knownMembershipBlocksKnock(ctx context.Context, roomID, userID string) error {
+	switch s.MembershipOf(ctx, roomID, userID) {
+	case matrix.MembershipJoin, matrix.MembershipInvite, matrix.MembershipBan:
+		return fmt.Errorf("you already have a membership in this room")
+	}
+	return nil
 }
 
 // knockRoomProblem answers whether a room admits a knock from a user at all, read from

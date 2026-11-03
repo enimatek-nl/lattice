@@ -272,6 +272,9 @@ func (s *Service) KnockRoom(ctx context.Context, idOrAlias, userID, reason strin
 		return "", err
 	}
 	if !s.LocalRoom(room.ID) {
+		if problem := s.knownMembershipBlocksKnock(ctx, room.ID, userID); problem != nil {
+			return "", matrix.ErrForbidden("%v", problem)
+		}
 		return s.KnockFederatedRoom(ctx, room.ID, userID, reason)
 	}
 	joinRule, err := s.db.StateRepo.JoinRule(room.ID)
