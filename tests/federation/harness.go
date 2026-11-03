@@ -290,6 +290,49 @@ type response struct {
 	Headers http.Header
 }
 
+// shareRoomByJoin puts a room on two servers the way a client does: the room invites the peer's
+// user when it is made, and that user's server joins over federation. Everything the second
+// server needs to take part - the room row, the state, the membership on both sides - is then
+// whatever the handshake wrote there, which is the point. A two-server test that seeds those
+// rows by hand is testing its own seed, and it keeps passing when the handshake breaks.
+func shareRoomByJoin(t *testing.T, host, guestServer *server, hostUser, guestUser *session) string {
+	t.Helper()
+	roomID := host.createRoom(hostUser, map[string]any{
+		"preset": "private_chat",
+		"invite": []any{guestUser.UserID},
+	})
+	guestServer.join(guestUser, roomID)
+	// Both sides have to believe both users are in the room, and the claim is checked rather
+	// than assumed: a join that worked on one side only sends the other side events it will
+	// then refuse to accept.
+	for _, s := range []*server{host, guestServer} {
+		members, err := s.db.MembershipRepo.Members(roomID, matrix.MembershipJoin)
+		if err != nil {
+			t.Fatalf("reading the members of %s on %s after the join: %v", roomID, s.name, err)
+		}
+		want := map[string]bool{hostUser.UserID: false, guestUser.UserID: false}
+		for _, member := range members {
+			delete(want, member.UserID)
+		}
+		if len(want) > 0 {
+			t.Fatalf("after %s joined %s, %s holds no joined membership for %v", guestUser.UserID, roomID, s.name, keysOf(want))
+		}
+	}
+	if _, err := guestServer.db.RoomRepo.Get(roomID); err != nil {
+		t.Fatalf("%s joined %s and still has no room row: %v", guestServer.name, roomID, err)
+	}
+	return roomID
+}
+
+// keysOf lists a set for an error message.
+func keysOf(set map[string]bool) []string {
+	out := []string{}
+	for key := range set {
+		out = append(out, key)
+	}
+	return out
+}
+
 // errCode returns the Matrix error code of a response body.
 func (r response) errCode() string {
 	code, _ := r.Body["errcode"].(string)

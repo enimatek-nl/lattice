@@ -20,9 +20,13 @@ import (
 // the other from what it can fetch for itself.
 
 // handTheRoomTo copies a room's state and memberships from one server to the other: the
-// room row, every state event, and the membership rows. That is what a completed join
-// handshake does to a server's database, and until it exists a test that wants a room on
-// two servers has to say plainly that it is doing the join by hand.
+// room row, every state event, and the membership rows. It is a join handshake written by
+// hand, and it stays because the tests that use it are about what a server does with an event
+// that arrives - authorisation, soft-failing, intake order - and a real handshake between
+// them would add a minute of protocol to each and hide the thing under test. The scenarios
+// that are about the protocol itself refuse this helper: see
+// TestTheFederationScenarioTableRunsWithoutSeeds, where every room reaches the second server
+// through the join.
 func handTheRoomTo(t *testing.T, to, from *server, sess *session, roomID string, members ...string) {
 	t.Helper()
 	room, err := from.db.RoomRepo.Get(roomID)

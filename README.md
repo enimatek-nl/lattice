@@ -28,9 +28,9 @@ that decide what a client trusts, and stores room-key backups it cannot read.
 | **Binary** | static, no cgo: ~21 MB stripped |
 | **Container** | `ghcr.io/enimatek-nl/lattice` — multi-arch, published from a tag; `make image` builds it locally |
 | **Client API** | 168 of the 234 indexed spec endpoints, plus 33 extra routes (`make endpoints`) |
-| **Federation** | keys, signed requests, join / leave / invite, events, typing, receipts, device lists, state and graph reads, gap filling, profiles, room directories, spaces — behind `-federation` |
+| **Federation** | keys and signed requests, join / leave / invite, events, typing, receipts, device lists and cross-server key distribution, to-device messaging, state and graph reads, gap filling, federated media, profiles, room directories, spaces — behind `-federation` |
 | **Room versions** | 1–11 (11 is the default; room upgrades supported) |
-| **Tests** | 123 client-API compatibility, 61 two-server federation, 70 unit |
+| **Tests** | 126 client-API compatibility, 71 two-server federation, 70 unit |
 | **Licence** | MIT |
 
 ---
@@ -88,8 +88,15 @@ TLS, then get four settings right — most federation failures come from the fir
    `-federation-advertise example.org:443` puts the right value in that document.
 3. **`-base-url`** is what `/.well-known/matrix/client` tells clients to call. Behind a
    proxy this is not `https://<server-name>`, so set it.
-4. **`-jwt-secret`** signs access tokens. Without it a fresh secret is generated per
-   boot, which logs every client out on restart.
+4. **`-jwt-secret`** signs access tokens. Leave it out and a secret is generated the
+   first time this database is started and kept in it, so restarting for an upgrade is
+   not a mass logout; name one and that is the secret used.
+
+**TLS.** A reverse proxy is the usual answer, and it is what the deployment notes
+assume. Lattice can also serve TLS itself — `-tls-addr`, `-tls-cert`, `-tls-key` — which
+is how two Lattice servers on one machine, or a container that has been handed a
+certificate authority, speak federation without a proxy in the way. Peers only ever talk
+TLS to each other; the client port can stay plain behind a proxy that terminates it.
 
 Backups: stop the server, copy the `-db` file. That is the whole backup.
 
@@ -140,7 +147,10 @@ which is also why `add-user` refuses to reuse it.
 
 ## Federation
 
-Off by default, on with `-federation`. What it gives you:
+Off by default, on with `-federation`. Rooms this server creates are federatable — they
+carry `m.federate: true` unless the creator says otherwise — so turning the flag on is
+the whole of opting in; a room that belongs to one server alone is created with
+`"m.federate": false` in its `creation_content`. What it gives you:
 
 - **Identity.** An ed25519 signing key is generated once and kept in the database,
   published at `/_matrix/key/v2/server`. Every request Lattice sends is signed, and
@@ -170,6 +180,20 @@ Off by default, on with `-federation`. What it gives you:
 - **Delivery that survives a peer being down.** Outbound traffic goes through a queue,
   retried with the same transaction id and the same bytes, backing off from five
   seconds to ten minutes. `m.room.server_acl` is honoured in both directions.
+- **The encryption plumbing between servers.** A device that uploads, renames or deletes
+  its keys sends `m.device_list_update` to every server that shares a room with that user,
+  and a join carries the device lists of the room to the server that just arrived — inside
+  the join, so the peer's client is told about the room and the people in it in the same
+  `/sync`. `POST /keys/query` and `/keys/claim` for a remote user are answered by asking
+  the server that owns the user, checking each device against the key inside it, and
+  caching what comes back. To-device messages are queued for the recipient's server and
+  retried until it answers, which is what makes an Olm handshake for an invite across
+  servers work at all.
+- **Media travels to the server that needs it.** `mxc://` URIs a peer's clients want are
+  fetched from the server the URI names — `media/download` and `media/thumbnail` answered
+  as `multipart/mixed` with exactly two parts, and the same question asked outbound —
+  and the copy is kept, so an avatar does not disappear when the server that hosted it
+  goes offline.
 - **The questions only one server can answer.** `query/profile` says what a user of
   this server is called and what their avatar is; `query/directory` says what one of
   our aliases addresses; `publicRooms` (v1 and v3) says which rooms this server
@@ -185,8 +209,15 @@ Off by default, on with `-federation`. What it gives you:
   and a space both respect `m.room.server_acl`: a room that excludes a server does
   not describe itself to it.
 
-Deferred deliberately: SRV lookups, acting as a client of somebody else's notary
-server, and signing-key rotation.
+Two things are deliberately not done yet. A **knock** cannot cross a server boundary:
+the join machinery would have to carry an invite that nobody has accepted and an allow
+rule naming a stranger. And a client's `/messages` does not reach across a gap in its
+own history — `backfill` is served, and one server asks another for events it was never
+sent when an event cites them, but the client-facing read stays local until the two are
+joined up.
+
+Deferred deliberately as well: SRV lookups, acting as a client of somebody else's
+notary server, and signing-key rotation.
 
 ---
 
@@ -219,9 +250,9 @@ server, and signing-key rotation.
   with `M_INCOMPATIBLE_ROOM_VERSION`, which names the version rather than pretending the
   room is gone. v12 is the next format step: it removes the domain from room IDs, gives
   `m.room.create` creators power over the power levels, and counts event limits in bytes.
-- **Federation tails**: knock handshakes, and cross-server end-to-end encryption —
-  device list updates, to-device messaging, signing-key relays. Application services,
-  bridges, SSO / `m.login.token`, email recovery, TURN for calls.
+- **Federation tails**: knock handshakes, client-initiated `/messages` across a gap in a
+  federated room, and signing-key relays. Application services, bridges,
+  SSO / `m.login.token`, email recovery, TURN for calls.
 - **Notarised key trust**: Lattice verifies a peer's own key document and re-signs it; it
   does not consult a notary such as `matrix.org`. A brand-new server whose DNS or TLS is
   half-broken therefore looks unreachable until it is not.

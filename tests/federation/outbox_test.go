@@ -65,6 +65,25 @@ func receipts(t *testing.T, s *server) []*persist.ReceivedPDU {
 	return rows
 }
 
+// messagesReceived lists what a server has been sent that is not a membership event. A join
+// handshake puts the joiner's own event on the wire, so a count that includes it measures the
+// guest list rather than the conversation.
+func messagesReceived(t *testing.T, s *server) []*persist.ReceivedPDU {
+	t.Helper()
+	out := []*persist.ReceivedPDU{}
+	for _, row := range receipts(t, s) {
+		event, err := s.db.EventRepo.Get(row.EventID)
+		if err != nil {
+			t.Fatalf("reading the received event %s on %s: %v", row.EventID, s.name, err)
+		}
+		if event.Type == matrix.TypeMember {
+			continue
+		}
+		out = append(out, row)
+	}
+	return out
+}
+
 // flush drains a server's outbox, which is what the background loop does on a timer.
 func flush(t *testing.T, s *server) {
 	t.Helper()
@@ -143,8 +162,8 @@ func TestTypingAndReceiptsTravel(t *testing.T) {
 	c := newCluster(t)
 	one, two := c.one(), c.two()
 	alice := one.register("alice", "wonderland")
-	roomID := one.createRoom(alice, map[string]any{"name": "Garden"})
-	shareRoom(t, one, roomID, "@bob:"+two.name)
+	bob := two.register("bob", "rubberduck")
+	roomID := shareRoomByJoin(t, one, two, alice, bob)
 
 	message := one.send(alice, roomID, "read me")
 
@@ -222,23 +241,18 @@ func TestLocalEventsTravelToThePeersOfARoom(t *testing.T) {
 	c := newCluster(t)
 	one, two := c.one(), c.two()
 	alice := one.register("alice", "wonderland")
-	roomID := one.createRoom(alice, map[string]any{"name": "Both sides"})
-	shareRoom(t, one, roomID, "@bob:"+two.name)
-
-	// The other server holds the room too, so it can tell which room version the events
-	// it is sent belong to. A join handshake would have created it; that is a later step.
-	if err := two.db.RoomRepo.Create(&persist.Room{
-		ID: roomID, Creator: alice.UserID, RoomVersion: "11", JoinRule: "invite",
-	}); err != nil {
-		t.Fatalf("seeding the room on %s: %v", two.name, err)
-	}
+	bob := two.register("bob", "rubberduck")
+	// The join is what gives the other server its room row, its copy of the state and its
+	// membership rows - including which room version the events it is sent belong to. Seeding
+	// those rows would have tested the seed.
+	roomID := shareRoomByJoin(t, one, two, alice, bob)
 
 	sent := one.send(alice, roomID, "across the wire")
 	flush(t, one)
 
-	received := receipts(t, two)
+	received := messagesReceived(t, two)
 	if len(received) != 1 {
-		t.Fatalf("%s received %d events, want the one message", two.name, len(received))
+		t.Fatalf("%s received %d messages, want the one message", two.name, len(received))
 	}
 	if received[0].EventID != sent {
 		t.Errorf("%s names the event %s, but the sending server named it %s: the two servers disagree about the id",
@@ -431,20 +445,15 @@ func TestARoomCanExcludeAServer(t *testing.T) {
 	c := newCluster(t)
 	one, two := c.one(), c.two()
 	alice := one.register("alice", "wonderland")
-	roomID := one.createRoom(alice, map[string]any{"name": "No entry"})
-	shareRoom(t, one, roomID, "@bob:"+two.name)
-	if err := two.db.RoomRepo.Create(&persist.Room{
-		ID: roomID, Creator: alice.UserID, RoomVersion: "11", JoinRule: "invite",
-	}); err != nil {
-		t.Fatalf("seeding the room on %s: %v", two.name, err)
-	}
+	bob := two.register("bob", "rubberduck")
+	roomID := shareRoomByJoin(t, one, two, alice, bob)
 
 	// The message sent before the exclusion travels, because at the time it was sent the
 	// room allowed the server.
 	before := one.send(alice, roomID, "before the door closed")
 	flush(t, one)
-	if got := receipts(t, two); len(got) != 1 {
-		t.Fatalf("the peer received %d events before the exclusion, want 1", len(got))
+	if got := messagesReceived(t, two); len(got) != 1 {
+		t.Fatalf("the peer received %d messages before the exclusion, want 1", len(got))
 	}
 
 	one.mustDo(http.StatusOK, http.MethodPut,
@@ -469,13 +478,21 @@ func TestARoomCanExcludeAServer(t *testing.T) {
 	}
 
 	// What comes after it does not travel.
-	one.send(alice, roomID, "after the door closed")
+	closed := one.send(alice, roomID, "after the door closed")
 	flush(t, one)
 	if count, err := one.db.OutboxRepo.Count(); err != nil || count != 0 {
 		t.Errorf("%s still has %d items queued for a server the room excluded", one.name, count)
 	}
-	if got := receipts(t, two); len(got) != 2 {
-		t.Errorf("%s received %d events after the exclusion, want the two that were sent before it", two.name, len(got))
+	for _, row := range receipts(t, two) {
+		if row.EventID == closed {
+			t.Errorf("%s accepted an event the room sent after it excluded %s", two.name, two.name)
+		}
+	}
+	// What is there is what was sent before the door closed, plus the exclusion itself: the
+	// membership events of the join are counted as what they are, since the handshake put them
+	// on the wire before any rule about the server existed.
+	if got := messagesReceived(t, two); len(got) != 2 {
+		t.Errorf("%s holds %d messages, want the one sent before the exclusion and the exclusion itself", two.name, len(got))
 	}
 
 	// The other direction: a server the room excludes cannot push events into it. The
