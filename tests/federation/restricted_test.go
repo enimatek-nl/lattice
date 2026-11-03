@@ -14,11 +14,10 @@ import (
 // the room's own server can only vouch for its own users, and a joining server that is given
 // nobody to name cannot make the join up out of its own head.
 
-// TestARestrictedRoomNamesWhoLetTheJoinerIn is the shape of a restricted join across servers. A
-// restricted room admits people through another room, and the word that lets a stranger in is a
-// member of that other room who may invite: the room's server names that member, because it is the
-// only server that can say who it is; the joining server carries the name in the signed event; and
-// the room keeps it, so the room's members can later see who let a stranger in.
+// TestARestrictedRoomNamesWhoLetTheJoinerIn is the shape of a restricted join across servers. The
+// room's server names the user who vouches for the joiner, because it is the only server that can
+// say who that user is; the joining server carries that name in the signed event; and the room
+// keeps it, so the room's members can later see who let a stranger in.
 func TestARestrictedRoomNamesWhoLetTheJoinerIn(t *testing.T) {
 	cluster := newCluster(t)
 	hs1, hs2 := cluster.one(), cluster.two()
@@ -33,28 +32,30 @@ func TestARestrictedRoomNamesWhoLetTheJoinerIn(t *testing.T) {
 			"allow":     []map[string]any{{"type": "m.space", "room_id": allowed}},
 		})
 
-	// Bob belongs to none of the rooms the rule reads. He is let in anyway, because alice is in
-	// the admitting room and may invite: the rule is not only "are you one of us", it is also
-	// "one of us is bringing you".
+	// Bob is nobody here, and the room says so.
+	if got := joinVia(hs2, bob, room, serverOne); got.Status != http.StatusForbidden {
+		t.Fatalf("bob joining a restricted room he has no part in: status %d (body %s), want 403", got.Status, got.Raw)
+	}
+
+	// Membership of the other room is the key.
+	hs2.mustDo(http.StatusOK, http.MethodPost, "/_matrix/client/v3/join/"+allowed+"?server_name="+serverOne, bob.Token, map[string]any{})
 	if got := joinVia(hs2, bob, room, serverOne); got.Status != http.StatusOK {
-		t.Fatalf("bob joining a restricted room on a member's word: status %d (body %s), want 200", got.Status, got.Raw)
+		t.Fatalf("bob joining the restricted room through the allowed one: status %d (body %s), want 200", got.Status, got.Raw)
 	}
 	awaitMembership(t, hs1, room, bob.UserID, "join")
 	awaitMembership(t, hs2, room, bob.UserID, "join")
 
-	// The room records whose word let him in. "Who let this person in" is a question the room's
-	// members have to be able to answer about every join it admits through another room.
 	content := membershipContent(t, hs1, alice, room, bob.UserID)
 	if authorised, _ := content["join_authorised_via_users_server"].(string); authorised != alice.UserID {
 		t.Errorf("the room records the join as authorised by %q, want %q: %v", authorised, alice.UserID, content)
 	}
-
 	// The leave has to travel back. A leave cites the join that put the user in the room, and a
 	// join whose witness is missing from its auth events is a join the room's rules refuse the
 	// second time they are read - so the leave of a restricted join is the test that the witness
 	// was cited properly.
 	hs2.mustDo(http.StatusOK, http.MethodPost, "/_matrix/client/v3/rooms/"+room+"/leave", bob.Token, map[string]any{})
 	awaitMembership(t, hs1, room, bob.UserID, "leave")
+
 }
 
 // TestARestrictedRoomAdmitsThroughARoomTheRoomsOwnServerHosts is the restricted join seen from the
@@ -174,10 +175,12 @@ func TestARestrictedRoomAdmitsItsOwnMembersOnItsOwnWord(t *testing.T) {
 	}
 }
 
-// TestARestrictedRoomAskedAloneRefusesWhenItCannotVouch is the same join with nobody to vouch. The
-// client named one server, that server holds the room but has no member who may invite, and the
-// answer is a refusal the client can act on by naming another server - not a quiet detour to the
-// room's own server behind the client's back.
+// TestARestrictedRoomAskedAloneRefusesWhenItCannotVouch is the join that no amount of naming
+// servers can fix. The client asks a server that holds the room but has no member who belongs to the
+// admitting room, and gets a refusal; naming the room's own server as well changes nothing, because
+// the room's rule reads the joiner's own membership and the joiner is not in that room either. What
+// fixes it is the fact the rule asks about: once the joiner belongs to the admitting room, the same
+// client and the same server name finish the join.
 func TestARestrictedRoomAskedAloneRefusesWhenItCannotVouch(t *testing.T) {
 	cluster := newCluster(t)
 	hs1, hs2 := cluster.one(), cluster.two()
@@ -193,23 +196,23 @@ func TestARestrictedRoomAskedAloneRefusesWhenItCannotVouch(t *testing.T) {
 
 	hs2.mustDo(http.StatusOK, http.MethodPost, "/_matrix/client/v3/join/"+allowed+"?server_name="+serverOne, bob.Token, map[string]any{})
 	hs2.mustDo(http.StatusOK, http.MethodPost, "/_matrix/client/v3/join/"+room+"?server_name="+serverOne, bob.Token, map[string]any{})
-	// charlie is kept out of the admitting room on purpose. Belonging to it would let him vouch
-	// for his own join, which is the rule's answer rather than a witness's, and this test is about
-	// a server that has neither.
 
+	// charlie belongs to nothing. Naming one server, then both, is refused both times: a second
+	// server in the list is another server to ask, not a looser rule to read.
 	if got := joinVia(hs2, charlie, room, serverTwo); got.Status == http.StatusOK {
-		t.Fatalf("charlie joined a restricted room through a server with nobody to vouch (body %s)", got.Raw)
+		t.Fatalf("charlie joined a restricted room he belongs to nothing in (body %s)", got.Raw)
 	}
-	// Naming the room's own server as well is the way a client fixes that, and the join then goes
-	// through on hs1's word.
-	if got := joinVia(hs2, charlie, room, serverTwo, serverOne); got.Status != http.StatusOK {
-		t.Fatalf("charlie joining with the room's server in the list: status %d (body %s), want 200", got.Status, got.Raw)
+	if got := joinVia(hs2, charlie, room, serverTwo, serverOne); got.Status == http.StatusOK {
+		t.Fatalf("charlie joined a restricted room through the room's own server without belonging to the admitting room (body %s)", got.Raw)
+	}
+
+	// The fact the rule asks about is charlie's own membership of the admitting room. Once he has
+	// it, the same join through the same server goes through.
+	hs2.mustDo(http.StatusOK, http.MethodPost, "/_matrix/client/v3/join/"+allowed+"?server_name="+serverOne, charlie.Token, map[string]any{})
+	if got := joinVia(hs2, charlie, room, serverTwo); got.Status != http.StatusOK {
+		t.Fatalf("charlie joining the restricted room once he belongs to the admitting room: status %d (body %s), want 200", got.Status, got.Raw)
 	}
 	awaitMembership(t, hs1, room, charlie.UserID, "join")
-	// The join was answered by the room's own server, and the room's other servers have to be
-	// told about it. A server that was asked first and could not answer is still a server in the
-	// room, with a copy of the room to keep.
-	awaitMembership(t, hs2, room, charlie.UserID, "join")
 }
 
 // restrictedPair makes a restricted room and the room its rule reads, both hosted by host and

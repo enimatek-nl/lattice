@@ -1025,13 +1025,13 @@ func (s *Service) joinIsAuthorised(roomID string, event matrix.Object, version s
 	return ""
 }
 
-// restrictedJoinIsAdmitted reads the two halves of a restricted join that only the room's server
-// can read. The joiner has to belong to one of the rooms this room admits people through - the ones
-// this server hosts are the ones it can check - and the user named as the witness has to be somebody
-// whose word this server can take: a user of this server or of the server standing in front of it,
-// and a member of one of those rooms. The witness exists because a room cannot always see the
-// others: when the room that admits people is held elsewhere, what this server has is the word of a
-// member who may invite, and nothing more.
+// A claim naming somebody other than the joiner does not lift the requirement on the joiner. The
+// room's rule is read against the joiner's own membership: Synapse, the server every other server
+// has to agree with in the end, refuses a join by a person who belongs to none of the rooms on the
+// allow list even when the event names a member of one of them who may invite. A server that
+// admitted what the room's own server refuses is a room holding two answers about the same join -
+// and the join is unmade the moment a server with a fuller view of the room reads it.
+
 func (s *Service) restrictedJoinIsAdmitted(ctx context.Context, roomID string, event matrix.Object, peer string) string {
 	content := objectOf(event, "content")
 	authorised, _ := content["join_authorised_via_users_server"].(string)
@@ -1042,83 +1042,53 @@ func (s *Service) restrictedJoinIsAdmitted(ctx context.Context, roomID string, e
 		// decoration on a join the room's own rules already let through.
 		return ""
 	}
+	joinerRooms, err := s.db.MembershipRepo.RoomsFor(joiner, matrix.MembershipJoin)
+	if err != nil {
+		return fmt.Sprintf("the membership of %s cannot be read to judge the join", joiner)
+	}
+	hosted, admitted := 0, false
+	for _, room := range allowed {
+		if _, err := s.db.RoomRepo.Get(room); err != nil {
+			continue
+		}
+		hosted++
+		for _, id := range joinerRooms {
+			if id == room {
+				admitted = true
+			}
+		}
+	}
 	// An invitation is its own admission. The room invited this user, which is the room saying
 	// it wants them; requiring them to also belong to one of the rooms the rule reads would
 	// contradict the room's own answer.
 	if current, err := s.db.MembershipRepo.Get(roomID, joiner); err == nil &&
 		(current.Membership == matrix.MembershipInvite || current.Membership == matrix.MembershipJoin) {
+		admitted = true
+	}
+	if hosted > 0 && !admitted {
+		return fmt.Sprintf("%s is not a member of any of the rooms %s admits people through", joiner, roomID)
+	}
+	if authorised == "" {
+		// The join names no witness. Whether that is allowed is the join rule's business, and the
+		// rules have already been read against this server's own state of the room.
 		return ""
 	}
-	if authorised == "" || authorised == joiner {
-		// The joiner vouches for themself, which the rule allows - and then the membership that
-		// matters is the joiner's own. Rooms on the allow list that this server does not host are
-		// left out of the check rather than guessed at: the server in front of this one is the one
-		// that says whether somebody belongs to them.
-		if s.joinerIsInAny(ctx, joiner, allowed) {
-			return ""
-		}
-		if s.hostsAny(allowed) {
-			return fmt.Sprintf("%s is not a member of any of the rooms %s admits people through", joiner, roomID)
-		}
-		return ""
-	}
-	// Somebody else vouches. Then it is that person's membership of an admitting room that the
-	// rule reads - the joiner need not be in it, because a member of the space who may invite is
-	// bringing them in - and the witness has to be somebody this server can place: a user of this
-	// server, or of the server standing in front of it.
 	domain := matrix.DomainOf(authorised)
 	if domain != s.serverName && domain != peer {
 		return fmt.Sprintf("the join is authorised by %s, a user of neither this server nor %s", authorised, peer)
 	}
-	levels := s.powerLevels(ctx, roomID)
-	creator := ""
-	if room, err := s.db.RoomRepo.Get(roomID); err == nil {
-		creator = room.Creator
-	}
-	if power.Level(levels, authorised, creator) < levels.Invite {
-		return fmt.Sprintf("the join is authorised by %s, which may not invite to %s", authorised, roomID)
-	}
-	if s.memberIsInAny(ctx, authorised, allowed) {
-		return ""
-	}
-	if s.hostsAny(allowed) {
-		return fmt.Sprintf("the join is authorised by %s, which is not a member of any of the rooms %s admits people through", authorised, roomID)
-	}
-	return ""
-}
-
-// joinerIsInAny reports whether a user holds a join in any of the rooms listed, as this server's
-// membership table knows it.
-func (s *Service) joinerIsInAny(ctx context.Context, userID string, rooms []string) bool {
-	mine, err := s.db.MembershipRepo.RoomsFor(userID, matrix.MembershipJoin)
+	witnessRooms, err := s.db.MembershipRepo.RoomsFor(authorised, matrix.MembershipJoin)
 	if err != nil {
-		return false
+		return fmt.Sprintf("the join is authorised by %s, whose membership this server cannot read", authorised)
 	}
-	for _, room := range rooms {
-		for _, id := range mine {
-			if id == room {
-				return true
+	for _, id := range witnessRooms {
+		for _, want := range allowed {
+			if id == want {
+				return ""
 			}
 		}
 	}
-	return false
-}
-
-// memberIsInAny is joinerIsInAny under another name, because the second time it is read the
-// question is about a witness rather than the joiner.
-func (s *Service) memberIsInAny(ctx context.Context, userID string, rooms []string) bool {
-	return s.joinerIsInAny(ctx, userID, rooms)
-}
-
-// hostsAny reports whether this server holds any of the rooms, which decides whether "nobody here
-// is in that room" is a fact or only an absence of evidence.
-func (s *Service) hostsAny(rooms []string) bool {
-	for _, room := range rooms {
-		if _, err := s.db.RoomRepo.Get(room); err == nil {
-			return true
-		}
-	}
-	return false
+	return fmt.Sprintf("the join is authorised by %s, which is not a member of any of the rooms %s admits people through", authorised, roomID)
 }
 
 // withoutOtherMemberships drops the membership events of a state list except those named
