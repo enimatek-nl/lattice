@@ -27,9 +27,13 @@ func TestStateKeysOnTheWire(t *testing.T) {
 	if !ok {
 		t.Fatalf("the initial sync does not have %s: %s", roomID, resp.Raw)
 	}
-	checkStateKeys(t, "the initial state", joined.State.Events)
-	if !hasStateEvent(joined.State.Events, matrix.TypeCreate, "") {
-		t.Errorf("the initial state has no m.room.create with an empty state key: %s", resp.Raw)
+	// The room's own events are spread over the state block and the timeline - each state key
+	// is described once, in whichever of the two its current version sits - so the wire format
+	// is checked across both.
+	described := append(append([]matrix.Event{}, joined.State.Events...), joined.Timeline.Events...)
+	checkStateKeys(t, "the initial sync", described)
+	if !hasStateEvent(described, matrix.TypeCreate, "") {
+		t.Errorf("the initial sync describes m.room.create nowhere, and it has no empty state key: %s", resp.Raw)
 	}
 	alice.NextBatch = first.NextBatch
 
@@ -51,13 +55,24 @@ func TestStateKeysOnTheWire(t *testing.T) {
 	}
 	checkStateKeys(t, "the state delta", renamed.State.Events)
 	checkStateKeys(t, "the timeline", renamed.Timeline.Events)
+
+	// The rename is described once. It sits in the timeline, which is where the event that
+	// changed the room's name belongs; repeating it in the state block would be a second
+	// account of the same change, and when a room has been renamed twice a client that reads
+	// the state block after the timeline is handed back the older name.
+	var named []matrix.Event
+	for _, ev := range append(append([]matrix.Event{}, renamed.State.Events...), renamed.Timeline.Events...) {
+		if ev.Type == matrix.TypeName {
+			named = append(named, ev)
+		}
+	}
+	if len(named) != 1 {
+		t.Fatalf("the rename is described %d times across the state delta and the timeline, want exactly once: %v", len(named), named)
+	}
 	var content struct {
 		Name string `json:"name"`
 	}
-	if len(renamed.State.Events) != 1 || renamed.State.Events[0].Type != matrix.TypeName {
-		t.Fatalf("the state delta is %v, want the m.room.name alone", renamed.State.Events)
-	}
-	if err := json.Unmarshal(renamed.State.Events[0].Content, &content); err != nil {
+	if err := json.Unmarshal(named[0].Content, &content); err != nil {
 		t.Fatalf("decoding the rename: %v (%s)", err, resp.Raw)
 	}
 	if content.Name != "second name" {

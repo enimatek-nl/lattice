@@ -121,25 +121,51 @@ func (s *Service) stateEventsWire(rows []*persist.RoomState, keep func(*persist.
 	return out, nil
 }
 
+// stateKeyOf names a state event by the pair that identifies it in a room.
+func stateKeyOf(typ, stateKey string) string { return typ + "\x1f" + stateKey }
+
+// stateKeysIn lists the state keys a timeline already carries. The state block of a sync is
+// meant to describe the room around the events in it, and a room whose state block and
+// timeline both name m.room.member/@bob with different content is a room that says two
+// things about itself: a client that applies the state after the timeline ends up with an
+// older membership than the one it was just shown, and one that applies it before sees the
+// older one vanish. Each state key is therefore reported once, in whichever of the two
+// places its current version sits.
+func stateKeysIn(events []*persist.Event) map[string]bool {
+	if len(events) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(events))
+	for _, event := range events {
+		if event.IsState {
+			out[stateKeyOf(event.Type, event.StateKey)] = true
+		}
+	}
+	return out
+}
+
 // stateEvents returns the full current state of a room.
-func (s *Service) stateEvents(ctx context.Context, roomID string, since uint64, filter *SyncFilter) ([]matrix.Event, error) {
+func (s *Service) stateEvents(ctx context.Context, roomID string, since uint64, filter *SyncFilter, skip map[string]bool) ([]matrix.Event, error) {
 	rows, err := s.db.StateRepo.List(roomID, nil, "")
 	if err != nil {
 		return nil, matrix.ErrInternal(err)
 	}
 	return s.stateEventsWire(rows, func(row *persist.RoomState) bool {
+		if skip[stateKeyOf(row.Type, row.StateKey)] {
+			return false
+		}
 		return filter.allowedByFilter(row.Type, row.Sender)
 	})
 }
 
 // stateDelta returns state events of a room that changed after a position.
-func (s *Service) stateDelta(roomID string, since uint64) ([]matrix.Event, error) {
+func (s *Service) stateDelta(roomID string, since uint64, skip map[string]bool) ([]matrix.Event, error) {
 	rows, err := s.db.StateRepo.List(roomID, nil, "")
 	if err != nil {
 		return nil, matrix.ErrInternal(err)
 	}
 	return s.stateEventsWire(rows, func(row *persist.RoomState) bool {
-		return row.StreamPos > since
+		return row.StreamPos > since && !skip[stateKeyOf(row.Type, row.StateKey)]
 	})
 }
 
@@ -259,7 +285,7 @@ func (s *Service) leftRoomSync(ctx context.Context, userID, roomID string, since
 	if len(events) == 0 {
 		return nil, false, nil
 	}
-	state, err := s.stateEvents(ctx, roomID, since, nil)
+	state, err := s.stateEvents(ctx, roomID, since, nil, stateKeysIn(events))
 	if err != nil {
 		return nil, false, err
 	}

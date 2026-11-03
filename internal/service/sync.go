@@ -273,13 +273,13 @@ func (s *Service) joinedRoomSync(ctx context.Context, userID, roomID string, sin
 	// Clients need the room state when they first see a room, and when they
 	// joined after the sync token; later syncs only carry state deltas.
 	if since == 0 || s.membershipAfter(roomID, userID, since) {
-		state, err := s.stateEvents(ctx, roomID, since, filter)
+		state, err := s.stateEvents(ctx, roomID, since, filter, stateKeysIn(events))
 		if err != nil {
 			return nil, false, err
 		}
 		room.State = matrix.State{Events: state, PrevBatch: s.Token(since)}
 	} else {
-		state, err := s.stateDelta(roomID, since)
+		state, err := s.stateDelta(roomID, since, stateKeysIn(events))
 		if err != nil {
 			return nil, false, err
 		}

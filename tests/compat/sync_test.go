@@ -27,8 +27,25 @@ func TestInitialSync(t *testing.T) {
 	if !ok {
 		t.Fatalf("the room is missing from the join section: %s", resp.Raw)
 	}
-	if len(room.State.Events) == 0 {
-		t.Errorf("the initial sync should carry the room state: %s", resp.Raw)
+	// The room's state is described once. The state block carries the state the timeline does
+	// not already show; a state key that appears in both, with a different event in each, is
+	// one response saying two things about the same room - and a client that applies the state
+	// after the timeline ends up with an older membership than the one it was just shown.
+	seen := map[string]int{}
+	for _, ev := range room.Timeline.Events {
+		if ev.StateKey != nil {
+			seen[ev.Type+"/"+*ev.StateKey]++
+		}
+	}
+	for _, ev := range room.State.Events {
+		if ev.StateKey != nil {
+			seen[ev.Type+"/"+*ev.StateKey]++
+		}
+	}
+	for _, key := range []string{"m.room.create/", "m.room.name/", "m.room.power_levels/", "m.room.member/" + alice.UserID} {
+		if seen[key] != 1 {
+			t.Errorf("%s is described %d times across the state block and the timeline, want exactly once", key, seen[key])
+		}
 	}
 	if len(room.Timeline.Events) == 0 {
 		t.Fatalf("the timeline is empty: %s", resp.Raw)

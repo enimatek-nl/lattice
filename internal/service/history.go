@@ -78,7 +78,11 @@ func (s *Service) History(ctx context.Context, params HistoryParams) (*HistoryRe
 	// Backward pagination starts in the past, so the state at the start of the
 	// window has to be supplied as well.
 	if dir == "b" {
-		state, err := s.stateEvents(ctx, params.RoomID, events[0].StreamPos, nil)
+		// The state of a page is the room's current state. Only the newest version of a
+		// state key is kept, so the state as it stood at the start of the page cannot be
+		// rebuilt; what is sent is the room as it is now, which is what a client paging
+		// backwards uses to name the room it is looking at.
+		state, err := s.stateEvents(ctx, params.RoomID, events[0].StreamPos, nil, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -161,7 +165,7 @@ func (s *Service) EventContext(ctx context.Context, roomID, eventID, userID stri
 	if err != nil {
 		return nil, matrix.ErrInternal(err)
 	}
-	state, err := s.stateEvents(ctx, roomID, center.StreamPos, nil)
+	state, err := s.stateEvents(ctx, roomID, center.StreamPos, nil, nil)
 	if err != nil {
 		return nil, err
 	}
