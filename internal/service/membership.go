@@ -165,7 +165,19 @@ func (s *Service) joinRuleProblem(ctx context.Context, roomID, userID, current s
 			return matrix.ErrForbidden("an invite is required to join this room")
 		}
 		return nil
-	case matrix.JoinRulesKnock, matrix.JoinRulesKnockRestricted:
+	case matrix.JoinRulesKnock:
+		if current != matrix.MembershipKnock && current != matrix.MembershipInvite {
+			return matrix.ErrForbidden("you must knock on this room before joining")
+		}
+		return nil
+	case matrix.JoinRulesKnockRestricted:
+		// A knock_restricted room answers two ways. Whoever the allow list admits walks in on
+		// that; the rest have to knock and wait for an invite. Requiring the knock first turns
+		// the half the rule exists for - admitting a member of another room - into a wait, and
+		// a room that admits its own space's members through a knock is not that room.
+		if s.restrictedJoinAllowed(ctx, roomID, userID) {
+			return nil
+		}
 		if current != matrix.MembershipKnock && current != matrix.MembershipInvite {
 			return matrix.ErrForbidden("you must knock on this room before joining")
 		}
