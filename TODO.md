@@ -1864,6 +1864,17 @@ the subtest that rejects a server name whose port is not a number),
 link) and `TestClientSpacesSummaryJoinRules`. The client-API package was run in full
 alongside them and stayed at the same 40 failures, which is the check that the change
 to the hierarchy's default depth and walk order was a fix and not a swing.
+
+The runs of 2026-11-03 (step 17, knocking and restricted rooms) took the restricted group
+whole: `TestRestrictedRoomsLocalJoin`, `TestRestrictedRoomsRemoteJoin`,
+`TestRestrictedRoomsRemoteJoinLocalUser`, `TestRestrictedRoomsRemoteJoinFailOver` and the four
+`...InMSC3787Room` twins, next to the knock group that went green in the same step. Came with them:
+`TestFederationRejectInvite`, `TestFederationThumbnail`, `TestJoinFederatedRoomWithUnverifiableEvents`.
+What is left in that neighbourhood is the space summary a restricted join is authorised through
+(`TestRestrictedRoomsSpacesSummaryLocal/Federation`), room version 12
+(`TestRestrictedRoomsLocalJoinNoCreatorsUsesPowerLevelsV12`,
+`TestKnockRestrictedRoomsLocalJoinNoCreatorsUsesPowerLevelsV12`,
+`TestComplementCanCreateValidV12Rooms`), and `TestFederationRoomsInvite`.
 What the remaining federation failures wait for, by group: `make_knock`/`send_knock` (knock and its
 guards), the invite endpoint `PUT /v1|v2/invite` (`TestFederationRoomsInvite`,
 `TestFederationRejectInvite`), the graph-reading queries `event_auth`, `state_ids`,
@@ -2460,10 +2471,11 @@ Done so far:
 - `TestRestrictedRoomsLocalJoin` is green in Complement (all five subtests).
 
 Green now (also): `TestRestrictedRoomsRemoteJoinFailOver` — which needed two things.
-`JoinFederatedRoom` now tries a **local witness** first (`joinThroughLocalWitness`,
-`joinRoomLocally`: write the join against the copy of the graph this server keeps, witness in the
-content, let `AppendEvent` relay it) and answers "not my call" when it has no witness or cannot see
-the joiner in an admitting room. The attempt list stopped adding the room's own server behind the
+`JoinFederatedRoom` tried a **local witness** first (`joinThroughLocalWitness`, `joinRoomLocally`:
+write the join against the copy of the graph this server keeps, witness in the content, let
+`AppendEvent` relay it) and answered "not my call" when it had no witness or could not see the
+joiner in an admitting room. That local write was taken out again on 2026-11-03, for the reason in
+the block at the end of this step. The attempt list stopped adding the room's own server behind the
 client's back (`joinCandidates`), and asking ourselves is skipped. `ServeSendJoin` now queues the
 join it accepted for the room's other servers — a join answered and not relayed leaves the room's
 other servers with a member they have never heard of, wrong member counts and a fan-out that
@@ -2499,26 +2511,73 @@ Green since, and what each needed:
   and v2, inbound and outbound; the knock queued for the rest of the room once the room took it;
   a knock allowed to be made again; the `knock` section of `/sync` filled in (it was declared and
   never written); the room directory saying each room's `join_rule`; and the state rule below.
-- `TestRestrictedRoomsRemoteJoinFailOver` (both variants): a server that holds the room, has a
-  member who may invite and belongs to the admitting room admits the join on its own word
-  (`joinThroughLocalWitness`, `joinRoomLocally`); the attempt list no longer adds the room's own
-  server behind the client's back; and `ServeSendJoin` queues the join it accepted for the rest
-  of the room, which is the half that was missing for the server asked first.
+- `TestRestrictedRoomsRemoteJoinFailOver` (both variants): the attempt list no longer adds the
+  room's own server behind the client's back; and `ServeSendJoin` queues the join it accepted for
+  the rest of the room, which is the half that was missing for the server asked first. (It also
+  named a local-witness path, since removed: see the last block.)
 - An outbound invite now carries `room_version` — a v2 invite is a v3-format event, and the
   invited server has no copy of the room to learn the version from. Complement's stub refused the
   invite with "unsupported room version ''" until it did.
 
 Still red, and what each needs:
 
-- `TestRestrictedRoomsRemoteJoinLocalUser`: it now reaches the last sync check. A server that was
-  **invited** into a restricted room answers a later join there with "room X needs an invite to
-  join" — `joinAllowed` reads `invite` from state where the room says `restricted`, so the state
-  bundle our invite path stores on the invited server is missing the join rule, or an old version
-  of it.
 - `TestRestrictedRoomsSpacesSummaryLocal/Federation`: the space summary a restricted join is
   authorised through, for a space this server does not host.
-- The `...InMSC3787Room` and `...V12` variants: rooms of version 12, which this server does not
-  offer. Deliberate for now, and it wants a decision about v12 rather than a fix.
+- `TestRestrictedRoomsLocalJoinNoCreatorsUsesPowerLevelsV12` and
+  `TestKnockRestrictedRoomsLocalJoinNoCreatorsUsesPowerLevelsV12`: `createRoom` with
+  `room_version: "12"` answers `M_UNSUPPORTED_ROOM_VERSION`. Everything else in that test is
+  reached by its v11 twin, which is green. This wants a decision about room version 12, not a fix
+  to the join rules.
+
+Green as of 2026-11-03, the whole restricted block except the two above:
+`TestRestrictedRoomsLocalJoin`, `TestRestrictedRoomsRemoteJoin`,
+`TestRestrictedRoomsRemoteJoinLocalUser`, `TestRestrictedRoomsRemoteJoinFailOver`, and the four
+`...InMSC3787Room` variants of the same. MSC3787 turned out not to be a new room version to
+support: it is `knock_restricted`, and the tests run it on room version 10, which this server
+already speaks.
+
+What it took, in the order the discoveries came:
+
+- **Do not pre-judge a room this server does not host.** `joinAllowed` fell back to `invite` when
+  it held no join rule, and "I hold no rule here" was read as "the rule is invite". Every first
+  join of a remote room was then refused before it was asked about. What this server holds is what
+  it may judge; the room's own server answers for the rest.
+- **The room version comes from the server that knows it.** A room entered by invitation was
+  recorded under this server's default version whenever the inviter's event id could not be
+  reproduced. The version decides how every event id in that room is made, so from then on this
+  server signed and hashed the room wrongly: the invite was fine, the join was fine, and the first
+  event this server made there was refused by every peer as a bad signature. The invite body and
+  `m.room.create` both name the version, and that is believed; the join handshake corrects the row
+  when the room's own server states it.
+- **A server in the room may finish a join there.** `ServeSendJoin`, which already holds the graph,
+  the state and the state-before-the-event, builds the join template for its own user as well
+  (`joinThroughThisServer`), and the finished event is handed to another server in the room to be
+  accepted. `joinTemplate` is one function used by both sides, so answering `make_join` and
+  finishing a join here cannot drift.
+- **A server may not write a join into its own copy of a room it does not host.** That was the
+  local-witness path, and Complement caught what it does: it answered 200 out of a copy that was
+  stale, and the room never got to say no. A server in the room builds the join and names the
+  witness its own state points at; the server the room counts judges it, and its refusal is the
+  client's answer.
+- **Membership of another room is a fact only while somebody is still there.** `canReadMembershipOf`
+  counts a room as readable when this server hosts it or still has a member in it. A copy of a room
+  the last member walked out of is frozen, and a restricted rule read from it answers for the day
+  the member left. This is what makes `TestRestrictedRoomsRemoteJoinFailOver` answer with a refusal
+  instead of a guess.
+- **The rule reads the joiner, not the witness.** A restricted room admits a joiner who belongs to
+  one of the rooms on its allow list. It does not admit a stranger because somebody who belongs
+  there signed the join: Synapse refuses that, and a server that accepts it holds two answers about
+  one join. `authcheck` can check the half that a state snapshot can answer - that the allow list
+  names at least one readable room, so a malformed list admits nothing and a self-claim has nothing
+  to stand on - and the caller checks the joiner's membership of the other room.
+- **`knock_restricted` answers two ways at once.** Whoever the allow list admits joins without
+  knocking; the rest knock and wait. Asking for the knock first made the admitting half a wait.
+
+A hole found on the way, not yet fixed, and not caught by Complement: **a user who knocked can join
+without an invite.** In a `knock` room, `joinRuleProblem` lets a join through when the current
+membership is `knock` (`membership.go`), and the local write does not consult `authcheck`'s join-rule
+branch, which does refuse it. Probe: knock on a `knock` room, then `POST /join` - 200. What the
+spec wants is an invite before the join, so the knock is a way of being seen and not a door.
 - New from the wider sweep: `TestJoinFederatedRoomFromApplicationServiceBridgeUser` — an
   appservice virtual user asking to join a remote room is answered `401 M_UNKNOWN`: the request
   authenticates as the appservice, and the user it names has no device here. Application services
