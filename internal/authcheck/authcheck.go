@@ -523,14 +523,21 @@ func checkMember(g *Graph, state State, event *Event) error {
 			if !claimsAuthoriser {
 				return fmt.Errorf("the room is joined through a space, and the event names no authorising user")
 			}
-			if authorisedBy == target {
+			if authorisedBy == target && admitsByName(g, state) {
 				// The joiner vouches for themselves, which the rule allows: it admits people
 				// who belong to one of the rooms on its allow list, and "belongs to that other
 				// room" is not a fact about this room's state, so no snapshot here can check
 				// it. The caller does, against the membership of the room on the allow list -
 				// and this server has to check it, because a claim that the joiner belongs
-				// somewhere else is exactly the claim a server would lie about.
+				// somewhere else is exactly the claim a server would lie about. What the
+				// snapshot can check is that the room has an allow list at all: a claim to
+				// belong to one of the rooms the room admits people through admits nothing when
+				// the room admits people through nothing, which is what a malformed allow list
+				// amounts to.
 				return nil
+			}
+			if authorisedBy == target {
+				return fmt.Errorf("the room is joined through a space, and its allow list names no room this server can read")
 			}
 			// Whether the authorising user's *server* signed the claim is a rule no
 			// state snapshot can answer, so it is the caller's to enforce; what the
@@ -1023,6 +1030,21 @@ func membershipOf(g *Graph, state State, userID string) string {
 
 // joinRule returns the room's join rule, defaulting to invite: a room with no
 // m.room.join_rules event is a room you have to be invited to.
+// admitsByName reports whether the room's join rules name at least one room it admits people
+// through. Malformed entries are dropped when the rules are read, so a list of junk reads as no
+// list, and a join whose only claim is membership of a room on that list has nothing to stand on.
+func admitsByName(g *Graph, state State) bool {
+	event := stateEvent(g, state, matrix.TypeJoinRules, "")
+	if event == nil {
+		return false
+	}
+	var content matrix.JoinRulesContent
+	if err := json.Unmarshal(matrix.Encode(event.Content), &content); err != nil {
+		return false
+	}
+	return len(content.Allow) > 0
+}
+
 func joinRule(g *Graph, state State) string {
 	event := stateEvent(g, state, matrix.TypeJoinRules, "")
 	if event == nil {

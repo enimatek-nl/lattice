@@ -70,8 +70,22 @@ func TestAuthorizationRules(t *testing.T) {
 	levels := func(content matrix.Object) *authcheck.Event {
 		return stateOf("$pl", matrix.TypePowerLevels, "", alice, content)
 	}
-	joinRules := func(rule string) *authcheck.Event {
-		return stateOf("$jr", matrix.TypeJoinRules, "", alice, matrix.Object{"join_rule": rule})
+	joinRules := func(rule string, extra ...matrix.Object) *authcheck.Event {
+		content := matrix.Object{"join_rule": rule}
+		for _, entry := range extra {
+			for key, value := range entry {
+				content[key] = value
+			}
+		}
+		return stateOf("$jr", matrix.TypeJoinRules, "", alice, content)
+	}
+	// admitsThrough is the join rules event of a room that lets people in from another room.
+	admitsThrough := func(rule string, rooms ...string) *authcheck.Event {
+		allow := make([]any, 0, len(rooms))
+		for _, room := range rooms {
+			allow = append(allow, matrix.Object{"type": "m.room_membership", "room_id": room})
+		}
+		return joinRules(rule, matrix.Object{"allow": allow})
 	}
 	member := func(target, membership, sender string, extra matrix.Object) *authcheck.Event {
 		content := matrix.Object{"membership": membership}
@@ -112,6 +126,17 @@ func TestAuthorizationRules(t *testing.T) {
 			member(carol, matrix.MembershipJoin, alice, nil),
 		}
 		return append(state, extra...)
+	}
+	// withJoinRule replaces the room's join rules event for one case.
+	withJoinRule := func(state []*authcheck.Event, rule *authcheck.Event) []*authcheck.Event {
+		out := append([]*authcheck.Event{}, state...)
+		for i, ev := range out {
+			if ev.Type == matrix.TypeJoinRules {
+				out[i] = rule
+				break
+			}
+		}
+		return out
 	}
 	// withLevels replaces the room's power levels event for one case.
 	withLevels := func(state []*authcheck.Event, entries matrix.Object) []*authcheck.Event {
@@ -263,10 +288,21 @@ func TestAuthorizationRules(t *testing.T) {
 			// room on the allow list, which is not a fact about this room's state, so the
 			// snapshot here cannot check it and the rules say nothing against it. The caller
 			// checks the other room.
-			name:  "a restricted join may be authorised by the joiner themself",
-			state: basics(matrix.JoinRulesRestricted),
+			name: "a restricted join may be authorised by the joiner themself",
+			state: withJoinRule(basics(matrix.JoinRulesRestricted),
+				admitsThrough(matrix.JoinRulesRestricted, "!allowed:domain")),
 			event: membershipEvent("$join", dave, matrix.MembershipJoin, dave,
 				matrix.Object{"join_authorised_via_users_server": dave}),
+		},
+		{
+			// A self-authorised join stands on the allow list and nothing else. A list of junk
+			// is no list, so the claim "I belong to one of those rooms" has nothing to stand on.
+			name: "a restricted join with a malformed allow list is refused",
+			state: withJoinRule(basics(matrix.JoinRulesRestricted),
+				joinRules(matrix.JoinRulesRestricted, matrix.Object{"allow": []any{"invalid"}})),
+			event: membershipEvent("$join", dave, matrix.MembershipJoin, dave,
+				matrix.Object{"join_authorised_via_users_server": dave}),
+			want: "its allow list names no room this server can read",
 		},
 		{
 			name:  "a restricted join cannot be authorised by a user that is not joined",
