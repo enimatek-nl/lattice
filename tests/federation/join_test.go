@@ -32,6 +32,94 @@ func joinVia(s *server, sess *session, roomID string, via ...string) response {
 	return s.do(http.MethodPost, "/_matrix/client/v3/join/"+roomID+"?"+viaQuery, sess.Token, map[string]any{})
 }
 
+// TestARoomEnteredByInviteIsKeptUnderItsOwnVersion is about a fact that is easy to get wrong and
+// hard to notice afterwards. The room version decides how every event id in the room is made, so a
+// server that records the wrong version for a room it was invited into signs and hashes that room
+// wrongly from then on: the invite is accepted, the join is accepted, and the first event this
+// server makes in the room is refused by every peer as a bad signature. The inviting server names
+// the version, and this server has to believe it.
+func TestARoomEnteredByInviteIsKeptUnderItsOwnVersion(t *testing.T) {
+	cluster := newCluster(t)
+	hs1, hs2 := cluster.one(), cluster.two()
+	stop := hs1.svc.StartFederationOutbox(context.Background(), 20*time.Millisecond)
+	defer stop()
+	charlie := hs2.register("charlie", "teatime")
+	bob := hs1.register("bob", "rubberduck")
+
+	room := hs2.createRoom(charlie, map[string]any{"preset": "public_chat", "name": "an old room", "room_version": "8"})
+	hs2.mustDo(http.StatusOK, http.MethodPost, "/_matrix/client/v3/rooms/"+room+"/invite", charlie.Token, map[string]any{"user_id": bob.UserID})
+	if got := joinVia(hs1, bob, room, serverTwo); got.Status != http.StatusOK {
+		t.Fatalf("bob accepting an invite to %s: status %d (body %s), want 200", room, got.Status, got.Raw)
+	}
+	recorded, err := hs1.db.RoomRepo.Get(room)
+	if err != nil {
+		t.Fatalf("%s holds no room row for %s: %v", hs1.name, room, err)
+	}
+	if recorded.RoomVersion != "8" {
+		t.Errorf("%s records %s as room version %s, want 8: a room under the wrong version is hashed and signed wrongly from then on",
+			hs1.name, room, recorded.RoomVersion)
+	}
+	// And the room takes what this server makes in it. This is what the wrong version breaks,
+	// and it breaks it quietly: the invite and the join are fine, and the first ordinary event
+	// is where the peers object.
+	if got := hs1.do(http.MethodPut, "/_matrix/client/v3/rooms/"+room+"/send/m.room.message/txn-1", bob.Token,
+		map[string]any{"msgtype": "m.text", "body": "from the invited server"}); got.Status != http.StatusOK {
+		t.Fatalf("bob speaking in %s: status %d (body %s), want 200", room, got.Status, got.Raw)
+	}
+	deadline := time.Now().Add(8 * time.Second)
+	for {
+		events, err := hs2.db.EventRepo.Timeline(room, 0, 50)
+		if err != nil {
+			t.Fatalf("reading the timeline of %s on %s: %v", room, hs2.name, err)
+		}
+		for _, event := range events {
+			if event.Type == "m.room.message" {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s never received what %s said in %s", hs2.name, hs1.name, room)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// TestAJoinRelayedToTheRoomsServerReachesItsOwnUsers is about the answer a room gives its own
+// people. A server that hosts a room but is not the server its members join through still has to
+// tell them when somebody arrives: an event that is accepted, relayed, and never shown to the
+// local users of the server that accepted it is a room whose members are reading a list that
+// stopped being updated.
+func TestAJoinRelayedToTheRoomsServerReachesItsOwnUsers(t *testing.T) {
+	cluster := newCluster(t)
+	hs1, hs2 := cluster.one(), cluster.two()
+	charlie := hs2.register("charlie", "teatime")
+	room := hs2.createRoom(charlie, map[string]any{"preset": "public_chat", "name": "the shared room"})
+
+	alice := hs1.register("alice", "wonderland")
+	if got := joinVia(hs1, alice, room, serverTwo); got.Status != http.StatusOK {
+		t.Fatalf("alice joining %s through %s: status %d (body %s), want 200", room, serverTwo, got.Status, got.Raw)
+	}
+	bob := hs1.register("bob", "rubberduck")
+	if got := joinVia(hs1, bob, room, serverOne); got.Status != http.StatusOK {
+		t.Fatalf("bob joining %s through %s, which is in the room but does not host it: status %d (body %s), want 200", room, serverOne, got.Status, got.Raw)
+	}
+	awaitMembership(t, hs2, room, bob.UserID, matrix.MembershipJoin)
+
+	// Charlie lives on the server that hosts the room and never left it. The join has to reach
+	// him the same way a local join would.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		synced := hs2.mustDo(http.StatusOK, http.MethodGet, "/_matrix/client/v3/sync?timeout=0", charlie.Token, nil)
+		if joined, _ := roomsContainMembership(synced.Body, "join", room, bob.UserID, matrix.MembershipJoin); joined {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s never synced the join of %s to %s: %s", hs2.name, bob.UserID, room, synced.Raw)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
 // awaitMembership waits for a membership row to say what it should, and fails the test
 // with the reason it did not. Delivery across servers is asynchronous, so the wait is
 // bounded and the failure says what was last seen.

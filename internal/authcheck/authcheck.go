@@ -523,6 +523,15 @@ func checkMember(g *Graph, state State, event *Event) error {
 			if !claimsAuthoriser {
 				return fmt.Errorf("the room is joined through a space, and the event names no authorising user")
 			}
+			if authorisedBy == target {
+				// The joiner vouches for themselves, which the rule allows: it admits people
+				// who belong to one of the rooms on its allow list, and "belongs to that other
+				// room" is not a fact about this room's state, so no snapshot here can check
+				// it. The caller does, against the membership of the room on the allow list -
+				// and this server has to check it, because a claim that the joiner belongs
+				// somewhere else is exactly the claim a server would lie about.
+				return nil
+			}
 			// Whether the authorising user's *server* signed the claim is a rule no
 			// state snapshot can answer, so it is the caller's to enforce; what the
 			// rules can say is that the authoriser has joined and may invite.

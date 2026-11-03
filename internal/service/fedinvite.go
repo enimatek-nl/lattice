@@ -55,7 +55,7 @@ func (s *Service) ServeInvite(ctx context.Context, roomID, eventID string, body 
 		return nil, matrix.ErrForbidden("%s is not a user this server hosts", invitee)
 	}
 	state := stateListOf(body, "invite_room_state")
-	version, err := s.roomVersionOfInvite(ctx, event, eventID, state)
+	version, err := s.roomVersionOfInvite(ctx, event, eventID, state, inviteRoomVersionClaim(body))
 	if err != nil {
 		return nil, err
 	}
@@ -119,20 +119,48 @@ func (s *Service) inviteIsBackedByTheRoom(event matrix.Object, state []matrix.Ob
 	return ""
 }
 
+// inviteRoomVersionClaim is the room version the inviting server named in the invite body, if
+// it named one.
+func inviteRoomVersionClaim(body matrix.Object) string {
+	claim, _ := body["room_version"].(string)
+	return claim
+}
+
 // roomVersionOfInvite works out which room version an invite belongs to. The room row
 // answers when this server holds the room; otherwise the event is hashed under each
 // version this server speaks and the one that reproduces the id the peer named wins,
 // because in those versions the id is the hash and a wrong version cannot reproduce it.
 // Only when neither works does this server fall back to its default, which is a guess it
 // will have to confirm at the join handshake.
-func (s *Service) roomVersionOfInvite(ctx context.Context, event matrix.Object, eventID string, state []matrix.Object) (string, error) {
+func (s *Service) roomVersionOfInvite(ctx context.Context, event matrix.Object, eventID string, state []matrix.Object, named string) (string, error) {
 	roomID := federation.EventField(event, "room_id")
 	if room, err := s.db.RoomRepo.Get(roomID); err == nil {
 		return RoomVersionOf(room), nil
 	} else if !persist.IsNotFound(err) {
 		return "", matrix.ErrInternal(err)
 	}
+	// The peer that invited may have said which version the room is: version 2 of the invite
+	// endpoint carries room_version, and m.room.create carries it in the state that comes with
+	// the invite. That is worth more than a guess, because the version decides the hash every
+	// event id in the room is made of: a room recorded under the wrong version is signed and
+	// hashed wrongly from then on, and every event this server later makes in it is refused by
+	// the servers that got the version right.
+	claims := []string{}
+	if named != "" {
+		claims = append(claims, named)
+	}
+	for _, ev := range state {
+		if federation.EventField(ev, "type") != matrix.TypeCreate {
+			continue
+		}
+		if version, ok := objectOf(ev, "content")["room_version"].(string); ok && version != "" && version != named {
+			claims = append(claims, version)
+		}
+	}
 	if eventID == "" {
+		if len(claims) > 0 {
+			return claims[0], nil
+		}
 		return DefaultRoomVersion, nil
 	}
 	matches := 0
@@ -147,6 +175,25 @@ func (s *Service) roomVersionOfInvite(ctx context.Context, event matrix.Object, 
 	}
 	if matches == 1 {
 		return version, nil
+	}
+	if matches > 1 {
+		// More than one version reproduces the id, which happens for the versions that hash
+		// alike. A peer that named the room's version settles it.
+		for _, claim := range claims {
+			if derived, err := eventcrypto.EventID(withEventID(event, eventID), claim); err == nil && derived == eventID {
+				return claim, nil
+			}
+		}
+	}
+	// Nothing reproduces the id. A version the inviter named is still the best answer this
+	// server has: it is the room's own server describing its room, and writing this server's
+	// default into the row would sign and hash the room's events under a version the room has
+	// never had.
+	if len(claims) > 0 {
+		log.Printf("service: %s invited %s to %s, which %s says is room version %s; no version this server speaks reproduces its event ids",
+			federation.EventField(event, "sender"), federation.EventField(event, "state_key"), roomID,
+			matrix.DomainOf(roomID), claims[0])
+		return claims[0], nil
 	}
 	// An id that no version reproduces is not a reason to refuse an invitation: an older
 	// room version this server does not speak, or an id the peer invented, both look the

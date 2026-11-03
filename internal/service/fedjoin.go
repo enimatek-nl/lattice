@@ -78,9 +78,18 @@ func (s *Service) JoinFederatedRoom(ctx context.Context, roomID, userID string, 
 	var refused *matrix.Error
 	for _, server := range joinCandidates(roomID, via) {
 		if server == s.serverName {
-			// Asking ourselves for a join template would be asking a server that is not in
-			// the room to authorise the join, which is the question this server is meant to
-			// answer for itself.
+			// Asking for a template from ourselves would be pointless, but the attempt is
+			// not: this server is one of the servers the room listens on, so it can build
+			// the join from its own copy of the room and offer it to the peers that hold it.
+			event, err := s.joinThroughThisServer(ctx, transport, roomID, userID)
+			if err == nil {
+				return event, nil
+			}
+			log.Printf("federation: joining %s as a server already in it failed: %v", roomID, err)
+			var peerErr *matrix.Error
+			if errors.As(err, &peerErr) && peerErr.Code != "" && peerErr.Code != matrix.ErrCodeNotFound {
+				refused = peerErr
+			}
 			continue
 		}
 		event, err := s.joinViaServer(ctx, transport, roomID, userID, server)
@@ -277,6 +286,111 @@ func (s *Service) joinViaServer(ctx context.Context, transport *federation.Trans
 	return s.db.EventRepo.Get(packet.eventID)
 }
 
+// joinThroughThisServer completes the join of one of this server's own users in a room this server
+// is in but does not host. The shape of the join does not have to be asked for: this server holds a
+// copy of the graph and the state, and is one of the servers the room counts as listening. What is
+// still the room's own decision is whether the signed join is taken, so that part is asked - of a
+// server in the room rather than of the one its id happens to name. A server that is in a room and
+// refuses its own user because it would have to ask a peer turns every room into a single point of
+// failure at the server its id names.
+func (s *Service) joinThroughThisServer(ctx context.Context, transport *federation.Transport, roomID, userID string) (*persist.Event, error) {
+	room, err := s.db.RoomRepo.Get(roomID)
+	if err != nil {
+		if persist.IsNotFound(err) {
+			return nil, matrix.ErrNotFound("this server holds no room %s, so it cannot finish a join there", roomID)
+		}
+		return nil, matrix.ErrInternal(err)
+	}
+	version := RoomVersionOf(room)
+	if !s.roomVersionIsSupported(version) {
+		return nil, fmt.Errorf("the room is version %s, which this server cannot speak", version)
+	}
+	// A room that admits people through another room is entered on the word of a member who may
+	// invite, and this server can say whose word that is for the members it holds state for. The
+	// name goes in the template and so in the signed event; the server asked to take the join
+	// still decides whether it believes it.
+	authorised := s.joinAuthoriser(ctx, roomID, userID)
+	prevIDs, authIDs, depth, unsigned, err := s.joinShapeHere(ctx, roomID, userID, version, authorised)
+	if err != nil {
+		return nil, err
+	}
+	content := matrix.Object{"membership": matrix.MembershipJoin}
+	if name := s.displayName(ctx, userID); name != "" {
+		content["display_name"] = name
+	}
+	if avatar := s.avatarURL(ctx, userID); avatar != "" {
+		content["avatar_url"] = avatar
+	}
+	if authorised != "" {
+		content["join_authorised_via_users_server"] = authorised
+	}
+	key := userID
+	draft := &EventDraft{
+		RoomID:   roomID,
+		Type:     matrix.TypeMember,
+		StateKey: &key,
+		Sender:   userID,
+		Content:  matrix.Encode(content),
+	}
+	if problem := s.joinAllowed(ctx, roomID, userID, prevIDs, authIDs, version); problem != "" {
+		return nil, fmt.Errorf("%s", problem)
+	}
+	packet, err := s.buildRemotePDU(draft, version, s.NowMS(), depth, prevIDs, authIDs, unsigned)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.SignAndIdentify(ctx, packet); err != nil {
+		return nil, err
+	}
+	var lastErr error
+	for _, server := range s.roomPeers(ctx, roomID) {
+		state, authChain, err := s.sendJoin(ctx, transport, server, roomID, packet)
+		if err != nil {
+			lastErr = err
+			log.Printf("federation: offering the join of %s for %s to %s failed: %v", roomID, userID, server, err)
+			continue
+		}
+		if err := s.storeJoinedRoom(ctx, roomID, version, packet, state, authChain); err != nil {
+			return nil, err
+		}
+		return s.db.EventRepo.Get(packet.eventID)
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no server in the room would take the join")
+	}
+	return nil, lastErr
+}
+
+// roomPeers are the servers this server can deal with for a room it holds: the servers its members
+// live on and the server the room id names. This server is not among them - a server does not need
+// to telephone itself to be told about a room it is already in.
+func (s *Service) roomPeers(ctx context.Context, roomID string) []string {
+	servers, err := s.destinationsOfRoomIgnoringACL(ctx, roomID)
+	if err != nil {
+		servers = nil
+	}
+	out := make([]string, 0, len(servers)+1)
+	if origin := matrix.DomainOf(roomID); origin != s.serverName {
+		out = append(out, origin)
+	}
+	for _, server := range servers {
+		if server == s.serverName {
+			continue
+		}
+		known := false
+		for _, seen := range out {
+			if seen == server {
+				known = true
+				break
+			}
+		}
+		if !known {
+			out = append(out, server)
+		}
+	}
+	return out
+}
+
 // requestMakeJoin asks a server for the join template of a room. Version 2 of the
 // endpoint is asked for first because it is the one that can omit the member list; a
 // server that only knows version 1 answers that instead, and the answer is the same
@@ -349,6 +463,18 @@ func (s *Service) storeJoinedRoom(ctx context.Context, roomID, version string, p
 		JoinRule:    matrix.JoinRulesInvite,
 	}); err != nil && !persist.IsDuplicate(err) {
 		return matrix.ErrInternal(err)
+	}
+	if room, err := s.db.RoomRepo.Get(roomID); err == nil && RoomVersionOf(room) != version {
+		// The join handshake is the moment this server learns the room's version from the
+		// server that hosts it, and that outranks whatever was guessed when the invite
+		// arrived. A room kept under the wrong version is hashed and signed wrongly from then
+		// on, and every event this server makes in it is refused by the servers that have the
+		// version right - which reads as a signature problem, not as a wrong row.
+		log.Printf("federation: %s is room version %s, not %s as this server had recorded", roomID, version, RoomVersionOf(room))
+		room.RoomVersion = version
+		if err := s.db.RoomRepo.Save(room); err != nil {
+			return matrix.ErrInternal(err)
+		}
 	}
 	for _, event := range append(append([]matrix.Object{}, state...), authChain...) {
 		id := federation.EventField(event, "event_id")
@@ -468,6 +594,15 @@ func (s *Service) joinAllowed(ctx context.Context, roomID, userID string, prevID
 	if err == nil && members.Membership == matrix.MembershipBan {
 		return fmt.Sprintf("you are banned from %s", roomID)
 	}
+	if _, err := s.db.RoomRepo.Get(roomID); err != nil {
+		// This server holds no copy of the room at all, so it holds no rule either. The
+		// room's own answer arrives with the join, and the server that answered make_join
+		// is the one that decides. A room this server has never heard of must not be
+		// pre-judged by the default it would fall back to: reading "there is no join rule
+		// here" as "the rule is invite" turns the first join of every remote room into a
+		// refusal, which is what it did.
+		return ""
+	}
 	rule, err := s.db.StateRepo.JoinRule(roomID)
 	if err != nil || rule == "" {
 		// Nothing local to read: the state comes with the join, and the server that
@@ -519,58 +654,19 @@ func isUnrecognized(err error) bool {
 		strings.Contains(text, "404")
 }
 
-// ServeMakeJoin answers a peer's make_join for a room this server hosts: the room
-// version, and the shape of the join event that would attach to this server's graph.
-//
-// What is answered is a template, not an authorisation - the event comes back signed by
-// the joining server, and it is the send_join that decides whether the room takes it. But
-// the prev_events named here are what the join will cite, so a server that answers with
-// a stale graph is the reason two servers then hold two histories that have to be
-// resolved later.
-func (s *Service) ServeMakeJoin(ctx context.Context, roomID, userID, peer string, versions []string) (matrix.Object, error) {
-	room, err := s.db.RoomRepo.Get(roomID)
-	if err != nil {
-		if persist.IsNotFound(err) {
-			return nil, matrix.ErrNotFound("this server holds no room %s", roomID)
-		}
-		return nil, matrix.ErrInternal(err)
-	}
-	if acl, err := s.roomServerACL(ctx, roomID); err != nil {
-		return nil, err
-	} else if !federation.ServerAllowed(acl, peer) {
-		return nil, matrix.ErrForbidden("this room excludes %s", peer)
-	}
-	version := RoomVersionOf(room)
-	if len(versions) > 0 {
-		agreed := false
-		for _, wanted := range versions {
-			if wanted == version {
-				agreed = true
-			}
-		}
-		if !agreed {
-			// The specification names this refusal M_INCOMPATIBLE_ROOM_VERSION and carries the
-			// room's version with it, because "no version in common" is only useful once the
-			// other side knows which version was missing.
-			err := matrix.NewError(matrix.ErrCodeIncompatibleRoomVer, http.StatusBadRequest,
-				fmt.Sprintf("this room is version %s and %s speaks none of the versions offered", version, peer))
-			err.Extra = matrix.Object{"room_version": version}
-			return nil, err
-		}
-	}
-	// A room joined through another room is joined on the word of somebody who is already in it
-	// and may invite. The room's own server is the only place that can say whose word that is,
-	// and a joining server left without a name cannot make the join at all: refusing at send_join
-	// would be refusing after the other server had already signed an event and spent its attempt,
-	// with nothing to show for failing over to another server.
-	authorised := s.joinAuthoriser(ctx, roomID, userID)
+// joinShapeHere is the join template this server would hand a peer for a room it holds: where a
+// new event attaches to the graph, which state authorises it, and the membership the join
+// replaces. The server answering make_join and a server that is in a room but does not host it
+// and finishes the join itself need the same shape, and two copies of that arithmetic drifting
+// apart is a join one server signs and every other one refuses.
+func (s *Service) joinShapeHere(ctx context.Context, roomID, userID, version, authorised string) ([]string, []string, int64, matrix.Object, error) {
 	var (
 		prevIDs  []string
 		authIDs  []string
 		depth    int64
 		unsigned matrix.Object
 	)
-	err = s.db.Tx(func(tx *gorm.DB) error {
+	if err := s.db.Tx(func(tx *gorm.DB) error {
 		events := persist.NewEventRepo(tx)
 		leaves, err := events.ForwardExtremities(roomID, maxPrevEvents)
 		if err != nil {
@@ -623,7 +719,58 @@ func (s *Service) ServeMakeJoin(ctx context.Context, roomID, userID, peer string
 			Content:  matrix.Encode(draft),
 		}, version)
 		return err
-	})
+	}); err != nil {
+		return nil, nil, 0, nil, err
+	}
+	return prevIDs, authIDs, depth, unsigned, nil
+}
+
+// ServeMakeJoin answers a peer's make_join for a room this server hosts: the room
+// version, and the shape of the join event that would attach to this server's graph.
+//
+// What is answered is a template, not an authorisation - the event comes back signed by
+// the joining server, and it is the send_join that decides whether the room takes it. But
+// the prev_events named here are what the join will cite, so a server that answers with
+// a stale graph is the reason two servers then hold two histories that have to be
+// resolved later.
+func (s *Service) ServeMakeJoin(ctx context.Context, roomID, userID, peer string, versions []string) (matrix.Object, error) {
+	room, err := s.db.RoomRepo.Get(roomID)
+	if err != nil {
+		if persist.IsNotFound(err) {
+			return nil, matrix.ErrNotFound("this server holds no room %s", roomID)
+		}
+		return nil, matrix.ErrInternal(err)
+	}
+	if acl, err := s.roomServerACL(ctx, roomID); err != nil {
+		return nil, err
+	} else if !federation.ServerAllowed(acl, peer) {
+		return nil, matrix.ErrForbidden("this room excludes %s", peer)
+	}
+	version := RoomVersionOf(room)
+	if len(versions) > 0 {
+		agreed := false
+		for _, wanted := range versions {
+			if wanted == version {
+				agreed = true
+			}
+		}
+		if !agreed {
+			// The specification names this refusal M_INCOMPATIBLE_ROOM_VERSION and carries the
+			// room's version with it, because "no version in common" is only useful once the
+			// other side knows which version was missing.
+			err := matrix.NewError(matrix.ErrCodeIncompatibleRoomVer, http.StatusBadRequest,
+				fmt.Sprintf("this room is version %s and %s speaks none of the versions offered", version, peer))
+			err.Extra = matrix.Object{"room_version": version}
+			return nil, err
+		}
+	}
+	// A room joined through another room is joined on the word of somebody who is already in it
+	// and may invite. The room's own server is the only place that can say whose word that is,
+	// and a joining server left without a name cannot make the join at all: refusing at send_join
+	// would be refusing after the other server had already signed an event and spent its attempt,
+	// with nothing to show for failing over to another server.
+	authorised := s.joinAuthoriser(ctx, roomID, userID)
+	prevIDs, authIDs, depth, unsigned, err := s.joinShapeHere(ctx, roomID, userID, version, authorised)
 	if err != nil {
 		return nil, err
 	}
@@ -688,6 +835,21 @@ func (s *Service) joinAuthoriser(ctx context.Context, roomID, joiningUser string
 			for _, want := range allowed {
 				if id == want {
 					return user
+				}
+			}
+		}
+	}
+	// Nobody else qualifies, so the joiner may vouch for themself. The rule admits people who
+	// belong to one of the rooms on its allow list, and "I belong to one of them" is a claim the
+	// room can check against its own list of members. A witness is named in preference to this,
+	// because "who let this person in" is better answered by the member who invited them than by
+	// the joiner; but a server that names nobody at all is refused by the room version's rules,
+	// which read a join with no authoriser as a join nobody let through.
+	if admits, err := s.db.MembershipRepo.RoomsFor(joiningUser, matrix.MembershipJoin); err == nil {
+		for _, id := range admits {
+			for _, want := range allowed {
+				if id == want {
+					return joiningUser
 				}
 			}
 		}
@@ -880,53 +1042,83 @@ func (s *Service) restrictedJoinIsAdmitted(ctx context.Context, roomID string, e
 		// decoration on a join the room's own rules already let through.
 		return ""
 	}
-	joinerRooms, err := s.db.MembershipRepo.RoomsFor(joiner, matrix.MembershipJoin)
-	if err != nil {
-		return fmt.Sprintf("the membership of %s cannot be read to judge the join", joiner)
-	}
-	hosted, admitted := 0, false
-	for _, room := range allowed {
-		if _, err := s.db.RoomRepo.Get(room); err != nil {
-			continue
-		}
-		hosted++
-		for _, id := range joinerRooms {
-			if id == room {
-				admitted = true
-			}
-		}
-	}
 	// An invitation is its own admission. The room invited this user, which is the room saying
 	// it wants them; requiring them to also belong to one of the rooms the rule reads would
 	// contradict the room's own answer.
 	if current, err := s.db.MembershipRepo.Get(roomID, joiner); err == nil &&
 		(current.Membership == matrix.MembershipInvite || current.Membership == matrix.MembershipJoin) {
-		admitted = true
-	}
-	if hosted > 0 && !admitted {
-		return fmt.Sprintf("%s is not a member of any of the rooms %s admits people through", joiner, roomID)
-	}
-	if authorised == "" {
-		// The join names no witness. Whether that is allowed is the join rule's business, and the
-		// rules have already been read against this server's own state of the room.
 		return ""
 	}
+	if authorised == "" || authorised == joiner {
+		// The joiner vouches for themself, which the rule allows - and then the membership that
+		// matters is the joiner's own. Rooms on the allow list that this server does not host are
+		// left out of the check rather than guessed at: the server in front of this one is the one
+		// that says whether somebody belongs to them.
+		if s.joinerIsInAny(ctx, joiner, allowed) {
+			return ""
+		}
+		if s.hostsAny(allowed) {
+			return fmt.Sprintf("%s is not a member of any of the rooms %s admits people through", joiner, roomID)
+		}
+		return ""
+	}
+	// Somebody else vouches. Then it is that person's membership of an admitting room that the
+	// rule reads - the joiner need not be in it, because a member of the space who may invite is
+	// bringing them in - and the witness has to be somebody this server can place: a user of this
+	// server, or of the server standing in front of it.
 	domain := matrix.DomainOf(authorised)
 	if domain != s.serverName && domain != peer {
 		return fmt.Sprintf("the join is authorised by %s, a user of neither this server nor %s", authorised, peer)
 	}
-	witnessRooms, err := s.db.MembershipRepo.RoomsFor(authorised, matrix.MembershipJoin)
-	if err != nil {
-		return fmt.Sprintf("the join is authorised by %s, whose membership this server cannot read", authorised)
+	levels := s.powerLevels(ctx, roomID)
+	creator := ""
+	if room, err := s.db.RoomRepo.Get(roomID); err == nil {
+		creator = room.Creator
 	}
-	for _, id := range witnessRooms {
-		for _, want := range allowed {
-			if id == want {
-				return ""
+	if power.Level(levels, authorised, creator) < levels.Invite {
+		return fmt.Sprintf("the join is authorised by %s, which may not invite to %s", authorised, roomID)
+	}
+	if s.memberIsInAny(ctx, authorised, allowed) {
+		return ""
+	}
+	if s.hostsAny(allowed) {
+		return fmt.Sprintf("the join is authorised by %s, which is not a member of any of the rooms %s admits people through", authorised, roomID)
+	}
+	return ""
+}
+
+// joinerIsInAny reports whether a user holds a join in any of the rooms listed, as this server's
+// membership table knows it.
+func (s *Service) joinerIsInAny(ctx context.Context, userID string, rooms []string) bool {
+	mine, err := s.db.MembershipRepo.RoomsFor(userID, matrix.MembershipJoin)
+	if err != nil {
+		return false
+	}
+	for _, room := range rooms {
+		for _, id := range mine {
+			if id == room {
+				return true
 			}
 		}
 	}
-	return fmt.Sprintf("the join is authorised by %s, which is not a member of any of the rooms %s admits people through", authorised, roomID)
+	return false
+}
+
+// memberIsInAny is joinerIsInAny under another name, because the second time it is read the
+// question is about a witness rather than the joiner.
+func (s *Service) memberIsInAny(ctx context.Context, userID string, rooms []string) bool {
+	return s.joinerIsInAny(ctx, userID, rooms)
+}
+
+// hostsAny reports whether this server holds any of the rooms, which decides whether "nobody here
+// is in that room" is a fact or only an absence of evidence.
+func (s *Service) hostsAny(rooms []string) bool {
+	for _, room := range rooms {
+		if _, err := s.db.RoomRepo.Get(room); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // withoutOtherMemberships drops the membership events of a state list except those named

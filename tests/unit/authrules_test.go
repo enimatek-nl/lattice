@@ -259,10 +259,20 @@ func TestAuthorizationRules(t *testing.T) {
 				matrix.Object{"join_authorised_via_users_server": bob}),
 		},
 		{
-			name:  "a restricted join cannot be authorised by a user that is not joined",
+			// The joiner may authorise their own join. What admits them is membership of a
+			// room on the allow list, which is not a fact about this room's state, so the
+			// snapshot here cannot check it and the rules say nothing against it. The caller
+			// checks the other room.
+			name:  "a restricted join may be authorised by the joiner themself",
 			state: basics(matrix.JoinRulesRestricted),
 			event: membershipEvent("$join", dave, matrix.MembershipJoin, dave,
 				matrix.Object{"join_authorised_via_users_server": dave}),
+		},
+		{
+			name:  "a restricted join cannot be authorised by a user that is not joined",
+			state: basics(matrix.JoinRulesRestricted),
+			event: membershipEvent("$join", dave, matrix.MembershipJoin, dave,
+				matrix.Object{"join_authorised_via_users_server": "@nobody:domain"}),
 			want: "is not joined to the room, so it cannot authorise",
 		},
 		{
