@@ -2447,6 +2447,27 @@ Done so far:
   syncing client in `TestRestrictedRoomsLocalJoin`.
 - `TestRestrictedRoomsLocalJoin` is green in Complement (all five subtests).
 
+Green now (also): `TestRestrictedRoomsRemoteJoinFailOver` — which needed two things.
+`JoinFederatedRoom` now tries a **local witness** first (`joinThroughLocalWitness`,
+`joinRoomLocally`: write the join against the copy of the graph this server keeps, witness in the
+content, let `AppendEvent` relay it) and answers "not my call" when it has no witness or cannot see
+the joiner in an admitting room. The attempt list stopped adding the room's own server behind the
+client's back (`joinCandidates`), and asking ourselves is skipped. `ServeSendJoin` now queues the
+join it accepted for the room's other servers — a join answered and not relayed leaves the room's
+other servers with a member they have never heard of, wrong member counts and a fan-out that
+excludes a server holding a copy of the room.
+
+Also: rooms this server creates state `invite: 50` rather than 0. The specification's two chapters
+disagree (matrix-spec#1187) and the implementations enforce 50, so a room that says 0 and is judged
+by 50 means different things to its members. A written `invite: 0` is still honoured as written —
+rooms open invites on purpose — so `ApplyDefaults` leaves invite alone.
+
+Lead worth following: `TestRestrictedRoomsRemoteJoinLocalUser` now reaches the sync check and
+fails because a non-hosting server that was **invited** into a restricted room answers a later join
+with "room X needs an invite to join" — `joinAllowed` reads `invite` from its state where the room
+says `restricted`. That points at the state bundle our invite path stores on the invited server:
+the join rules of the room are not in it, or are the wrong version of it.
+
 Green now: `TestRestrictedRoomsLocalJoin`, `TestRestrictedRoomsRemoteJoin`,
 `TestRestrictedRoomsLocalJoinNoCreatorsUsesPowerLevelsV11`. The remote half needed the
 authorising user: `ServeMakeJoin` names one of its own users who is joined, holds the room's
