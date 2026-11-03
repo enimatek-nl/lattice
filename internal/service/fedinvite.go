@@ -243,6 +243,14 @@ func (s *Service) InviteRemoteServer(ctx context.Context, roomID, invitee string
 		"event":             event,
 		"invite_room_state": state,
 	}
+	// The room version travels with the invite. A v2 invite event is a v3-format event, and
+	// which format the bytes are in is a property of the room, not of the endpoint: a receiving
+	// server that is not yet in the room has no copy of the room to read the version from, and
+	// without it it cannot say whether the event it is being handed is signed over the old keys
+	// or the new ones.
+	if room, err := s.db.RoomRepo.Get(roomID); err == nil {
+		body["room_version"] = RoomVersionOf(room)
+	}
 	server := matrix.DomainOf(invitee)
 	path := fmt.Sprintf("/_matrix/federation/v2/invite/%s/%s",
 		url.PathEscape(roomID), url.PathEscape(row.EventID))
