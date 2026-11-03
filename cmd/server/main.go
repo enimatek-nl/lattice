@@ -291,6 +291,12 @@ func main() {
 	// Federation traffic is queued rather than sent inline, so something has to put it on
 	// the wire. A peer that is down is retried with backoff from this loop; the interval
 	// is how long a message waits before its first attempt leaves.
+	// Worth one line at start-up: a backlog that survives a restart is the queue working,
+	// and a backlog that an operator did not know about explains a room that stopped
+	// receiving messages hours ago.
+	if waiting, err := db.OutboxRepo.Count(); err == nil && waiting > 0 {
+		log.Printf("federation: %d queued transaction(s) from an earlier run are waiting for peers", waiting)
+	}
 	stopOutbox := svc.StartFederationOutbox(ctx, *federationFlush)
 
 	errs := make(chan error, len(doors))

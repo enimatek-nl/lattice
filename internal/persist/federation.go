@@ -75,7 +75,7 @@ func (r *InboundTxnRepoImpl) Store(txn *InboundTxn) error {
 
 // Prune implements [InboundTxnRepo].
 func (r *InboundTxnRepoImpl) Prune(beforeTS int64) (int64, error) {
-	result := r.db.Where("received_ts < ?", beforeTS).Delete(&InboundTxn{})
+	result := r.db.Where("received_ts < ?", beforeTS).Unscoped().Delete(&InboundTxn{})
 	return result.RowsAffected, result.Error
 }
 
@@ -203,7 +203,7 @@ func (r *ReceivedPDURepoImpl) Count() (int64, error) {
 
 // Prune implements [ReceivedPDURepo].
 func (r *ReceivedPDURepoImpl) Prune(beforeTS int64) (int64, error) {
-	result := r.db.Where("processed = ? AND received < ?", true, beforeTS).Delete(&ReceivedPDU{})
+	result := r.db.Where("processed = ? AND received < ?", true, beforeTS).Unscoped().Delete(&ReceivedPDU{})
 	return result.RowsAffected, result.Error
 }
 
@@ -368,10 +368,10 @@ func (r *OutboxRepoImpl) Acknowledge(destination, txnID string) error {
 		return err
 	}
 	ids := splitIDs(txn.Items)
-	if err := r.db.Delete(&OutboxItem{}, ids).Error; err != nil {
+	if err := r.db.Unscoped().Delete(&OutboxItem{}, ids).Error; err != nil {
 		return err
 	}
-	return r.db.Delete(&OutboundTxn{}, txn.ID).Error
+	return r.db.Unscoped().Delete(&OutboundTxn{}, txn.ID).Error
 }
 
 // Retry implements [OutboxRepo].
@@ -413,7 +413,7 @@ func (r *OutboxRepoImpl) Count() (int64, error) {
 
 // Prune implements [OutboxRepo].
 func (r *OutboxRepoImpl) Prune(beforeTS int64) (int64, error) {
-	result := r.db.Where("created_ts < ?", beforeTS).Delete(&OutboxItem{})
+	result := r.db.Where("created_ts < ?", beforeTS).Unscoped().Delete(&OutboxItem{})
 	return result.RowsAffected, result.Error
 }
 
@@ -501,7 +501,7 @@ func (r *RemoteDeviceRepoImpl) Set(device *RemoteDevice) error {
 
 // Forget implements [RemoteDeviceRepo].
 func (r *RemoteDeviceRepoImpl) Forget(userID, deviceID string) error {
-	return r.db.Where("user_id = ? AND device_id = ?", userID, deviceID).Delete(&RemoteDevice{}).Error
+	return r.db.Where("user_id = ? AND device_id = ?", userID, deviceID).Unscoped().Delete(&RemoteDevice{}).Error
 }
 
 // ForUser implements [RemoteDeviceRepo].

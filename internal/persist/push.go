@@ -75,7 +75,7 @@ func (r *PushRuleRepoImpl) List(userID, kind string) ([]*PushRule, error) {
 // same rule id from being created again.
 func (r *PushRuleRepoImpl) Delete(userID, kind, ruleID string) error {
 	return r.db.Unscoped().Where("user_id = ? AND kind = ? AND rule_id = ?", userID, kind, ruleID).
-		Delete(&PushRule{}).
+		Unscoped().Delete(&PushRule{}).
 		Error
 }
 
@@ -172,7 +172,7 @@ func (r *PusherRepoImpl) List(userID string) ([]*Pusher, error) {
 // again afterwards.
 func (r *PusherRepoImpl) Delete(userID, pushKey, appID string) error {
 	return r.db.Unscoped().Where("user_id = ? AND push_key = ? AND app_id = ?", userID, pushKey, appID).
-		Delete(&Pusher{}).
+		Unscoped().Delete(&Pusher{}).
 		Error
 }
 
@@ -182,7 +182,7 @@ func (r *PusherRepoImpl) Delete(userID, pushKey, appID string) error {
 // everything — the promise ends with them.
 func (r *PusherRepoImpl) DeleteExceptDevice(userID, deviceID string) error {
 	return r.db.Unscoped().Where("user_id = ? AND (device_id IS NULL OR device_id <> ?)", userID, deviceID).
-		Delete(&Pusher{}).
+		Unscoped().Delete(&Pusher{}).
 		Error
 }
 

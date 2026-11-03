@@ -80,7 +80,7 @@ func (r *SessionRepoImpl) DeleteByUser(userID string) error {
 // DeleteByDevice implements [SessionRepo].
 func (r *SessionRepoImpl) DeleteByDevice(userID, deviceID string) error {
 	return r.db.Unscoped().Where("user_id = ? AND device_id = ?", userID, deviceID).
-		Delete(&Session{}).
+		Unscoped().Delete(&Session{}).
 		Error
 }
 
@@ -91,7 +91,7 @@ func (r *SessionRepoImpl) DeleteExceptDevice(userID, keepDeviceID string) error 
 	if keepDeviceID != "" {
 		q = q.Where("device_id <> ?", keepDeviceID)
 	}
-	return q.Delete(&Session{}).Error
+	return q.Unscoped().Delete(&Session{}).Error
 }
 
 // ListByUser implements [SessionRepo].

@@ -206,3 +206,57 @@ func TestAccountsOutsideTheServersNameAreCounted(t *testing.T) {
 		}
 	}
 }
+
+// TestAnAcknowledgedOutboxEdgeCanBeUsedAgain is about the queue's memory. Outbox items are
+// idempotent per edge, which is what stops an event sent twice to one server becoming two items
+// and a to-device message retried by a client becoming two room keys. That idempotence lives in a
+// unique index, and every model here embeds gorm.Model - whose Delete is a soft delete: the row
+// stops being visible to reads but keeps its index. So an item retired by a successful delivery
+// left its edge burned for good, and the next message that happened to share it - a second user
+// whose client numbered its transactions the same way - was quietly never queued at all.
+// Complement caught this as a to-device test that passed alone and failed as the third subtest of
+// one deployment.
+func TestAnAcknowledgedOutboxEdgeCanBeUsedAgain(t *testing.T) {
+	db, err := persist.NewDatabase(filepath.Join(t.TempDir(), "lattice.db"))
+	if err != nil {
+		t.Fatalf("opening the database: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	item := &persist.OutboxItem{Destination: "peer.example", Kind: "edu", EdgeID: "edu:peer.example:m.direct_to_device:1", Payload: `{"edu_type":"m.direct_to_device"}`, CreatedTS: 1}
+	added, err := db.OutboxRepo.Append(item)
+	if err != nil || added != 1 {
+		t.Fatalf("queueing the first item: added %d (%v)", added, err)
+	}
+	txn := &persist.OutboundTxn{
+		Destination: "peer.example",
+		TxnID:       "txn-1",
+		Payload:     `{"origin":"test.server","edus":[]}`,
+		Items:       "1",
+		EDUs:        1,
+		Created:     1,
+		NextTry:     1,
+	}
+	if err := db.OutboxRepo.Pack(txn); err != nil {
+		t.Fatalf("packing the transaction: %v", err)
+	}
+	if err := db.OutboxRepo.Acknowledge("peer.example", "txn-1"); err != nil {
+		t.Fatalf("acknowledging the transaction: %v", err)
+	}
+
+	// The delivery is over: nothing is waiting, and the raw rows are gone rather than marked.
+	if count, err := db.OutboxRepo.Count(); err != nil || count != 0 {
+		t.Fatalf("the queue holds %d items after the delivery, want none (%v)", count, err)
+	}
+	again := &persist.OutboxItem{Destination: "peer.example", Kind: "edu", EdgeID: "edu:peer.example:m.direct_to_device:1", Payload: `{"edu_type":"m.direct_to_device"}`, CreatedTS: 2}
+	added, err = db.OutboxRepo.Append(again)
+	if err != nil {
+		t.Fatalf("queueing the second item: %v", err)
+	}
+	if added != 1 {
+		t.Errorf("an item whose edge was used and retired was refused: %d added, want 1", added)
+	}
+	if count, err := db.OutboxRepo.Count(); err != nil || count != 1 {
+		t.Errorf("the queue holds %d items, want the one that was just queued (%v)", count, err)
+	}
+}

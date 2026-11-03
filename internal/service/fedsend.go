@@ -447,7 +447,11 @@ func (s *Service) queueToDeviceForPeers(ctx context.Context, senderID, senderDev
 		// The client's transaction id names the message on the wire, which is what
 		// makes a retried PUT /sendToDevice deliver a room key once rather than as many
 		// times as the client retried.
-		s.queueEDUForDestinations([]string{serverName}, "m.direct_to_device", txnID, matrix.Object{
+		// The edge names the message for de-duplication, and a client's transaction id is only
+		// unique within one client session: the same "0", "1", "2" come round for every device
+		// and every room. The sender is part of the identity, or two users' messages to the same
+		// server cancel each other out.
+		s.queueEDUForDestinations([]string{serverName}, "m.direct_to_device", senderID+"|"+txnID, matrix.Object{
 			"message_id": txnID,
 			"sender":     senderID,
 			"type":       eventType,
@@ -753,6 +757,13 @@ func (s *Service) attemptTransaction(ctx context.Context, transport *federation.
 		next := s.retryDelay(txn.Tries)
 		if markErr := s.db.OutboxRepo.Retry(txn.Destination, txn.TxnID, next, truncate(err.Error(), 255)); markErr != nil {
 			log.Printf("federation: could not record the retry of %s to %s: %v", txn.TxnID, txn.Destination, markErr)
+		} else {
+			// Named at the moment it happens, because this is the only point at which the
+			// queue's promise - "it will be sent later" - is being kept or broken, and an
+			// operator looking at a room that is missing messages needs the attempt, the
+			// destination and the wait, not a count that says nothing was sent.
+			log.Printf("federation: %s is not answering, transaction %s (%d PDU(s), %d EDU(s)) retried in %dms: %v",
+				txn.Destination, txn.TxnID, txn.PDUs, txn.EDUs, next-s.NowMS(), err)
 		}
 		return 1, err
 	}

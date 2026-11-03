@@ -107,7 +107,7 @@ func (r *MembershipRepoImpl) MutualRooms(userID, otherUserID string) ([]string, 
 // would be swallowed by the conflict update and stay invisible.
 func (r *MembershipRepoImpl) Forget(roomID, userID string) error {
 	return r.db.Unscoped().Where("room_id = ? AND user_id = ?", roomID, userID).
-		Delete(&RoomMembership{}).
+		Unscoped().Delete(&RoomMembership{}).
 		Error
 }
 

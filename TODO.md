@@ -47,8 +47,8 @@ because it said nothing these steps do not.
   table runs through the join handshake rather than through rows a test wrote, and both
   Complement packages have a recorded tally.
 - Against [Complement](https://github.com/matrix-org/complement), the upstream
-  Matrix suite, **40 of 107** client-API tests fail (`make complement`) and **54 of
-  91** server-server tests fail — 37 green, up from 4 green before step 10 and 22 green
+  Matrix suite, **40 of 107** client-API tests fail (`make complement`) and **53 of
+  91** server-server tests fail — 38 green, up from 4 green before step 10 and 22 green
   before step 11. Green now: the membership handshakes and their guards, the graph and
   state reads a peer needs to judge what it is sent, gap filling both ways, profiles and
   the room directory, spaces and `/hierarchy`, OpenID exchange, device lists, key
@@ -57,10 +57,9 @@ because it said nothing these steps do not.
   failure is waiting for. The transport itself is not among the reasons: the bulk is
   knocking and restricted rooms (client-side join rules and the space summary that
   authorises them), room versions past v11, application services, and presence. The
-  two exceptions worth naming are `TestToDeviceMessagesOverFederation`'s outage cases
-  (a queued to-device message is not delivered inside Complement's 30s window after a
-  peer restart, which the in-repo timer and backoff tests do not reproduce) and
-  `TestMediaFilenames` / `TestMediaWithoutFileName`.
+  one exception worth naming is
+  `TestMediaFilenames` / `TestMediaWithoutFileName` (see the outbox bug under step 14:
+  the same root cause, a retired row holding its unique index).
 - The three bugs the federation suite found were not federation bugs: access tokens died
   at every restart (the signing secret was per process, the sessions are in the
   database), the event stream counter was re-seeded from the events table alone (so a
@@ -1278,18 +1277,18 @@ backoff tests (`tests/federation/timer_test.go`) do not reproduce.
       minute of protocol and hide the thing under test.)*
 - [x] Run both Complement packages and record the tallies here and in README. Measured
       2026-11-03 against Complement v1.19 at `/tmp/complement`, image
-      `localhost/lattice-complement:latest`:
+      `localhost/lattice-complement:latest`, and re-measured after the outbox fix:
       * `tests/csapi` — **40 red of 107** (67 green).
-      * `tests` (server-server) — **54 red of 91** (37 green), against 4 green before
+      * `tests` (server-server) — **53 red of 91** (38 green), against 4 green before
         step 10 and 22 green before step 11. Green includes the join/leave/invite
         handshakes, the graph and state reads, `backfill` and `timestamp_to_event`,
         profiles, the room directory and `publicRooms`, `/hierarchy`, OpenID exchange,
         `TestDeviceListsUpdateOverFederation` (all three connectivity cases),
         `TestFederationKeyUploadQuery`, `TestToDeviceMessagesOverFederation` with good
-        connectivity, and `TestContentMediaV1`. The 54 red are dominated by knocking and
+        connectivity, and `TestContentMediaV1`. The 53 red are dominated by knocking and
         restricted rooms (~17), room versions past v11 (~13), application services and
-        presence; the ones that are Lattice's own federation bugs are the two to-device
-        outage cases and `TestMediaFilenames` / `TestMediaWithoutFileName`.
+        presence; the ones that are Lattice's own federation bugs are
+        `TestMediaFilenames`, `TestMediaWithoutFileName` and `TestACLsForEDUs`.
 - [x] Regenerate `ENDPOINTS.md`: **177 of 234** indexed endpoints implemented, 37 extra
       routes (the admin aliases, `/_synapse/admin/*`, the refresh and device flows that
       the index lists under other names). Federation is near-complete; what is left in
@@ -2341,3 +2340,39 @@ need to run outside any network sandbox.
 - New repo convention (unchanged): model + interface + Impl + `NewXxxRepo`
   in `internal/persist/`, wire into `Database`, add to `AutoMigrate`,
   remember the hard-delete rule for unique indexes.
+
+### 15. Federation X — the queue's memory (the to-device outage cases)
+
+`TestToDeviceMessagesOverFederation` passed with good connectivity and failed its
+`interrupted_connectivity` and `stopped_server` cases — and, tellingly, **passed when run
+on its own**. That is the shape of a bug about what a server remembers, so the queue was
+read rather than guessed at:
+
+- Outbox items are idempotent per `EdgeID` under a unique index, which is right: an event
+  sent twice to one server is one item, a room key retried by a client is one key.
+- Every model embeds `gorm.Model`, so `Delete` is a **soft delete**: the row disappears
+  from reads and keeps its index. `Acknowledge` retired an item by marking it, so its edge
+  stayed burned forever — and `Append`'s `ON CONFLICT DO NOTHING` silently dropped the next
+  message that reused it. Complement's three subtests share one deployment and each PUTs
+  the client transaction id `1`, so the third subtest's message was never queued at all.
+  The log said so — "1 of 1 queued item(s) were already waiting" — which is why the retry
+  never appeared in the sender's log.
+- The edge for a to-device message was `destination : edu_type : client-txn-id`. A client's
+  transaction id is unique **per client session**, not per server: every device counts from
+  0. Two users of one homeserver both using `1` to the same peer cancelled each other out.
+
+Fixes: the outbox (and every other table addressed by a unique index — sessions, media ids,
+inbound transaction ids, device keys, one-time keys, account data, key-backup rows, remote
+devices, received receipts of a room) is deleted with `Unscoped()`, so a retired row stops
+holding its identity hostage; and the to-device edge carries the sender. Two log lines were
+added because this bug was invisible from the outside: a failed attempt names the
+destination, the transaction and the wait, and a start-up with a backlog says how much is
+waiting.
+
+Tests: `TestAnAcknowledgedOutboxEdgeCanBeUsedAgain` (`tests/compat/database_test.go`; fails
+against the soft delete) and `TestTwoSendersSharingATransactionIDBothGetTheirMessage`
+(`tests/federation/outbox_test.go`; delivers one message where the sender-less edge is used).
+Complement: all three `TestToDeviceMessagesOverFederation` cases green, and the server-server
+package moved from 37 to 38 green with nothing newly red. `TestMediaFilenames` /
+`TestMediaWithoutFileName` are the same class of bug in a different table — a retired media
+row keeping its `(server_name, media_id)` — and are the next thing to look at.

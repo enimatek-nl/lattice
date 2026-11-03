@@ -155,7 +155,7 @@ func (r *KeyBackupRepoImpl) DeleteVersion(userID string, version int64) (int64, 
 	// so the next backup would be handed a number that cannot be inserted, and a
 	// client recreating its backup would be told the version already exists.
 	if err := r.db.Unscoped().Where("user_id = ? AND version = ?", userID, version).
-		Delete(&KeyBackupVersion{}).Error; err != nil {
+		Unscoped().Delete(&KeyBackupVersion{}).Error; err != nil {
 		return 0, err
 	}
 	result := r.db.Unscoped().Where("user_id = ? AND version = ?", userID, version).Delete(&BackupRoomKey{})
@@ -232,6 +232,6 @@ func (r *KeyBackupRepoImpl) DeleteKeys(userID string, version int64, roomID, ses
 	if sessionID != "" {
 		query = query.Where("session_id = ?", sessionID)
 	}
-	result := query.Delete(&BackupRoomKey{})
+	result := query.Unscoped().Delete(&BackupRoomKey{})
 	return result.RowsAffected, result.Error
 }

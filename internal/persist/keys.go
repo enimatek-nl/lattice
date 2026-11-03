@@ -82,7 +82,7 @@ func (r *DeviceKeyRepoImpl) Delete(userID string, deviceIDs ...string) error {
 	if len(deviceIDs) > 0 {
 		q = q.Where("device_id IN ?", deviceIDs)
 	}
-	return q.Delete(&DeviceKey{}).Error
+	return q.Unscoped().Delete(&DeviceKey{}).Error
 }
 
 // Count implements [DeviceKeyRepo].
@@ -176,7 +176,7 @@ func (r *OneTimeKeyRepoImpl) Add(keys []*OneTimeKey) error {
 func (r *OneTimeKeyRepoImpl) ReplaceFallback(userID, deviceID string, keys []*OneTimeKey) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Unscoped().Where("user_id = ? AND device_id = ? AND fallback = ? AND claimed_ts = 0",
-			userID, deviceID, true).Delete(&OneTimeKey{}).Error; err != nil {
+			userID, deviceID, true).Unscoped().Delete(&OneTimeKey{}).Error; err != nil {
 			return err
 		}
 		if len(keys) == 0 {
@@ -243,7 +243,7 @@ func (r *OneTimeKeyRepoImpl) Delete(userID string, deviceIDs ...string) error {
 	if len(deviceIDs) > 0 {
 		q = q.Where("device_id IN ?", deviceIDs)
 	}
-	return q.Delete(&OneTimeKey{}).Error
+	return q.Unscoped().Delete(&OneTimeKey{}).Error
 }
 
 // Count implements [OneTimeKeyRepo].

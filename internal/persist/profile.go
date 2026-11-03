@@ -96,7 +96,7 @@ func (r *ProfileRepoImpl) All(userID string) (map[string]string, error) {
 // can be set again afterwards.
 func (r *ProfileRepoImpl) Delete(userID, key string) error {
 	return r.db.Unscoped().Where("user_id = ? AND key = ?", userID, key).
-		Delete(&ProfileField{}).
+		Unscoped().Delete(&ProfileField{}).
 		Error
 }
 

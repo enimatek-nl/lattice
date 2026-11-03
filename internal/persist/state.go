@@ -99,7 +99,7 @@ func (r *StateRepoImpl) MemberEvents(roomID string) ([]*Event, error) {
 // Delete implements [StateRepo].
 func (r *StateRepoImpl) Delete(roomID, typ, stateKey string) error {
 	return r.db.Where("room_id = ? AND type = ? AND state_key = ?", roomID, typ, stateKey).
-		Delete(&RoomState{}).Error
+		Unscoped().Delete(&RoomState{}).Error
 }
 
 // JoinRule implements [StateRepo]. Defaults to invite when unknown.

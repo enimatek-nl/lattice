@@ -72,7 +72,7 @@ func (r *MediaRepoImpl) Count() (int64, error) {
 // response advertises, and after that the id is only taking up space.
 func (r *MediaRepoImpl) DeleteReservationsBefore(createdBefore int64) (int64, error) {
 	result := r.db.Where("size = 0 AND (blob IS NULL OR length(blob) = 0) AND created_at < ?",
-		time.UnixMilli(createdBefore)).Delete(&Media{})
+		time.UnixMilli(createdBefore)).Unscoped().Delete(&Media{})
 	return result.RowsAffected, result.Error
 }
 

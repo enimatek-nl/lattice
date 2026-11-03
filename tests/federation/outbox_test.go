@@ -648,3 +648,43 @@ func TestARoomNobodyHereIsIn(t *testing.T) {
 		t.Errorf("%s kept an invitation for a user of another server", two.name)
 	}
 }
+
+// TestTwoSendersSharingATransactionIDBothGetTheirMessage is about who a queued to-device message
+// belongs to. A client's transaction id is unique within one client session, not across a
+// homeserver: every device starts counting at 0, and a server that keys its queue on the id alone
+// lets one user's Olm handshake cancel another's. Complement's own to-device test uses the id "1"
+// in each of its subtests against one deployment, which is how this was found.
+func TestTwoSendersSharingATransactionIDBothGetTheirMessage(t *testing.T) {
+	t.Parallel()
+	c := newCluster(t)
+	one, two := c.one(), c.two()
+	alice := one.register("alice", "wonderland")
+	carol := one.register("carol", "wonderland")
+	bob := two.register("bob", "rubberduck")
+
+	sendToDevice(t, one, alice, matrix.TypeEncrypted, "1", map[string]map[string]any{
+		bob.UserID: {"*": matrix.Object{"ciphertext": "from-alice"}},
+	})
+	sendToDevice(t, one, carol, matrix.TypeEncrypted, "1", map[string]map[string]any{
+		bob.UserID: {"*": matrix.Object{"ciphertext": "from-carol"}},
+	})
+	flush(t, one)
+
+	count, err := two.db.ToDeviceRepo.Count()
+	if err != nil {
+		t.Fatalf("reading the to-device queue of %s: %v", two.name, err)
+	}
+	if count != 2 {
+		t.Fatalf("%s holds %d to-device messages, want the two that were sent (%v)", two.name, count, err)
+	}
+
+	// The same message, offered twice by the same client, is still one message: the
+	// de-duplication is per sender and id, not switched off.
+	sendToDevice(t, one, alice, matrix.TypeEncrypted, "1", map[string]map[string]any{
+		bob.UserID: {"*": matrix.Object{"ciphertext": "from-alice"}},
+	})
+	flush(t, one)
+	if again, err := two.db.ToDeviceRepo.Count(); err != nil || again != 2 {
+		t.Errorf("%s holds %d to-device messages after a repeat, want the two it was given (%v)", two.name, again, err)
+	}
+}

@@ -61,7 +61,7 @@ func (r *DeviceRepoImpl) Save(device *Device) error {
 // can claim the same device id again.
 func (r *DeviceRepoImpl) Delete(userID, deviceID string) error {
 	return r.db.Unscoped().Where("user_id = ? AND device_id = ?", userID, deviceID).
-		Delete(&Device{}).
+		Unscoped().Delete(&Device{}).
 		Error
 }
 
@@ -72,7 +72,7 @@ func (r *DeviceRepoImpl) DeleteAll(userID string, exceptDeviceID string) error {
 	if exceptDeviceID != "" {
 		q = q.Where("device_id <> ?", exceptDeviceID)
 	}
-	return q.Delete(&Device{}).Error
+	return q.Unscoped().Delete(&Device{}).Error
 }
 
 // Count implements [DeviceRepo].

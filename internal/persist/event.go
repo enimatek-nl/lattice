@@ -473,7 +473,7 @@ func (r *EventRepoImpl) ForwardExtremities(roomID string, limit int) ([]string, 
 func (r *EventRepoImpl) AdvanceForwardExtremities(roomID string, consumed []string, added *ForwardExtremity) error {
 	if len(consumed) > 0 {
 		if err := r.db.Where("room_id = ? AND event_id IN ?", roomID, consumed).
-			Delete(&ForwardExtremity{}).Error; err != nil {
+			Unscoped().Delete(&ForwardExtremity{}).Error; err != nil {
 			return err
 		}
 	}

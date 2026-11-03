@@ -81,7 +81,7 @@ func (r *TypingRepoImpl) ActiveUserIDs(roomID, except string, nowMS int64) ([]st
 func (r *TypingRepoImpl) Prune(nowMS, graceMS int64) (int64, error) {
 	result := r.db.Unscoped().
 		Where("sent_ts < ? AND (typing = ? OR expires_ts <= ?)", nowMS-graceMS, false, nowMS).
-		Delete(&Typing{})
+		Unscoped().Delete(&Typing{})
 	return result.RowsAffected, result.Error
 }
 
