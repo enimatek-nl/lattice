@@ -92,6 +92,10 @@ func (a *App) handlePublicRooms(w http.ResponseWriter, r *http.Request) {
 		Limit    int               `json:"limit"`
 		Since    string            `json:"since"`
 		RoomType string            `json:"room_network"`
+		// Server names whose directory is being asked for. A client reading another
+		// server's shelf gets that server's answer, because "published" is a decision a
+		// server makes about its own rooms and no other server can make it.
+		Server string `json:"server"`
 	}
 	if r.Method == http.MethodPost {
 		if err := decodeBody(r, &body); err != nil {
@@ -106,6 +110,20 @@ func (a *App) handlePublicRooms(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		body.Limit, body.Since = limit, queryValue(r, "since", "")
+		body.Server = queryValue(r, "server", "")
+	}
+	if body.Server != "" && body.Server != a.svc.ServerName() {
+		// Another server's directory: ask that server, and answer the client with what it
+		// says. A directory entry this server invented for a room it does not host would
+		// carry no way to reach the room anyway.
+		answer, err := a.svc.RemotePublicRooms(r.Context(), body.Server,
+			body.Filter.GenericSearchTerm, body.Limit, body.Since)
+		if err != nil {
+			a.writeError(w, r, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, answer)
+		return
 	}
 	result, err := a.svc.PublicRooms(r.Context(), body.Filter.GenericSearchTerm, body.Limit, body.Since)
 	if err != nil {

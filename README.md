@@ -28,9 +28,9 @@ that decide what a client trusts, and stores room-key backups it cannot read.
 | **Binary** | static, no cgo: ~21 MB stripped |
 | **Container** | `ghcr.io/enimatek-nl/lattice` — multi-arch, published from a tag; `make image` builds it locally |
 | **Client API** | 168 of the 234 indexed spec endpoints, plus 33 extra routes (`make endpoints`) |
-| **Federation** | keys, signed requests, join / leave / invite, events, typing, receipts, device lists, state and graph reads, gap filling — behind `-federation` |
+| **Federation** | keys, signed requests, join / leave / invite, events, typing, receipts, device lists, state and graph reads, gap filling, profiles, room directories, spaces — behind `-federation` |
 | **Room versions** | 1–11 (11 is the default; room upgrades supported) |
-| **Tests** | 117 client-API compatibility, 43 two-server federation, 68 unit |
+| **Tests** | 123 client-API compatibility, 60 two-server federation, 70 unit |
 | **Licence** | MIT |
 
 ---
@@ -170,6 +170,20 @@ Off by default, on with `-federation`. What it gives you:
 - **Delivery that survives a peer being down.** Outbound traffic goes through a queue,
   retried with the same transaction id and the same bytes, backing off from five
   seconds to ten minutes. `m.room.server_acl` is honoured in both directions.
+- **The questions only one server can answer.** `query/profile` says what a user of
+  this server is called and what their avatar is; `query/directory` says what one of
+  our aliases addresses; `publicRooms` (v1 and v3) says which rooms this server
+  publishes, with the servers that can serve each one; `/hierarchy` says what the
+  space below one of our rooms looks like, `m.space.child` edges included, so a peer
+  can carry on into rooms this server does not hold. Lattice asks those questions as
+  well: `/profile/{userId}` for a remote user is fetched from the server that owns
+  the user, `/publicRooms?server=` is answered by that server rather than from our
+  own shelf, and a space whose children live elsewhere is walked by dialling the
+  servers the child link names — with `incomplete_chain` said out loud when a branch
+  cannot be reached, rather than a space quietly shown with holes in it. An OpenID
+  token minted here can be turned back into the user it stands for. A room directory
+  and a space both respect `m.room.server_acl`: a room that excludes a server does
+  not describe itself to it.
 
 Deferred deliberately: SRV lookups, acting as a client of somebody else's notary
 server, and signing-key rotation.

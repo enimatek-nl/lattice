@@ -1094,24 +1094,63 @@ Still unread as a whole: `TestOutboundFederationIgnoresMissingEventWithBadJSONFo
 
 ### 12. Federation VII — names, profiles and spaces
 
-- [ ] `GET /_matrix/federation/v1/query/directory`, so a remote server can resolve
+- [x] `GET /_matrix/federation/v1/query/directory`, so a remote server can resolve
       a local alias (Unicode included), and the client-side path that then joins
-      through it.
-- [ ] `GET /_matrix/federation/v1/query/profile` — display name and avatar of a
-      local user, refused for a user this server does not have.
-- [ ] `GET`/`POST /_matrix/federation/v1/publicRooms` for another server's room
+      through it. *(Was already served; the gap was the answer's `servers` list,
+      which named only the other members and left a room hosted nowhere else —
+      including here — unaddressable. `DirectoryAnswer` now puts this server first.
+      `TestARemoteAliasIsResolvedByTheServerThatHostsIt` covers a non-ASCII alias
+      resolved over federation and then used by a client of the other server to
+      join.)*
+- [x] `GET /_matrix/federation/v1/query/profile` — display name and avatar of a
+      local user, refused for a user this server does not have. *(Served: one field
+      at a time or both, an empty answer for a field this server does not hold, and
+      `M_NOT_FOUND` for a user that is not ours rather than an empty object, because
+      "no display name" and "no such user" are different answers a client cannot
+      recover from once they look the same. The outbound half is
+      `RemoteUserProfile`, which a client's `GET /profile/{userId}` now uses for a
+      remote user instead of answering 404 — and takes the peer's word only for the
+      two fields it asked about, never for whether the user exists.)*
+- [x] `GET`/`POST /_matrix/federation/v1/publicRooms` for another server's room
       directory, and the client-side `/publicRooms?server=` that reaches it.
-- [ ] `GET /_matrix/federation/v1/hierarchy/{roomId}` to serve our side of a space,
+      *(v1 GET and v3 GET/POST served; `RemotePublicRooms` asks v3 first and falls
+      back to v1 when the peer does not know it. A room whose `m.room.server_acl`
+      excludes the asker is left out of the page: publishing says "anyone may find
+      this", an ACL says "not that server", and the ACL is the room's own word.
+      `destinationsOfRoom` excludes this server because it exists to choose where to
+      send, so the directory answer prepends it — otherwise a room nobody else has
+      joined is listed with nowhere to go.)*
+- [x] `GET /_matrix/federation/v1/hierarchy/{roomId}` to serve our side of a space,
       and `walkHierarchy` following remote spaces through it instead of skipping
-      them.
-- [ ] Decide what happens to `GET /_matrix/federation/v1/openid/userinfo`: it is
+      them. *(One walk serves both endpoints, with a `reader` that is either a user
+      of this server or a peer: a peer sees a space when it is world readable or the
+      peer's server is in it, and a space that is not open to be read is refused
+      rather than answered as an empty tree — "there is nothing here" is not this
+      server's claim to make about a room it is keeping private. The walk asks the
+      servers the `m.space.child` link names, translates the depth window before
+      asking so the peer's page arrives already cut to it, and bounds itself at 50
+      outbound asks and 15 seconds; whatever falls out of that is `incomplete_chain`.
+      Two sets drive the walk — `visited` for rooms already queued or asked about,
+      `described` for rooms in the page — because a remote child is in the first
+      before its own description arrives, and collapsing them is how a room with two
+      parents ends up listed nowhere at all.)*
+- [x] Decide what happens to `GET /_matrix/federation/v1/openid/userinfo`: it is
       indexed and unimplemented, and it exists for third-party invites, which are
       themselves deferred. Record the decision instead of leaving it unlisted.
+      *(Implemented, because the minting half already exists: `openid/request_token`
+      hands a user a credential to show a stranger, and a server that will not say
+      what its own tokens mean has sold the user something with no way to spend it.
+      Third-party invites stay deferred; this endpoint is what they will need, and it
+      is one name. It is registered unsigned on purpose — the asker is usually an
+      identity server with no homeserver key, and the token is the credential. Two
+      tests: only the minting server answers, a stranger's server refuses, and the
+      token is not a session (`/whoami` refuses it).)*
 
 Complement turns green: `TestRemoteAliasRequestsUnderstandUnicode`,
 `TestInboundFederationProfile`, `TestOutboundFederationProfile`,
 `TestFederatedClientSpaces`, `TestClientSpacesSummary`,
-`TestClientSpacesSummaryJoinRules`.
+`TestClientSpacesSummaryJoinRules` — `TestClientSpacesSummary*` still needs
+`GET /_matrix/client/v1/spaces`, which is a client-side step, not this one.
 
 ### 13. Federation VIII — cross-server E2EE, device lists, to-device and media
 

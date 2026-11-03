@@ -2,10 +2,9 @@ package service
 
 import (
 	"context"
-	"strconv"
+	"log"
 
 	"github.com/enimatek-nl/lattice/internal/matrix"
-	"github.com/enimatek-nl/lattice/internal/persist"
 )
 
 // Hierarchy defaults: a page holds at most hierarchyLimitRooms rooms and the
@@ -61,8 +60,10 @@ type HierarchyResult struct {
 // a client where the tree continues.
 var hierarchyStateTypes = []string{matrix.TypeSpaceChild}
 
-// RoomHierarchy walks the m.space.child edges of a room breadth first and
-// returns a page of the rooms it finds.
+// RoomHierarchy walks the m.space.child edges of a room breadth first and returns a page
+// of the rooms it finds. The room itself is at depth 0, and the page is bounded by the
+// caller's limit, depth window and token - all of which [Service.hierarchyPage] shares with
+// the federation answer, so a peer and a client see the same tree shaped the same way.
 func (s *Service) RoomHierarchy(ctx context.Context, params HierarchyParams) (*HierarchyResult, error) {
 	room, err := s.MustRoom(ctx, params.RoomID)
 	if err != nil {
@@ -71,69 +72,41 @@ func (s *Service) RoomHierarchy(ctx context.Context, params HierarchyParams) (*H
 	if err := s.RequireReadable(ctx, room.ID, params.UserID); err != nil {
 		return nil, err
 	}
-	limit := params.Limit
-	if limit <= 0 || limit > hierarchyLimitRooms {
-		limit = hierarchyDefaultRooms
-	}
-	maxDepth := params.MaxDepth
-	if maxDepth <= 0 {
-		maxDepth = hierarchyDefaultDepth
-	}
-	if maxDepth > hierarchyMaxDepth {
-		maxDepth = hierarchyMaxDepth
-	}
-	if params.MinDepth < 0 {
-		return nil, matrix.ErrInvalidParam("min_depth must not be negative")
-	}
-	if params.MinDepth > maxDepth {
-		return nil, matrix.ErrInvalidParam("min_depth must not exceed max_depth")
-	}
-	offset := 0
-	if params.From != "" {
-		parsed, err := strconv.Atoi(params.From)
-		if err != nil || parsed < 0 {
-			return nil, matrix.ErrInvalidParam("invalid from token %q", params.From)
-		}
-		offset = parsed
-	}
-
-	rooms, incomplete, err := s.walkHierarchy(ctx, room.ID, params.UserID, maxDepth, params.MinDepth)
-	if err != nil {
-		return nil, err
-	}
-	result := &HierarchyResult{
-		Rooms:           []HierarchyRoom{},
-		IncompleteChain: incomplete,
-	}
-	if offset >= len(rooms) {
-		return result, nil
-	}
-	end := min(offset+limit, len(rooms))
-	result.Rooms = rooms[offset:end]
-	if end < len(rooms) {
-		result.NextBatch = strconv.Itoa(end)
-	}
-	return result, nil
+	return s.hierarchyPage(ctx, room.ID, reader{userID: params.UserID}, params)
 }
 
-// walkHierarchy lists the reachable rooms breadth first, starting at the room
-// itself. Children that are remote, unknown or unreadable are left out and make
-// the chain incomplete.
-func (s *Service) walkHierarchy(ctx context.Context, rootID, userID string, maxDepth, minDepth int) ([]HierarchyRoom, bool, error) {
+// walkHierarchy lists the reachable rooms breadth first, starting at the room itself.
+//
+// A child this server does not hold is asked about rather than dropped: the link that names
+// it also names the servers that can serve it, and the tree below a remote space belongs to
+// that server to describe. The depth window is translated before the question is asked, so
+// the page that comes back is already cut to the window this walk is in. What cannot be
+// fetched - a server that is down, a link that names nobody reachable, a walk that has spent
+// its budget of questions - leaves the chain incomplete, which the answer says out loud
+// instead of quietly presenting a smaller space than the one that exists.
+func (s *Service) walkHierarchy(ctx context.Context, rootID string, r reader, maxDepth, minDepth int) ([]HierarchyRoom, bool, error) {
 	type node struct {
 		roomID string
 		depth  int
 	}
+	// Two sets, because they answer two questions. `visited` is about the walk: this room
+	// has been queued or asked about, so a second edge pointing at it costs nothing.
+	// `described` is about the answer: this room has been put in the page. A remote child is
+	// in the first set before its own description arrives - that is what stops a second
+	// question about it - and folding the two together is how a room with two parents ends up
+	// listed nowhere at all.
 	visited := map[string]bool{rootID: true}
+	described := map[string]bool{rootID: true}
 	queue := []node{{roomID: rootID, depth: 0}}
 	out := make([]HierarchyRoom, 0, 8)
 	incomplete := false
+	asked := 0
 
 	for len(queue) > 0 && len(out) < hierarchyHardCap {
 		current := queue[0]
 		queue = queue[1:]
 		if current.depth >= minDepth {
-			entry, err := s.hierarchyEntry(ctx, current.roomID, userID)
+			entry, err := s.hierarchyEntry(ctx, current.roomID)
 			if err != nil {
 				return nil, false, err
 			}
@@ -142,59 +115,67 @@ func (s *Service) walkHierarchy(ctx context.Context, rootID, userID string, maxD
 		if current.depth >= maxDepth {
 			continue
 		}
-		children, err := s.spaceChildren(ctx, current.roomID)
+		children, err := s.spaceLinks(ctx, current.roomID)
 		if err != nil {
 			return nil, false, err
 		}
-		for _, childID := range children {
-			if visited[childID] {
+		for _, link := range children {
+			if visited[link.roomID] {
 				continue
 			}
-			visited[childID] = true
-			if !s.LocalRoom(childID) {
-				// Remote spaces cannot be resolved without federation, which
-				// makes the chain incomplete rather than wrong.
-				incomplete = true
-				continue
-			}
-			if _, err := s.db.RoomRepo.Get(childID); err != nil {
-				if persist.IsNotFound(err) {
+			visited[link.roomID] = true
+			if !s.LocalRoom(link.roomID) {
+				if asked >= remoteHierarchyAsks {
+					// The walk has asked enough. The rest of the space exists; this
+					// request is not going to describe it, and the answer says so.
 					incomplete = true
 					continue
 				}
-				return nil, false, matrix.ErrInternal(err)
+				asked++
+				remote, err := s.RemoteHierarchy(ctx, link.roomID, link.via, hierarchyDefaultRooms,
+					maxDepth-current.depth-1, minDepth-current.depth-1)
+				if err != nil {
+					log.Printf("federation: the space below %s cannot be read: %v", link.roomID, err)
+					incomplete = true
+					continue
+				}
+				if remote.IncompleteChain {
+					incomplete = true
+				}
+				// The page starts at the child itself and already holds everything below it
+				// within the window, so its rooms are added without being queued: asking this
+				// server's way down a tree another server already walked would double every
+				// request and could only find less.
+				for _, entry := range remote.Rooms {
+					if entry.RoomID == "" || described[entry.RoomID] {
+						continue
+					}
+					visited[entry.RoomID] = true
+					described[entry.RoomID] = true
+					out = append(out, entry)
+				}
+				continue
 			}
-			if !s.canRead(ctx, childID, userID) {
+			here, err := s.roomExistsLocal(ctx, link.roomID)
+			if err != nil {
+				return nil, false, err
+			}
+			if !here {
 				incomplete = true
 				continue
 			}
-			queue = append(queue, node{roomID: childID, depth: current.depth + 1})
+			if !s.readableBy(ctx, link.roomID, r) {
+				incomplete = true
+				continue
+			}
+			queue = append(queue, node{roomID: link.roomID, depth: current.depth + 1})
 		}
 	}
 	return out, incomplete, nil
 }
 
-// spaceChildren returns the child room ids of a room, taken from its
-// m.space.child state events. A child whose content is an empty object was
-// removed from the space.
-func (s *Service) spaceChildren(ctx context.Context, roomID string) ([]string, error) {
-	rows, err := s.db.StateRepo.List(roomID, []string{matrix.TypeSpaceChild}, "")
-	if err != nil {
-		return nil, matrix.ErrInternal(err)
-	}
-	ids := make([]string, 0, len(rows))
-	for _, row := range rows {
-		content := matrix.MustParseObject([]byte(row.Content))
-		if len(content) == 0 {
-			continue
-		}
-		ids = append(ids, row.StateKey)
-	}
-	return ids, nil
-}
-
 // hierarchyEntry renders one room of the hierarchy.
-func (s *Service) hierarchyEntry(ctx context.Context, roomID, userID string) (HierarchyRoom, error) {
+func (s *Service) hierarchyEntry(ctx context.Context, roomID string) (HierarchyRoom, error) {
 	joinRule, err := s.db.StateRepo.JoinRule(roomID)
 	if err != nil {
 		joinRule = matrix.JoinRulesInvite

@@ -3,12 +3,14 @@ package api
 import (
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/enimatek-nl/lattice/internal/federation"
 	"github.com/enimatek-nl/lattice/internal/matrix"
+	"github.com/enimatek-nl/lattice/internal/service"
 )
 
 // The server-server API begins with identity: a peer has to know which server it
@@ -100,6 +102,25 @@ func (a *App) registerFederationRoutes() {
 	// so the answer has to come from the server the alias names - a client that is told
 	// "not hosted here" about an alias it read somewhere has no way to go further.
 	a.federated("GET /_matrix/federation/v1/query/directory", a.handleFederationDirectory)
+	// ... and about a user of this server. A user ID names the server behind it, so the
+	// display name and avatar of that user can only come from here: a member list on
+	// another server shows the names of people it has never met by asking this question.
+	a.federated("GET /_matrix/federation/v1/query/profile", a.handleFederationProfileQuery)
+	// A space is a room, and its children may be anywhere. A peer walking a space that
+	// starts here has to be able to see the tree this server holds of it, and a server that
+	// cannot answer this question turns somebody else's space into a room with no children.
+	a.federated("GET /_matrix/federation/v1/hierarchy/{roomID}", a.handleFederationHierarchy)
+	// A room directory says what one server chooses to publish, so it can only be answered
+	// by that server - and a client pointed at somebody else's directory has to be able to
+	// reach it. v1 is the form every server knows; v3 adds a room's type and a filter that
+	// is an object rather than a string.
+	// The OpenID exchange is unsigned on purpose: the party asking is usually an identity
+	// server working for somebody else's invite, and the credential is the token the user
+	// chose to hand over. See service.OpenIDUserInfo.
+	a.handle("GET /_matrix/federation/v1/openid/userinfo", a.handleFederationOpenIDUserInfo)
+	a.federated("GET /_matrix/federation/v1/publicRooms", a.handleFederationPublicRooms)
+	a.federated("GET /_matrix/federation/v3/publicRooms", a.handleFederationPublicRooms)
+	a.federated("POST /_matrix/federation/v3/publicRooms", a.handleFederationPublicRooms)
 }
 
 // handleFederationMakeJoin answers GET of make_join: the room version, and the shape of
@@ -498,6 +519,101 @@ func (a *App) handleFederationDirectory(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, body)
+}
+
+// handleFederationProfileQuery answers GET /_matrix/federation/v1/query/profile.
+func (a *App) handleFederationProfileQuery(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	answer, err := a.svc.AnswerProfileQuery(r.Context(), query.Get("user_id"), query.Get("field"))
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, answer)
+}
+
+// handleFederationOpenIDUserInfo answers GET /_matrix/federation/v1/openid/userinfo.
+func (a *App) handleFederationOpenIDUserInfo(w http.ResponseWriter, r *http.Request) {
+	answer, err := a.svc.OpenIDUserInfo(r.Context(), r.URL.Query().Get("access_token"))
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, answer)
+}
+
+// handleFederationPublicRooms answers the federation forms of the room directory: v1 as a
+// GET with a filter in the query, v3 as a GET or a POST with a filter object.
+func (a *App) handleFederationPublicRooms(w http.ResponseWriter, r *http.Request) {
+	limit, err := queryInt(r, "limit", 0)
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	filter := queryValue(r, "filter_generic_search_terms", "")
+	since := queryValue(r, "since", "")
+	if r.Method == http.MethodPost {
+		var body struct {
+			Limit  int    `json:"limit"`
+			Since  string `json:"since"`
+			Filter struct {
+				GenericSearchTerm string `json:"generic_search_term"`
+			} `json:"filter"`
+		}
+		// A body this server cannot read is not a reason to refuse the page: a peer that
+		// sent a filter in a shape we do not know still wants the directory, and answering
+		// it unfiltered is a smaller lie than answering it with an error. What is said out
+		// loud is that the filter was not applied.
+		if err := decodeBody(r, &body); err != nil {
+			log.Printf("federation: %s sent a room directory request this server cannot read: %v",
+				federation.Peer(r.Context()), err)
+		} else {
+			if body.Limit > 0 {
+				limit = body.Limit
+			}
+			if body.Since != "" {
+				since = body.Since
+			}
+			filter = body.Filter.GenericSearchTerm
+		}
+	}
+	answer, err := a.svc.ServePublicRooms(r.Context(), federation.Peer(r.Context()), filter, limit, since)
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, answer)
+}
+
+// handleFederationHierarchy answers GET /_matrix/federation/v1/hierarchy/{roomID}.
+func (a *App) handleFederationHierarchy(w http.ResponseWriter, r *http.Request) {
+	limit, err := queryInt(r, "limit", 0)
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	maxDepth, err := queryInt(r, "max_depth", 0)
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	minDepth, err := queryInt(r, "min_depth", 0)
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	result, err := a.svc.ServeHierarchy(r.Context(), r.PathValue("roomID"), federation.Peer(r.Context()),
+		service.HierarchyParams{
+			Limit:    limit,
+			MaxDepth: maxDepth,
+			MinDepth: minDepth,
+			From:     r.URL.Query().Get("from"),
+		})
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 // handleFederationStateIDs answers GET /_matrix/federation/v1/state_ids/{roomID}.

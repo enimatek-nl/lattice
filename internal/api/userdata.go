@@ -106,7 +106,11 @@ func (a *App) handleDeleteRoomTag(w http.ResponseWriter, r *http.Request) {
 //	@Success	200		{object}	matrix.Object
 //	@Router		/_matrix/client/v3/profile/{userId} [get]
 func (a *App) handleGetProfile(w http.ResponseWriter, r *http.Request) {
-	profile, err := a.svc.Profile(r.Context(), r.PathValue("userId"))
+	// A name that carries another server's address is described by that server, so the
+	// read goes out rather than failing: a member list on this server contains remote
+	// users, and a client showing "@bob:other.example" to nobody's benefit is a member
+	// list that lost half its people.
+	profile, err := a.svc.ProfileForReader(r.Context(), r.PathValue("userId"))
 	if err != nil {
 		a.writeError(w, r, err)
 		return
@@ -116,7 +120,7 @@ func (a *App) handleGetProfile(w http.ResponseWriter, r *http.Request) {
 
 // handleGetProfileKey implements GET /_matrix/client/v3/profile/{userId}/{key}.
 func (a *App) handleGetProfileKey(w http.ResponseWriter, r *http.Request) {
-	value, err := a.svc.ProfileKey(r.Context(), r.PathValue("userId"), r.PathValue("key"))
+	value, err := a.svc.ProfileKeyForReader(r.Context(), r.PathValue("userId"), r.PathValue("key"))
 	if err != nil {
 		a.writeError(w, r, err)
 		return

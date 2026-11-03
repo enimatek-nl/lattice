@@ -216,6 +216,65 @@ func cutIdentifier(id, sigil string) (localpart, domain string, ok bool) {
 	return localpart, domain, true
 }
 
+// ValidServerName reports whether name is written the way a server name is written: a
+// host, optionally followed by a colon and a port. It is not a DNS check - a name can be
+// perfectly spelled and unreachable - it is the check that separates a name that could
+// address a server from one that cannot, which is what matters before a string from a
+// stranger is used as an address or embedded in an identifier.
+//
+// The port is the part that catches the common malformed identifier: `localhost:http` is
+// what a URI that should have been split looks like, and a server name that carries one
+// was never a server name.
+func ValidServerName(name string) bool {
+	host, port, hasPort := name, "", false
+	if name != "" && name[0] == '[' {
+		// A bracketed IPv6 literal keeps its own colons; the port is what follows the
+		// closing bracket, and nothing else may.
+		end := strings.Index(name, "]")
+		if end < 0 {
+			return false
+		}
+		host = name[:end+1]
+		rest := name[end+1:]
+		switch {
+		case rest == "":
+		case strings.HasPrefix(rest, ":"):
+			hasPort, port = true, rest[1:]
+		default:
+			return false
+		}
+	} else if local, after, found := strings.Cut(name, ":"); found {
+		host, hasPort, port = local, true, after
+	}
+	if hasPort {
+		if port == "" || len(port) > 5 {
+			return false
+		}
+		for _, r := range port {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+	}
+	if host == "" {
+		return false
+	}
+	for _, r := range host {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '.' || r == '-' || r == '_' || r == ':' || r == '[' || r == ']':
+		default:
+			return false
+		}
+	}
+	// A name made only of punctuation is not a host. This is the same "does it carry
+	// something addressable" question the port check answers, one level in.
+	if strings.Trim(host, ".-[]:") == "" {
+		return false
+	}
+	return true
+}
+
 // UserMxid builds a user ID from a localpart and server name.
 func UserMxid(localpart, serverName string) string {
 	if !strings.HasPrefix(localpart, "@") {

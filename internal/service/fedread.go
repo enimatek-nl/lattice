@@ -154,6 +154,10 @@ func (s *Service) DirectoryAnswer(ctx context.Context, alias string, peer string
 	if err != nil {
 		return nil, err
 	}
+	// This server can serve the room as well - it hosts the alias, which is how the room is
+	// being addressed - and a room nobody else has joined is still a room. An answer that
+	// names only the other members' servers tells the asker where to *not* go.
+	servers = append([]string{s.serverName}, servers...)
 	return matrix.Object{
 		"room_id": row.RoomID,
 		"servers": servers,
