@@ -1,8 +1,10 @@
 package federation
 
 import (
+	"context"
 	"net/http"
 	"testing"
+	"time"
 )
 
 // A restricted room admits people through another room, which means the admission rests on
@@ -88,4 +90,87 @@ func membershipContent(t *testing.T, s *server, sess *session, roomID, userID st
 	}
 	t.Fatalf("%s holds no membership event for %s in %s", s.name, userID, roomID)
 	return nil
+}
+
+// TestARestrictedRoomAdmitsItsOwnMembersOnItsOwnWord is the half of a restricted join that needs no
+// ask across servers. This server holds the room, has a member who may invite and belongs to the
+// room that admits people, and the joiner visibly belongs to that room too: the admission is this
+// server's to make, and asking the room's own server would make one server the gatekeeper for a
+// room its members share.
+func TestARestrictedRoomAdmitsItsOwnMembersOnItsOwnWord(t *testing.T) {
+	cluster := newCluster(t)
+	hs1, hs2 := cluster.one(), cluster.two()
+	stop := hs2.svc.StartFederationOutbox(context.Background(), 20*time.Millisecond)
+	defer stop()
+	alice := hs1.register("alice", "wonderland")
+	bob := hs2.register("bob", "rubberduck")
+	charlie := hs2.register("charlie", "hatter")
+
+	room, allowed := restrictedPair(t, hs1, alice)
+
+	// Bob is let in the ordinary way, and then given the room's invite level.
+	hs2.mustDo(http.StatusOK, http.MethodPost, "/_matrix/client/v3/join/"+allowed+"?server_name="+serverOne, bob.Token, map[string]any{})
+	hs2.mustDo(http.StatusOK, http.MethodPost, "/_matrix/client/v3/join/"+room+"?server_name="+serverOne, bob.Token, map[string]any{})
+	hs1.mustDo(http.StatusOK, http.MethodPut, "/_matrix/client/v3/rooms/"+room+"/state/m.room.power_levels", alice.Token,
+		map[string]any{
+			"invite": 100,
+			"users":  map[string]any{alice.UserID: 100, bob.UserID: 100},
+		})
+
+	// Charlie reaches the room through hs2 alone: hs2 has somebody who can vouch for the join, so
+	// it does not have to ask hs1.
+	hs2.mustDo(http.StatusOK, http.MethodPost, "/_matrix/client/v3/join/"+allowed+"?server_name="+serverOne, charlie.Token, map[string]any{})
+	if got := joinVia(hs2, charlie, room, serverTwo); got.Status != http.StatusOK {
+		t.Fatalf("charlie joining the restricted room through hs2, which has a witness: status %d (body %s), want 200", got.Status, got.Raw)
+	}
+	awaitMembership(t, hs2, room, charlie.UserID, "join")
+	awaitMembership(t, hs1, room, charlie.UserID, "join")
+
+	content := membershipContent(t, hs1, alice, room, charlie.UserID)
+	if authorised, _ := content["join_authorised_via_users_server"].(string); authorised != bob.UserID {
+		t.Errorf("the join is authorised by %q, want the local witness %q: %v", authorised, bob.UserID, content)
+	}
+}
+
+// TestARestrictedRoomAskedAloneRefusesWhenItCannotVouch is the same join with nobody to vouch. The
+// client named one server, that server holds the room but has no member who may invite, and the
+// answer is a refusal the client can act on by naming another server - not a quiet detour to the
+// room's own server behind the client's back.
+func TestARestrictedRoomAskedAloneRefusesWhenItCannotVouch(t *testing.T) {
+	cluster := newCluster(t)
+	hs1, hs2 := cluster.one(), cluster.two()
+	stop := hs2.svc.StartFederationOutbox(context.Background(), 20*time.Millisecond)
+	defer stop()
+	alice := hs1.register("alice", "wonderland")
+	bob := hs2.register("bob", "rubberduck")
+	charlie := hs2.register("charlie", "hatter")
+
+	room, allowed := restrictedPair(t, hs1, alice)
+	hs1.mustDo(http.StatusOK, http.MethodPut, "/_matrix/client/v3/rooms/"+room+"/state/m.room.power_levels", alice.Token,
+		map[string]any{"invite": 100, "users": map[string]any{alice.UserID: 100}})
+
+	hs2.mustDo(http.StatusOK, http.MethodPost, "/_matrix/client/v3/join/"+allowed+"?server_name="+serverOne, bob.Token, map[string]any{})
+	hs2.mustDo(http.StatusOK, http.MethodPost, "/_matrix/client/v3/join/"+room+"?server_name="+serverOne, bob.Token, map[string]any{})
+	hs2.mustDo(http.StatusOK, http.MethodPost, "/_matrix/client/v3/join/"+allowed+"?server_name="+serverOne, charlie.Token, map[string]any{})
+
+	if got := joinVia(hs2, charlie, room, serverTwo); got.Status == http.StatusOK {
+		t.Fatalf("charlie joined a restricted room through a server with nobody to vouch (body %s)", got.Raw)
+	}
+	// Naming the room's own server as well is the way a client fixes that, and the join then goes
+	// through on hs1's word.
+	if got := joinVia(hs2, charlie, room, serverTwo, serverOne); got.Status != http.StatusOK {
+		t.Fatalf("charlie joining with the room's server in the list: status %d (body %s), want 200", got.Status, got.Raw)
+	}
+	awaitMembership(t, hs1, room, charlie.UserID, "join")
+}
+
+// restrictedPair makes a restricted room and the room its rule reads, both hosted by host and
+// created by creator, and returns them in that order.
+func restrictedPair(t *testing.T, host *server, creator *session) (room, allowed string) {
+	t.Helper()
+	allowed = host.createRoom(creator, map[string]any{"preset": "public_chat", "name": "the allowed room"})
+	room = host.createRoom(creator, map[string]any{"preset": "public_chat", "name": "the restricted room", "room_version": "8"})
+	host.mustDo(http.StatusOK, http.MethodPut, "/_matrix/client/v3/rooms/"+room+"/state/m.room.join_rules", creator.Token,
+		map[string]any{"join_rule": "restricted", "allow": []map[string]any{{"type": "m.space", "room_id": allowed}}})
+	return room, allowed
 }

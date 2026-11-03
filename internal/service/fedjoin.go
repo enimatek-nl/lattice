@@ -57,13 +57,32 @@ func (s *Service) JoinFederatedRoom(ctx context.Context, roomID, userID string, 
 	// A room in a version this server does not speak is a different answer from a room
 	// nobody would talk about, and it is the one the client can act on: the version is
 	// named, so the operator knows what to add rather than hunting for a missing room.
+	// A room that admits people through another room is entered on the word of a member who may
+	// invite. When this server can name such a member itself, it does not need to ask anybody:
+	// the join is written here, against the copy of the room this server keeps, and relayed to the
+	// servers in the room like any other event. A room whose members span several servers is not
+	// joinable through one of them alone, and a server that always defers to the room's own server
+	// makes that server a single point of failure for admissions it could have answered itself.
+	if event, err, answered := s.joinThroughLocalWitness(ctx, roomID, userID); answered {
+		if err == nil {
+			return event, nil
+		}
+		log.Printf("federation: joining %s with a witness of this server failed: %v", roomID, err)
+		return nil, err
+	}
 	var incompatible error
 	// A server that answered is a server that looked. Its refusal - banned, invited nowhere,
 	// admitted by no rule the room has - is the reason the join did not happen, and the client
 	// can only act on a reason it is given: "no server in the list could complete the join"
 	// sends somebody who was banned to look for a room that is right there.
 	var refused *matrix.Error
-	for _, server := range joinServers(roomID, via) {
+	for _, server := range joinCandidates(roomID, via) {
+		if server == s.serverName {
+			// Asking ourselves for a join template would be asking a server that is not in
+			// the room to authorise the join, which is the question this server is meant to
+			// answer for itself.
+			continue
+		}
 		event, err := s.joinViaServer(ctx, transport, roomID, userID, server)
 		if err == nil {
 			return event, nil
@@ -88,6 +107,95 @@ func (s *Service) JoinFederatedRoom(ctx context.Context, roomID, userID string, 
 		return nil, refused
 	}
 	return nil, matrix.ErrNotFound("no server in the list could complete the join of %s for %s", roomID, userID)
+}
+
+// joinCandidates names the servers a join is asked of. The client named the servers it wanted
+// tried, and a server that quietly adds the room's own server answers a question the client asked
+// somebody else: fail-over between servers is only meaningful if the list is the list. With no
+// servers named at all, the room's own server is the obvious place to ask.
+func joinCandidates(roomID string, via []string) []string {
+	if len(via) == 0 {
+		return joinServers(roomID, nil)
+	}
+	return joinServers("", via)
+}
+
+// joinThroughLocalWitness originates a join in a room this server holds but does not host, for the
+// join rules that admit people through another room, when this server has a member who can vouch
+// for the joiner. It answers the third value to say whether it took the decision: no witness, no
+// room held here, or a joiner this server cannot see in an admitting room means the room's own
+// server is the one that should judge, and a refusal here would be a refusal from partial
+// knowledge.
+func (s *Service) joinThroughLocalWitness(ctx context.Context, roomID, userID string) (*persist.Event, error, bool) {
+	if len(s.roomsThatAdmit(ctx, roomID)) == 0 {
+		return nil, nil, false
+	}
+	if _, err := s.db.RoomRepo.Get(roomID); err != nil {
+		return nil, nil, false
+	}
+	witness := s.joinAuthoriser(ctx, roomID, userID)
+	if witness == "" {
+		return nil, nil, false
+	}
+	if !s.joinerIsAdmittedHere(ctx, roomID, userID) {
+		return nil, nil, false
+	}
+	event, err := s.joinRoomLocally(ctx, roomID, userID, witness)
+	return event, err, true
+}
+
+// joinerIsAdmittedHere reads what this server can see about a joiner: membership of one of the
+// rooms the rule reads, or an invitation or membership the room has already given them.
+func (s *Service) joinerIsAdmittedHere(ctx context.Context, roomID, userID string) bool {
+	if current := s.MembershipOf(ctx, roomID, userID); current == matrix.MembershipInvite ||
+		current == matrix.MembershipJoin {
+		return true
+	}
+	joined, err := s.db.MembershipRepo.RoomsFor(userID, matrix.MembershipJoin)
+	if err != nil {
+		return false
+	}
+	for _, allowed := range s.roomsThatAdmit(ctx, roomID) {
+		if _, err := s.db.RoomRepo.Get(allowed); err != nil {
+			continue
+		}
+		for _, id := range joined {
+			if id == allowed {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// joinRoomLocally writes the join here and lets it travel. The witness is part of the content, so
+// the room's rules read the same authorisation wherever the event arrives, and the auth events the
+// room selects cite the witness's membership alongside the join rule.
+func (s *Service) joinRoomLocally(ctx context.Context, roomID, userID, witness string) (*persist.Event, error) {
+	if current := s.MembershipOf(ctx, roomID, userID); current == matrix.MembershipBan {
+		return nil, matrix.ErrForbidden("%s is banned from this room", userID)
+	}
+	content := matrix.Object{
+		"membership": matrix.MembershipJoin,
+	}
+	if name := s.displayName(ctx, userID); name != "" {
+		content["display_name"] = name
+	}
+	if avatar := s.avatarURL(ctx, userID); avatar != "" {
+		content["avatar_url"] = avatar
+	}
+	if witness != "" {
+		content["join_authorised_via_users_server"] = witness
+	}
+	key := userID
+	return s.AppendEvent(ctx, &EventDraft{
+		RoomID:   roomID,
+		Type:     matrix.TypeMember,
+		StateKey: &key,
+		Sender:   userID,
+		Content:  matrix.Encode(content),
+		Kind:     "room_event",
+	})
 }
 
 // joinViaServer runs one make_join / send_join pair against one server.
