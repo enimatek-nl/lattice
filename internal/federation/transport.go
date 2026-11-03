@@ -154,6 +154,22 @@ func NewTransport(identity Identity, cfg Config) *Transport {
 // ServerName is the name this transport signs as.
 func (t *Transport) ServerName() string { return t.identity.ServerName() }
 
+// GetRaw performs a signed GET and returns the answer as it arrived: the content type, the
+// headers and the bytes. Media is what needs this. A JSON endpoint's answer is decoded and
+// re-encoded on its way to a client, and a picture that goes through the same hands arrives as
+// a different file - its hash changes, and the event that named it no longer describes it.
+// limit caps how much of the answer is read, because the peer decides how big its own content
+// is and this server should not agree in advance to hold all of it in memory.
+func (t *Transport) GetRaw(ctx context.Context, destination, path string, query url.Values, limit int64) (http.Header, []byte, error) {
+	if query == nil {
+		query = url.Values{}
+	}
+	if query.Get("origin") == "" {
+		query.Set("origin", t.identity.ServerName())
+	}
+	return t.roundTrip(ctx, destination, http.MethodGet, path, query, nil, limit)
+}
+
 // Get performs a signed GET and returns the JSON object the peer answers with.
 // The query gets an origin parameter when it has none, which is what senders do
 // here so a receiver can tie the request to the signing server even before it
@@ -183,13 +199,40 @@ func (t *Transport) Put(ctx context.Context, destination, path string, body matr
 // url.Values.Encode sorts its keys, and RawQuery is set to exactly that string, so
 // a peer verifying the target it received sees the target that was signed.
 func (t *Transport) do(ctx context.Context, destination, method, path string, query url.Values, body matrix.Object) (matrix.Object, error) {
-	base, err := t.baseURL(ctx, destination)
+	_, raw, err := t.roundTrip(ctx, destination, method, path, query, body, maxResponseBody)
 	if err != nil {
 		return nil, err
 	}
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return matrix.Object{}, nil
+	}
+	// Canonical decoding keeps numbers exact, which matters as soon as an answer
+	// carries an event that has to be verified: a timestamp re-encoded through
+	// float64 changes the bytes the signature was made over.
+	decoded, err := matrix.DecodeCanonical(raw)
+	if err != nil {
+		return nil, fmt.Errorf("decoding the answer from %s: %w", destination, err)
+	}
+	object, ok := decoded.(matrix.Object)
+	if !ok {
+		return nil, fmt.Errorf("the answer from %s is not a JSON object", destination)
+	}
+	return object, nil
+}
+
+// roundTrip signs and sends one request, and hands back the answer without reading it as
+// anything in particular.
+func (t *Transport) roundTrip(ctx context.Context, destination, method, path string, query url.Values, body matrix.Object, limit int64) (http.Header, []byte, error) {
+	if limit <= 0 {
+		limit = maxResponseBody
+	}
+	base, err := t.baseURL(ctx, destination)
+	if err != nil {
+		return nil, nil, err
+	}
 	key, err := t.identity.SigningKey(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// A caller may hand over a path that already carries its query. Splitting it off
@@ -200,7 +243,7 @@ func (t *Transport) do(ctx context.Context, destination, method, path string, qu
 	if cut := strings.Index(path, "?"); cut >= 0 {
 		merged, err := url.ParseQuery(path[cut+1:])
 		if err != nil {
-			return nil, fmt.Errorf("the query of %s: %w", path, err)
+			return nil, nil, fmt.Errorf("the query of %s: %w", path, err)
 		}
 		if query == nil {
 			query = url.Values{}
@@ -223,24 +266,24 @@ func (t *Transport) do(ctx context.Context, destination, method, path string, qu
 	}
 	fields, err := SignAuthorization(key, method, target, t.identity.ServerName(), destination, body)
 	if err != nil {
-		return nil, fmt.Errorf("signing a request for %s: %w", destination, err)
+		return nil, nil, fmt.Errorf("signing a request for %s: %w", destination, err)
 	}
 
 	destinationURL, err := url.Parse(base + target)
 	if err != nil {
-		return nil, fmt.Errorf("resolving %s on %s: %w", target, destination, err)
+		return nil, nil, fmt.Errorf("resolving %s on %s: %w", target, destination, err)
 	}
 	var payload io.Reader
 	if method != http.MethodGet {
 		encoded, err := json.Marshal(body)
 		if err != nil {
-			return nil, fmt.Errorf("encoding the body for %s: %w", destination, err)
+			return nil, nil, fmt.Errorf("encoding the body for %s: %w", destination, err)
 		}
 		payload = bytes.NewReader(encoded)
 	}
 	request, err := http.NewRequestWithContext(ctx, method, destinationURL.String(), payload)
 	if err != nil {
-		return nil, fmt.Errorf("building a request for %s: %w", destination, err)
+		return nil, nil, fmt.Errorf("building a request for %s: %w", destination, err)
 	}
 	request.Header.Set("Authorization", fields.AuthorizationHeader())
 	request.Header.Set("User-Agent", t.cfg.UserAgent)
@@ -250,32 +293,18 @@ func (t *Transport) do(ctx context.Context, destination, method, path string, qu
 
 	response, err := t.client.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("requesting %s from %s: %w", target, destination, err)
+		return nil, nil, fmt.Errorf("requesting %s from %s: %w", target, destination, err)
 	}
 	defer func() { _ = response.Body.Close() }()
 
-	raw, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBody))
+	raw, err := io.ReadAll(io.LimitReader(response.Body, limit))
 	if err != nil {
-		return nil, fmt.Errorf("reading the answer from %s: %w", destination, err)
+		return nil, nil, fmt.Errorf("reading the answer from %s: %w", destination, err)
 	}
 	if response.StatusCode < 200 || response.StatusCode > 299 {
-		return nil, peerError(response.StatusCode, raw, destination)
+		return nil, nil, peerError(response.StatusCode, raw, destination)
 	}
-	if len(bytes.TrimSpace(raw)) == 0 {
-		return matrix.Object{}, nil
-	}
-	// Canonical decoding keeps numbers exact, which matters as soon as an answer
-	// carries an event that has to be verified: a timestamp re-encoded through
-	// float64 changes the bytes the signature was made over.
-	decoded, err := matrix.DecodeCanonical(raw)
-	if err != nil {
-		return nil, fmt.Errorf("decoding the answer from %s: %w", destination, err)
-	}
-	object, ok := decoded.(matrix.Object)
-	if !ok {
-		return nil, fmt.Errorf("the answer from %s is not a JSON object", destination)
-	}
-	return object, nil
+	return response.Header, raw, nil
 }
 
 // peerError turns a non-2xx answer into the error the peer reported. The errcode

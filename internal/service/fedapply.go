@@ -153,7 +153,7 @@ func (s *Service) applyIncomingPDU(ctx context.Context, pdu matrix.Object, versi
 		return OutcomeRejected, problem, nil
 	}
 
-	if err := s.storeIncomingPDU(pdu, eventID, softFailure, false); err != nil {
+	if err := s.storeIncomingPDU(ctx, pdu, eventID, softFailure, false); err != nil {
 		return "", "", err
 	}
 	if softFailure != "" {
@@ -487,7 +487,7 @@ func withEventID(pdu matrix.Object, eventID string) matrix.Object {
 // room does not currently apply.
 // notInTimeline says whether the event belongs to this room's timeline. The state that
 // arrives with a join from another server does not: see [persist.Event.NotInTimeline].
-func (s *Service) storeIncomingPDU(pdu matrix.Object, eventID, softFailure string, notInTimeline bool) error {
+func (s *Service) storeIncomingPDU(ctx context.Context, pdu matrix.Object, eventID, softFailure string, notInTimeline bool) error {
 	roomID := federation.EventField(pdu, "room_id")
 	encoded := matrix.Encode(objectOf(pdu, "content"))
 	pos := s.nextStreamPos()
@@ -520,7 +520,8 @@ func (s *Service) storeIncomingPDU(pdu matrix.Object, eventID, softFailure strin
 	}
 	event.RelatesTo, event.RelType = relationOf(encoded)
 
-	return s.db.Tx(func(tx *gorm.DB) error {
+	joined := ""
+	err := s.db.Tx(func(tx *gorm.DB) error {
 		events := persist.NewEventRepo(tx)
 		if err := events.Create(event); err != nil {
 			if persist.IsDuplicate(err) {
@@ -566,6 +567,9 @@ func (s *Service) storeIncomingPDU(pdu matrix.Object, eventID, softFailure strin
 			if err := s.applySideEffects(tx, draft, event, pos); err != nil {
 				log.Printf("federation: the side effects of %s could not be applied: %v", event.EventID, err)
 			}
+			if event.Type == matrix.TypeMember && event.StateKey != "" && membershipIsJoin(event.Content) {
+				joined = event.StateKey
+			}
 		}
 		if event.Type == matrix.TypeRedaction && redactionTargetKnown(events, roomID, event) {
 			if err := applyRedaction(tx, event); err != nil {
@@ -581,6 +585,13 @@ func (s *Service) storeIncomingPDU(pdu matrix.Object, eventID, softFailure strin
 		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	if joined != "" {
+		s.announceDeviceListsOnJoin(ctx, roomID, joined)
+	}
+	return nil
 }
 
 // redactionTargetKnown reports whether this server holds the event a redaction names.

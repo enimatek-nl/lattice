@@ -67,7 +67,12 @@ func (s *Service) UpdateDevice(ctx context.Context, userID, deviceID, displayNam
 	if err := s.db.DeviceRepo.Save(device); err != nil {
 		return matrix.ErrInternal(err)
 	}
-	return nil
+	// The name a device shows its owner is part of the device list, and the specification
+	// names a change to it as a reason to tell the other servers in the rooms this user is in.
+	// A client that renames a device is doing the thing a peer's trust decision is made from -
+	// "this is Alice's laptop" - and a peer that never hears about it is encrypting to a device
+	// it describes by a name that no longer exists.
+	return s.recordDeviceListChange(ctx, persist.DeviceListChanged, userID, deviceID)
 }
 
 // DeleteDevices removes devices and their sessions. Unknown device IDs are

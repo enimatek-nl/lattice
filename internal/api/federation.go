@@ -1,10 +1,13 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"strconv"
 	"strings"
 
@@ -48,6 +51,22 @@ func (a *App) registerFederationRoutes() {
 
 	a.handle("GET /_matrix/federation/v1/version", a.handleFederationVersion)
 	a.federated("GET /_matrix/federation/v1/user/devices/{userId}", a.handleFederationDevices)
+
+	// The two key endpoints a peer asks when it wants to encrypt to somebody on this server:
+	// what their devices are, and a one-time key to start a session with one of them. The
+	// query form names several users at once, which is what a client encrypting for a room
+	// needs; the older per-user form above is answered too, because a peer that only knows it
+	// still has to be able to ask.
+	// Content a peer's clients want is asked of the server its mxc URI names, and served as a
+	// two-part multipart answer: a JSON description, then the bytes. The thumbnail endpoint comes
+	// in two spellings - the box in the query, and the older one with the box in the path - and
+	// both are answered, because peers are running versions of the specification.
+	a.federated("GET /_matrix/federation/v1/media/download/{mediaId}", a.handleFederationMediaDownload)
+	a.federated("GET /_matrix/federation/v1/media/thumbnail/{mediaId}", a.handleFederationMediaThumbnail)
+	a.federated("GET /_matrix/federation/v1/media/thumbnail/{mediaId}/{width}/{height}", a.handleFederationMediaThumbnail)
+
+	a.federated("POST /_matrix/federation/v1/user/keys/query", a.handleFederationKeyQuery)
+	a.federated("POST /_matrix/federation/v1/user/keys/claim", a.handleFederationKeyClaim)
 
 	// The transaction endpoint is the door all live activity comes through: events and
 	// ephemeral messages arrive in batches, and the transaction id is what makes a retry
@@ -483,7 +502,180 @@ func (a *App) handleFederationDevices(w http.ResponseWriter, r *http.Request) {
 			body[key] = object
 		}
 	}
+	// The response is signed by this server. This is the older form of the question, and it
+	// is the form whose answer a peer is expected to check: the payload is a list of devices
+	// somebody claims to have, and the only thing between that claim and a client encrypting
+	// to a stranger's key is a signature the asking server can tie to this one.
+	if err := a.svc.SignAsServer(r.Context(), body); err != nil {
+		a.writeError(w, r, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, body)
+}
+
+// handleFederationKeyQuery answers POST /_matrix/federation/v1/user/keys/query: the device
+// keys and cross-signing keys this server publishes for the users it was asked about.
+//
+//	@Summary	Device keys of this server's users
+//	@Description	Answers a peer with the device keys and the cross-signing keys this server publishes for the users in the request, plus the device list position the answer reaches. Only users of this server are answered.
+//	@Tags	federation
+//	@Accept	json
+//	@Produce	json
+//	@Param	body	body	matrix.Object	true	"device_keys: user id to device ids, empty list for all devices"
+//	@Success	200	{object}	matrix.Object	"device_keys, master_keys, self_signing_keys, user_signing_keys, stream_id"
+//	@Failure	400	{object}	matrix.Error	"The request body is not readable"
+//	@Failure	401	{object}	matrix.Error	"The request carries no valid peer signature"
+//	@Router	/_matrix/federation/v1/user/keys/query [post]
+func (a *App) handleFederationKeyQuery(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		DeviceKeys map[string][]string `json:"device_keys"`
+	}
+	if err := decodeBody(r, &request); err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	answer, err := a.svc.ServeKeyQuery(r.Context(), request.DeviceKeys)
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, answer)
+}
+
+// handleFederationKeyClaim answers POST /_matrix/federation/v1/user/keys/claim: one one-time
+// key per requested device of this server's users, spent as it is handed over.
+//
+//	@Summary	One one-time key per device
+//	@Description	Hands a peer one one-time key for each device of this server's users the request names. A key is spent by the handover, so the second claim for the same device does not receive it again.
+//	@Tags	federation
+//	@Accept	json
+//	@Produce	json
+//	@Param	body	body	matrix.Object	true	"one_time_keys: user id to device id to algorithm"
+//	@Success	200	{object}	matrix.Object	"one_time_keys"
+//	@Failure	400	{object}	matrix.Error	"The request body is not readable"
+//	@Failure	401	{object}	matrix.Error	"The request carries no valid peer signature"
+//	@Router	/_matrix/federation/v1/user/keys/claim [post]
+func (a *App) handleFederationKeyClaim(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		OneTimeKeys map[string]map[string]string `json:"one_time_keys"`
+	}
+	if err := decodeBody(r, &request); err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	answer, err := a.svc.ServeKeyClaim(r.Context(), request.OneTimeKeys)
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, answer)
+}
+
+// handleFederationMediaDownload answers GET /_matrix/federation/v1/media/download/{mediaId}:
+// the content this server hosts, as the two-part multipart answer the specification describes.
+//
+//	@Summary	Content this server hosts
+//	@Description	Serves a peer the content behind a media id this server hosts as multipart/mixed with exactly two parts: a JSON description carrying media_type, media_length and upload_name, then the bytes themselves.
+//	@Tags	federation
+//	@Produce	multipart/mixed
+//	@Param	mediaId	path	string	true	"Media id"
+//	@Success	200	{file}	binary	"multipart/mixed: a JSON description and the content"
+//	@Failure	401	{object}	matrix.Error	"The request carries no valid peer signature"
+//	@Failure	404	{object}	matrix.Error	"No such media"
+//	@Router	/_matrix/federation/v1/media/download/{mediaId} [get]
+func (a *App) handleFederationMediaDownload(w http.ResponseWriter, r *http.Request) {
+	media, err := a.svc.FederationMedia(r.Context(), r.PathValue("mediaId"))
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	a.writeMultipartMedia(w, r, matrix.Object{
+		"media_type":   media.ContentType,
+		"media_length": len(media.Blob),
+		"upload_name":  media.FileName,
+	}, media.ContentType, media.Blob)
+}
+
+// handleFederationMediaThumbnail answers the federation thumbnail endpoint, whose box is given
+// in the query by current servers and in the path by older ones.
+//
+//	@Summary	A thumbnail of content this server hosts
+//	@Description	Scales an image this server hosts to the requested box and serves it to a peer as multipart/mixed with exactly two parts: a JSON description carrying content_type, then the image.
+//	@Tags	federation
+//	@Produce	multipart/mixed
+//	@Param	mediaId	path	string	true	"Media id"
+//	@Param	width	path	int	false	"Width of the box (older spelling)"
+//	@Param	height	path	int	false	"Height of the box (older spelling)"
+//	@Success	200	{file}	binary	"multipart/mixed: a JSON description and the thumbnail"
+//	@Failure	401	{object}	matrix.Error	"The request carries no valid peer signature"
+//	@Failure	404	{object}	matrix.Error	"No such media, or nothing to thumbnail"
+//	@Router	/_matrix/federation/v1/media/thumbnail/{mediaId} [get]
+//	@Router	/_matrix/federation/v1/media/thumbnail/{mediaId}/{width}/{height} [get]
+func (a *App) handleFederationMediaThumbnail(w http.ResponseWriter, r *http.Request) {
+	width, err := queryInt(r, "width", 128)
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	height, err := queryInt(r, "height", 128)
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	// The older spelling puts the box in the path. It wins when it is there, because a peer that
+	// sent it named the box twice at worst, and a peer that sent only the query never fills the
+	// path.
+	if inPath := r.PathValue("width"); inPath != "" {
+		if parsed, err := strconv.Atoi(inPath); err == nil && parsed > 0 {
+			width = parsed
+		}
+	}
+	if inPath := r.PathValue("height"); inPath != "" {
+		if parsed, err := strconv.Atoi(inPath); err == nil && parsed > 0 {
+			height = parsed
+		}
+	}
+	data, contentType, err := a.svc.FederationThumbnail(r.Context(), r.PathValue("mediaId"),
+		width, height, queryValue(r, "method", "scale"))
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	a.writeMultipartMedia(w, r, matrix.Object{"content_type": contentType}, contentType, data)
+}
+
+// writeMultipartMedia writes the two-part answer the federation media endpoints are specified to
+// give: a JSON description of the content, then the content.
+//
+// Exactly two parts, in that order. Some servers decide what a response is by counting, and an
+// answer with a third part in it - a second description, an empty trailer - is an answer a peer
+// may throw away rather than parse.
+func (a *App) writeMultipartMedia(w http.ResponseWriter, r *http.Request, description matrix.Object, contentType string, body []byte) {
+	writer := multipart.NewWriter(w)
+	w.Header().Set("Content-Type", "multipart/mixed; boundary="+writer.Boundary())
+	encoded, err := json.Marshal(description)
+	if err != nil {
+		a.writeError(w, r, matrix.ErrInternal(err))
+		return
+	}
+	part, err := writer.CreatePart(textproto.MIMEHeader{"Content-Type": []string{"application/json"}})
+	if err != nil {
+		return
+	}
+	if _, err := part.Write(encoded); err != nil {
+		return
+	}
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	part, err = writer.CreatePart(textproto.MIMEHeader{"Content-Type": []string{contentType}})
+	if err != nil {
+		return
+	}
+	if _, err := part.Write(body); err != nil {
+		return
+	}
+	_ = writer.Close()
 }
 
 // handleFederationEvent answers GET /_matrix/federation/v1/event/{eventID}: one event,

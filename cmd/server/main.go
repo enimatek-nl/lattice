@@ -23,7 +23,6 @@ import (
 	"github.com/enimatek-nl/lattice/internal/cli"
 	"github.com/enimatek-nl/lattice/internal/config"
 	"github.com/enimatek-nl/lattice/internal/federation"
-	"github.com/enimatek-nl/lattice/internal/matrix"
 	"github.com/enimatek-nl/lattice/internal/persist"
 	"github.com/enimatek-nl/lattice/internal/service"
 )
@@ -136,15 +135,21 @@ func main() {
 		log.Printf("settings taken from the environment: %s", strings.Join(takenFromEnv, " "))
 	}
 
-	secret := *jwtSecret
-	if secret == "" {
-		secret = randomSecret()
-		log.Print("no --jwt-secret given; generated an ephemeral one, access tokens stop working on restart")
-	}
-
 	db, err := persist.NewDatabase(*dbPath)
 	if err != nil {
 		log.Fatalf("opening database %s: %v", *dbPath, err)
+	}
+
+	// The secret that signs access tokens is kept in the database when the operator did not
+	// name one. A secret thrown away at shutdown would log every user out at the next start:
+	// the sessions it made are rows in that database, and the signatures that let them be read
+	// are the only thing tying them together.
+	secret, generated, err := auth.TokenSecret(db, *jwtSecret)
+	if err != nil {
+		log.Fatalf("reading the access token secret: %v", err)
+	}
+	if generated {
+		log.Print("no --jwt-secret given; generated one and stored it in the database, where it stays across restarts")
 	}
 	tokens := auth.NewTokenService(secret, auth.WithTTL(*tokenTTL))
 	svc, err := service.New(db, *serverName, tokens,
@@ -345,15 +350,6 @@ func splitList(value string) []string {
 		}
 	}
 	return out
-}
-
-// randomSecret returns a token used to sign access tokens.
-func randomSecret() string {
-	token := matrix.NewToken()
-	if token == "" {
-		log.Fatal("could not generate a signing secret")
-	}
-	return token
 }
 
 // peerOverrides parses the server=URL pairs of --federation-peer. A pin bypasses

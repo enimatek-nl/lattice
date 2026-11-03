@@ -85,7 +85,14 @@ func NewServerWithDatabase(t *testing.T, path string, cfg api.Config, opts ...se
 	if !cfg.EnableMedia {
 		cfg.EnableMedia = true
 	}
-	tokens := auth.NewTokenService("test-secret", auth.WithTTL(24*time.Hour))
+	// The secret is read from the database rather than fixed in the harness, so that a test
+	// restarting a server over the same file behaves like an operator restarting a process -
+	// including whether the access tokens it issued earlier still work.
+	secret, _, err := auth.TokenSecret(db, "")
+	if err != nil {
+		t.Fatalf("choosing the access token secret: %v", err)
+	}
+	tokens := auth.NewTokenService(secret, auth.WithTTL(24*time.Hour))
 	svc, err := service.New(db, cfg.ServerName, tokens, opts...)
 	if err != nil {
 		t.Fatalf("building service: %v", err)

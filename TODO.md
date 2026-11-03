@@ -1177,26 +1177,71 @@ been getting quietly wrong, and Complement is precise about them:
 
 The sinks for all of this landed in step 8; this is the producing and asking half.
 
-- [ ] **Emit** `m.device_list_update` when a device uploads or deletes keys, with
-      the per-user `stream_id`/`prev_id` chain on the counter `FederatedDevices`
-      already counts, to the servers that hold that user in a room; and
-      `m.signing_key_update` on the cross-signing changes the local paths already
-      record.
-- [ ] `POST /client/v3/keys/query` and `/keys/claim` for **remote** users: ask the
-      owning server (`GET /federation/v1/user/devices/{userId}` is already served),
-      verify its signature, cache, answer as if local. A `device_id` that is not
-      there is asked for again, never invented.
-- [ ] To-device to a remote user: queue for the destination server (inbound and the
-      `*` expansion already work).
-- [ ] Federation media: `GET /_matrix/federation/v1/media/download/{mediaId}` and
-      `/thumbnail/{mediaId}/{width}/{height}` answered as `multipart/mixed` with
-      **exactly two parts**, and the client-side `/download` and `/thumbnail`
-      fetching from the owning server for an `mxc://` this server does not have,
-      caching the result as a Media row.
+- [x] **Emit** `m.device_list_update` when a device uploads, is renamed or loses its
+      keys, with the per-user `stream_id`/`prev_id` chain, to the servers that hold
+      that user in a room; and on a join, in both directions — the joining user's
+      list to the servers already in the room, and every local list in the room to
+      the server that just joined. *(The receiving half applied these since step 8 and
+      never had a sender. A snapshot is sent per **device**, not per key upload: a
+      device that has not published keys yet is still a device, and a peer told about
+      nothing has no reason to ask. A join delivers its updates inside the join
+      request rather than on the outbox timer, because the peer's client starts
+      syncing a few milliseconds after the join returns — an update that leaves on
+      the next tick puts the room in one sync response and the users in it in a later
+      one, which is what `TestDeviceListsUpdateOverFederation` checks and what a
+      client working out whom to encrypt for has to hold apart.
+      `m.signing_key_update` is queued on the cross-signing paths already.)*
+- [x] `POST /client/v3/keys/query` and `/keys/claim` for **remote** users: ask the
+      owning server over `POST /federation/v1/user/keys/query` and
+      `/user/keys/claim` (the older `GET /user/devices/{userId}` is kept as a
+      fallback for a peer that does not know them), check each device's signature by
+      the key inside it, cache, answer as if local. A `device_id` that is not there
+      is asked for again, never invented. `GET /user/devices` is served too, since
+      the older query form needs it. *(A device's `unsigned.device_display_name` is
+      filled in on the way out — the label is this server's description, not part of
+      what the device signed — and a cached remote device keeps the label rather than
+      letting a later list un-name it.)*
+- [x] To-device to a remote user: queue for the destination server, and retry the
+      queued transaction until the peer answers. *(Inbound and the `*` expansion were
+      there; the sending half was the whole of it. `TestAToDeviceMessageWaitsForTheServerThatIsNotAnswering`
+      and `TestTheOutboxTimerDeliversWithoutAnyoneAsking` cover down-peer → queued →
+      back-up → delivered once. One attempt at a transaction is bounded at 10s rather
+      than the transport's 30s, so a peer that is silent rather than refusing costs a
+      backoff slot and not the queue.)*
+- [x] Federation media: `GET /_matrix/federation/v1/media/download/{mediaId}` and
+      `thumbnail` — the box in the query that current servers send and the
+      `/{width}/{height}` path older ones still do — answered as `multipart/mixed`
+      with **exactly two parts**, and the client-side `/media/download` and
+      `/media/thumbnail` fetching from the owning server for an `mxc://` this server
+      does not hold, caching the bytes as a Media row. *(The copy is served from the
+      local row afterwards without a round trip, so a peer going away does not take
+      the content with it; a thumbnail of a copy already here is scaled here. A peer
+      that cannot be asked is `M_NOT_FOUND`, and no empty row is left behind.)*
 
-Complement turns green: `TestDeviceListsUpdateOverFederation`,
-`TestDeviceListsUpdateOverFederationOnRoomJoin`, `TestFederationKeyUploadQuery`,
-`TestToDeviceMessagesOverFederation`, `TestContentMediaV1`.
+Three bugs that were not federation, found by the federation suite:
+
+- Access tokens died on restart. The secret that signs them was generated per
+  process while the sessions it authorised live in the database, so every restart
+  was a mass logout that the database looked innocent about. A generated secret is
+  now stored in `Meta` next to the sessions it made (`auth.TokenSecret`).
+- The event stream counter was re-seeded from the **events** table at start-up.
+  Receipts, to-device messages, device list changes and read markers take positions
+  from the same counter, so a restarted server handed out positions it had already
+  issued and every client holding a token past that point was told, forever, that
+  nothing had happened. `Database.LatestStreamPos` takes the maximum across every
+  table that carries one.
+- A device list change made by one of a user's *other* devices was not reported to
+  that user's own sync, so a client never learned to re-query when a second laptop
+  appeared.
+
+Complement (server-server package): `TestDeviceListsUpdateOverFederation` (all three
+connectivity cases), `TestDeviceListsUpdateOverFederationOnRoomJoin`,
+`TestUserAppearsInChangedDeviceListOnJoinOverFederation`, `TestFederationKeyUploadQuery`
+and `TestContentMediaV1` are green. `TestToDeviceMessagesOverFederation` is green for
+good connectivity; its `interrupted_connectivity` and `stopped_server` cases still
+fail: the message is queued, and after Complement restarts the peer nothing in the
+restarted sender's log shows an attempt being made, which the in-repo timer and
+backoff tests (`tests/federation/timer_test.go`) do not reproduce.
 
 ### 14. Federation IX — a two-server suite that does not cheat, and the wrap
 

@@ -242,13 +242,13 @@ func (s *Service) storeJoinedRoom(ctx context.Context, roomID, version string, p
 				roomID, id, problem)
 			continue
 		}
-		if err := s.storeIncomingPDU(judged, id, "", true); err != nil {
+		if err := s.storeIncomingPDU(ctx, judged, id, "", true); err != nil {
 			return err
 		}
 	}
 	// The join event itself does belong to the timeline: it is the moment this server
 	// joined, and it happened here.
-	return s.storeIncomingPDU(packet.object, packet.eventID, "", false)
+	return s.storeIncomingPDU(ctx, packet.object, packet.eventID, "", false)
 }
 
 // buildRemotePDU assembles an event whose place in the graph was decided somewhere
@@ -558,7 +558,7 @@ func (s *Service) ServeSendJoin(ctx context.Context, roomID, eventID string, eve
 	// server learns who else it can ask, and leaving out the server it is talking to
 	// contradicts the connection the answer came down.
 	servers := append([]string{s.serverName}, serversBefore...)
-	if err := s.storeIncomingPDU(judged, eventID, "", false); err != nil {
+	if err := s.storeIncomingPDU(ctx, judged, eventID, "", false); err != nil {
 		return nil, err
 	}
 	state, err := s.roomStateForTransport(ctx, roomID, version)

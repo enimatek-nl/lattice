@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/enimatek-nl/lattice/internal/matrix"
+	"github.com/enimatek-nl/lattice/internal/persist"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -130,4 +132,40 @@ func ParseStreamPos(token string) (uint64, error) {
 		return 0, fmt.Errorf("invalid stream token %q: %w", token, err)
 	}
 	return pos, nil
+}
+
+// TokenSecretKey names the row that holds the secret this database was first started with.
+const TokenSecretKey = "token.secret"
+
+// TokenSecret returns the secret that signs access tokens: the one the operator configured,
+// or the one this database was given when it first started.
+//
+// A secret generated at startup and thrown away at shutdown logs everybody out on restart.
+// The sessions it authorised are rows in the database and are still current; what is gone is
+// the signature that lets them be read, so the client is told its token is unknown and the
+// only way back in is a password it may not even have - an SSO login, a registration token,
+// a phone holding the token in a keystore. An upgrade restart is not a logout, so a generated
+// secret is kept next to the sessions it made.
+func TokenSecret(db *persist.Database, configured string) (secret string, generated bool, err error) {
+	if configured != "" {
+		return configured, false, nil
+	}
+	stored, err := db.MetaRepo.Get(TokenSecretKey)
+	if err != nil && !persist.IsNotFound(err) {
+		return "", false, err
+	}
+	if stored != "" {
+		return stored, false, nil
+	}
+	value, err := db.MetaRepo.GetOrSet(TokenSecretKey, func() (string, error) {
+		made := matrix.NewToken()
+		if made == "" {
+			return "", fmt.Errorf("generating an access token secret")
+		}
+		return made, nil
+	})
+	if err != nil {
+		return "", false, err
+	}
+	return value, true, nil
 }

@@ -168,6 +168,11 @@ func (s *Service) AppendEvent(ctx context.Context, draft *EventDraft) (*persist.
 	}
 
 	s.Notify()
+	if draft.Type == matrix.TypeMember && draft.StateKey != nil && membershipIsJoin(created.Content) {
+		// The room gained a server, or a server gained a user, and either way somebody has
+		// to be told that a device list exists they cannot ask about yet.
+		s.announceDeviceListsOnJoin(ctx, draft.RoomID, *draft.StateKey)
+	}
 	// The event goes to the peers that share the room through the outbox, not from this
 	// call: a peer that is unreachable must not make a local message fail, and the
 	// specification's transaction rules make the unit of delivery a queued batch rather
@@ -177,6 +182,12 @@ func (s *Service) AppendEvent(ctx context.Context, draft *EventDraft) (*persist.
 		log.Printf("push rule evaluation for %s failed: %v", created.EventID, err)
 	}
 	return created, nil
+}
+
+// membershipIsJoin reports whether the content of an m.room.member event says join.
+func membershipIsJoin(content string) bool {
+	decoded, err := matrix.DecodeMemberContent(matrix.RawMessage(content))
+	return err == nil && decoded.Membership == matrix.MembershipJoin
 }
 
 // applySideEffects keeps derived tables in sync with special state event
@@ -197,6 +208,21 @@ func (s *Service) applySideEffects(tx *gorm.DB, draft *EventDraft, event *persis
 			SentTS:     event.OriginServerTS,
 		}); err != nil {
 			return fmt.Errorf("update membership: %w", err)
+		}
+		if content.Membership == matrix.MembershipJoin {
+			// A join is a device list appearing. Whoever applied it, the local clients of
+			// this room have to learn that somebody's devices may exist that they have never
+			// queried - which is what the device_lists section of a sync is for. The change is
+			// stamped with the join's own stream position so that a client resuming from
+			// before the join sees it without this server having to wake anything.
+			if err := persist.NewDeviceListRepo(tx).Append(&persist.DeviceListChange{
+				UserID:    *draft.StateKey,
+				Kind:      persist.DeviceListChanged,
+				StreamPos: int64(pos),
+				TS:        event.OriginServerTS,
+			}); err != nil {
+				return fmt.Errorf("record the device list change of a join: %w", err)
+			}
 		}
 	case matrix.TypeJoinRules:
 		var content matrix.JoinRulesContent

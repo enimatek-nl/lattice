@@ -143,7 +143,10 @@ func New(db *persist.Database, serverName string, tokens *auth.TokenService, opt
 	for _, opt := range opts {
 		opt(s)
 	}
-	pos, err := db.EventRepo.LatestStreamPos()
+	// The counter is seeded from the highest position the database holds, not from the highest
+	// event: a restarted server must not hand out positions it already issued, or the clients
+	// holding a since token around that point stop seeing anything at all.
+	pos, err := db.LatestStreamPos()
 	if err != nil {
 		return nil, err
 	}

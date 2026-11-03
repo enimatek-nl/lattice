@@ -31,6 +31,10 @@ import (
 const (
 	outboxRetryFloor   = 5 * time.Second
 	outboxRetryCeiling = 10 * time.Minute
+	// outboxAttemptTimeout bounds one attempt at a transaction. It is shorter than the transport's
+	// request timeout on purpose: a peer that is silent rather than refusing still costs a slot,
+	// and the queue is meant to come back to it soon rather than after one long wait.
+	outboxAttemptTimeout = 10 * time.Second
 	// outboxDestinationsPerFlush bounds one pass, so one unreachable peer cannot make
 	// a flush run past the lifetime of the request that triggered it.
 	outboxDestinationsPerFlush = 16
@@ -452,13 +456,28 @@ func (s *Service) queueToDeviceForPeers(ctx context.Context, senderID, senderDev
 	}
 }
 
-// queueDeviceListForPeers announces a change to one of this server's user's devices.
-func (s *Service) queueDeviceListForPeers(ctx context.Context, userID, deviceID string, deleted bool, streamID int64) {
-	if !s.outboxWanted() {
+// queueDeviceListForPeers announces a change to one of this server's users' devices.
+//
+// Only this server's own users are announced, whoever asked for the announcement: a device
+// list belongs to the server whose name is in the user id, and relaying somebody else's
+// would attach this server's approval to keys it has no way to check.
+//
+// destinations says who is told. A device list change goes to every server that shares a
+// room with the user; a join names the one server that has just started sharing one, which
+// is the difference between telling the server that needs to know and re-telling every
+// server that already does.
+func (s *Service) queueDeviceListForPeers(ctx context.Context, userID, deviceID string, deleted bool, streamID int64, destinations []string) {
+	if !s.outboxWanted() || !s.LocalUser(userID) {
 		return
 	}
-	destinations, err := s.destinationsOfUser(ctx, userID)
-	if err != nil || len(destinations) == 0 {
+	if len(destinations) == 0 {
+		found, err := s.destinationsOfUser(ctx, userID)
+		if err != nil {
+			return
+		}
+		destinations = found
+	}
+	if len(destinations) == 0 {
 		return
 	}
 	content := matrix.Object{
@@ -489,6 +508,98 @@ func (s *Service) queueDeviceListForPeers(ctx context.Context, userID, deviceID 
 		log.Printf("federation: could not record the device list position of %s: %v", userID, err)
 	}
 	s.queueEDUForDestinations(destinations, "m.device_list_update", fmt.Sprintf("%s:%d", deviceID, streamID), content)
+}
+
+// announceDeviceListsOnJoin pays the federation debt of a join. The specification asks for
+// a device list update when a user joins a room that contains servers not already receiving
+// updates for that user, and both halves of that matter: the server joining has to hear about
+// the device lists already in the room, and the server the user is leaving home from has to
+// start telling the room about that user's devices. A client on the far side learns to ask
+// for keys it did not know existed only if somebody tells it they exist.
+func (s *Service) announceDeviceListsOnJoin(ctx context.Context, roomID, userID string) {
+	if !s.outboxWanted() || userID == "" {
+		return
+	}
+	if s.LocalUser(userID) {
+		// One of ours just entered a room. Its device list is news to every server there.
+		destinations, err := s.destinationsOfRoom(ctx, roomID)
+		if err != nil {
+			log.Printf("federation: the servers sharing %s are unknown, so the device list of %s stays here: %v", roomID, userID, err)
+			return
+		}
+		s.queueDeviceListSnapshot(ctx, userID, destinations)
+		s.deliverQueuedNow(ctx, destinations)
+		return
+	}
+	// A server just joined a room we are in. It has never been told about the device lists of
+	// the locals in that room, and it has no way to ask about users it has only just met.
+	joiner := matrix.DomainOf(userID)
+	members, err := s.db.MembershipRepo.Members(roomID, matrix.MembershipJoin)
+	if err != nil {
+		log.Printf("federation: the members of %s are unknown, so no device list was announced to %s: %v", roomID, joiner, err)
+		return
+	}
+	for _, member := range members {
+		if !s.LocalUser(member.UserID) {
+			continue
+		}
+		s.queueDeviceListSnapshot(ctx, member.UserID, []string{joiner})
+	}
+	// Deliver now rather than on the timer. This request is the join itself: the peer asked to be
+	// told about the room, and its client starts syncing a few milliseconds after the join
+	// returns. A device list that leaves on the next tick of the timer arrives after that first
+	// sync, so the client is told about the room in one response and about the users in it in a
+	// later one - and a client that is working out who to encrypt for has to hold the two apart.
+	// A peer that will not answer costs this request its timeout, and the queue still holds the
+	// update afterwards.
+	s.deliverQueuedNow(ctx, []string{joiner})
+}
+
+// deliverQueuedNow puts what is waiting for a destination on the wire, in this request rather
+// than on the timer. Failures are logged and left to the queue: the point of sending now is
+// promptness, not a different idea of what happens when a peer is not there.
+func (s *Service) deliverQueuedNow(ctx context.Context, destinations []string) {
+	transport := s.federationTransport()
+	if transport == nil {
+		return
+	}
+	for _, destination := range destinations {
+		if _, err := s.flushDestination(ctx, transport, destination); err != nil && ctx.Err() == nil {
+			log.Printf("federation: delivering to %s: %v", destination, err)
+		}
+	}
+}
+
+// queueDeviceListSnapshot hands a set of servers the whole device list of one of our users,
+// one update per device.
+//
+// A join is not a change to a device list, it is the first time a server is entitled to know
+// about one - so there is nothing for a delta to build on, and the list itself goes over. Each
+// device gets its own update and its own place in the user's sequence, which is what keeps the
+// chain of prev_id values the receiver checks intact.
+//
+// A user with no devices at all - which this server would not normally have - gets one update
+// with no device in it, the form the specification uses to say "this user's list is not what you
+// have"; a peer that reads it goes and asks, which it can now that asking is implemented.
+func (s *Service) queueDeviceListSnapshot(ctx context.Context, userID string, destinations []string) {
+	if len(destinations) == 0 {
+		return
+	}
+	// The list is of devices, not of key uploads. A device that has not published keys yet is
+	// still a device the user has - it is what a client is before its first key upload - and a
+	// peer that is never told about it has no reason to ask, so the user looks like somebody with
+	// no devices at all until the first upload happens.
+	devices, err := s.db.DeviceRepo.List(userID)
+	if err != nil {
+		log.Printf("federation: the devices of %s are unknown, so nothing was announced: %v", userID, err)
+		return
+	}
+	for _, device := range devices {
+		s.queueDeviceListForPeers(ctx, userID, device.DeviceID, false, int64(s.nextStreamPos()), destinations)
+	}
+	if len(devices) == 0 {
+		s.queueDeviceListForPeers(ctx, userID, "", false, int64(s.nextStreamPos()), destinations)
+	}
 }
 
 // queueSigningKeysForPeers announces new cross-signing keys for one of this server's
@@ -579,8 +690,15 @@ func (s *Service) flushDestination(ctx context.Context, transport *federation.Tr
 		defer lock.Unlock()
 	}
 
+	// One attempt gets a shorter bound than an interactive federation query. A peer that has
+	// gone quiet without refusing - packets dropped, a container stopped but still named - would
+	// otherwise hold this destination for the whole of the request timeout, and the queue's
+	// promise is that a recovered peer is retried promptly rather than at the end of one attempt.
+	attemptCtx, cancel := context.WithTimeout(ctx, outboxAttemptTimeout)
+	defer cancel()
+
 	if outstanding, err := s.db.OutboxRepo.Outstanding(destination); err == nil {
-		return s.attemptTransaction(ctx, transport, outstanding)
+		return s.attemptTransaction(attemptCtx, transport, outstanding)
 	} else if !persist.IsNotFound(err) {
 		return 0, matrix.ErrInternal(err)
 	}
@@ -606,7 +724,7 @@ func (s *Service) flushDestination(ctx context.Context, transport *federation.Tr
 	if err := s.db.OutboxRepo.Pack(txn); err != nil {
 		return 0, matrix.ErrInternal(err)
 	}
-	return s.attemptTransaction(ctx, transport, txn)
+	return s.attemptTransaction(attemptCtx, transport, txn)
 }
 
 // attemptTransaction puts one transaction on the wire, and records either the answer or

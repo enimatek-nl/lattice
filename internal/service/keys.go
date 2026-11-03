@@ -110,7 +110,7 @@ func (s *Service) storeDeviceKey(ctx context.Context, params KeyUploadParams) er
 	// A peer holding a stale picture of this user's devices sends encrypted messages to
 	// a device that no longer exists, and they never arrive. The device list update is
 	// how that picture is kept current without a round trip per message.
-	s.queueDeviceListForPeers(ctx, params.UserID, params.DeviceID, false, int64(pos))
+	s.queueDeviceListForPeers(ctx, params.UserID, params.DeviceID, false, int64(pos), nil)
 	s.Notify()
 	return nil
 }
@@ -226,10 +226,13 @@ type KeyQueryResult struct {
 	UserSigningKeys map[string]matrix.Object `json:"user_signing_keys,omitempty"`
 }
 
-// QueryKeys returns the published device keys of the requested users. An empty
-// device list for a user asks for every device of that user. The requester is
-// needed because their own user-signing key is the only one reported.
-func (s *Service) QueryKeys(ctx context.Context, requester string, wanted map[string][]string) (*KeyQueryResult, error) {
+// localKeyQuery returns the device keys this server holds for the requested users.
+// An empty device list for a user asks for every device of that user. The requester
+// is needed because their own user-signing key is the only one reported.
+//
+// Only rows of this server are read. The endpoint that answers a client is
+// [Service.QueryKeys], which adds the users this server has to ask somebody else about.
+func (s *Service) localKeyQuery(ctx context.Context, requester string, wanted map[string][]string) (*KeyQueryResult, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -308,11 +311,14 @@ type KeyClaimResult struct {
 	Failures    matrix.Object                                  `json:"failures"`
 }
 
-// ClaimKeys hands out one one-time key per requested device. A key is marked
-// taken by a conditional update, so two concurrent claims never receive the same
-// key; when a device has run out of ordinary prekeys its fallback key is handed
-// out without being consumed, as MSC3288 asks.
-func (s *Service) ClaimKeys(ctx context.Context, request map[string]map[string]string) (*KeyClaimResult, error) {
+// localKeyClaim hands out one one-time key per requested device of this server's own
+// users. A key is marked taken by a conditional update, so two concurrent claims never
+// receive the same key; when a device has run out of ordinary prekeys its fallback key is
+// handed out without being consumed, as MSC3288 asks.
+//
+// Only this server's users are served here; [Service.ClaimKeys] adds the devices that live
+// on another server, which can only be answered by asking the server that holds them.
+func (s *Service) localKeyClaim(ctx context.Context, request map[string]map[string]string) (*KeyClaimResult, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -444,7 +450,11 @@ func (s *Service) DeviceListChanges(ctx context.Context, viewer string, from, to
 		if seen[change.UserID] {
 			continue
 		}
-		seen[change.UserID] = true
+		// A user is only marked as reported once the change is actually going to be reported.
+		// Marking it first lets the change a device made itself - which is skipped, see above -
+		// stand in for the change another device of the same user made a moment later, and the
+		// client never hears about the second one. That is how adding a laptop on one machine
+		// leaves every other machine encrypting to a device list it has stopped being told about.
 		if change.UserID == viewer && change.DeviceID != "" && change.DeviceID == excludeDevice {
 			continue
 		}
@@ -457,6 +467,7 @@ func (s *Service) DeviceListChanges(ctx context.Context, viewer string, from, to
 				continue
 			}
 		}
+		seen[change.UserID] = true
 		lists.Changed = append(lists.Changed, change.UserID)
 	}
 	if len(lists.Changed) == 0 {
@@ -517,7 +528,7 @@ func (s *Service) recordDeviceListChange(ctx context.Context, kind, userID strin
 	if err := s.db.DeviceListRepo.Append(change); err != nil {
 		return matrix.ErrInternal(err)
 	}
-	s.queueDeviceListForPeers(ctx, userID, change.DeviceID, kind == persist.DeviceListLeft, int64(pos))
+	s.queueDeviceListForPeers(ctx, userID, change.DeviceID, kind == persist.DeviceListLeft, int64(pos), nil)
 	s.Notify()
 	return nil
 }

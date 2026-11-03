@@ -173,7 +173,16 @@ func (s *Service) Media(ctx context.Context, origin, mediaID string) (*persist.M
 		return nil, matrix.ErrNotFound("no such media id")
 	}
 	if origin != s.serverName {
-		return nil, matrix.ErrNotFound("media %s is not hosted by this server", mediaID)
+		// The content belongs to another server, but this one may already hold a copy of it -
+		// that is the point of caching. The copy is served without a round trip; only the first
+		// ask for a piece of content leaves the building.
+		if media, err := s.db.MediaRepo.Get(origin, mediaID); err == nil && (media.Size > 0 || len(media.Blob) > 0) {
+			return media, nil
+		}
+		// A client is entitled to ask its own server for anybody's mxc URI - that is what the URI
+		// means - so this is answered by fetching from the server the URI names and keeping the
+		// copy, rather than telling the client to go introduce itself.
+		return s.RemoteMedia(ctx, origin, mediaID)
 	}
 	media, err := s.db.MediaRepo.Get(origin, mediaID)
 	if err != nil {
@@ -196,16 +205,33 @@ func (s *Service) Media(ctx context.Context, origin, mediaID string) (*persist.M
 // "crop". Non-image content yields a not found error, which is how homeservers
 // report missing thumbnails.
 func (s *Service) Thumbnail(ctx context.Context, origin, mediaID string, width, height int, method string) ([]byte, string, error) {
+	if origin != s.serverName {
+		// Scaling content this server does not hold would mean pulling the whole original down for
+		// a picture a few kilobytes wide, so the server that has it is asked and its answer is
+		// passed on. A copy already here is scaled here, because the file is on the disk and the
+		// peer is not owed a second look at it.
+		if media, err := s.db.MediaRepo.Get(origin, mediaID); err == nil && len(media.Blob) > 0 {
+			return s.thumbnailOf(media, width, height, method)
+		}
+		return s.RemoteThumbnail(ctx, origin, mediaID, width, height, method)
+	}
 	media, err := s.Media(ctx, origin, mediaID)
 	if err != nil {
 		return nil, "", err
 	}
+	return s.thumbnailOf(media, width, height, method)
+}
+
+// thumbnailOf scales the bytes of a media row. It is separate from the lookup because a
+// thumbnail can be made from a copy this server holds of somebody else's content as well as
+// from content this server hosts.
+func (s *Service) thumbnailOf(media *persist.Media, width, height int, method string) ([]byte, string, error) {
 	if width <= 0 || height <= 0 {
 		return nil, "", matrix.ErrInvalidParam("width and height must be positive")
 	}
 	src, _, err := image.Decode(bytes.NewReader(media.Blob))
 	if err != nil {
-		return nil, "", matrix.ErrNotFound("media %s has no thumbnail", mediaID)
+		return nil, "", matrix.ErrNotFound("media %s has no thumbnail", media.MediaID)
 	}
 	scaled := scaleImage(src, width, height, method == "crop")
 	var buf bytes.Buffer

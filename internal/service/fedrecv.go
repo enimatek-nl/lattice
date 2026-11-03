@@ -362,7 +362,7 @@ func (s *Service) applyEDU(ctx context.Context, peer string, edu matrix.Object) 
 	case "m.direct_to_device":
 		return s.applyToDeviceEDU(peer, content)
 	case "m.device_list_update":
-		return s.applyDeviceListEDU(peer, content)
+		return s.applyDeviceListEDU(ctx, peer, content)
 	case "m.signing_key_update":
 		return s.applySigningKeyEDU(peer, content)
 	case "m.presence":
@@ -536,11 +536,14 @@ func (s *Service) applyToDeviceEDU(peer string, content matrix.Object) error {
 
 // applyDeviceListEDU folds one incremental change to a remote user's device list into
 // this server's cache.
-func (s *Service) applyDeviceListEDU(peer string, content matrix.Object) error {
+func (s *Service) applyDeviceListEDU(ctx context.Context, peer string, content matrix.Object) error {
 	userID, _ := content["user_id"].(string)
+	// The device is optional. An update that names no device says "the whole list of this user
+	// is no longer what you have", which is what a server sends when it has a list to hand over
+	// rather than one change to it, and what a receiver should read as a reason to ask again.
 	deviceID, _ := content["device_id"].(string)
-	if userID == "" || deviceID == "" {
-		return fmt.Errorf("a device list update must name a user and a device")
+	if userID == "" {
+		return fmt.Errorf("a device list update must name a user")
 	}
 	if err := belongsToServer(userID, peer); err != nil {
 		return err
@@ -573,14 +576,37 @@ func (s *Service) applyDeviceListEDU(peer string, content matrix.Object) error {
 	if keys, ok := asObject(content["keys"]); ok {
 		device.KeyJSON = string(mustCanonical(keys))
 	}
-	if device.Deleted {
+	switch {
+	case deviceID == "":
+		// Nothing to cache: the copy this server holds of this user's devices is now suspect,
+		// and the next question about them goes back to the owner rather than being answered
+		// from a list the owner just disowned.
+		devices, err := s.db.RemoteDeviceRepo.ForUser(userID)
+		if err != nil {
+			return fmt.Errorf("listing the cached devices of %s: %w", userID, err)
+		}
+		for _, cached := range devices {
+			cached.Deleted = true
+			cached.SeenTS = s.NowMS()
+			if err := s.db.RemoteDeviceRepo.Set(cached); err != nil {
+				return fmt.Errorf("invalidating the cached device %s of %s: %w", cached.DeviceID, userID, err)
+			}
+		}
+	case device.Deleted:
 		if err := s.db.RemoteDeviceRepo.Forget(userID, deviceID); err != nil {
 			return fmt.Errorf("forgetting the device %s of %s: %w", deviceID, userID, err)
 		}
-	} else {
+	default:
 		if err := s.db.RemoteDeviceRepo.Set(device); err != nil {
 			return fmt.Errorf("caching the device %s of %s: %w", deviceID, userID, err)
 		}
+	}
+	// A client of this server whose rooms contain this user has to learn that the device
+	// list it was told about changed. The local half of a device list update is recorded
+	// here, not relayed: this server did not make the change and cannot vouch for it, but it
+	// can say that somebody did.
+	if err := s.recordDeviceListChange(ctx, persist.DeviceListChanged, userID, deviceID); err != nil {
+		return fmt.Errorf("recording the device list change of %s: %w", userID, err)
 	}
 	stream, err := s.db.DeviceStreamRepo.Advance(userID, streamID, predecessors, s.NowMS())
 	if err != nil {
