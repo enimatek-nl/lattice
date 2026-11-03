@@ -43,19 +43,30 @@ because it said nothing these steps do not.
   and `make_leave`/`send_leave` served and sent, the state a peer hands over persisted
   and usable, remote aliases resolved through `/query/directory`, and a room's decision
   about a user (ban, unban, invite, kick, leave) reaching the server that user lives on.
-  The plan continues at **step 11**; steps 11 to 13 are driven
-  test-by-test against Complement's server-server suite, each naming the tests it
-  is expected to turn green, and step 14 wraps the release.
+  Steps 9 to 13 are done and **step 14** wrapped the release: the two-server scenario
+  table runs through the join handshake rather than through rows a test wrote, and both
+  Complement packages have a recorded tally.
 - Against [Complement](https://github.com/matrix-org/complement), the upstream
-  Matrix suite, **40 of 106** client-API tests fail (`make complement`) and **69 of
-  91** server-server tests fail (`make complement COMPLEMENT_PKG=./tests`) — up from
-  4 green before step 10. The membership handshakes are green — join, leave, and the
-  invitation shipped with the state that authorises it — along with the guards that
-  refuse a wrong membership at each of those doors.
+  Matrix suite, **40 of 107** client-API tests fail (`make complement`) and **54 of
+  91** server-server tests fail — 37 green, up from 4 green before step 10 and 22 green
+  before step 11. Green now: the membership handshakes and their guards, the graph and
+  state reads a peer needs to judge what it is sent, gap filling both ways, profiles and
+  the room directory, spaces and `/hierarchy`, OpenID exchange, device lists, key
+  queries and claims, and `TestContentMediaV1`.
   See _Complement_ below for how they run, what a run can hide, and what each remaining
-  failure is waiting for. The transport itself is not among the reasons: most of
-  what is left is a peer answering `M_UNRECOGNIZED` to a handshake Lattice does not
-  serve yet — knock, and the rest of the graph-reading queries of step 11 (`backfill`, `timestamp_to_event`).
+  failure is waiting for. The transport itself is not among the reasons: the bulk is
+  knocking and restricted rooms (client-side join rules and the space summary that
+  authorises them), room versions past v11, application services, and presence. The
+  two exceptions worth naming are `TestToDeviceMessagesOverFederation`'s outage cases
+  (a queued to-device message is not delivered inside Complement's 30s window after a
+  peer restart, which the in-repo timer and backoff tests do not reproduce) and
+  `TestMediaFilenames` / `TestMediaWithoutFileName`.
+- The three bugs the federation suite found were not federation bugs: access tokens died
+  at every restart (the signing secret was per process, the sessions are in the
+  database), the event stream counter was re-seeded from the events table alone (so a
+  restarted server re-issued positions and clients holding a later token saw nothing),
+  and a device list change made by one of a user's other devices never reached that
+  user's own sync.
 - Federation is live behind `-federation` (default off): a persisted ed25519
   signing key, `/_matrix/key/v2/*`, `/_matrix/federation/v1/version`,
   `/_matrix/federation/v1/user/devices/{userId}`,
@@ -1245,25 +1256,63 @@ backoff tests (`tests/federation/timer_test.go`) do not reproduce.
 
 ### 14. Federation IX — a two-server suite that does not cheat, and the wrap
 
-- [ ] Rewrite the in-repo two-server cases that seed `Room`/`RoomMembership` rows
-      so the membership is the result of step 10's handshake; keep the seeded form
-      where it tests storage rather than flow. The scenario table stays: join,
-      invite→join, messages both ways, typing, receipts, to-device, remote
-      profile/keys, leave, knock, backfill, soft-fail (ban, then an event
-      referencing pre-ban state), transaction retry idempotence.
-- [ ] Run both Complement packages and record the tallies here and in README:
-      `make complement` and `make complement COMPLEMENT_PKG=./tests`.
-- [ ] Regenerate `ENDPOINTS.md`: the federation count should move from 3/31 to
-      near-complete, with the media-admin endpoints, the CS-protocol proxying, and
-      whatever the deferred list above names still open.
-- [ ] README's federation section: what `-federation` turns on, TLS and the
-      certificate, `-federation-address`, `-federation-peer`, `-insecure`, and the
-      fact that rooms federate by default with `-no-federation` to opt out.
-- [ ] Decide `0.2.0` (client API complete) / `1.0.0` (with federation) tagging.
-      The release machinery exists since 2026-11-03 (`Dockerfile`,
-      `.github/workflows/image.yml`): pushing `vX.Y.Z` publishes the multi-arch
-      image, and the job refuses a tag that is not `LatticeVersion` — so a release is
-      "bump the constant, commit, tag", whichever number is chosen.
+- [x] Rewrite the in-repo two-server cases that seed `Room`/`RoomMembership` rows so the
+      membership is the result of step 10's handshake; keep the seeded form where it tests
+      storage rather than flow. *(The harness gained `shareRoomByJoin`: the room invites
+      the peer's user when it is made and that user's server joins, and the helper then
+      fails the test if either server holds no joined membership or the joiner holds no
+      room row — so the facts a later assertion leans on are checked rather than assumed.
+      The outbox tests that send, type, receipt and exclude now start that way, which also
+      exposed a counting mistake those tests had been making happily: a join handshake puts
+      the joiner's own event on the wire, so "how many events did the peer receive" was
+      measuring the guest list. `TestTheFederationScenarioTableRunsWithoutSeeds` is the
+      table — join, invite→join, messages both ways, typing, receipts, to-device, remote
+      profile, remote device keys, leave, backfill, soft-fail after a ban, a retried
+      transaction applied once — twelve subtests, each on two servers that had never heard
+      of each other's users. Two rows of the original list are named rather than faked:
+      **knock** cannot cross a server boundary yet, and the **backfill** row goes over
+      `GET /federation/v1/backfill` because a client's `/messages` still does not reach
+      across a gap in its own history. The intake tests keep their hand-written join and
+      say why: they are about what a server does with an event that arrives — authorisation,
+      soft-failing, intake order — and a real handshake in the middle of each would add a
+      minute of protocol and hide the thing under test.)*
+- [x] Run both Complement packages and record the tallies here and in README. Measured
+      2026-11-03 against Complement v1.19 at `/tmp/complement`, image
+      `localhost/lattice-complement:latest`:
+      * `tests/csapi` — **40 red of 107** (67 green).
+      * `tests` (server-server) — **54 red of 91** (37 green), against 4 green before
+        step 10 and 22 green before step 11. Green includes the join/leave/invite
+        handshakes, the graph and state reads, `backfill` and `timestamp_to_event`,
+        profiles, the room directory and `publicRooms`, `/hierarchy`, OpenID exchange,
+        `TestDeviceListsUpdateOverFederation` (all three connectivity cases),
+        `TestFederationKeyUploadQuery`, `TestToDeviceMessagesOverFederation` with good
+        connectivity, and `TestContentMediaV1`. The 54 red are dominated by knocking and
+        restricted rooms (~17), room versions past v11 (~13), application services and
+        presence; the ones that are Lattice's own federation bugs are the two to-device
+        outage cases and `TestMediaFilenames` / `TestMediaWithoutFileName`.
+- [x] Regenerate `ENDPOINTS.md`: **177 of 234** indexed endpoints implemented, 37 extra
+      routes (the admin aliases, `/_synapse/admin/*`, the refresh and device flows that
+      the index lists under other names). Federation is near-complete; what is left in
+      the index is the media-admin set, the CS-protocol proxying for rooms this server
+      does not host, and the deferred list above.
+- [x] README's federation section: what `-federation` turns on — including the
+      cross-server encryption plumbing and federated media step 13 built — the TLS
+      settings **as the flags actually are** (`-tls-addr`, `-tls-cert`, `-tls-key`,
+      `-federation-advertise`, `-federation-peer`; there is no `-federation-address`,
+      `-insecure` or `-no-federation`, and the plan's names for them are retired), and
+      the fact that rooms are federated unless the creator says otherwise in
+      `creation_content`. Also corrected: a generated `-jwt-secret` now survives a
+      restart, which is what the step 13 bug fixed.
+- [x] Decide `0.2.0` / `1.0.0`. **0.2.0**, bumped in `service.LatticeVersion` and the
+      Swagger version. The reasoning is that "1.0.0 with federation" would promise
+      federation as a settled default, and it is not: it is off until switched on,
+      knocking does not cross a server boundary, restricted-room `join_authorised_via_users_server`
+      is missing, and a peer's key is trusted only by its own signature rather than a
+      notary's. Those are the four things that would make it 1.0.0. The release
+      machinery (`Dockerfile`, `.github/workflows/image.yml`) publishes the multi-arch
+      image on a pushed `vX.Y.Z` tag that must equal `LatticeVersion`, so the release
+      itself is `git tag v0.2.0 && git push --tags` — left to the operator, since
+      pushing a tag publishes an image.
 ### What else the server-server package holds, and who owns it
 
 Steps 9 to 13 name 37 of the 87 red. The other 50 sit in that package because

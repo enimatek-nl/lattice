@@ -11,11 +11,12 @@ join rooms on other servers, and their rooms can receive yours. Encryption happe
 in the clients; Lattice relays the key material, verifies the cross-signing keys
 that decide what a client trusts, and stores room-key backups it cannot read.
 
-> **Alpha.** Version `0.1.0`. This is the first release: it is complete for what it
-> aims at — hosting one person's account and talking to the rest of Matrix about
-> rooms up to **room version 11** — and it is honest about the rest, listed under
-> [What is not there yet](#what-is-not-there-yet). Nothing about the on-disk format
-> or the flags is stable promise yet.
+> **Alpha.** Version `0.2.0`: the client-server API Lattice aims at, plus
+> federation — rooms up to **room version 11**, signed peer requests, the
+> membership handshakes, cross-server encryption plumbing and federated media.
+> Still alpha, not because federation is unfinished at its own terms but because it
+> is off until you turn it on, knocking does not cross a server boundary yet, and
+> nothing about the on-disk format or the flags is a stable promise.
 
 ---
 
