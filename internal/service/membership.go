@@ -261,7 +261,18 @@ func (s *Service) InviteRoom(ctx context.Context, roomID, inviter, invitee, reas
 func (s *Service) KnockRoom(ctx context.Context, idOrAlias, userID, reason string) (string, error) {
 	room, err := s.MustRoom(ctx, idOrAlias)
 	if err != nil {
+		// A room held nowhere here is not a room that cannot be knocked on - it is a room
+		// that lives on another server, and the knock has to be carried there.
+		if matrix.HasCode(err, matrix.ErrCodeNotFound) && strings.HasPrefix(idOrAlias, "!") {
+			if _, ferr := s.KnockFederatedRoom(ctx, idOrAlias, userID, reason); ferr != nil {
+				return "", ferr
+			}
+			return idOrAlias, nil
+		}
 		return "", err
+	}
+	if !s.LocalRoom(room.ID) {
+		return s.KnockFederatedRoom(ctx, room.ID, userID, reason)
 	}
 	joinRule, err := s.db.StateRepo.JoinRule(room.ID)
 	if err != nil {
@@ -299,7 +310,12 @@ func (s *Service) knockProblemWith(ctx context.Context, joinRule, current string
 	if joinRule != matrix.JoinRulesKnock && joinRule != matrix.JoinRulesKnockRestricted {
 		return matrix.ErrForbidden("this room does not allow knocking")
 	}
-	if current != "" {
+	// A knock can be made again. The room answers a knock with an invite or a refusal, and a
+	// refusal is a leave - so "I have already knocked" would bar the second try of the one
+	// sequence knocking exists for. A knock of a user already in the room, already invited,
+	// or banned is not a request but a mistake: the room has already answered that user.
+	switch current {
+	case matrix.MembershipJoin, matrix.MembershipInvite, matrix.MembershipBan:
 		return matrix.ErrForbidden("you already have a membership in this room")
 	}
 	return nil

@@ -114,6 +114,17 @@ func (a *App) registerFederationRoutes() {
 	a.federated("PUT /_matrix/federation/v2/send_leave/{roomID}/{eventID}", a.handleFederationSendLeave)
 	// An invite is the one membership a server receives without asking for it, so it has
 	// its own endpoint: the inviting server ships the state the invite is authorised by.
+	// A knock is a request to join, and the room has to see it: the knocking server signs the
+	// knock against a graph it does not hold, so it asks for the shape first. The plain knock
+	// endpoint is the same event carried between servers that hold a copy of the room without
+	// hosting it - a user of a server already in the room still has to be able to knock.
+	a.federated("GET /_matrix/federation/v1/make_knock/{roomID}/{userID}", a.handleFederationMakeKnock)
+	a.federated("GET /_matrix/federation/v2/make_knock/{roomID}/{userID}", a.handleFederationMakeKnock)
+	a.federated("PUT /_matrix/federation/v1/send_knock/{roomID}/{eventID}", a.handleFederationSendKnock)
+	a.federated("PUT /_matrix/federation/v2/send_knock/{roomID}/{eventID}", a.handleFederationSendKnock)
+	a.federated("POST /_matrix/federation/v1/knock/{roomID}/{eventID}", a.handleFederationKnock)
+	a.federated("POST /_matrix/federation/v2/knock/{roomID}/{eventID}", a.handleFederationKnock)
+
 	a.federated("PUT /_matrix/federation/v1/invite/{roomID}/{eventID}", a.handleFederationInvite)
 	a.federated("PUT /_matrix/federation/v2/invite/{roomID}/{eventID}", a.handleFederationInvite)
 
@@ -279,6 +290,100 @@ func (a *App) handleFederationMakeLeave(w http.ResponseWriter, r *http.Request) 
 //	@Failure	403	{object}	matrix.Error	"The room's rules refuse the leave"
 //	@Router	/_matrix/federation/v1/send_leave/{roomID}/{eventID} [put]
 //	@Router	/_matrix/federation/v2/send_leave/{roomID}/{eventID} [put]
+//
+// handleFederationMakeKnock answers GET of make_knock: the room version and the shape of the
+// knock that would attach to this server's graph.
+//
+//	@Summary	Ask which events a knock must build on
+//	@Description	Serves a peer the room version and the knock-event template whose prev_events and auth_events come from this server's graph.
+//	@Tags	federation
+//	@Produce	json
+//	@Param	roomID	path	string	true	"Room ID"
+//	@Param	userID	path	string	true	"User knocking on the room"
+//	@Success	200	{object}	matrix.Object	"room_version and event"
+//	@Failure	403	{object}	matrix.Error	"The room excludes that server"
+//	@Failure	404	{object}	matrix.Error	"No such room"
+//	@Router	/_matrix/federation/v1/make_knock/{roomID}/{userID} [get]
+//	@Router	/_matrix/federation/v2/make_knock/{roomID}/{userID} [get]
+func (a *App) handleFederationMakeKnock(w http.ResponseWriter, r *http.Request) {
+	answer, err := a.svc.ServeMakeKnock(r.Context(), r.PathValue("roomID"), r.PathValue("userID"),
+		federation.Peer(r.Context()))
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, answer)
+}
+
+// handleFederationSendKnock answers PUT of send_knock: a knock event a peer signed for a room
+// this server hosts.
+//
+//	@Summary	Take a knock a peer signed
+//	@Description	Validates a knock event for a room hosted here, applies it, and relays it to the rest of the room.
+//	@Tags	federation
+//	@Accept	json
+//	@Produce	json
+//	@Param	roomID	path	string	true	"Room ID"
+//	@Param	eventID	path	string	true	"Event id of the knock event"
+//	@Success	200	{object}	matrix.Object	"empty, and agreed"
+//	@Failure	400	{object}	matrix.Error	"The event is not a knock by the sender of itself"
+//	@Failure	403	{object}	matrix.Error	"The room's rules refuse the knock"
+//	@Router	/_matrix/federation/v1/send_knock/{roomID}/{eventID} [put]
+//	@Router	/_matrix/federation/v2/send_knock/{roomID}/{eventID} [put]
+func (a *App) handleFederationSendKnock(w http.ResponseWriter, r *http.Request) {
+	event, err := federationBody(r)
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	event, err = eventInBody(event)
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	answer, err := a.svc.ServeSendKnock(r.Context(), r.PathValue("roomID"), r.PathValue("eventID"), event,
+		federation.Peer(r.Context()))
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, answer)
+}
+
+// handleFederationKnock answers POST of knock: a knock carried between servers that hold a
+// copy of the room.
+//
+//	@Summary	Carry a knock towards the room's server
+//	@Description	Accepts a knock of a peer's user, taking it when the room is hosted here and passing it on when it is not.
+//	@Tags	federation
+//	@Accept	json
+//	@Produce	json
+//	@Param	roomID	path	string	true	"Room ID"
+//	@Param	eventID	path	string	true	"Event id of the knock event"
+//	@Success	200	{object}	matrix.Object	"empty, and agreed"
+//	@Failure	400	{object}	matrix.Error	"The event is not a knock by the sender of itself"
+//	@Router	/_matrix/federation/v1/knock/{roomID}/{eventID} [post]
+//	@Router	/_matrix/federation/v2/knock/{roomID}/{eventID} [post]
+func (a *App) handleFederationKnock(w http.ResponseWriter, r *http.Request) {
+	event, err := federationBody(r)
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	event, err = eventInBody(event)
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	answer, err := a.svc.ServeKnock(r.Context(), r.PathValue("roomID"), r.PathValue("eventID"), event,
+		federation.Peer(r.Context()))
+	if err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, answer)
+}
+
 func (a *App) handleFederationSendLeave(w http.ResponseWriter, r *http.Request) {
 	event, err := federationBody(r)
 	if err != nil {
@@ -946,6 +1051,16 @@ func (a *App) handleSendTransaction(w http.ResponseWriter, r *http.Request) {
 // encodes to, so a body that passes through float64 on the way in becomes an event that
 // its own content hash does not cover - the difference is invisible in a log and fatal
 // at the first signature check.
+// eventInBody reads the event a knock endpoint carries. Unlike send_leave, whose body is
+// the event, the knock endpoints wrap it: {"event": ...}.
+func eventInBody(body matrix.Object) (matrix.Object, error) {
+	event, ok := body["event"].(matrix.Object)
+	if !ok {
+		return nil, matrix.ErrInvalidRequest("the body carries no event")
+	}
+	return event, nil
+}
+
 func federationBody(r *http.Request) (matrix.Object, error) {
 	raw, err := io.ReadAll(io.LimitReader(r.Body, federation.MaxTransactionBytes))
 	if err != nil {
