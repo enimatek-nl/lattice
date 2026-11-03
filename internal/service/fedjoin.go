@@ -778,6 +778,16 @@ func (s *Service) ServeSendJoin(ctx context.Context, roomID, eventID string, eve
 	if err := s.storeIncomingPDU(ctx, judged, eventID, "", false); err != nil {
 		return nil, err
 	}
+	// The join has to be carried to the rest of the room. Answering the joining server alone
+	// leaves the room's other servers with a member they have never heard of: they leave the
+	// new server out of their fan-out, their member lists disagree, and the room is left with
+	// copies of itself that do not agree about who is in it.
+	if stored, err := s.db.EventRepo.Get(eventID); err == nil {
+		s.queueEventForPeersExcept(ctx, stored, version, peer)
+	} else {
+		log.Printf("federation: the join of %s in %s was accepted but cannot be read back to relay it: %v",
+			federation.EventField(judged, "state_key"), roomID, err)
+	}
 	state, err := s.roomStateForTransport(ctx, roomID, version)
 	if err != nil {
 		return nil, err

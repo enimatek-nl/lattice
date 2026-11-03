@@ -162,6 +162,10 @@ func TestARestrictedRoomAskedAloneRefusesWhenItCannotVouch(t *testing.T) {
 		t.Fatalf("charlie joining with the room's server in the list: status %d (body %s), want 200", got.Status, got.Raw)
 	}
 	awaitMembership(t, hs1, room, charlie.UserID, "join")
+	// The join was answered by the room's own server, and the room's other servers have to be
+	// told about it. A server that was asked first and could not answer is still a server in the
+	// room, with a copy of the room to keep.
+	awaitMembership(t, hs2, room, charlie.UserID, "join")
 }
 
 // restrictedPair makes a restricted room and the room its rule reads, both hosted by host and
