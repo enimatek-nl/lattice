@@ -748,7 +748,7 @@ func (s *Service) joinAuthoriser(ctx context.Context, roomID, joiningUser string
 		}
 		for _, id := range rooms {
 			for _, want := range allowed {
-				if id == want {
+				if id == want && s.canReadMembershipOf(want) {
 					return user
 				}
 			}
@@ -763,7 +763,7 @@ func (s *Service) joinAuthoriser(ctx context.Context, roomID, joiningUser string
 	if admits, err := s.db.MembershipRepo.RoomsFor(joiningUser, matrix.MembershipJoin); err == nil {
 		for _, id := range admits {
 			for _, want := range allowed {
-				if id == want {
+				if id == want && s.canReadMembershipOf(want) {
 					return joiningUser
 				}
 			}
@@ -940,6 +940,27 @@ func (s *Service) joinIsAuthorised(roomID string, event matrix.Object, version s
 	return ""
 }
 
+// canReadMembershipOf reports whether this server may treat "is this user in that room" as a fact.
+// Either it hosts the room, or it still has a member there. A copy of a room this server has left is
+// frozen: nothing arrives to update it, and a rule read from it is a rule read from the day the last
+// member walked out. Answering from that copy is how a server ends up certain about a room that has
+// moved on without it.
+func (s *Service) canReadMembershipOf(roomID string) bool {
+	if _, err := s.db.RoomRepo.Get(roomID); err != nil {
+		return false
+	}
+	members, err := s.db.MembershipRepo.Members(roomID, matrix.MembershipJoin)
+	if err != nil {
+		return false
+	}
+	for _, member := range members {
+		if matrix.DomainOf(member.UserID) == s.serverName {
+			return true
+		}
+	}
+	return false
+}
+
 // A claim naming somebody other than the joiner does not lift the requirement on the joiner. The
 // room's rule is read against the joiner's own membership: Synapse, the server every other server
 // has to agree with in the end, refuses a join by a person who belongs to none of the rooms on the
@@ -963,7 +984,7 @@ func (s *Service) restrictedJoinIsAdmitted(ctx context.Context, roomID string, e
 	}
 	hosted, admitted := 0, false
 	for _, room := range allowed {
-		if _, err := s.db.RoomRepo.Get(room); err != nil {
+		if !s.canReadMembershipOf(room) {
 			continue
 		}
 		hosted++
@@ -998,7 +1019,7 @@ func (s *Service) restrictedJoinIsAdmitted(ctx context.Context, roomID string, e
 	}
 	for _, id := range witnessRooms {
 		for _, want := range allowed {
-			if id == want {
+			if id == want && s.canReadMembershipOf(want) {
 				return ""
 			}
 		}
