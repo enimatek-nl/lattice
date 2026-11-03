@@ -21,13 +21,22 @@ const (
 	Admin = 100
 	// DefaultUser is the level of a member the room has not named.
 	DefaultUser = 0
-	// DefaultInvite, DefaultKick, DefaultBan and DefaultRedact are the levels the
-	// membership actions ask for. Inviting is open to everyone, the rest is an
-	// administrator's job.
-	DefaultInvite = 0
+	// DefaultKick, DefaultBan and DefaultRedact are the levels the membership
+	// actions of an administrator ask for.
 	DefaultKick   = 50
 	DefaultBan    = 50
 	DefaultRedact = 50
+	// DefaultInvite is the level inviting somebody asks for when the room has not
+	// said. The specification's two chapters disagree here, and have done since
+	// matrix-org/matrix-spec#1187: the client-server chapter reads "invite" as
+	// defaulting to 0, the authorisation chapter - the one that decides whether an
+	// event may be sent at all - reads invite, kick, ban and redact as all
+	// defaulting to 50. The other implementations enforce 50, so a room built by a
+	// server that used 0 is a room whose members can invite in one place and not in
+	// another, and the difference is invisible to whoever joins it. A room's
+	// permissions have to be the strict reading that every server applies to it,
+	// and the room says so in the levels event it creates.
+	DefaultInvite = 50
 	// DefaultState is the level required to change a state event that the room
 	// has not given its own level.
 	DefaultState = 50

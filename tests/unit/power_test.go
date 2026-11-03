@@ -18,7 +18,11 @@ func TestPowerDefaults(t *testing.T) {
 		got  int64
 		want int64
 	}{
-		{name: "invite", got: levels.Invite, want: 0},
+		// The authorisation chapter, which is the one that decides whether an event may be
+		// sent, reads invite alongside kick, ban and redact: all four default to 50. The
+		// client-server chapter says 0; the other implementations enforce 50, and a room whose
+		// permissions depend on which chapter a server read is not one room but two.
+		{name: "invite", got: levels.Invite, want: 50},
 		{name: "kick", got: levels.Kick, want: 50},
 		{name: "ban", got: levels.Ban, want: 50},
 		{name: "redact", got: levels.Redact, want: 50},
@@ -39,6 +43,12 @@ func TestPowerDefaults(t *testing.T) {
 // A decoded event cannot tell an absent field from an explicit 0, so kick, ban
 // and redact fall back to 50: reading an absent field as 0 would let every
 // member of a plain room ban everybody else.
+//
+// invite is left as the event reads, because the safe direction is the other way
+// round. Rooms set "invite": 0 on purpose, to let anybody bring somebody in;
+// reading that as the default 50 would lock a room that had said it was open. A
+// room that says nothing keeps the permissive reading, and a room this server
+// creates writes the level it actually enforces.
 func TestApplyDefaults(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -53,6 +63,7 @@ func TestApplyDefaults(t *testing.T) {
 			name: "an empty event gets the specification defaults",
 			in:   matrix.PowerLevelsContent{},
 			kick: 50, ban: 50, redact: 50, invite: 0,
+			comment: "an absent invite key is kept open: rooms say \"invite\": 0 on purpose",
 		},
 		{
 			name: "an explicit level is kept",
