@@ -2447,17 +2447,29 @@ Done so far:
   syncing client in `TestRestrictedRoomsLocalJoin`.
 - `TestRestrictedRoomsLocalJoin` is green in Complement (all five subtests).
 
+Green now: `TestRestrictedRoomsLocalJoin`, `TestRestrictedRoomsRemoteJoin`,
+`TestRestrictedRoomsLocalJoinNoCreatorsUsesPowerLevelsV11`. The remote half needed the
+authorising user: `ServeMakeJoin` names one of its own users who is joined, holds the room's
+invite level and belongs to one of the allowed rooms; `joinViaServer` copies that name out of the
+template into the signed event; `ServeSendJoin` judges the pair - the joiner must belong to the
+allowed rooms this server hosts (an invitation is its own admission), and the witness must be a
+user of this server or of the server in front of it, and a member of one of those rooms. The
+witness also has to be part of the join's **auth events**, which is why make_join chooses it
+before selecting them: a chain built from `{"membership": "join"}` alone is refused the next time
+the room reads it, which showed up as a leave being rejected. A failed federated join now carries
+the refusing server's reason instead of a bare M_NOT_FOUND.
+
 Still red, and what each needs:
 
-- `TestRestrictedRoomsRemoteJoin`, `...LocalUser`, `...FailOver`,
-  `...NoCreatorsUsesPowerLevelsV11`: the authorising user. The server **answering** `make_join`
-  for a restricted room has to name a user it can vouch for — local to itself, joined to the
-  room, holding the room's invite level, and joined to one of the allowed rooms — return it in
-  the `make_join` response (`org.matrix.msc2175.join_authorised_via_users_server`), and check it
-  when the `send_join` arrives. Our outbound join has to copy that value into the member event.
-  Our current error for the case is "the room is joined through a space, and the event names no
-  authorising user". If the answering server has nobody to vouch for, `make_join` must refuse so
-  the joining client fails over to another server.
+- `TestRestrictedRoomsRemoteJoinLocalUser`: a joining server with a local user who may invite and
+  belongs to an allowed room should authorise the join **itself** and do a local join, rather than
+  asking the room's server. That needs a locally originated membership in a room this server holds
+  but does not host.
+- `TestRestrictedRoomsRemoteJoinFailOver`: a join asked with `via=[hs2]` where hs2 is not in the
+  room must fail rather than reach the room's own server anyway; our attempt list adds the room's
+  origin server, Synapse tries only the servers it was given (plus one it can vouch for itself).
+- `TestRestrictedRoomsSpacesSummaryLocal/Federation`: the space summary a restricted join is
+  authorised through, for a space this server does not host.
 - `TestRestrictedRoomsSpacesSummaryLocal/Federation`: the space summary a restricted join is
   authorised through, for a space this server does not host.
 - `TestKnocking`, `TestCannotSendNonKnockViaSendKnock`, `TestKnockRoomsInPublicRoomsDirectory`:
