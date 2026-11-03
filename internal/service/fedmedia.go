@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 
+	"github.com/enimatek-nl/lattice/internal/federation"
 	"github.com/enimatek-nl/lattice/internal/matrix"
 	"github.com/enimatek-nl/lattice/internal/persist"
 )
@@ -47,8 +48,7 @@ func (s *Service) RemoteMedia(ctx context.Context, origin, mediaID string) (*per
 	}
 	// The peer decides how big its own content is, so this server puts a ceiling on how much of
 	// it it is willing to hold in memory rather than agreeing in advance to whatever arrives.
-	header, raw, err := transport.GetRaw(ctx, origin,
-		"/_matrix/federation/v1/media/download/"+url.PathEscape(mediaID), nil, s.MaxUploadSize())
+	header, raw, err := askForMedia(ctx, transport, origin, mediaFetchPaths(origin, "download", mediaID, nil), s.MaxUploadSize())
 	if err != nil {
 		log.Printf("federation: asking %s for the media %s: %v", origin, mediaID, err)
 		return nil, matrix.ErrNotFound("%s could not be asked for the media %s", origin, mediaID)
@@ -93,8 +93,7 @@ func (s *Service) RemoteThumbnail(ctx context.Context, origin, mediaID string, w
 		"height": []string{fmt.Sprintf("%d", height)},
 		"method": []string{method},
 	}
-	header, raw, err := transport.GetRaw(ctx, origin,
-		"/_matrix/federation/v1/media/thumbnail/"+url.PathEscape(mediaID), query, s.MaxUploadSize())
+	header, raw, err := askForMedia(ctx, transport, origin, mediaFetchPaths(origin, "thumbnail", mediaID, query), s.MaxUploadSize())
 	if err != nil {
 		log.Printf("federation: asking %s for a thumbnail of %s: %v", origin, mediaID, err)
 		return nil, "", matrix.ErrNotFound("%s could not be asked for a thumbnail of %s", origin, mediaID)
@@ -169,3 +168,42 @@ func splitMediaMultipart(header http.Header, raw []byte) (contentType, fileName 
 // kilobyte is already generous, and an answer that spends its first part on something else is
 // not a description this server has any use for.
 const maxMediaDescription = 4 << 10
+
+// mediaFetchPaths names the places a peer may answer media on, newest first.
+//
+// The authenticated federation endpoints are where the specification put media, and they name no
+// origin: a peer is asked for content by id because the mxc URI the client is holding already says
+// whose content it is. The unauthenticated /_matrix/media paths, which carry the origin in the URL,
+// are what servers that predate that change answer. Asking only the new one leaves a user looking
+// at a broken avatar because the server that hosts it has not caught up, so both are asked.
+func mediaFetchPaths(origin, kind, mediaID string, query url.Values) []string {
+	if query == nil {
+		query = url.Values{}
+	}
+	suffix := ""
+	if encoded := query.Encode(); encoded != "" {
+		suffix = "?" + encoded
+	}
+	id := url.PathEscape(mediaID)
+	peer := url.PathEscape(origin)
+	return []string{
+		"/_matrix/federation/v1/media/" + kind + "/" + id + suffix,
+		"/_matrix/media/v3/" + kind + "/" + peer + "/" + id + suffix,
+	}
+}
+
+// askForMedia walks mediaFetchPaths until a peer answers. Trying the next path after any failure is
+// deliberate: a peer without the authenticated endpoint says so in whatever way it knows how -
+// M_UNRECOGNIZED, a 404, an error page - and one extra request to a server that truly has no such
+// content is cheaper than content that never arrives.
+func askForMedia(ctx context.Context, transport *federation.Transport, origin string, paths []string, limit int64) (map[string][]string, []byte, error) {
+	var lastErr error
+	for _, path := range paths {
+		header, raw, err := transport.GetRaw(ctx, origin, path, nil, limit)
+		if err == nil {
+			return header, raw, nil
+		}
+		lastErr = err
+	}
+	return nil, nil, lastErr
+}
