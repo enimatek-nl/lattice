@@ -1255,6 +1255,15 @@ form. Two rules to keep: never map two slots to one LiveKit room, and always map
 members of one slot to the same LiveKit room — that is what keeps the number of
 connections proportional to the number of servers rather than of members.
 
+Two things are pinned here because a review had them backwards, and backwards here means
+an interop failure rather than a style difference. The client asks for a token with a
+flat `member_id`, not with a `member` object carrying a `device_id`: that object shape
+and the three-element identity hash around it belong to the legacy OpenID/`sfu/get`
+flow the standalone service still supports. And issuance must not be gated on an open
+slot or a live member event, because the MSC's own sequence has the client connect to
+the SFU before it publishes the member event that records the connection — the check
+belongs at the SFU's participant-joined webhook, with a short `exp` covering the gap.
+
 ### What is already in place
 
 - `PUT /rooms/{roomId}/send/{eventType}/{txnId}` and `/state/{eventType}/{stateKey}`
@@ -1277,30 +1286,70 @@ event path cannot carry MSC4354 at all. That is the largest piece of work below.
 
 ### The steps (numbered L1.. so they do not collide with the release plan above)
 
+Work them in the order **L1, L2, L3, L5, L4, L6**: everything up to and including L5
+has to be reliable with one server and one SFU before cross-server token relays and
+delegated leave add a second failure domain to every one of them.
+
 #### L1. Announce the SFU and sign tokens for local users
 
 - [ ] `internal/service/livekit.go`: the two derivations above, and `JoinToken`
-      building the MSC4195 grant set. Pin the derivations with fixed vectors in
-      `tests/unit` — a silent change to a room name puts the participants of one call
-      in different LiveKit rooms, and the bug looks like a media failure.
+      building the MSC4195 grant set. Pin the derivations against vectors from outside
+      this repo, and they already line up: with `matrix.CanonicalJSON` and
+      `base64.RawStdEncoding`, verified 2026-11-03,
+      `["!roomid:example.com","slot1234"]` hashes to
+      `O8437W3+jmzMVjoIP3tNwbm+XxHQk2iKpOA7aqw3qSc` (MSC4195's own example) and
+      `["@alice:example.com","memberABC"]` to
+      `M3VnsLXrkbxIDINXO64u8PZzFyD9ZYFiQULR2dshWYs` (the one the Rust service tests).
+      A silent change to a room name puts the participants of one call in different
+      LiveKit rooms, and the bug looks like a media failure.
+- [ ] Take the request and response shapes from the current MSC and the current
+      clients, not from an older snapshot: `room_id`, `slot_id`, `url`, `member_id`
+      and an optional `server_name`, all at the top level — the flat `member_id` is
+      what the JS SDK's `LivekitGetTokenRequest` and the reference service's request
+      structs use. A `member` object carrying `device_id` belongs to the legacy
+      OpenID/`sfu/get` flow, which is also why that service still carries a legacy
+      identity built from `(mxid, device_id, member_id)` rather than the current
+      `(mxid, member_id)` pair. Copying the legacy shape by mistake means a client
+      sends one thing and the server hashes another.
+- [ ] Validate the three flags at startup rather than at the first call: the URL must
+      parse, a `ws://` URL is allowed but warned about, and an empty key with a set
+      secret (or the other way round) is a start-up failure rather than a call that
+      fails an hour later. The startup line that reports settings taken from the
+      environment prints flag names — `livekit-secret` appears there, its value never
+      does — and that is the rule to keep.
 - [ ] Routes: `GET /_matrix/client/v1/rtc/transports` (plus the
       `unstable/org.matrix.msc4143/rtc/transports` twin) answering
       `{"transports":[{"type":"m.livekit","url":…}]}`, empty when unconfigured; and
       `POST /_matrix/client/v1/rtc/livekit/get_token` plus the
       `unstable/io.element.msc4195/rtc/livekit/get_token` twin that current clients
       call. Rate limit both like the other expensive writes.
-- [ ] The rejections exactly as the MSC has them: requester not joined → 403
-      `M_FORBIDDEN`; `server_name` naming another server → 403 until L4 exists; `url`
-      that is not the configured SFU → 400 `M_INVALID_PARAM`. Compare the URL after
-      normalising scheme and host, not byte for byte.
-- [ ] `/versions`: advertise `org.matrix.msc4143`, `org.matrix.msc4195` and
-      `org.matrix.msc4354` in `unstable_features`, and only while configured.
+- [ ] The rejections exactly as the MSC has them, and no more: requester not joined
+      → 403 `M_FORBIDDEN`; `server_name` naming another server → 403 until L4 exists;
+      `url` that is not the configured SFU → 400 `M_INVALID_PARAM`. Compare the URL
+      after normalising scheme and host, not byte for byte. Do not invent further
+      gates at issuance time: MSC4195's own sequence has the client get the token and
+      **connect to the SFU before it publishes its `m.rtc.member` event**, so an
+      issuance that demanded an open slot or a live member event rejects the join it
+      is supposed to authorise. Slot and member validity are enforced where the MSC
+      puts them — at the SFU's participant-joined webhook, in L5 — with the short
+      `exp` bounding the window in between.
+- [ ] Identity comes from the access token. The `member_id` in the body says which of
+      the requester's own memberships to derive the participant identity for; the
+      sender half of that derivation is the authenticated user, never anything in the
+      request. Same rule on the federation endpoint, where `user_id` must match the
+      origin server's name. A test that one user cannot obtain a token for another
+      user's `member_id` is the one that keeps this true.
+- [ ] `/versions`: advertise `org.matrix.msc4143` and `org.matrix.msc4195` in
+      `unstable_features`, and only while configured. `org.matrix.msc4354` waits for
+      L2 — advertising stickiness the server cannot yet deliver invites clients to use
+      a path that silently drops their member events.
 - [ ] `deploy/livekit/`: a compose file and a `livekit.yaml` whose `keys:` match the
       flags, `room.auto_create: true` for now, and the port list below. Flags without
       a runnable SFU are not easy, so this belongs in the step and not in a footnote.
 - [ ] `tests/compat/livekit_test.go`: the transports body with and without
       configuration; a table over the get_token accept/reject matrix; the issued JWT
-      parsed back and its grants asserted field by field.
+      parsed back and its grants asserted field by field; and the impersonation case
+      above.
 - [ ] Done when Element Call in a browser completes a two-user local call against
       Lattice and a real LiveKit.
 
@@ -1318,7 +1367,17 @@ compute.
       `org.matrix.msc4354.sticky_duration_ms`), strictly positive, clamped to
       3 600 000; store the expiry next to the event, computed from
       `min(received_ts, origin_server_ts)` so a forged future origin timestamp cannot
-      extend a membership.
+      extend a membership. The expiry is a column and expiry is a query — not a map of
+      Go timers — because the set of live memberships has to be reconstructable after a
+      restart, a database restore, and a sync resuming from an old token, and a timer
+      list is none of those things.
+- [ ] Sticky lifetime is its own thing, not the timeline's: an event can be current in
+      the sticky set while outside the synced timeline window, and expired from the
+      sticky set while staying in history. Retention or pruning of the timeline must
+      not be what decides whether a membership is live. And no dedupe by sender: the
+      clients key memberships on `(sender, type, content.sticky_key)`, keeping the last
+      to expire, so several devices of one user are several memberships and collapsing
+      them by user ID empties a call when someone's second device joins.
 - [ ] A `sticky.events` section per joined room in the sync response: deduplicated
       against the timeline, the RoomFilter's timeline filter applied **before** that
       dedupe, ignored users omitted, history visibility not applied, capped (100 is the
@@ -1330,7 +1389,13 @@ compute.
       oldest expired first, so one client cannot fill the send queue.
 - [ ] Tests: expiry arithmetic and clamping as a unit table; a compat case that sends
       a member event, syncs with `timeline: {limit: 1}` and finds the event in
-      `sticky.events`; cases for the dedupe and for an ignored sender.
+      `sticky.events`; cases for the dedupe and for an ignored sender; and one that
+      restarts the server between the send and the sync, which is the case an
+      in-memory design fails.
+- [ ] Four landings rather than one commit: representation and persistence, then
+      expiry and sync, then federation, then filtering and redaction with the compat
+      cases. The PDU stays the source of truth throughout — an index for expiry, never
+      a second copy of the event.
 
 #### L3. Slots, and letting an ordinary member start a call
 
@@ -1360,24 +1425,79 @@ compute.
 - [ ] Publishing from remote users: MSC4195 recommends allowing it, and the upstream
       service allows it by default. Allow, and name the flag here if it is ever
       narrowed.
+- [ ] Worth understanding before writing it: this server's authorization can only ever
+      cover this server's users and this server's SFU. A token for a foreign SFU comes
+      back signed by the *other* homeserver, and that server decided the grants — the
+      MSC says to accept external SFUs "with care" for exactly this reason. So there is
+      no cross-server grant model to design here; there is a trust decision about which
+      servers' signatures an SFU accepts, and `-livekit-url` naming one SFU keeps that
+      decision small.
 - [ ] Tests: a two-server case in `tests/federation`, including a banned user whose
-      relayed request is refused.
+      relayed request is refused, and a peer that answers malformed JSON or times out
+      (502 `M_UNKNOWN`, nothing leaked). What goes back to a client is the peer's 403
+      or 400 and nothing else: no signing material, no internal SFU address.
 
 #### L5. Room creation, and getting rid of participants
 
 - [ ] Create the LiveKit room before answering get_token — MSC4195 requires it to exist
       — then set `room.auto_create: false` in the example config. With auto-create on,
       any holder of any token can create rooms on the SFU, which is also why
-      `roomCreate` must stay false in the grants.
+      `roomCreate` must stay false in the grants. Make the creation idempotent: two
+      users asking at once both find no room, and one of them will get an
+      already-exists error back. That case continues after checking the room is the one
+      expected; every other creation error is a failure, not evidence of a race.
 - [ ] Remove the participant from the LiveKit room when a user leaves or is banned,
-      with `revoke_token_ts` set to now. Since self-hosted LiveKit cannot revoke a
-      token yet, re-check room membership whenever the SFU's participant webhook
-      reports a join, and remove them again when the check fails.
-- [ ] Decide the dependency here rather than by accident: LiveKit's RoomService is a
-      Twirp API, and the two calls needed (`CreateRoom`, `RemoveParticipant`) come
-      down to `github.com/livekit/server-sdk-go` versus hand-rolled requests on the
-      JWT signing already in the tree. This repo keeps five direct dependencies; weigh
-      that before adding a sixth.
+      with `revoke_token_ts` set to now. Removing a participant is not revoking their
+      token: self-hosted LiveKit cannot revoke yet, so a removed participant can walk
+      back in on the same unexpired JWT. That is why the enforcement point is the
+      SFU's participant-joined webhook — re-check room membership on every join and
+      remove again — and why `exp` stays short.
+- [ ] Verify the webhook the way LiveKit signs it, not with a compare of a shared
+      secret: the POST carries `Authorization: Bearer <JWT>` minted by the SFU from an
+      API key, so it is parsed with the configured secret and the key checked against
+      `-livekit-key` — which is exactly what the reference service's webhook receiver
+      does. Handlers then have to be idempotent and safe against duplicate and
+      out-of-order deliveries, and off the request-serving goroutines.
+- [ ] Reconcile rather than trust: webhooks are not a durable log, so one missed
+      delivery must not leave someone connected for the rest of the hour. Periodically
+      list the SFU's participants and compare them against MatrixRTC state, removing
+      participants whose Matrix membership or open slot no longer holds and reporting
+      LiveKit rooms nobody is in. This belongs on the existing maintenance loop
+      (`StartMaintenance`), not in the request path, and it is what makes a Lattice or
+      LiveKit restart recover on its own.
+- [ ] Tests for exactly the parts that are easy to get wrong: a participant removed
+      after a leave who then reconnects with the same unexpired JWT is removed again
+      (the interesting half — that `RemoveParticipant` works is the easy half); a
+      webhook POST signed with the wrong key is refused; two simultaneous token
+      requests for one room end with one room and two tokens; a call survives a restart
+      of Lattice and a restart of the SFU.
+- [ ] Decide the dependency here rather than by accident, and the answer is no: the
+      official `github.com/livekit/server-sdk-go/v2` exists, and its `go.mod` requires
+      moby/buildkit, containerd, pion/webrtc, cel-go, psrpc, grpc, protobuf, zap and a
+      cgo `opus` binding — a few hundred modules for the two RoomService calls this step
+      needs (`CreateRoom`, `RemoveParticipant`), and a C toolchain in the graph while
+      the release image builds `CGO_ENABLED=0`. Hand-roll those two Twirp calls on the
+      HTTP client and JWT signing already in the tree; the SDK becomes interesting only
+      if the participant listing and webhook handling above start costing more than the
+      dependency would.
+
+#### M1. A local call that survives its own edges — the gate before federation
+
+Acceptance for L1+L2+L3+L5, all of it on one server with one SFU:
+
+- [ ] Two accounts join, publish audio and video, and see each other.
+- [ ] A third account joining late sees the two already in the call — the case sticky
+      events exist for.
+- [ ] Leaving removes the participant; rejoining works; a ban removes the participant
+      and a ban mid-call removes them while connected.
+- [ ] Closing the slot ends the call for new joiners — enforced where the decision is
+      made, in the participant-joined check, with the slot's open state as part of what
+      that check requires — while issuance itself keeps behaving as L1 defines it.
+- [ ] Restarting Lattice loses no live membership, because the expiry is in the row.
+- [ ] Restarting LiveKit leaves Matrix state alone, and the reconciliation loop clears
+      whatever the SFU lost.
+- [ ] Killing the webhook delivery (point `webhook.urls` at a black hole) still ends
+      the membership within the reconcile period rather than never.
 
 #### L6. Delayed events, and delegating the deadman switch
 
@@ -1388,10 +1508,10 @@ compute.
       `delay_id` to an event this same user scheduled in this same room, one
       delegation per (room, slot, member, MXID), a later `delay_id` invalidating the
       earlier one.
-- [ ] The SFU webhook endpoint, verified with the same key and secret: keep restarting
-      the delegated event while the participant is connected, send the leave when they
-      are gone. Webhooks carry no delivery guarantee, so poll the SFU as well as
-      listening to it.
+- [ ] The same webhook handler L5 verifies and dispatches, extended to keep restarting
+      the delegated event while the participant is connected and to send the leave when
+      they are gone. Webhooks carry no delivery guarantee, so the reconciliation loop
+      polls the SFU as well as listening to it.
 
 ### TURN, ports, and what the operator still runs
 
@@ -1439,6 +1559,17 @@ are done, with three things left on the operator's side: `keys:` matching
 - Multi-SFU: `transports` is an array and MSC4195 is designed around several SFUs per
   server and per room. One URL per server first; a repeatable `-livekit-url` is a
   decision for later, not a gap in these steps.
+- Failure behaviour to define per step, since Matrix and LiveKit have separate state
+  and separate failure domains: LiveKit down means token issuance fails and the
+  homeserver keeps working; a Lattice restart recovers stickiness from the database;
+  a lost webhook is healed by reconciliation; a federation peer being unreachable
+  fails remote tokens and never blocks a local call. Nothing in this feature may make
+  the homeserver itself unavailable when the SFU is.
+- No metrics: Lattice has no metrics subsystem, and inventing one inside a feature
+  step is a decision in disguise. Failures here surface as log lines naming the room,
+  the slot and the pseudonymised participant — never a JWT, a secret, or a raw
+  participant identity that a log could be correlated back to. If counters are ever
+  wanted, they are their own step.
 - Ringing and invitations for MatrixRTC sessions (MSC4075) are not merged and are not
   part of these steps.
 
