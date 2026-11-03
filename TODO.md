@@ -797,10 +797,14 @@ and it is the first step to turn Complement server-server tests green: **17 of t
       a `send_leave`), and applied and relayed to the rest of the room when accepted. A
       local user leaving a room this server does not host goes through that server,
       which is the only way the room's own list of members stops being wrong.
-- [ ] Knock (`make_knock`/`send_knock` v1/v2; the client-side knock already exists),
-      which is what `TestKnocking`, `TestKnockingInMSC3787Room`,
-      `TestCannotSendNonKnockViaSendKnock` and
-      `TestCannotSendKnockViaSendKnockInMSC3787Room` wait on.
+- [x] Knock over federation: `GET /v1|v2/make_knock/{roomID}/{userID}`,
+      `PUT /v1|v2/send_knock/{roomID}/{eventID}` and `POST /v1|v2/knock/{roomID}/{eventID}`
+      (the last carries a knock between servers that hold a copy of the room without hosting
+      it). The room's server answers with agreement, not state, and queues the knock for the
+      rest of the room; a knock may be made again, and only a user the room has already
+      answered - joined, invited, banned - is refused. `TestKnocking`,
+      `TestKnockingInMSC3787Room`, `TestKnockRoomsInPublicRoomsDirectory` and
+      `TestCannotSendNonKnockViaSendKnock` are green.
 - [ ] Invites over the dedicated endpoint: `PUT /v1|v2/invite/{roomId}/{eventId}`,
       whose `invite_room_state` must carry `m.room.create`. A local `/invite` of a
       remote user already reaches them today by the ordinary event relay, which is
@@ -2421,6 +2425,14 @@ knocking and restricted rooms, room versions past v11, application services, pre
 `TestACLsForEDUs`.
 
 ### 17. Federation XII — knocking and restricted rooms (in progress)
+One rule that was not about knocking and showed up there: **a state key is described once per
+sync response.** The state block used to carry the room's current state while the timeline carried
+the events, so a room knocked on twice arrived with two versions of `m.room.member/@bob` in one
+answer - and a check, or a client, that reads the state first never reaches the older membership in
+the timeline. The state block now describes the room around the timeline instead of repeating it.
+Anything that reads sync responses should expect that: a state key appears in `state` or in
+`timeline`, not both.
+
 
 Aimed at the knock/restricted block of the Complement red list, and explicitly **not** at
 MSC3787 (`...InMSC3787Room` — restricted rooms back-ported to room versions 1-3), MSC4289
@@ -2480,22 +2492,34 @@ before selecting them: a chain built from `{"membership": "join"}` alone is refu
 the room reads it, which showed up as a leave being rejected. A failed federated join now carries
 the refusing server's reason instead of a bare M_NOT_FOUND.
 
+Green since, and what each needed:
+
+- Knocking (`TestKnocking`, `TestKnockingInMSC3787Room`, `TestKnockRoomsInPublicRoomsDirectory`
+  both variants, `TestCannotSendNonKnockViaSendKnock`): `make_knock`/`send_knock`/`knock` in v1
+  and v2, inbound and outbound; the knock queued for the rest of the room once the room took it;
+  a knock allowed to be made again; the `knock` section of `/sync` filled in (it was declared and
+  never written); the room directory saying each room's `join_rule`; and the state rule below.
+- `TestRestrictedRoomsRemoteJoinFailOver` (both variants): a server that holds the room, has a
+  member who may invite and belongs to the admitting room admits the join on its own word
+  (`joinThroughLocalWitness`, `joinRoomLocally`); the attempt list no longer adds the room's own
+  server behind the client's back; and `ServeSendJoin` queues the join it accepted for the rest
+  of the room, which is the half that was missing for the server asked first.
+- An outbound invite now carries `room_version` — a v2 invite is a v3-format event, and the
+  invited server has no copy of the room to learn the version from. Complement's stub refused the
+  invite with "unsupported room version ''" until it did.
+
 Still red, and what each needs:
 
-- `TestRestrictedRoomsRemoteJoinLocalUser`: a joining server with a local user who may invite and
-  belongs to an allowed room should authorise the join **itself** and do a local join, rather than
-  asking the room's server. That needs a locally originated membership in a room this server holds
-  but does not host.
-- `TestRestrictedRoomsRemoteJoinFailOver`: a join asked with `via=[hs2]` where hs2 is not in the
-  room must fail rather than reach the room's own server anyway; our attempt list adds the room's
-  origin server, Synapse tries only the servers it was given (plus one it can vouch for itself).
+- `TestRestrictedRoomsRemoteJoinLocalUser`: it now reaches the last sync check. A server that was
+  **invited** into a restricted room answers a later join there with "room X needs an invite to
+  join" — `joinAllowed` reads `invite` from state where the room says `restricted`, so the state
+  bundle our invite path stores on the invited server is missing the join rule, or an old version
+  of it.
 - `TestRestrictedRoomsSpacesSummaryLocal/Federation`: the space summary a restricted join is
   authorised through, for a space this server does not host.
-- `TestRestrictedRoomsSpacesSummaryLocal/Federation`: the space summary a restricted join is
-  authorised through, for a space this server does not host.
-- `TestKnocking`, `TestCannotSendNonKnockViaSendKnock`, `TestKnockRoomsInPublicRoomsDirectory`:
-  knocking over federation — `GET /_matrix/federation/v1/make_knock/{roomID}/{userID}` (and v2)
-  and `PUT /_matrix/federation/v1/send_knock/{roomID}/{eventID}` (and v2), inbound and outbound,
-  with the knock's `reason` and the invite that answers it. `TestKnocking` also invites a user
-  on Complement's stub server and our invite got `404`: the stub answers `v2/invite` (the signed
-  form), so our outbound invite has to try that form.
+- The `...InMSC3787Room` and `...V12` variants: rooms of version 12, which this server does not
+  offer. Deliberate for now, and it wants a decision about v12 rather than a fix.
+- New from the wider sweep: `TestJoinFederatedRoomFromApplicationServiceBridgeUser` — an
+  appservice virtual user asking to join a remote room is answered `401 M_UNKNOWN`: the request
+  authenticates as the appservice, and the user it names has no device here. Application services
+  and user-identified requests are their own piece of work.
