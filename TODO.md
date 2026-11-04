@@ -27,7 +27,7 @@ because it said nothing these steps do not.
 
 - A working homeserver with its **federation transport in production shape**:
   `make build vet lint` clean (`make lint` = golangci-lint, 0 issues),
-  `go test ./...` green — **135** compatibility tests (~60 s here, ~5½ min
+  `go test ./...` green — **139** compatibility tests (~62 s here, ~5½ min
   with `-race` on this machine), **70** offline unit tests in `tests/unit`
   (milliseconds), and **84** two-server tests in `tests/federation` (~40 s,
   ~56 s with `-race`). Coverage: **168 of the 234** indexed endpoints, 33 extra
@@ -54,8 +54,9 @@ because it said nothing these steps do not.
   the room directory, spaces and `/hierarchy`, OpenID exchange, device lists, key
   queries and claims, and `TestContentMediaV1`.
   See _Complement_ below for how they run, what a run can hide, and what each remaining
-  failure is waiting for. The transport itself is not among the reasons: knocking,
-  restricted rooms and the space summary that authorises them are green (steps 17 and 18);
+  failure is waiting for. A room's rules are read once, by one list, for what this server
+  writes and what a peer sends (step 20). The transport itself is not among the reasons:
+  knocking, restricted rooms and the space summary that authorises them are green (steps 17-19);
   what is left is room versions past v11, application services, presence, the federation
   `PUT /invite` endpoint, and redaction of an event the peer has never seen. The
   The federation
