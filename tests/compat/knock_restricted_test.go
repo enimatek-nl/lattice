@@ -34,6 +34,13 @@ func TestAKnockRestrictedRoomAdmitsItsOwnWithoutAKnock(t *testing.T) {
 	if join := server.Do(http.MethodPost, "/_matrix/client/v3/join/"+roomID, bob.Token, map[string]any{}); join.Status != http.StatusForbidden {
 		t.Fatalf("bob joining a room he belongs to nothing in: status %d (body %s), want 403", join.Status, join.Raw)
 	}
+	// The same door through the state endpoint, which is the other way a client writes a
+	// membership: the guard is the room's rule either way.
+	if write := server.Do(http.MethodPut, "/_matrix/client/v3/rooms/"+roomID+"/state/m.room.member/"+bob.UserID,
+		bob.Token, map[string]any{"membership": "join"}); write.Status != http.StatusForbidden {
+		t.Fatalf("bob writing his own join through the state endpoint: status %d (body %s), want 403",
+			write.Status, write.Raw)
+	}
 
 	// Bob belongs to the space now. He does not knock: the room reads its allow list, sees him
 	// there, and lets him in.
@@ -63,11 +70,22 @@ func TestAKnockRestrictedRoomAdmitsItsOwnWithoutAKnock(t *testing.T) {
 		map[string]any{"reason": "i work with bob"}); knock.Status != http.StatusOK {
 		t.Fatalf("carol knocking on a knock_restricted room: status %d (body %s), want 200", knock.Status, knock.Raw)
 	}
-	// Knocking is her way of being seen; it is not a door. Whether a knock alone lets her join is a
-	// question this server currently answers the other way, and that answer is recorded rather than
-	// asserted here, so the difference is visible instead of buried.
+	// Knocking is her way of being seen; it is not a door. The room now has her question in its
+	// state and has not answered it, and a join reads the question as the answer.
 	knockJoin := server.Do(http.MethodPost, "/_matrix/client/v3/join/"+roomID, carol.Token, map[string]any{})
-	t.Logf("carol joining on her knock alone: status %d", knockJoin.Status)
+	if knockJoin.Status != http.StatusForbidden {
+		t.Fatalf("carol joining on her unanswered knock: status %d (body %s), want 403 until the room answers",
+			knockJoin.Status, knockJoin.Raw)
+	}
+
+	// The answer, and the join it permits.
+	if invite := server.Do(http.MethodPost, "/_matrix/client/v3/rooms/"+roomID+"/invite", alice.Token,
+		map[string]any{"user_id": carol.UserID}); invite.Status != http.StatusOK {
+		t.Fatalf("alice letting carol in: %d %s", invite.Status, invite.Raw)
+	}
+	if join := server.Do(http.MethodPost, "/_matrix/client/v3/join/"+roomID, carol.Token, map[string]any{}); join.Status != http.StatusOK {
+		t.Fatalf("carol joining after the room answered her knock: status %d (body %s), want 200", join.Status, join.Raw)
+	}
 }
 
 // TestARestrictedRoomsSummaryNamesTheRoomsThatAdmit is the same rule read from the other end: a
@@ -102,5 +120,36 @@ func TestARestrictedRoomsSummaryNamesTheRoomsThatAdmit(t *testing.T) {
 	other := server.MustDo(http.MethodGet, "/_matrix/client/v1/room_summary/"+private, alice.Token, nil, http.StatusOK)
 	if _, found := other.Body["allowed_room_ids"]; found {
 		t.Errorf("a room with no allow list carries allowed_room_ids anyway: %s", other.Raw)
+	}
+}
+
+// TestAKnockIsNotADoor is the same rule in a plain knock room. Knocking is how an outsider asks;
+// the room's answer is an invite. Accepting the join on the strength of the knock is a bug a server
+// cannot see in itself: it looks like working, and the only room it is true in is this one.
+func TestAKnockIsNotADoor(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	bob := server.Register("bob", "rubberduck")
+
+	roomID := server.CreateRoom(alice, map[string]any{"preset": "private_chat", "name": "the locked room"})
+	if set := server.Do(http.MethodPut, "/_matrix/client/v3/rooms/"+roomID+"/state/m.room.join_rules", alice.Token,
+		map[string]any{"join_rule": "knock"}); set.Status != http.StatusOK {
+		t.Fatalf("opening the room to knocking: %d %s", set.Status, set.Raw)
+	}
+	if knock := server.Do(http.MethodPost, "/_matrix/client/v3/knock/"+roomID, bob.Token,
+		map[string]any{"reason": "let me in"}); knock.Status != http.StatusOK {
+		t.Fatalf("bob knocking: %d %s", knock.Status, knock.Raw)
+	}
+	// The knock is in the room's state, which is what makes this a decision rather than a
+	// missing fact: the room knows bob asked, and has not said yes.
+	if join := server.Do(http.MethodPost, "/_matrix/client/v3/join/"+roomID, bob.Token, map[string]any{}); join.Status != http.StatusForbidden {
+		t.Fatalf("bob joining on his unanswered knock: status %d (body %s), want 403", join.Status, join.Raw)
+	}
+	if invite := server.Do(http.MethodPost, "/_matrix/client/v3/rooms/"+roomID+"/invite", alice.Token,
+		map[string]any{"user_id": bob.UserID}); invite.Status != http.StatusOK {
+		t.Fatalf("alice inviting bob: %d %s", invite.Status, invite.Raw)
+	}
+	if join := server.Do(http.MethodPost, "/_matrix/client/v3/join/"+roomID, bob.Token, map[string]any{}); join.Status != http.StatusOK {
+		t.Fatalf("bob joining once invited: status %d (body %s), want 200", join.Status, join.Raw)
 	}
 }

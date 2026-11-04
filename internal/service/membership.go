@@ -166,20 +166,24 @@ func (s *Service) joinRuleProblem(ctx context.Context, roomID, userID, current s
 		}
 		return nil
 	case matrix.JoinRulesKnock:
-		if current != matrix.MembershipKnock && current != matrix.MembershipInvite {
-			return matrix.ErrForbidden("you must knock on this room before joining")
+		// A knock is a question, not a door. It puts the asker into the room's state so the room
+		// can answer, and the answer that lets them in is an invite. Joining on the knock alone
+		// reads the ask as the answer, and it is the sort of error a server cannot see from the
+		// outside: this server let its own user in, while every peer holding the same room
+		// refuses the same join, because the rules as written ask for an invite.
+		if current != matrix.MembershipInvite {
+			return matrix.ErrForbidden("this room is joined by invitation, and your knock has to be answered first")
 		}
 		return nil
 	case matrix.JoinRulesKnockRestricted:
-		// A knock_restricted room answers two ways. Whoever the allow list admits walks in on
-		// that; the rest have to knock and wait for an invite. Requiring the knock first turns
-		// the half the rule exists for - admitting a member of another room - into a wait, and
-		// a room that admits its own space's members through a knock is not that room.
+		// Two ways in, and neither of them is the knock itself. Whoever the allow list admits
+		// walks in on that; the rest have knocked, which is how they asked, and now wait for the
+		// room to answer.
 		if s.restrictedJoinAllowed(ctx, roomID, userID) {
 			return nil
 		}
-		if current != matrix.MembershipKnock && current != matrix.MembershipInvite {
-			return matrix.ErrForbidden("you must knock on this room before joining")
+		if current != matrix.MembershipInvite {
+			return matrix.ErrForbidden("this room is joined through another room or by invitation, and your knock has to be answered first")
 		}
 		return nil
 	case matrix.JoinRulesRestricted:
