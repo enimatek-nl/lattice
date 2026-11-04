@@ -102,6 +102,41 @@ func (s *Service) HandleSendTransaction(ctx context.Context, peer, txnID string,
 	return answer, nil
 }
 
+// guessRoomVersion is the version an event for a room this server does not know belongs
+// to. The identifier says most of it: a room id written as a hash exists only in the
+// versions that make room ids that way, and an event that names itself can be hashed
+// under each candidate - the version that reproduces the id the peer sent is the version
+// the room is in. The default is the answer only when the event gives nothing to check.
+func (s *Service) guessRoomVersion(pdu matrix.Object, roomID string) string {
+	hashed := matrix.IsHashedRoomID(roomID)
+	// An event that names itself can be checked exactly: the version that reproduces the id
+	// the peer sent is the version the room is in.
+	if id := federation.EventField(pdu, "event_id"); id != "" {
+		named := withEventID(pdu, id)
+		for _, candidate := range s.roomVersions {
+			if eventcrypto.UsesHashedRoomIDs(candidate) != hashed {
+				continue
+			}
+			if derived, err := eventcrypto.EventID(named, candidate); err == nil && derived == id {
+				return candidate
+			}
+		}
+	}
+	// Nothing to check. This server's default is the answer, unless the identifier says the
+	// room is from the other family of versions - a hashed room id comes only from a version
+	// that hashes room ids - in which case the first such version this server speaks stands
+	// in, rather than a default that could not name the room at all.
+	if eventcrypto.UsesHashedRoomIDs(DefaultRoomVersion) == hashed {
+		return DefaultRoomVersion
+	}
+	for _, candidate := range s.roomVersions {
+		if eventcrypto.UsesHashedRoomIDs(candidate) == hashed {
+			return candidate
+		}
+	}
+	return DefaultRoomVersion
+}
+
 // queuePDU stores an event a peer sent, and returns the id it is answered under and an
 // empty problem string when it was taken.
 //
@@ -142,11 +177,14 @@ func (s *Service) queuePDU(ctx context.Context, peer, txnID string, pdu matrix.O
 			matrix.DomainOf(federation.EventField(pdu, "state_key")) != s.serverName {
 			return eventID, "this server is not in the room the event belongs to"
 		}
-		// The room version is not known yet, and the version decides how an event is
-		// named. The version this server creates rooms with is used to name the event in
-		// the meantime: for the versions in common use that is the same name, and the
-		// join that follows replaces the guess with the room's real version.
-		version = DefaultRoomVersion
+		// The room version is not known yet, and the version decides how the event is named
+		// and what shape its fields take. This server's default is only a safe guess for the
+		// versions that hash events alike; a room whose id is a hash belongs to the versions
+		// that hash room ids, and no other version can even read such an identifier. So the
+		// identifier and the event's own id narrow the choice, and the default is what is left
+		// when neither says anything. The join that follows replaces the guess with the room's
+		// real version.
+		version = s.guessRoomVersion(pdu, roomID)
 	}
 	if eventID == "" {
 		derived, err := eventcrypto.EventID(pdu, version)

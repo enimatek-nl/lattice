@@ -2816,12 +2816,12 @@ tests, all red today:
 
 Work, in the order that keeps the tree green:
 
-- [ ] **The version plumbing.** `service.SupportedRoomVersions` gains `"12"`;
+- [x] **The version plumbing.** `service.SupportedRoomVersions` gains `"12"`;
       `DefaultRoomVersion` stays **"11"** on purpose: the specification recommends 12, but
       `TestIsDirectFlagFederation` sends a v12 invite whose stripped state lacks `m.room.create`,
       which a correct server rejects (MSC4311, v1.16) — so defaulting to 12 turns that test red
       for being right. Say so in the code, next to the constant.
-- [ ] **Room ids without a domain.** A v12 room id is `!` plus URL-safe unpadded base64 of the
+- [x] **Room ids without a domain.** A v12 room id is `!` plus URL-safe unpadded base64 of the
       create event's reference hash: no `:example.com` behind it. Every place that asks a room id
       for its host to decide whether the room is local has to stop doing that — locality is
       "this server has the room", not "the id names this server". The audit has a name:
@@ -2833,39 +2833,57 @@ Work, in the order that keeps the tree green:
       aliases keep their domain in every room version), or it is a room id being used as a
       federation hint (→ the id says nothing; ask the state which servers hold the room). Record
       that classification as a comment on `DomainOf` once the first caller is fixed.
-- [ ] **The event format.** `m.room.create` carries **no** `room_id` (auth rule 1.2 rejects one
+- [x] **The event format.** `m.room.create` carries **no** `room_id` (auth rule 1.2 rejects one
       that does); every other event carries the room id. Event ids are the URL-safe unpadded
       base64 reference hash, as in v4+; the room id is that same hash with `!` instead of `$`, so
       creating a room means: build the create event without a room id, hash it, and the room's id
       falls out of the hash. Canonical JSON, hashing and the stored-event marshalling for the
       client API all have to agree that the create event of a v12 room has no `room_id` key.
-- [ ] **`m.room.create` is not an auth event** in v12 (rule 3.2 note): the auth-event *selection*
+- [x] **`m.room.create` is not an auth event** in v12 (rule 3.2 note): the auth-event *selection*
       must not cite it, and the rule must reject an event that does cite it. The rule that
       verifies a peer's choice of auth events therefore gets stricter, not looser.
-- [ ] **Room creators, formally.** Creators are the create event's `sender` plus
+- [x] **Room creators, formally.** Creators are the create event's `sender` plus
       `content.additional_creators`. Their power level is **infinite**: `authcheck` must answer
       infinite for them wherever it reads a level, and rule 10.4 rejects any
       `m.room.power_levels` whose `users` names a creator. Rule 1.4 validates
       `additional_creators` as an array of user ids under the same grammar as `sender`.
-- [ ] **Rule 2, the room id check.** An event is rejected unless its `room_id` is the event id of
+- [x] **Rule 2, the room id check.** An event is rejected unless its `room_id` is the event id of
       an accepted `m.room.create` with the sigil `!`: the check needs the create event of the room
       in hand, which the graph already has.
-- [ ] **State resolution v2.1** (`internal/stateres`): the v2 algorithm with three changes —
+- [x] **State resolution v2.1** (`internal/stateres`): the v2 algorithm with three changes —
       step 2's iterative auth checks start from an **empty** state map instead of the unconflicted
       one; a **conflicted state subgraph** (paths along `auth_events` between two conflicted
       events, endpoints included) is defined; and the **full conflicted set** additionally
       includes that subgraph. Two tests exercise exactly this, and both check the resolved state
       rather than the code path, so a wrong subgraph shows up as a wrong state map.
-- [ ] **Stripped state as full events (MSC4311).** The `invite_room_state` this server sends is a
+- [x] **Stripped state as full events (MSC4311).** The `invite_room_state` this server sends is a
       list of **complete** PDUs (with `room_id`, `hashes`, `signatures`, `depth`, `prev_events`,
       `origin_server_ts`), not the trimmed tuples it sends today; for v12 it must include
       `m.room.create`, because nothing else in the invite says what the room id is. Inbound: an
       invite whose stripped state does not validate (a tuple, a missing create in v12, a state
       event whose `room_id` is not this room's) is rejected, with the reason in the log.
-- [ ] **Upgrades.** Read `TestMSC4289PrivilegedRoomCreators_Upgrades` and the MSC4289 upgrade
+- [x] **Upgrades.** Read `TestMSC4289PrivilegedRoomCreators_Upgrades` and the MSC4289 upgrade
       text before writing the code: what carries a creator into the new room (a `predecessor`
       plus `additional_creators`, or a power-levels content carry-over) is exactly what that test
       asserts, and guessing it wastes an afternoon.
+- [ ] **Wiring state resolution in.** `internal/stateres` is a correct pure function and nothing
+      calls it: two servers that disagree about a key settle by whichever event arrived last.
+      What `TestMSC4297StateResolutionV2_1_*` asks for is the other half of that - when
+      `get_missing_events` cannot close a graph gap, ask the peer for `state_ids`, fetch those
+      events, and resolve this server's state against the peer's before the replayed events are
+      judged. Until that exists the v2.1 changes are exercised only by `tests/unit`.
+
+A run of Complement's v12 gates after this stretch: **MSC4289 (6), MSC4291 (5), MSC4311 (3),
+`TestComplementCanCreateValidV12Rooms`, `TestRoomVersionSupport`, and the two v12
+restricted/knock cases - green**; the two MSC4297 state-resolution tests are the red pair, and
+they are red for the missing wiring above rather than for the algorithm. Three things the run
+found that were worth fixing on the way: a room version 12 `m.room.create` names no room, so
+every place that read a PDU's `room_id` to decide where to keep an event was keeping the room's
+first event under the empty room (`roomOfPDU` now reads the room out of the event's id when the
+event cannot name it); the empty auth set that a v12 room's earliest events legitimately carry
+was being read as a forged chain; and a knock from a server outside the room had nowhere to ask
+when the room id named no server, which is what the endpoint's `via` list is for.
+
 - [ ] **Own tests**, because Complement is a guest here: a v12 room created, hashed, joined,
       posted to, knocked on and upgraded in `tests/compat` (the id has no domain, the create
       event has no `room_id`, the creator cannot be demoted, `users` naming the creator is

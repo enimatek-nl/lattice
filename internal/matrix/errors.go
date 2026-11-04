@@ -28,23 +28,27 @@ const (
 	ErrCodeGuestAccessForbidden ErrorCode = "M_GUEST_ACCESS_FORBIDDEN"
 	ErrCodeUnrecognized         ErrorCode = "M_UNRECOGNIZED"
 	ErrCodeInvalidParam         ErrorCode = "M_INVALID_PARAM"
-	ErrCodeWeakPassword         ErrorCode = "M_WEAK_PASSWORD"
-	ErrCodeTokenExpired         ErrorCode = "M_TOKEN_EXPIRED"
-	ErrCodeExclusive            ErrorCode = "M_EXCLUSIVE"
-	ErrCodeAliasExists          ErrorCode = "M_ALIAS_EXISTS"
-	ErrCodeBadAlias             ErrorCode = "M_BAD_ALIAS"
-	ErrCodeCannotOverwrite      ErrorCode = "M_CANNOT_OVERWRITE_MEDIA"
-	ErrCodeNotYetUploaded       ErrorCode = "M_NOT_YET_UPLOADED"
-	ErrCodeReserved             ErrorCode = "M_RESERVED"
-	ErrCodeSessionExpired       ErrorCode = "M_SESSION_EXPIRED"
-	ErrCodeFlowNotFound         ErrorCode = "M_FLOW_NOT_FOUND"
-	ErrCodeIncompleteStages     ErrorCode = "M_INCOMPLETE_STAGES"
-	ErrCodeWrongRoomServer      ErrorCode = "M_WRONG_ROOM_SERVER"
-	ErrCodeUnsupportedRoomVer   ErrorCode = "M_UNSUPPORTED_ROOM_VERSION"
-	ErrCodeIncompatibleRoomVer  ErrorCode = "M_INCOMPATIBLE_ROOM_VERSION"
-	ErrCodeThreepidNotFound     ErrorCode = "M_THREEPID_NOT_FOUND"
-	ErrCodeThreepidInUse        ErrorCode = "M_THREEPID_IN_USE"
-	ErrCodeWrongKeyVersion      ErrorCode = "M_WRONG_KEY_VERSION"
+	// ErrCodeMissingParam is what an endpoint answers when a request leaves out something it
+	// cannot be carried out without. MSC4311 asks for this code for the invite whose stripped
+	// state cannot identify the room at all.
+	ErrCodeMissingParam        ErrorCode = "M_MISSING_PARAM"
+	ErrCodeWeakPassword        ErrorCode = "M_WEAK_PASSWORD"
+	ErrCodeTokenExpired        ErrorCode = "M_TOKEN_EXPIRED"
+	ErrCodeExclusive           ErrorCode = "M_EXCLUSIVE"
+	ErrCodeAliasExists         ErrorCode = "M_ALIAS_EXISTS"
+	ErrCodeBadAlias            ErrorCode = "M_BAD_ALIAS"
+	ErrCodeCannotOverwrite     ErrorCode = "M_CANNOT_OVERWRITE_MEDIA"
+	ErrCodeNotYetUploaded      ErrorCode = "M_NOT_YET_UPLOADED"
+	ErrCodeReserved            ErrorCode = "M_RESERVED"
+	ErrCodeSessionExpired      ErrorCode = "M_SESSION_EXPIRED"
+	ErrCodeFlowNotFound        ErrorCode = "M_FLOW_NOT_FOUND"
+	ErrCodeIncompleteStages    ErrorCode = "M_INCOMPLETE_STAGES"
+	ErrCodeWrongRoomServer     ErrorCode = "M_WRONG_ROOM_SERVER"
+	ErrCodeUnsupportedRoomVer  ErrorCode = "M_UNSUPPORTED_ROOM_VERSION"
+	ErrCodeIncompatibleRoomVer ErrorCode = "M_INCOMPATIBLE_ROOM_VERSION"
+	ErrCodeThreepidNotFound    ErrorCode = "M_THREEPID_NOT_FOUND"
+	ErrCodeThreepidInUse       ErrorCode = "M_THREEPID_IN_USE"
+	ErrCodeWrongKeyVersion     ErrorCode = "M_WRONG_KEY_VERSION"
 )
 
 // Error is a Matrix API error. It carries the HTTP status that should be used
@@ -127,6 +131,11 @@ func NewError(code ErrorCode, status int, message string) *Error {
 // ErrInvalidParam returns a 400 M_INVALID_PARAM error.
 func ErrInvalidParam(format string, args ...any) *Error {
 	return newError(ErrCodeInvalidParam, http.StatusBadRequest, format, args...)
+}
+
+// ErrMissingParam returns a 400 M_MISSING_PARAM error.
+func ErrMissingParam(format string, args ...any) *Error {
+	return newError(ErrCodeMissingParam, http.StatusBadRequest, format, args...)
 }
 
 // ErrInvalidUsername returns a 400 M_INVALID_USERNAME error.

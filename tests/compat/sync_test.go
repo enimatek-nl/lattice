@@ -458,11 +458,7 @@ func TestInviteStateCarriesOnlyTheTwoPeople(t *testing.T) {
 	var members, others []string
 	for _, event := range invited.InviteState.Events {
 		if event.Type == matrix.TypeMember {
-			key := ""
-			if event.StateKey != nil {
-				key = *event.StateKey
-			}
-			members = append(members, key)
+			members = append(members, event.StateKey)
 			continue
 		}
 		others = append(others, event.Type)

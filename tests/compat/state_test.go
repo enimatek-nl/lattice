@@ -203,11 +203,14 @@ func TestEncryptionStaysPut(t *testing.T) {
 	}
 
 	// m.room.create cannot be rewritten, because it is the root of the room and
-	// carries its version.
+	// carries its version. It is refused as a bad request rather than a permission
+	// problem: no level anywhere lets a client send this event into a room that is
+	// already made, and in room version 12 the event is the hash the room is named by,
+	// so rewriting it would rename the room.
 	rewrite := server.Do(http.MethodPut, path+"/state/m.room.create/", alice.Token,
 		map[string]any{"room_version": "11", "creator": alice.UserID})
-	if rewrite.Status != http.StatusForbidden {
-		t.Errorf("rewriting m.room.create: got %d %s, want 403", rewrite.Status, rewrite.Raw)
+	if rewrite.Status != http.StatusBadRequest {
+		t.Errorf("rewriting m.room.create: got %d %s, want 400", rewrite.Status, rewrite.Raw)
 	}
 }
 

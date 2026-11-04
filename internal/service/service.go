@@ -207,9 +207,30 @@ func (s *Service) ParseToken(token string) (uint64, error) {
 // Notify wakes all long polling sync calls. Call it after persisting new data.
 func (s *Service) Notify() { s.hub.Notify() }
 
-// Localroom reports whether a room identifier belongs to this homeserver.
+// LocalRoom reports whether this homeserver hosts a room.
+//
+// For a room version up to 11 that is a question about the identifier: the id names the
+// server that made the room, so this server hosts it exactly when the id names this
+// server. Room version 12 breaks that reading - the id is a hash of the room's create event
+// and names no server at all - so the same question is asked of the room itself: the server
+// named by the creator in that create event is the one that made the room, which is what
+// the identifier used to say.
+//
+// Holding a copy is deliberately not the test. An invite leaves a room row behind on the
+// invited server, and a past join leaves one where the user once was; a server that treated
+// either as hosting would answer a join from its own copy instead of asking the room, and
+// would write a membership the room has not agreed to - the two servers then hold different
+// histories under one room id. The places that need the weaker fact ("do we know this room?")
+// read the room row directly.
 func (s *Service) LocalRoom(roomID string) bool {
-	return matrix.DomainOf(roomID) == s.serverName
+	if !matrix.IsHashedRoomID(roomID) {
+		return matrix.DomainOf(roomID) == s.serverName
+	}
+	room, err := s.db.RoomRepo.Get(roomID)
+	if err != nil {
+		return false
+	}
+	return matrix.DomainOf(room.Creator) == s.serverName
 }
 
 // LocalUser reports whether a user identifier belongs to this homeserver.

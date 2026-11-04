@@ -27,7 +27,7 @@ import (
 
 // KnockFederatedRoom asks the servers of a room this server does not host to take a
 // knock from a local user, and returns the room ID once one of them has.
-func (s *Service) KnockFederatedRoom(ctx context.Context, roomID, userID, reason string) (string, error) {
+func (s *Service) KnockFederatedRoom(ctx context.Context, roomID, userID, reason string, via []string) (string, error) {
 	transport := s.federationTransport()
 	if transport == nil {
 		return "", matrix.ErrNotFound("this server holds no room %s, and does not speak to other servers", roomID)
@@ -40,7 +40,7 @@ func (s *Service) KnockFederatedRoom(ctx context.Context, roomID, userID, reason
 		return "", matrix.ErrForbidden("%v", problem)
 	}
 	var lastErr error
-	for _, server := range s.knockServers(ctx, roomID) {
+	for _, server := range s.knockServers(ctx, roomID, via) {
 		if err := s.knockViaServer(ctx, transport, roomID, userID, reason, server); err != nil {
 			lastErr = err
 			log.Printf("service: knocking on %s through %s: %v", roomID, server, err)
@@ -61,21 +61,38 @@ func (s *Service) KnockFederatedRoom(ctx context.Context, roomID, userID, reason
 	return "", matrix.ErrForbidden("none of the servers of room %s would take the knock of %s: %v", roomID, userID, lastErr)
 }
 
-// knockServers names the servers a knock is offered to: the ones this server already
-// relays the room to, and the room's own server, which is the one that can let the
-// knocker in. The room's server is first, because a knock taken by a server that is in
-// the room but does not host it still has to be passed on, and taking the answer from
-// the horse's mouth saves a round that can only end in the same place.
-func (s *Service) knockServers(ctx context.Context, roomID string) []string {
+// knockServers names the servers a knock is offered to: the ones the client handed over with
+// the request, the room's own server, and the ones this server already relays the room to.
+//
+// The client's list comes first. It is the one thing in the request that says who the person
+// knocking believes can let them in, and for a room this server has never met it may be the
+// only name there is: a room id of a room version that hashes room ids names no server at
+// all, so the id cannot be asked. The room's own server is next, because a knock taken by a
+// server that is in the room but does not host it still has to be passed on, and taking the
+// answer from the horse's mouth saves a round that can only end in the same place.
+func (s *Service) knockServers(ctx context.Context, roomID string, via []string) []string {
 	servers, err := s.destinationsOfRoomIgnoringACL(ctx, roomID)
 	if err != nil {
 		servers = nil
 	}
-	out := []string{matrix.DomainOf(roomID)}
-	for _, server := range servers {
-		if server != s.serverName && server != out[0] {
-			out = append(out, server)
+	out := make([]string, 0, len(servers)+len(via)+1)
+	add := func(server string) {
+		if server == "" || server == s.serverName {
+			return
 		}
+		for _, known := range out {
+			if known == server {
+				return
+			}
+		}
+		out = append(out, server)
+	}
+	for _, server := range via {
+		add(server)
+	}
+	add(matrix.DomainOf(roomID))
+	for _, server := range servers {
+		add(server)
 	}
 	return out
 }
@@ -107,12 +124,20 @@ func (s *Service) knockViaServer(ctx context.Context, transport *federation.Tran
 	if err := s.SignAndIdentify(ctx, packet); err != nil {
 		return err
 	}
-	if err := s.sendKnock(ctx, transport, server, roomID, packet); err != nil {
+	answer, err := s.sendKnock(ctx, transport, server, roomID, packet)
+	if err != nil {
 		return err
 	}
-	// The room has taken the knock. Recording it here is what makes the knocker's own
-	// server agree with the room: their client shows the knock as pending, and a second
-	// knock from the same user is judged against it.
+	// The room has taken the knock. What it answered with is the state that describes the
+	// room (MSC3788), which for a server that knocked from outside is the first it ever learns
+	// of the room - and in a room version whose id is the hash of its create event, the only
+	// way it can come by that event at all.
+	if err := s.keepInviteState(ctx, roomID, version, stateListOf(answer, "knock_room_state")); err != nil {
+		return err
+	}
+	// Recording the knock here is what makes the knocker's own server agree with the room:
+	// their client shows the knock as pending, and a second knock from the same user is
+	// judged against it.
 	outcome, why, err := s.applyIncomingPDU(ctx, packet.object, version, server, packet.eventID)
 	if err != nil {
 		return err
@@ -159,21 +184,31 @@ func (s *Service) requestMakeKnock(ctx context.Context, transport *federation.Tr
 	return nil, "", fmt.Errorf("%s serves no make_knock this server understands", server)
 }
 
-// sendKnock hands the signed knock to the server that proposed it. The body wraps the
-// event, unlike send_leave: a knock has no other shape to be.
-func (s *Service) sendKnock(ctx context.Context, transport *federation.Transport, server, roomID string, packet *pdu) error {
+// sendKnock hands the signed knock to the server that proposed it, and brings back what that
+// server answered. The body wraps the event, unlike send_leave: a knock has no other shape to
+// be. Beside the event goes the state this server authorised the knock with (MSC3788), which
+// MSC4311 asks for as complete events: a room that has never met the knocking server is being
+// asked to take a membership on the strength of the state behind it, and in a room whose id is
+// the hash of its create event, that event is the room's name. A server knocking from outside
+// the room has no state to name, and says so with an empty list.
+func (s *Service) sendKnock(ctx context.Context, transport *federation.Transport, server, roomID string, packet *pdu) (matrix.Object, error) {
+	body := matrix.Object{
+		"event":            packet.object,
+		"knock_room_state": s.inviteStateForPeer(ctx, roomID, federation.EventField(packet.object, "sender")),
+	}
 	for _, version := range []string{"v2", "v1"} {
 		path := fmt.Sprintf("/_matrix/federation/%s/send_knock/%s/%s",
 			version, url.PathEscape(roomID), url.PathEscape(packet.eventID))
-		if _, err := transport.Put(ctx, server, path, matrix.Object{"event": packet.object}); err != nil {
+		answer, err := transport.Put(ctx, server, path, body)
+		if err != nil {
 			if isUnrecognized(err) && version == "v2" {
 				continue
 			}
-			return err
+			return nil, err
 		}
-		return nil
+		return answer, nil
 	}
-	return fmt.Errorf("%s serves no send_knock this server understands", server)
+	return nil, fmt.Errorf("%s serves no send_knock this server understands", server)
 }
 
 // ServeMakeKnock answers a peer's make_knock: the room's version and the shape of the
@@ -244,7 +279,34 @@ func (s *Service) ServeMakeKnock(ctx context.Context, roomID, userID, peer strin
 // ServeSendKnock takes a knock event a server signed for a room this server hosts, and
 // decides whether the room accepts it. The answer is agreement, not state; the rest of
 // the room is told, because a knock nobody can see is a request nobody can answer.
-func (s *Service) ServeSendKnock(ctx context.Context, roomID, eventID string, event matrix.Object, peer string) (matrix.Object, error) {
+// knockEventInBody reads the knock out of a send_knock or knock body. The specification wraps
+// it - {"event": ..., "knock_room_state": [...]} - and that is what this server sends. A body
+// that is the event itself is also read, because a send of that shape has been in the wild
+// since MSC2403 and refusing it would turn a peer's untidy body into a refused knock: an
+// event body names its type and its sender, which is not a shape an envelope of state happens
+// to have.
+func knockEventInBody(body matrix.Object) (matrix.Object, bool) {
+	if raw, hasEvent := body["event"]; hasEvent {
+		if event, ok := raw.(matrix.Object); ok {
+			return event, true
+		}
+		if event := objectOf(body, "event"); len(event) > 0 {
+			return event, true
+		}
+	}
+	if _, hasType := body["type"].(string); hasType {
+		if _, hasSender := body["sender"].(string); hasSender {
+			return body, true
+		}
+	}
+	return nil, false
+}
+
+func (s *Service) ServeSendKnock(ctx context.Context, roomID, eventID string, body matrix.Object, peer string) (matrix.Object, error) {
+	event, hasEvent := knockEventInBody(body)
+	if !hasEvent {
+		return nil, matrix.ErrInvalidRequest("the body carries no event")
+	}
 	room, err := s.db.RoomRepo.Get(roomID)
 	if err != nil {
 		if persist.IsNotFound(err) {
@@ -253,6 +315,13 @@ func (s *Service) ServeSendKnock(ctx context.Context, roomID, eventID string, ev
 		return nil, matrix.ErrInternal(err)
 	}
 	version := RoomVersionOf(room)
+	// MSC3788 ships the state the knocking server authorised the knock with, and MSC4311 asks
+	// for those as complete events. This server hosts the room and holds its own copy of that
+	// state, so keeping the peer's copy is not taking the peer's word for anything: it is the
+	// pieces a peer holds that this server has not written down which arrive this way.
+	if err := s.keepInviteState(ctx, roomID, version, stateListOf(body, "knock_room_state")); err != nil {
+		return nil, err
+	}
 	sender, problem := membershipForEndpoint(event, eventID, roomID, "send_knock", matrix.MembershipKnock)
 	if problem != nil {
 		return nil, problem
@@ -277,7 +346,15 @@ func (s *Service) ServeSendKnock(ctx context.Context, roomID, eventID string, ev
 // than the room's server, and the server it asks has to carry the knock the rest of the
 // way. Answering 404 here would mean a user of a server that is already in a room cannot
 // knock on it.
-func (s *Service) ServeKnock(ctx context.Context, roomID, eventID string, event matrix.Object, peer string) (matrix.Object, error) {
+func (s *Service) ServeKnock(ctx context.Context, roomID, eventID string, body matrix.Object, peer string) (matrix.Object, error) {
+	event, hasEvent := knockEventInBody(body)
+	if !hasEvent {
+		return nil, matrix.ErrInvalidRequest("the knock carries no event")
+	}
+	// MSC3788 ships the state the knocking server authorised the knock with, and MSC4311 asks
+	// for those as complete events. A server that is only a relay has no copy of the room's
+	// history of its own, so this is the state it judges the knock it is passing on against.
+	state := stateListOf(body, "knock_room_state")
 	room, err := s.db.RoomRepo.Get(roomID)
 	if err != nil {
 		if persist.IsNotFound(err) {
@@ -296,6 +373,13 @@ func (s *Service) ServeKnock(ctx context.Context, roomID, eventID string, event 
 		}
 		return s.acceptKnock(ctx, roomID, eventID, event, version, peer)
 	}
+	// This server holds a copy of the room but does not host it, so the knock has to be
+	// carried on. MSC3788 ships the state the knocking server authorised the knock with, and
+	// MSC4311 asks for those as complete events: keeping them is what lets a server that is
+	// only a relay judge the knock it is passing on at all.
+	if err := s.keepInviteState(ctx, roomID, version, state); err != nil {
+		return nil, err
+	}
 	if problem := s.knockRoomProblem(ctx, roomID); problem != nil {
 		return nil, matrix.ErrForbidden("this room refuses the knock of %s: %v", sender, problem)
 	}
@@ -305,11 +389,11 @@ func (s *Service) ServeKnock(ctx context.Context, roomID, eventID string, event 
 	}
 	packet := &pdu{object: withEventID(event, eventID), eventID: eventID}
 	var lastErr error
-	for _, server := range s.knockServers(ctx, roomID) {
+	for _, server := range s.knockServers(ctx, roomID, nil) {
 		if server == peer || server == matrix.DomainOf(sender) {
 			continue
 		}
-		if err := s.sendKnock(ctx, transport, server, roomID, packet); err != nil {
+		if _, err := s.sendKnock(ctx, transport, server, roomID, packet); err != nil {
 			lastErr = err
 			continue
 		}
@@ -345,7 +429,12 @@ func (s *Service) acceptKnock(ctx context.Context, roomID, eventID string, event
 		// left waiting in a room that never heard them.
 		s.queueEventForPeersExcept(ctx, stored, version, peer)
 	}
-	return matrix.Object{}, nil
+	// The knock is agreed. The state that describes the room travels back with the answer
+	// (MSC3788), in the same complete form MSC4311 asks of an invite: the knocking server
+	// holds no copy of this room, and an event it cannot hash is an event it cannot check.
+	return matrix.Object{
+		"knock_room_state": s.inviteStateForPeer(ctx, roomID, federation.EventField(event, "sender")),
+	}, nil
 }
 
 // knownMembershipBlocksKnock refuses a knock this server can already refuse without

@@ -99,7 +99,7 @@ func (s *Service) fillGraphGap(ctx context.Context, pdu matrix.Object, version, 
 		// a question this server asked.
 		ordered := make([]matrix.Object, 0, len(found))
 		for _, fetched := range found {
-			if federation.EventField(fetched, "room_id") != roomID {
+			if roomOfPDU(fetched, version, roomID) != roomID {
 				log.Printf("federation: %s answered a gap in %s with an event of %s",
 					peer, roomID, federation.EventField(fetched, "room_id"))
 				continue

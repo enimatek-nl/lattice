@@ -3,6 +3,11 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"math"
+	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/enimatek-nl/lattice/internal/matrix"
 	"github.com/enimatek-nl/lattice/internal/persist"
@@ -13,7 +18,12 @@ import (
 func (s *Service) validateStateEvent(ctx context.Context, roomID, sender, typ, stateKey string, content matrix.RawMessage) error {
 	switch typ {
 	case matrix.TypeCreate:
-		return matrix.ErrForbidden("the m.room.create event cannot be replaced")
+		// A room already exists, so its create event is a fact about the past: in room
+		// version 12 it is also the hash the room is named by, and rewriting it would rename
+		// the room. The request is refused as a bad request rather than a permission problem -
+		// no level anywhere lets a client send this event into a room that is already made.
+		return matrix.NewError(matrix.ErrCodeForbidden, http.StatusBadRequest,
+			"the m.room.create event cannot be replaced")
 	case matrix.TypeEncryption:
 		// The specification never says a room may be re-encrypted with a different
 		// algorithm, and a room whose encryption changes cannot decrypt what came
@@ -26,8 +36,89 @@ func (s *Service) validateStateEvent(ctx context.Context, roomID, sender, typ, s
 		}
 	case matrix.TypeMember:
 		return validateMemberStateWrite(sender, stateKey, matrix.MustParseObject(content))
+	case matrix.TypePowerLevels:
+		return s.validatePowerLevelsWrite(ctx, roomID, content)
 	case matrix.TypeCanonicalAlias:
 		return s.validateCanonicalAlias(ctx, roomID, content)
+	}
+	return nil
+}
+
+// maxCanonicalJSON is the largest magnitude canonical JSON can carry without losing a
+// digit: 2^53-1, past which a double stops being exact. A power level outside it cannot be
+// written into an event at all, so a client that asks for one is handed a 400 naming the
+// number rather than a 500 from the signer.
+const maxCanonicalJSON = float64(1<<53 - 1)
+
+// validatePowerLevelsWrite checks a power levels event at the door, before it is hashed,
+// signed and judged by the room's rules. Two problems are worth catching here rather than
+// letting the rules answer: a level outside what canonical JSON can name cannot be signed,
+// and a room version 12 power levels event that names one of the room's creators is
+// refused by rule 10.4 - in both cases the client typed something into a field and wants
+// the field named back, not a 403 from a rule it never could have satisfied.
+func (s *Service) validatePowerLevelsWrite(ctx context.Context, roomID string, content matrix.RawMessage) error {
+	var decoded matrix.Object
+	if err := json.Unmarshal(content, &decoded); err != nil {
+		return matrix.ErrBadJSON(err)
+	}
+	for _, field := range []string{"users_default", "events_default", "state_default", "ban", "redact", "kick", "invite"} {
+		if value, present := decoded[field]; present {
+			if err := levelIsSpellable(field, value); err != nil {
+				return err
+			}
+		}
+	}
+	for _, field := range []string{"users", "events", "notifications"} {
+		value, present := decoded[field]
+		if !present {
+			continue
+		}
+		entries, ok := value.(map[string]any)
+		if !ok {
+			return matrix.ErrInvalidRequest("content.%s of an m.room.power_levels event must be an object", field)
+		}
+		for name, entry := range entries {
+			if err := levelIsSpellable(field+"."+name, entry); err != nil {
+				return err
+			}
+		}
+	}
+	creators, privileged := s.roomCreators(ctx, roomID)
+	if privileged {
+		if named := powerLevelsNamesUsers(decoded, creators); len(named) > 0 {
+			return matrix.NewError(matrix.ErrCodeForbidden, http.StatusBadRequest,
+				fmt.Sprintf("a room version 12 power levels event cannot name %s, who is a creator of this room",
+					strings.Join(named, ", ")))
+		}
+	}
+	return nil
+}
+
+// levelIsSpellable reports whether a power level is a whole number canonical JSON can
+// carry.
+func levelIsSpellable(field string, value any) error {
+	switch typed := value.(type) {
+	case float64:
+		if typed != math.Trunc(typed) {
+			return matrix.ErrInvalidRequest("content.%s of an m.room.power_levels event is %v, which is not a whole number", field, typed)
+		}
+		if typed > maxCanonicalJSON || typed < -maxCanonicalJSON {
+			return matrix.ErrInvalidRequest("content.%s of an m.room.power_levels event is %v, past the largest number canonical JSON can name", field, typed)
+		}
+	case json.Number:
+		text := typed.String()
+		if strings.ContainsAny(text, ".eE") {
+			return matrix.ErrInvalidRequest("content.%s of an m.room.power_levels event is %s, which is not a plain whole number", field, text)
+		}
+		parsed, err := strconv.ParseFloat(text, 64)
+		if err != nil {
+			return matrix.ErrInvalidRequest("content.%s of an m.room.power_levels event is not a number: %s", field, text)
+		}
+		if parsed > maxCanonicalJSON || parsed < -maxCanonicalJSON {
+			return matrix.ErrInvalidRequest("content.%s of an m.room.power_levels event is %s, past the largest number canonical JSON can name", field, text)
+		}
+	default:
+		return matrix.ErrInvalidRequest("content.%s of an m.room.power_levels event must be a whole number", field)
 	}
 	return nil
 }

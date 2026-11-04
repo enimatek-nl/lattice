@@ -218,6 +218,39 @@ func (g *Graph) EnforcesAliasesRule() bool { return g.versionNumber() <= 2 }
 // an integer, which is a compatibility rule from the earliest implementations.
 func (g *Graph) RequiresIntegerPowerLevels() bool { return g.versionNumber() >= 10 }
 
+// HashedRoomIDs reports whether the room version names its rooms by a hash of the room's
+// create event. Room version 12 does: the room id is that create event's event id with the
+// room sigil instead of the event one, so it names no server, and an event whose room id
+// is not that hash is an event about a room this is not.
+func (g *Graph) HashedRoomIDs() bool { return g.versionNumber() >= 12 }
+
+// PrivilegedCreators reports whether the room version gives its room creators a power
+// level no m.room.power_levels event can name. Room version 12 does, and it also names
+// more than one creator: the sender of the create event plus the users in its
+// content.additional_creators array. A creator cannot be demoted, cannot appear in the
+// users map, and outranks whoever the room raised - which is why the level is answered
+// here rather than read from the event.
+func (g *Graph) PrivilegedCreators() bool { return g.versionNumber() >= 12 }
+
+// creators returns the room creators the state names. For a room version that privileges
+// them that is the sender of the create event and its additional_creators; for the
+// versions before, it is the creator alone, and being one only means the administrator
+// level.
+func creators(g *Graph, state State) []string {
+	create := roomCreate(g, state)
+	if create == nil {
+		return []string{roomCreator(g, state)}
+	}
+	return power.CreatorsOf(asObjectOr(create.Content), create.Sender, g.PrivilegedCreators())
+}
+
+// levelOf answers what power a user holds under the rules of this room: the level the
+// power levels event gives them, or the level of a room creator, which room version 12
+// says is beyond anything the event can say.
+func levelOf(g *Graph, state State, levels matrix.PowerLevelsContent, userID string) int64 {
+	return power.LevelOf(levels, userID, creators(g, state), g.PrivilegedCreators())
+}
+
 // Check applies the room version's authorization rules to an event, including the rule
 // that reads the event's own choice of auth events - the one that catches a sender
 // picking a friendlier set of rules for itself. State resolution wants the rules
@@ -279,8 +312,30 @@ func Rules(g *Graph, state State, event *Event) error {
 		return checkCreate(g, event)
 	}
 
+	// Rule 2 of room version 12: the room is named by a hash of the event that created it,
+	// and an event that names any other room does not belong here. This is the version where
+	// a room id carries no server name, so nothing else about the event says which room it
+	// claims to be in. The create event is read from the graph rather than from the state the
+	// event was built against, because in this version no event cites it: a check that asked
+	// the arriving event's own auth events for it would refuse every event the room has ever
+	// seen, including the ones this server made itself.
+	if g.HashedRoomIDs() {
+		create := roomCreate(g, state)
+		if create == nil {
+			return fmt.Errorf("nothing here holds the room's m.room.create event, so no event can name the room by its hash")
+		}
+		want, err := matrix.RoomIDFromEventID(create.ID)
+		if err != nil {
+			return fmt.Errorf("the room's create event %s does not name a room: %v", create.ID, err)
+		}
+		if event.RoomID != want {
+			return fmt.Errorf("the event names room %s, but this room is %s: the hash of its create event",
+				event.RoomID, want)
+		}
+	}
+
 	// Rule 3: a room that does not federate holds only its own server's events.
-	create := stateEvent(g, state, matrix.TypeCreate, "")
+	create := roomCreate(g, state)
 	if create != nil && federateDisabled(create) &&
 		matrix.DomainOf(event.Sender) != matrix.DomainOf(create.Sender) {
 		return fmt.Errorf("the room's create event sets m.federate to false, so only events "+
@@ -312,11 +367,10 @@ func Rules(g *Graph, state State, event *Event) error {
 	}
 
 	levels := powerLevels(g, state)
-	creator := roomCreator(g, state)
 
 	// Rule 6: publishing a third-party invite is an inviter's act.
 	if event.Type == matrix.TypeThirdPartyInvite {
-		if level := power.Level(levels, event.Sender, creator); level < levels.Invite {
+		if level := levelOf(g, state, levels, event.Sender); level < levels.Invite {
 			return fmt.Errorf("publishing a third-party invite needs power level %d, %s has %d",
 				levels.Invite, event.Sender, level)
 		}
@@ -325,7 +379,7 @@ func Rules(g *Graph, state State, event *Event) error {
 
 	// Rule 7: the required power level of the event type.
 	required := power.EventRequired(levels, event.Type, event.IsState())
-	if senderLevel := power.Level(levels, event.Sender, creator); required > senderLevel {
+	if senderLevel := levelOf(g, state, levels, event.Sender); required > senderLevel {
 		return fmt.Errorf("sending %s needs power level %d, %s has %d",
 			event.Type, required, event.Sender, senderLevel)
 	}
@@ -338,12 +392,12 @@ func Rules(g *Graph, state State, event *Event) error {
 	// Rule 9: changing the power levels has rules of its own, because a user who
 	// can write them can hand themselves any power in the room.
 	if event.Type == matrix.TypePowerLevels {
-		return checkPowerLevelsChange(g, state, event, levels, creator)
+		return checkPowerLevelsChange(g, state, event, levels, roomCreator(g, state))
 	}
 
 	// Rule 11 of room versions 1 and 2.
 	if event.Type == matrix.TypeRedaction && g.EnforcesRedactionRule() {
-		return checkRedaction(g, event, levels, creator)
+		return checkRedaction(g, event, levels, roomCreator(g, state))
 	}
 	return nil
 }
@@ -353,7 +407,26 @@ func checkCreate(g *Graph, event *Event) error {
 	if len(event.PrevIDs) > 0 {
 		return fmt.Errorf("an m.room.create event cannot have prev_events: it is the room's first event")
 	}
-	if event.RoomID != "" && matrix.DomainOf(event.RoomID) != matrix.DomainOf(event.Sender) {
+	if g.HashedRoomIDs() {
+		// Rule 1.2 of room version 12: the create event names no room, because the room's id
+		// is the hash of this event and cannot be written into it before it is signed.
+		if event.RoomID != "" {
+			return fmt.Errorf("an m.room.create event in room version %s must not name a room: the room's id is this event's hash", g.Version)
+		}
+		// Rule 1.4: the additional creators have to be spelled as user ids, or the room would
+		// be created with a creator nobody can name again later.
+		if raw, asked := event.Content["additional_creators"]; asked {
+			list, ok := stringList(raw)
+			if !ok {
+				return fmt.Errorf("content.additional_creators of an m.room.create event must be an array of user ids")
+			}
+			for _, user := range list {
+				if !matrix.ValidUserID(user) {
+					return fmt.Errorf("content.additional_creators of an m.room.create event names %q, which is not a user id", user)
+				}
+			}
+		}
+	} else if event.RoomID != "" && matrix.DomainOf(event.RoomID) != matrix.DomainOf(event.Sender) {
 		return fmt.Errorf("the room %s and its creator %s belong to different servers",
 			event.RoomID, event.Sender)
 	}
@@ -391,10 +464,27 @@ func checkAuthEvents(g *Graph, state State, event *Event) error {
 		}
 		seen[key] = auth.ID
 	}
-	if _, hasCreate := seen[Key{Type: matrix.TypeCreate}]; !hasCreate {
+	if g.HashedRoomIDs() {
+		// Room version 12 stops citing the create event: every event carries the room id,
+		// which is that event's hash, so the room is already named. Rule 3.2 of this version
+		// rejects an event that cites it anyway.
+		if _, hasCreate := seen[Key{Type: matrix.TypeCreate}]; hasCreate {
+			return fmt.Errorf("the event cites the room's m.room.create event, which room version %s does not select", g.Version)
+		}
+	} else if _, hasCreate := seen[Key{Type: matrix.TypeCreate}]; !hasCreate {
 		return fmt.Errorf("the event's auth events hold no m.room.create event")
 	}
 	want := Selection(state, event)
+	if g.HashedRoomIDs() {
+		without := make([]Key, 0, len(want))
+		for _, key := range want {
+			if key.Type == matrix.TypeCreate {
+				continue
+			}
+			without = append(without, key)
+		}
+		want = without
+	}
 	for _, key := range want {
 		if _, ok := seen[key]; !ok {
 			return fmt.Errorf("the event's auth events are missing %s", key)
@@ -457,6 +547,28 @@ func Selection(state State, event *Event) []Key {
 	return want
 }
 
+// stringList reads a JSON array of strings in whichever of the shapes this codebase
+// carries one: the decoded form a wire object arrives in, or the Go slice this server
+// built itself before encoding it.
+func stringList(value any) ([]string, bool) {
+	switch typed := value.(type) {
+	case []string:
+		return typed, true
+	case []any:
+		out := make([]string, 0, len(typed))
+		for _, entry := range typed {
+			text, ok := entry.(string)
+			if !ok {
+				return nil, false
+			}
+			out = append(out, text)
+		}
+		return out, true
+	default:
+		return nil, false
+	}
+}
+
 // eStateKey returns the state key of a state event, or the empty string.
 func eStateKey(event *Event) string {
 	if event.StateKey == nil {
@@ -486,9 +598,8 @@ func checkMember(g *Graph, state State, event *Event) error {
 		return fmt.Errorf("an m.room.member event must name a membership in its content")
 	}
 	levels := powerLevels(g, state)
-	creator := roomCreator(g, state)
-	senderLevel := power.Level(levels, event.Sender, creator)
-	targetLevel := power.Level(levels, target, creator)
+	senderLevel := levelOf(g, state, levels, event.Sender)
+	targetLevel := levelOf(g, state, levels, target)
 	senderMembership := membershipOf(g, state, event.Sender)
 	targetMembership := membershipOf(g, state, target)
 	authorisedBy, claimsAuthoriser := event.Content["join_authorised_via_users_server"].(string)
@@ -559,7 +670,7 @@ func checkMember(g *Graph, state State, event *Event) error {
 			if membershipOf(g, state, authorisedBy) != matrix.MembershipJoin {
 				return fmt.Errorf("%s is not joined to the room, so it cannot authorise a join", authorisedBy)
 			}
-			if power.Level(levels, authorisedBy, creator) < levels.Invite {
+			if levelOf(g, state, levels, authorisedBy) < levels.Invite {
 				return fmt.Errorf("%s cannot invite, so it cannot authorise a restricted join", authorisedBy)
 			}
 			return nil
@@ -755,7 +866,7 @@ func signedMatches(signed matrix.Object, keys [][]byte) bool {
 func checkPowerLevelsChange(g *Graph, state State, event *Event, levels matrix.PowerLevelsContent, creator string) error {
 	content := asObjectOr(event.Content)
 	strict := g.RequiresIntegerPowerLevels()
-	senderLevel := power.Level(levels, event.Sender, creator)
+	senderLevel := levelOf(g, state, levels, event.Sender)
 	fields := []string{"users_default", "events_default", "state_default", "ban", "redact", "kick", "invite"}
 
 	// The shape of the content, which room version 10 tightened from "a string
@@ -785,6 +896,16 @@ func checkPowerLevelsChange(g *Graph, state State, event *Event, levels matrix.P
 		object, ok := asObject(users)
 		if !ok {
 			return fmt.Errorf("content.users of an m.room.power_levels event must be an object")
+		}
+		if g.PrivilegedCreators() {
+			for _, creator := range creators(g, state) {
+				if _, named := object[creator]; named {
+					// Rule 10.4: a room whose creators hold a level beyond writing cannot be asked
+					// to write it down. Listing a creator would invite a reader to believe the level
+					// in the event is the one that counts.
+					return fmt.Errorf("content.users of an m.room.power_levels event cannot name %s, a creator of this room", creator)
+				}
+			}
 		}
 		for userID, entry := range object {
 			if !strings.HasPrefix(userID, "@") {
@@ -1101,11 +1222,40 @@ func joinRule(g *Graph, state State) string {
 	return rule
 }
 
+// roomCreate returns the room's create event however the caller can reach it: through the
+// state when the state names it, and otherwise through the graph. The second half matters
+// for room version 12, where no event cites its room's create event - the room id is that
+// event's id with a different sigil - so a state assembled from an arriving event's own
+// auth events holds no create entry, while the graph, which is seeded with this server's
+// state of the room, does.
+//
+// A room has one create event. If a fork has left two in the graph, the one with the
+// smallest id is read: the same tie-break state resolution uses, so the two do not answer
+// the same question differently.
+func roomCreate(g *Graph, state State) *Event {
+	if event := stateEvent(g, state, matrix.TypeCreate, ""); event != nil {
+		return event
+	}
+	var found *Event
+	for _, event := range g.Events {
+		if event == nil || event.Type != matrix.TypeCreate {
+			continue
+		}
+		if event.StateKey != nil && *event.StateKey != "" {
+			continue
+		}
+		if found == nil || event.ID < found.ID {
+			found = event
+		}
+	}
+	return found
+}
+
 // roomCreator returns the room's creator as the state names it. Room version 11
 // dropped the content.creator property, so the sender of the create event answers
 // for every version.
 func roomCreator(g *Graph, state State) string {
-	event := stateEvent(g, state, matrix.TypeCreate, "")
+	event := roomCreate(g, state)
 	if event == nil {
 		return ""
 	}
@@ -1134,8 +1284,11 @@ func isCreateEvent(g *Graph, eventID string) bool {
 	return event != nil && event.Type == matrix.TypeCreate
 }
 
-// stateKeyIsCreator reports whether the event's state key names the creator of the
-// room, which is how rule 4 lets a creator join the room it just made.
+// stateKeyIsCreator reports whether the event's state key names one of the creators of
+// the room, which is how the rules let a creator join the room it just made before there
+// is any membership to read. Room version 12 counts its additional creators beside the
+// sender of the create event: they made the room as much as the sender did, and the room
+// has no other way to say so.
 func stateKeyIsCreator(g *Graph, event *Event) bool {
 	if event.StateKey == nil {
 		return false
@@ -1149,7 +1302,12 @@ func stateKeyIsCreator(g *Graph, event *Event) bool {
 			creator, _ := asObjectOr(create.Content)["creator"].(string)
 			return creator == *event.StateKey
 		}
-		return create.Sender == *event.StateKey
+		for _, creator := range power.CreatorsOf(asObjectOr(create.Content), create.Sender, g.PrivilegedCreators()) {
+			if creator == *event.StateKey {
+				return true
+			}
+		}
+		return false
 	}
 	return false
 }

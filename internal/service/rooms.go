@@ -4,16 +4,26 @@ import (
 	"context"
 	"strings"
 
+	"github.com/enimatek-nl/lattice/internal/eventcrypto"
 	"github.com/enimatek-nl/lattice/internal/matrix"
 	"github.com/enimatek-nl/lattice/internal/persist"
+	"github.com/enimatek-nl/lattice/internal/power"
 )
 
 // DefaultRoomVersion is the room version this homeserver creates and
 // advertises as the default.
+//
+// The specification recommends room version 12 as the default, and this server stays on
+// 11 on purpose: room version 12 rooms are named by a hash of their create event, so an
+// invite for one is only meaningful if the invite carries that create event in its
+// stripped state (MSC4311, spec v1.16), and a server that defaults to 12 must then reject
+// the invites of clients that do not send it. Defaulting to a version whose invites the
+// wider federation half-sends would break rooms rather than protect them. Switching the
+// default is a decision for a release, not for a step.
 const DefaultRoomVersion = "11"
 
 // SupportedRoomVersions lists the room versions this server understands.
-var SupportedRoomVersions = []string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"}
+var SupportedRoomVersions = []string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"}
 
 // Creation presets understood by createRoom.
 const (
@@ -37,6 +47,10 @@ type CreateRoomParams struct {
 	CreationContent           matrix.Object
 	PowerLevelContentOverride matrix.Object
 	InitialStates             []matrix.Event
+	// Invite lists the users the createRoom call invites. It is not used to invite them -
+	// that happens after the room exists - but room version 12 reads it to decide who the
+	// room's creators are, and that has to be settled before the create event is signed.
+	Invite []string
 }
 
 // CreateRoom creates a room and its initial state, returning the stored room.
@@ -44,7 +58,6 @@ func (s *Service) CreateRoom(ctx context.Context, params CreateRoomParams) (*per
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	roomID := matrix.NewRoomID(s.serverName)
 	version := params.RoomVersion
 	if version == "" {
 		version = DefaultRoomVersion
@@ -56,6 +69,26 @@ func (s *Service) CreateRoom(ctx context.Context, params CreateRoomParams) (*per
 	params.RoomVersion = version
 
 	preset := s.presetDefaults(params)
+
+	// The create event content is built before the room exists, because in a room version
+	// that hashes room ids the event decides what the room is called.
+	creation, err := s.creationContent(params)
+	if err != nil {
+		return nil, err
+	}
+
+	roomID := matrix.NewRoomID(s.serverName)
+	var create *pdu
+	if eventcrypto.UsesHashedRoomIDs(version) {
+		create, err = s.buildCreatePDU(ctx, params.Creator, creation, version)
+		if err != nil {
+			return nil, err
+		}
+		roomID, err = matrix.RoomIDFromEventID(create.eventID)
+		if err != nil {
+			return nil, matrix.ErrInternal(err)
+		}
+	}
 
 	room := &persist.Room{
 		ID:          roomID,
@@ -83,7 +116,7 @@ func (s *Service) CreateRoom(ctx context.Context, params CreateRoomParams) (*per
 		}
 	}
 
-	if err := s.writeInitialState(ctx, roomID, params, preset); err != nil {
+	if err := s.writeInitialState(ctx, roomID, params, preset, creation, create); err != nil {
 		return nil, err
 	}
 
@@ -104,6 +137,95 @@ func (s *Service) CreateRoom(ctx context.Context, params CreateRoomParams) (*per
 		return nil, matrix.ErrInternal(err)
 	}
 	return room, nil
+}
+
+// creationContent assembles the content of a room's m.room.create event from what the
+// caller asked for: the caller's own creation_content, plus the properties this server
+// always writes.
+//
+// additional_creators is the property room version 12 adds, and it is validated here
+// rather than left for the authorisation rule to refuse later: a client that mistyped a
+// user id in a createRoom request wants a 400 naming the field, not a room that was
+// created anyway and then refuses everything its second creator tries to do. The users a
+// createRoom call invites become creators as well, which is what lets the people a room
+// was opened for administer it from the first moment - and it is why a v12 room's create
+// event can be handed to them as proof of what the room is.
+func (s *Service) creationContent(params CreateRoomParams) (matrix.Object, error) {
+	creation := matrix.Object{}
+	for k, v := range params.CreationContent {
+		creation[k] = v
+	}
+	creation["creator"] = params.Creator
+	creation["room_version"] = params.RoomVersion
+	if _, ok := creation["m.federate"]; !ok {
+		// A room is federated unless its creator says otherwise: the specification's
+		// create event makes m.federate default to true, and a server that defaults it to
+		// false quietly un-federates every room it creates - the creator then has to know
+		// to ask for federation, which is the opposite of how the feature is specified.
+		creation["m.federate"] = true
+	}
+
+	privileged := eventcrypto.UsesHashedRoomIDs(params.RoomVersion)
+	if raw, asked := creation["additional_creators"]; asked {
+		if !privileged {
+			delete(creation, "additional_creators")
+			return creation, matrix.ErrInvalidRequest(
+				"additional_creators is a property of room version 12 rooms, not %s rooms", params.RoomVersion)
+		}
+		creators, err := validAdditionalCreators(raw)
+		if err != nil {
+			return creation, err
+		}
+		creation["additional_creators"] = creators
+	}
+	if privileged && params.Preset == PresetTrustedPrivateChat && len(params.Invite) > 0 {
+		// A trusted private chat is one the invited people are trusted in: before room
+		// version 12 they were handed the administrator level for it, and in this version they
+		// are made creators of the room instead, which is the stronger and the more honest
+		// statement - they helped make it, so nothing in the room can take that back.
+		// Other presets do not say that about their invitees, so an ordinary invite does not
+		// quietly promote anybody.
+		creators, _ := creation["additional_creators"].([]string)
+		for _, user := range params.Invite {
+			if !matrix.IsUserID(user) {
+				return creation, matrix.ErrInvalidRequest("%s is not a user id", user)
+			}
+			if !containsString(creators, user) {
+				creators = append(creators, user)
+			}
+		}
+		creation["additional_creators"] = creators
+	}
+	return creation, nil
+}
+
+// validAdditionalCreators checks an additional_creators array the way room version 12's
+// authorisation rule does: an array, of strings, each spelled as a user id.
+func validAdditionalCreators(raw any) ([]string, error) {
+	var entries []any
+	switch typed := raw.(type) {
+	case []any:
+		entries = typed
+	case []string:
+		entries = make([]any, len(typed))
+		for i, v := range typed {
+			entries[i] = v
+		}
+	default:
+		return nil, matrix.ErrInvalidRequest("additional_creators must be an array of user ids")
+	}
+	out := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		user, ok := entry.(string)
+		if !ok {
+			return nil, matrix.ErrInvalidRequest("every additional creator must be a user id, and %v is not a string", entry)
+		}
+		if !matrix.ValidUserID(user) {
+			return nil, matrix.ErrInvalidRequest("%q is not a user id", user)
+		}
+		out = append(out, user)
+	}
+	return out, nil
 }
 
 // Preset holds the defaults derived from a creation preset plus explicit
@@ -151,21 +273,13 @@ func (s *Service) presetDefaults(params CreateRoomParams) Preset {
 // writeInitialState appends the state events every new room starts with. The
 // order matches the specification: create, membership, power levels, join
 // rules, then the informational events.
-func (s *Service) writeInitialState(ctx context.Context, roomID string, params CreateRoomParams, preset Preset) error {
-	creation := matrix.Object{}
-	for k, v := range params.CreationContent {
-		creation[k] = v
-	}
-	creation["creator"] = params.Creator
-	creation["room_version"] = params.RoomVersion
-	// A room is federated unless its creator says otherwise: the specification's
-	// create event makes m.federate default to true, and a server that defaults it to
-	// false quietly un-federates every room it creates - the creator then has to know
-	// to ask for federation, which is the opposite of how the feature is specified.
-	if _, ok := creation["m.federate"]; !ok {
-		creation["m.federate"] = true
-	}
-	if err := s.appendState(ctx, roomID, params.Creator, matrix.TypeCreate, creation); err != nil {
+//
+// The create event content and, for a room version that hashes room ids, the finished
+// create event come from the caller: such an event had to be signed before the room it
+// names existed, so it was built in [Service.CreateRoom] and is stored here rather than
+// rebuilt.
+func (s *Service) writeInitialState(ctx context.Context, roomID string, params CreateRoomParams, preset Preset, creation matrix.Object, prebuiltCreate *pdu) error {
+	if err := s.appendCreate(ctx, roomID, params.Creator, creation, prebuiltCreate); err != nil {
 		return err
 	}
 
@@ -187,12 +301,44 @@ func (s *Service) writeInitialState(ctx context.Context, roomID string, params C
 		StateDefault:  PowerDefaultState,
 		UsersDefault:  PowerDefaultUser,
 		Events:        map[string]int64{},
-		Users:         map[string]int64{params.Creator: PowerAdmin},
+		Users:         map[string]int64{},
 		Notifications: map[string]int64{"room_char": 50},
+	}
+	privileged := eventcrypto.UsesHashedRoomIDs(params.RoomVersion)
+	if !privileged {
+		// Before room version 12 a creator is an administrator like any other, so the room
+		// says so in its own power levels event.
+		levels.Users[params.Creator] = PowerAdmin
+	}
+	if privileged {
+		// A room version 12 creator holds a level no power levels event can name, so naming
+		// them here would be a level the authorisation rules refuse to read (rule 10.4
+		// rejects the event outright). Ending the room belongs to the creators alone.
+		levels.Events[matrix.TypeTombstone] = PowerTombstone
 	}
 	override := matrix.MustParseObject(matrix.Encode(levels))
 	for k, v := range params.PowerLevelContentOverride {
 		override[k] = v
+	}
+	if privileged {
+		// The room says out loud that its levels name nobody. An absent users map and an
+		// empty one mean the same thing here, but the point of a room version 12 room is that
+		// its creators were deliberately left out of the event, and a reader - another server,
+		// or whoever is auditing why a room refused an event - can only see that omission if
+		// the field it is an omission from is there.
+		if _, named := override["users"]; !named {
+			override["users"] = map[string]int64{}
+		}
+	}
+	if privileged {
+		// A caller that overrides the levels may hand in a map that names a creator, which
+		// is the one thing a room version 12 power levels event is not allowed to do. The
+		// client that did it asked for a room that cannot hold its own first state event,
+		// so the room is not created and the request is refused.
+		if named := powerLevelsNamesUsers(override, power.CreatorsOf(creation, params.Creator, true)); len(named) > 0 {
+			return matrix.ErrInvalidRequest(
+				"room version 12 power levels cannot name its creators, and %s is one", strings.Join(named, ", "))
+		}
 	}
 	if err := s.appendState(ctx, roomID, params.Creator, matrix.TypePowerLevels, override); err != nil {
 		return err
@@ -278,6 +424,45 @@ func richTopic(topic string) matrix.Object {
 // appendState appends a state event with an empty state key.
 func (s *Service) appendState(ctx context.Context, roomID, sender, typ string, content matrix.Object) error {
 	return s.appendStateKey(ctx, roomID, sender, typ, "", content)
+}
+
+// appendCreate appends a room's create event, which a room version that hashes room ids
+// has already had built, hashed and named by [Service.buildCreatePDU].
+func (s *Service) appendCreate(ctx context.Context, roomID, sender string, content matrix.Object, prebuilt *pdu) error {
+	_, err := s.AppendEvent(ctx, &EventDraft{
+		RoomID:   roomID,
+		Type:     matrix.TypeCreate,
+		StateKey: StateKeyOf(""),
+		Sender:   sender,
+		Content:  matrix.Encode(content),
+		prebuilt: prebuilt,
+	})
+	return err
+}
+
+// powerLevelsNamesUsers returns the users a power levels content object lists in its
+// users map that the room names as creators.
+func powerLevelsNamesUsers(content matrix.Object, creators []string) []string {
+	users, ok := content["users"]
+	if !ok {
+		return nil
+	}
+	var named []string
+	switch typed := users.(type) {
+	case map[string]int64:
+		for _, creator := range creators {
+			if _, found := typed[creator]; found {
+				named = append(named, creator)
+			}
+		}
+	case map[string]any:
+		for _, creator := range creators {
+			if _, found := typed[creator]; found {
+				named = append(named, creator)
+			}
+		}
+	}
+	return named
 }
 
 // appendStateKey appends a state event with an explicit state key.

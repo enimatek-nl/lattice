@@ -24,6 +24,11 @@ type EventDraft struct {
 	TxnID string
 	// Kind distinguishes the transaction namespaces of the txn log.
 	Kind string
+	// prebuilt carries an event that was built, hashed, signed and named outside this
+	// call. Only a room version 12 create event needs it: such an event names the room it
+	// creates by its own hash, so it has to exist before the room row that would let it be
+	// appended does.
+	prebuilt *pdu
 }
 
 // StateKeyOf returns a pointer to a state key, ready for use in an
@@ -81,12 +86,16 @@ func (s *Service) AppendEvent(ctx context.Context, draft *EventDraft) (*persist.
 		// the ones that were current when the event was made.
 		originServerTS := s.NowMS()
 		version = RoomVersionOf(room)
-		packet, err := s.BuildPDU(ctx, tx, draft, version, originServerTS)
-		if err != nil {
-			return err
-		}
-		if err := s.SignAndIdentify(ctx, packet); err != nil {
-			return err
+		packet := draft.prebuilt
+		if packet == nil {
+			built, err := s.BuildPDU(ctx, tx, draft, version, originServerTS)
+			if err != nil {
+				return err
+			}
+			packet = built
+			if err := s.SignAndIdentify(ctx, packet); err != nil {
+				return err
+			}
 		}
 		// The room's rules are asked about this event the same way they are asked about an
 		// event arriving from a peer, before anything of it is written.

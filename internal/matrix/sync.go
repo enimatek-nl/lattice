@@ -72,12 +72,32 @@ type JoinedRoom struct {
 
 // InvitedRoom is the /sync "invite" section of a single room.
 type InvitedRoom struct {
-	InviteState State `json:"invite_state"`
+	InviteState StrippedState `json:"invite_state"`
 }
 
 // KnockedRoom is the /sync "knock" section of a single room.
 type KnockedRoom struct {
-	KnockState State `json:"knock_state"`
+	KnockState StrippedState `json:"knock_state"`
+}
+
+// StrippedState is a room's state shown to somebody who has not joined it - the invite and
+// knock sections of a sync, and the same block a federation invite carries.
+//
+// The two forms differ, and MSC4311 says so: between servers the block is a list of
+// complete events, because a server that has never met the room has to be able to check the
+// events it is being handed and, in a room version whose id is the hash of its create event,
+// has to be able to hash them. A client is asked for neither, so it is shown this:
+// four fields that say what the state is, and nothing of where it came from.
+type StrippedState struct {
+	Events []StrippedStateEvent `json:"events"`
+}
+
+// StrippedStateEvent is one piece of that state.
+type StrippedStateEvent struct {
+	Type     string     `json:"type"`
+	StateKey string     `json:"state_key,omitempty"`
+	Sender   string     `json:"sender"`
+	Content  RawMessage `json:"content"`
 }
 
 // LeftRoom is the /sync "leave" section of a single room.

@@ -4,8 +4,10 @@ import (
 	"context"
 	"strconv"
 
+	"github.com/enimatek-nl/lattice/internal/eventcrypto"
 	"github.com/enimatek-nl/lattice/internal/matrix"
 	"github.com/enimatek-nl/lattice/internal/persist"
+	"github.com/enimatek-nl/lattice/internal/power"
 )
 
 // CreateAlias maps an alias to a room, rejecting duplicates.
@@ -362,12 +364,22 @@ func (s *Service) RoomSummary(ctx context.Context, idOrAlias, requester string) 
 
 // UpgradeRoom creates the successor of a room and marks the old room as
 // retired.
-func (s *Service) UpgradeRoom(ctx context.Context, roomID, requester, newVersion, reason string) (string, error) {
+//
+// additionalCreators names the users who are to be creators of the new room alongside the
+// one doing the upgrade. Only a room version 12 successor reads it, and it changes what
+// the copied power levels may say: a creator of such a room holds a level no power levels
+// event can name, so the entries for the new creators come out of the copy before it is
+// written.
+func (s *Service) UpgradeRoom(ctx context.Context, roomID, requester, newVersion, reason string, additionalCreators []string) (string, error) {
 	room, err := s.MustRoom(ctx, roomID)
 	if err != nil {
 		return "", err
 	}
-	if !s.Allow(ctx, roomID, requester, "ban", 50) && room.Creator != requester {
+	// Ending a room is the act of writing its m.room.tombstone, so the level the old room
+	// asks for that event is the level the upgrade asks for. A room version 12 room asks for
+	// more than the ordinary state default, because its creators are the only ones whose
+	// power is beyond the levels the event can say.
+	if required := power.EventRequired(s.powerLevels(ctx, roomID), matrix.TypeTombstone, true); s.PowerLevel(ctx, roomID, requester) < required && room.Creator != requester {
 		return "", matrix.ErrForbidden("you do not have permission to upgrade this room")
 	}
 	if newVersion == "" {
@@ -381,8 +393,15 @@ func (s *Service) UpgradeRoom(ctx context.Context, roomID, requester, newVersion
 		return "", matrix.ErrForbidden("this room has already been replaced by %s", replacement)
 	}
 
-	predecessor := matrix.Predecessor{RoomID: room.ID, EventID: s.lastCreateEventID(roomID)}
+	hashed := eventcrypto.UsesHashedRoomIDs(newVersion)
+	predecessor := matrix.Predecessor{RoomID: room.ID}
+	if !hashed {
+		predecessor.EventID = s.lastCreateEventID(roomID)
+	}
 	creation := matrix.Object{"predecessor": matrix.MustParseObject(matrix.Encode(predecessor))}
+	if hashed && len(additionalCreators) > 0 {
+		creation["additional_creators"] = additionalCreators
+	}
 	params := CreateRoomParams{
 		Creator:           requester,
 		RoomVersion:       newVersion,
@@ -392,6 +411,10 @@ func (s *Service) UpgradeRoom(ctx context.Context, roomID, requester, newVersion
 		HistoryVisibility: s.HistoryVisibility(ctx, room.ID),
 		JoinRule:          mustJoinRule(ctx, s, room.ID),
 	}
+	// The people the new room will refuse to list in its power levels: its creator is the
+	// one doing the upgrade, and any additional creators named for it.
+	newCreators := []string{requester}
+	newCreators = append(newCreators, additionalCreators...)
 	// Copy the room's current state into the replacement room.
 	states, err := s.db.StateRepo.List(room.ID, nil, "")
 	if err != nil {
@@ -402,10 +425,14 @@ func (s *Service) UpgradeRoom(ctx context.Context, roomID, requester, newVersion
 			state.Type == matrix.TypeTombstone {
 			continue
 		}
+		content := state.Content
+		if hashed && state.Type == matrix.TypePowerLevels {
+			content = powerLevelsWithoutCreators(content, newCreators)
+		}
 		params.InitialStates = append(params.InitialStates, matrix.Event{
 			Type:     state.Type,
 			StateKey: StateKeyOf(state.StateKey),
-			Content:  matrix.RawMessage(state.Content),
+			Content:  matrix.RawMessage(content),
 		})
 	}
 	newRoom, err := s.CreateRoom(ctx, params)
@@ -427,6 +454,38 @@ func (s *Service) UpgradeRoom(ctx context.Context, roomID, requester, newVersion
 		return "", err
 	}
 	return newRoom.ID, nil
+}
+
+// powerLevelsWithoutCreators rewrites a copied m.room.power_levels content object so that
+// it names none of the new room's creators. Room version 12 refuses a power levels event
+// that lists a creator, because the level such a person holds is not one the event can
+// say - copying the old room's levels across untouched would create a room whose first
+// state event its own rules reject.
+func powerLevelsWithoutCreators(raw string, creators []string) string {
+	content := matrix.Object{}
+	if err := matrix.DecodeContent(matrix.RawMessage(raw), &content); err != nil {
+		return raw
+	}
+	users, ok := content["users"]
+	if !ok {
+		return raw
+	}
+	typed, ok := users.(map[string]any)
+	if !ok {
+		return raw
+	}
+	changed := false
+	for _, creator := range creators {
+		if _, found := typed[creator]; found {
+			delete(typed, creator)
+			changed = true
+		}
+	}
+	if !changed {
+		return raw
+	}
+	content["users"] = typed
+	return string(matrix.Encode(content))
 }
 
 // closeRoomPowerLevels raises the levels needed to send events and to invite in a

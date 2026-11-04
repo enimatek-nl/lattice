@@ -21,10 +21,14 @@ type createRoomBody struct {
 	InitialState       []matrix.Event `json:"initial_state,omitempty"`
 	PowerLevelOverride matrix.Object  `json:"power_level_content_override,omitempty"`
 	Invite             []string       `json:"invite,omitempty"`
-	IsDirect           bool           `json:"is_direct"`
-	HistoryVisibility  string         `json:"history_visibility"`
-	GuestAccess        string         `json:"guest_access"`
-	JoinRule           string         `json:"join_rules"`
+	// AdditionalCreators is accepted at the top level as well as inside creation_content,
+	// because that is how clients spell the room version 12 property: some put it beside
+	// room_version, some inside the create event content they hand in.
+	AdditionalCreators []string `json:"additional_creators,omitempty"`
+	IsDirect           bool     `json:"is_direct"`
+	HistoryVisibility  string   `json:"history_visibility"`
+	GuestAccess        string   `json:"guest_access"`
+	JoinRule           string   `json:"join_rules"`
 }
 
 // handleCreateRoom implements POST /_matrix/client/v3/createRoom.
@@ -52,6 +56,12 @@ func (a *App) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
 		}
 		creation["type"] = body.Type
 	}
+	if len(body.AdditionalCreators) > 0 {
+		if creation == nil {
+			creation = matrix.Object{}
+		}
+		creation["additional_creators"] = body.AdditionalCreators
+	}
 	room, err := a.svc.CreateRoom(r.Context(), service.CreateRoomParams{
 		Creator:                   creator,
 		Alias:                     body.RoomAliasName,
@@ -66,6 +76,7 @@ func (a *App) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
 		CreationContent:           creation,
 		PowerLevelContentOverride: body.PowerLevelOverride,
 		InitialStates:             body.InitialState,
+		Invite:                    body.Invite,
 	})
 	if err != nil {
 		a.writeError(w, r, err)
@@ -165,7 +176,11 @@ func (a *App) handleKnockRoom(w http.ResponseWriter, r *http.Request) {
 	if target == "" {
 		target = r.PathValue("roomId")
 	}
-	roomID, err := a.svc.KnockRoom(r.Context(), target, auth.GetUserID(r), body.Reason)
+	// The servers the client names are the ones it thinks can let the user in. For a room this
+	// server has never met - and a room id of the versions that hash room ids names no server to
+	// ask - they may be the only names there are.
+	via := append(r.URL.Query()["via"], r.URL.Query()["server_name"]...)
+	roomID, err := a.svc.KnockRoom(r.Context(), target, auth.GetUserID(r), body.Reason, via)
 	if err != nil {
 		a.writeError(w, r, err)
 		return
@@ -313,12 +328,15 @@ func (a *App) handleUpgradeRoom(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		NewVersion string `json:"new_version"`
 		Reason     string `json:"reason"`
+		// AdditionalCreators are the users the new room is to hold as creators beside the one
+		// doing the upgrade. Only a room version 12 successor reads them.
+		AdditionalCreators []string `json:"additional_creators,omitempty"`
 	}
 	if err := decodeBody(r, &body); err != nil {
 		a.writeError(w, r, err)
 		return
 	}
-	newRoomID, err := a.svc.UpgradeRoom(r.Context(), r.PathValue("roomId"), auth.GetUserID(r), body.NewVersion, body.Reason)
+	newRoomID, err := a.svc.UpgradeRoom(r.Context(), r.PathValue("roomId"), auth.GetUserID(r), body.NewVersion, body.Reason, body.AdditionalCreators)
 	if err != nil {
 		a.writeError(w, r, err)
 		return

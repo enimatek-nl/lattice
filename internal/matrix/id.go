@@ -196,12 +196,77 @@ func IsUserID(id string) bool {
 	return ok && ValidLocalpart(localpart)
 }
 
-// IsRoomID reports whether id is written as "!localpart:domain". Room ID local
-// parts are opaque: a server mints them and nothing else reads them, so only the
-// shape is checked.
+// ValidUserID reports whether a string is spelled as a user ID all the way through: the
+// sigil, a local part this server could accept, and a server name that could address a
+// server. [IsUserID] asks only the first two, because the identifier in already-stored
+// state was accepted once and is not re-examined for how its server name is spelled; a
+// value arriving from a client is checked all the way, before it is written down as
+// somebody's identity.
+func ValidUserID(id string) bool {
+	localpart, domain, ok := cutIdentifier(id, "@")
+	return ok && ValidLocalpart(localpart) && ValidServerName(domain)
+}
+
+// IsRoomID reports whether id is written as a room ID: either "!localpart:domain", or
+// the domain-less form room version 12 mints - "!" followed by a URL-safe unpadded
+// base64 hash, which names no server at all because the room is named by its create
+// event rather than by the server that made it.
+//
+// Room ID local parts are opaque: a server mints them and nothing else reads them, so
+// only the shape is checked.
 func IsRoomID(id string) bool {
-	localpart, _, ok := cutIdentifier(id, "!")
-	return ok && localpart != ""
+	if !strings.HasPrefix(id, "!") {
+		return false
+	}
+	rest := id[1:]
+	if local, _, found := strings.Cut(rest, ":"); found {
+		return local != ""
+	}
+	return isHashedRoomIDLocal(rest)
+}
+
+// hashedRoomIDLength is the length of a URL-safe unpadded base64 SHA-256: 43
+// characters, because 32 bytes need 43 characters once the padding is dropped.
+const hashedRoomIDLength = 43
+
+// isHashedRoomIDLocal reports whether a room ID local part is the hash form room
+// version 12 uses: URL-safe unpadded base64, and nothing else. The length is part of
+// the shape on purpose - a shorter string in that alphabet would be a room ID from an
+// older version that lost its domain on the way here, and treating that as a valid
+// identifier would let a truncated id address a room nobody asked for.
+func isHashedRoomIDLocal(local string) bool {
+	if len(local) != hashedRoomIDLength {
+		return false
+	}
+	for i := 0; i < len(local); i++ {
+		c := local[i]
+		switch {
+		case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '-', c == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// IsHashedRoomID reports whether a room ID is the domain-less hash form. It is the
+// question to ask before treating a room ID as addressable by its domain.
+func IsHashedRoomID(id string) bool {
+	return strings.HasPrefix(id, "!") && !strings.Contains(id, ":") && isHashedRoomIDLocal(id[1:])
+}
+
+// RoomIDFromEventID returns the room ID a room version 12 room takes from the event
+// that created it: the create event's id with ! in place of $, because both are the
+// same hash over the same event and the sigil is the only thing that differs.
+func RoomIDFromEventID(eventID string) (string, error) {
+	if !strings.HasPrefix(eventID, "$") {
+		return "", fmt.Errorf("the create event id %q is not a hashed event id", eventID)
+	}
+	roomID := "!" + eventID[1:]
+	if !IsHashedRoomID(roomID) {
+		return "", fmt.Errorf("the create event id %q does not hash to a room ID this server can name", eventID)
+	}
+	return roomID, nil
 }
 
 // cutIdentifier splits "<sigil>localpart:domain" into its parts.
@@ -286,8 +351,13 @@ func ValidRoomID(id string) bool {
 		return false
 	}
 	local, server, found := strings.Cut(id[1:], ":")
-	if local == "" || !found {
+	if local == "" {
 		return false
+	}
+	if !found {
+		// Room version 12: the id is a hash of the room's create event and names no
+		// server, so there is no server name to check.
+		return isHashedRoomIDLocal(local)
 	}
 	return ValidServerName(server)
 }
@@ -312,7 +382,16 @@ func LocalpartOf(userID string) string {
 	return s
 }
 
-// DomainOf returns the server name part of a Matrix identifier.
+// DomainOf returns the server name part of a Matrix identifier, or the empty string
+// when the identifier names none.
+//
+// A room ID from room version 12 names none on purpose: such a room is named by a hash
+// of its create event, and the server that made it is not written into the identifier.
+// A caller that asked for the domain of a room ID to decide where the room lives, which
+// server to send to, or whether the room is local has to ask something else instead -
+// the room's own state, or this server's database. A caller that asked about a user ID,
+// an alias or a server name is unaffected: those keep their domain in every room
+// version, aliases included.
 func DomainOf(id string) string {
 	if i := strings.Index(id, ":"); i >= 0 {
 		return id[i+1:]

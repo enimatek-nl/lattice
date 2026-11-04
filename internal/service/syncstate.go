@@ -177,7 +177,19 @@ func (s *Service) stateDelta(roomID string, since uint64, skip map[string]bool) 
 // specification lists the m.room.member events of the inviter and the invitee;
 // carrying every member of the room hands a stranger the full guest list before
 // they have done anything but receive an invitation.
-func (s *Service) strippedState(ctx context.Context, roomID, invitee string) []matrix.Event {
+func (s *Service) strippedState(ctx context.Context, roomID, invitee string) []matrix.StrippedStateEvent {
+	out, err := s.strippedEvents(ctx, s.inviteStateRows(ctx, roomID, invitee))
+	if err != nil {
+		return nil
+	}
+	return out
+}
+
+// inviteStateRows picks the pieces of a room's state that travel to somebody who is not in
+// it: the room's identity (its create event, name, topic, avatar, alias), how it is entered
+// (join rule, encryption), and the two memberships the invitation is between - the invitee's
+// own and the inviter's, which is how a client shows who invited them.
+func (s *Service) inviteStateRows(ctx context.Context, roomID, invitee string) []*persist.RoomState {
 	types := []string{
 		matrix.TypeCreate, matrix.TypeName, matrix.TypeTopic, matrix.TypeAvatar,
 		matrix.TypeCanonicalAlias, matrix.TypeJoinRules, matrix.TypeEncryption,
@@ -211,38 +223,31 @@ func (s *Service) strippedState(ctx context.Context, roomID, invitee string) []m
 			keep = append(keep, row)
 		}
 	}
-	out, err := s.strippedEvents(ctx, keep)
-	if err != nil {
-		return nil
-	}
-	return out
+	return keep
 }
 
-// strippedEvents renders state rows for stripped state, which per the
-// specification carries no origin server timestamp. A row whose event has gone
-// is rendered from the row itself, as the specification allows.
-func (s *Service) strippedEvents(ctx context.Context, rows []*persist.RoomState) ([]matrix.Event, error) {
-	ids := make([]string, 0, len(rows))
+// strippedEvents renders state rows for the client API's stripped state, which per the
+// specification is the four fields that describe a piece of state and nothing else: no
+// origin server timestamp, no hashes, no signatures. MSC4311 keeps that shape on the client
+// side even though the same block is a set of complete events between servers, because a
+// client is not being asked to check the room - it is being shown what it was invited to.
+// A row whose event has gone is rendered from the row itself, as the specification allows.
+func (s *Service) strippedEvents(ctx context.Context, rows []*persist.RoomState) ([]matrix.StrippedStateEvent, error) {
+	if len(rows) == 0 {
+		return []matrix.StrippedStateEvent{}, nil
+	}
+	out := make([]matrix.StrippedStateEvent, 0, len(rows))
 	for _, row := range rows {
-		ids = append(ids, row.EventID)
-	}
-	if len(ids) == 0 {
-		return []matrix.Event{}, nil
-	}
-	events, err := s.db.EventRepo.GetByIDs(ids)
-	if err != nil {
-		return nil, matrix.ErrInternal(err)
-	}
-	out := make([]matrix.Event, 0, len(rows))
-	for _, row := range rows {
-		event, ok := events[row.EventID]
-		if !ok {
-			out = append(out, matrix.Event{Type: row.Type, StateKey: StateKeyOf(row.StateKey), Sender: row.Sender})
-			continue
-		}
-		ev := event.Matrix()
-		ev.OriginServerTS = 0
-		out = append(out, ev)
+		// The four fields of a stripped state event, read from the state row rather than
+		// copied out of the stored event: a stored event carries where it came from, when it
+		// arrived and how it was signed, and all of that belongs to the room, not to the
+		// notice a stranger is shown about it.
+		out = append(out, matrix.StrippedStateEvent{
+			Type:     row.Type,
+			StateKey: row.StateKey,
+			Sender:   row.Sender,
+			Content:  matrix.RawMessage(row.Content),
+		})
 	}
 	return out, nil
 }
@@ -257,7 +262,7 @@ func (s *Service) strippedEvents(ctx context.Context, rows []*persist.RoomState)
 func (s *Service) invitedRoomSync(ctx context.Context, userID, roomID string,
 	since uint64) (*matrix.InvitedRoom, bool, error) {
 	return &matrix.InvitedRoom{
-		InviteState: matrix.State{Events: s.strippedState(ctx, roomID, userID)},
+		InviteState: matrix.StrippedState{Events: s.strippedState(ctx, roomID, userID)},
 	}, s.membershipAfter(roomID, userID, since), nil
 }
 
@@ -270,7 +275,7 @@ func (s *Service) invitedRoomSync(ctx context.Context, userID, roomID string,
 func (s *Service) knockedRoomSync(ctx context.Context, userID, roomID string,
 	since uint64) (*matrix.KnockedRoom, bool, error) {
 	return &matrix.KnockedRoom{
-		KnockState: matrix.State{Events: s.strippedState(ctx, roomID, userID)},
+		KnockState: matrix.StrippedState{Events: s.strippedState(ctx, roomID, userID)},
 	}, s.membershipAfter(roomID, userID, since), nil
 }
 

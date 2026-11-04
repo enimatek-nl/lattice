@@ -80,7 +80,18 @@ func Resolve(g *authcheck.Graph, sets []authcheck.State) (authcheck.State, error
 	powerEvents = reverseTopologicalPowerOrder(g, powerEvents)
 
 	// Step 2: apply them over the state every set agreed on.
-	state := iterativeAuthChecks(g, unconflicted, powerEvents)
+	//
+	// State resolution v2.1 (room version 12) starts that walk from an empty state map
+	// instead. The unconflicted state is what every server already agrees on, so putting it
+	// in first lets an event be judged against state it was never authorised against - and a
+	// creator's power, which no level can name, is exactly the kind of fact that then leaks
+	// into a check it does not belong to. The unconflicted entries are still restored at step
+	// 5, so nothing is lost; only the order in which the rules are re-run changes.
+	start := unconflicted
+	if g.HashedRoomIDs() {
+		start = authcheck.State{}
+	}
+	state := iterativeAuthChecks(g, start, powerEvents)
 
 	// Steps 3 and 4: the rest, ordered by mainline order based on the power levels
 	// event the partially resolved state now holds.
@@ -156,8 +167,17 @@ func split(g *authcheck.Graph, sets []authcheck.State) (authcheck.State, []*auth
 // events that do not appear in every state set's chain. Those events are what makes two
 // servers disagree about who was allowed to do what, and the rules need them even
 // though neither state set holds them.
+//
+// Room version 12 adds the conflicted subgraph as well: the events that sit on an
+// auth_events path between two conflicted events. Those events are in every state set's
+// auth chain, so the auth difference leaves them out, yet they are the record of one
+// conflicted event authorising another - leaving them out means the rules are re-run
+// without the events that decided who was allowed to do it.
 func fullConflictedSet(g *authcheck.Graph, sets []authcheck.State, conflicted []*authcheck.Event) []*authcheck.Event {
 	out := append([]*authcheck.Event{}, conflicted...)
+	if g.HashedRoomIDs() {
+		out = append(out, conflictedSubgraph(g, conflicted)...)
+	}
 	if len(sets) >= 2 {
 		chains := make([]map[string]bool, 0, len(sets))
 		for _, set := range sets {
@@ -188,6 +208,61 @@ func fullConflictedSet(g *authcheck.Graph, sets []authcheck.State, conflicted []
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return dedupeEvents(out)
+}
+
+// conflictedSubgraph returns the events that lie on an auth_events path between two
+// events of the conflicted set, endpoints included. Each conflicted event is walked back
+// along auth_events; whenever the walk lands on another conflicted event, everything the
+// walk passed through on the way is part of the subgraph, because that is the chain by
+// which the first event authorised the second.
+func conflictedSubgraph(g *authcheck.Graph, conflicted []*authcheck.Event) []*authcheck.Event {
+	inSet := make(map[string]bool, len(conflicted))
+	for _, event := range conflicted {
+		if event != nil {
+			inSet[event.ID] = true
+		}
+	}
+	var out []*authcheck.Event
+	for _, root := range conflicted {
+		if root == nil {
+			continue
+		}
+		// A breadth-first walk that remembers who led to whom, so a path can be read back
+		// out of the parent links once its far end is recognised as conflicted.
+		parent := map[string]string{root.ID: ""}
+		queue := []string{root.ID}
+		for len(queue) > 0 {
+			id := queue[0]
+			queue = queue[1:]
+			event := g.Lookup(id)
+			if event == nil {
+				continue
+			}
+			for _, authID := range event.AuthIDs {
+				if authID == root.ID {
+					continue
+				}
+				if _, seen := parent[authID]; !seen {
+					parent[authID] = id
+					queue = append(queue, authID)
+				}
+				if !inSet[authID] {
+					continue
+				}
+				// Walk the parent links back from the far endpoint to the root and take the
+				// whole path: those are the events that carried the authorisation.
+				for at := authID; at != ""; at = parent[at] {
+					if event := g.Lookup(at); event != nil {
+						out = append(out, event)
+					}
+					if at == root.ID {
+						break
+					}
+				}
+			}
+		}
+	}
+	return out
 }
 
 // dedupeEvents collapses a list of events to one entry per id, keeping the order.
@@ -271,6 +346,11 @@ func isPowerEvent(event *authcheck.Event) bool {
 // ordering the same on every server.
 func reverseTopologicalPowerOrder(g *authcheck.Graph, events []*authcheck.Event) []*authcheck.Event {
 	events = dedupeEvents(events)
+	// The room's creators are weighed here rather than read from each event's own auth
+	// events, because in the version that privileges them an event does not cite the create
+	// event at all: the room id names it instead. The graph still holds the create event -
+	// the state sets name it - so this is where the answer is.
+	creators := roomCreatorsOf(g)
 	inSet := map[string]bool{}
 	byID := map[string]*authcheck.Event{}
 	for _, event := range events {
@@ -300,7 +380,7 @@ func reverseTopologicalPowerOrder(g *authcheck.Graph, events []*authcheck.Event)
 	}
 	out := make([]*authcheck.Event, 0, len(events))
 	for len(ready) > 0 {
-		sort.SliceStable(ready, func(i, j int) bool { return smaller(g, ready[i], ready[j]) })
+		sort.SliceStable(ready, func(i, j int) bool { return smaller(g, creators, ready[i], ready[j]) })
 		next := ready[0]
 		ready = ready[1:]
 		out = append(out, next)
@@ -327,7 +407,7 @@ func reverseTopologicalPowerOrder(g *authcheck.Graph, events []*authcheck.Event)
 			for id := range left {
 				candidates = append(candidates, byID[id])
 			}
-			sort.SliceStable(candidates, func(i, j int) bool { return smaller(g, candidates[i], candidates[j]) })
+			sort.SliceStable(candidates, func(i, j int) bool { return smaller(g, creators, candidates[i], candidates[j]) })
 			out = append(out, candidates[0])
 			delete(left, candidates[0].ID)
 		}
@@ -339,8 +419,8 @@ func reverseTopologicalPowerOrder(g *authcheck.Graph, events []*authcheck.Event)
 // uses: sender power level (higher first), then origin_server_ts, then event id. Each
 // sender's level is read from the power levels event that event was itself authorised
 // against, which is why two events can be compared by different tables of levels.
-func smaller(g *authcheck.Graph, x, y *authcheck.Event) bool {
-	lx, ly := senderLevel(g, x), senderLevel(g, y)
+func smaller(g *authcheck.Graph, creators []string, x, y *authcheck.Event) bool {
+	lx, ly := senderLevel(g, creators, x), senderLevel(g, creators, y)
 	if lx != ly {
 		return lx > ly
 	}
@@ -352,7 +432,7 @@ func smaller(g *authcheck.Graph, x, y *authcheck.Event) bool {
 
 // senderLevel reads the power level an event's sender held, from the power levels event
 // in that event's own auth events.
-func senderLevel(g *authcheck.Graph, event *authcheck.Event) int64 {
+func senderLevel(g *authcheck.Graph, creators []string, event *authcheck.Event) int64 {
 	creator := ""
 	levels := authcheck.PowerLevelsOf(g, nil)
 	for _, id := range event.AuthIDs {
@@ -367,7 +447,32 @@ func senderLevel(g *authcheck.Graph, event *authcheck.Event) int64 {
 			levels = authcheck.PowerLevelsOf(g, auth)
 		}
 	}
+	if g.PrivilegedCreators() {
+		return power.LevelOf(levels, event.Sender, creators, true)
+	}
 	return power.Level(levels, event.Sender, creator)
+}
+
+// roomCreatorsOf returns the creators the room's own create event names, for a room
+// version that privileges them. It reads the create event out of the graph rather than out
+// of an event's auth events, because room version 12 events do not cite it.
+func roomCreatorsOf(g *authcheck.Graph) []string {
+	if !g.PrivilegedCreators() {
+		return nil
+	}
+	var create *authcheck.Event
+	for _, event := range g.Events {
+		if event == nil || event.Type != matrix.TypeCreate {
+			continue
+		}
+		if create == nil || event.ID < create.ID {
+			create = event
+		}
+	}
+	if create == nil {
+		return nil
+	}
+	return power.CreatorsOf(create.Content, create.Sender, true)
 }
 
 // mainlineOrder sorts events by their position on the mainline of a power levels event:

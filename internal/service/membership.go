@@ -200,13 +200,13 @@ func (s *Service) InviteRoom(ctx context.Context, roomID, inviter, invitee, reas
 	}
 	return nil
 }
-func (s *Service) KnockRoom(ctx context.Context, idOrAlias, userID, reason string) (string, error) {
+func (s *Service) KnockRoom(ctx context.Context, idOrAlias, userID, reason string, via []string) (string, error) {
 	room, err := s.MustRoom(ctx, idOrAlias)
 	if err != nil {
 		// A room held nowhere here is not a room that cannot be knocked on - it is a room
 		// that lives on another server, and the knock has to be carried there.
 		if matrix.HasCode(err, matrix.ErrCodeNotFound) && strings.HasPrefix(idOrAlias, "!") {
-			if _, ferr := s.KnockFederatedRoom(ctx, idOrAlias, userID, reason); ferr != nil {
+			if _, ferr := s.KnockFederatedRoom(ctx, idOrAlias, userID, reason, via); ferr != nil {
 				return "", ferr
 			}
 			return idOrAlias, nil
@@ -217,7 +217,7 @@ func (s *Service) KnockRoom(ctx context.Context, idOrAlias, userID, reason strin
 		if problem := s.knownMembershipBlocksKnock(ctx, room.ID, userID); problem != nil {
 			return "", matrix.ErrForbidden("%v", problem)
 		}
-		return s.KnockFederatedRoom(ctx, room.ID, userID, reason)
+		return s.KnockFederatedRoom(ctx, room.ID, userID, reason, via)
 	}
 	joinRule, err := s.db.StateRepo.JoinRule(room.ID)
 	if err != nil {

@@ -35,27 +35,43 @@ func PDUCheck(event matrix.Object, roomVersion string) error {
 	}
 	legacy := version <= 2
 	latest := UseRoom11Algorithms(roomVersion)
+	hashedRoomIDs := version >= 12
 
-	for _, field := range []string{"type", "sender", "room_id", "event_id"} {
+	for _, field := range []string{"type", "sender"} {
 		if _, ok := event[field]; !ok {
-			// Room version 3 and later derive the event id, and a PDU arriving over
-			// federation carries the derived id; a PDU without one is a caller problem
-			// rather than an invalid event, so the id is only required to be a string
-			// when present.
-			if field == "event_id" {
-				continue
-			}
 			return fmt.Errorf("a PDU must carry %s", field)
 		}
 		if _, ok := event[field].(string); !ok {
 			return fmt.Errorf("the %s of a PDU must be a string", field)
 		}
 	}
+	if id, present := event["event_id"]; present {
+		if _, ok := id.(string); !ok {
+			return fmt.Errorf("the event_id of a PDU must be a string")
+		}
+	}
 	if sender, _ := event["sender"].(string); !strings.HasPrefix(sender, "@") || !strings.Contains(sender, ":") {
 		return fmt.Errorf("the sender of a PDU must be a user id")
 	}
-	if room, _ := event["room_id"].(string); !strings.HasPrefix(room, "!") || !strings.Contains(room, ":") {
+	// The room the event belongs to is a property of the event in every room version
+	// except room version 12's create event: there the room does not exist yet, and the
+	// room's id is the hash of this very event, so writing it in would be writing in a
+	// value that cannot be computed until after the event is signed. Rule 1.2 of that
+	// version rejects a create event that carries one.
+	room, hasRoom := event["room_id"].(string)
+	if typ, _ := event["type"].(string); typ == matrix.TypeCreate && hashedRoomIDs {
+		if hasRoom {
+			return fmt.Errorf("an m.room.create event in room version %d must not carry a room_id", version)
+		}
+	} else if !hasRoom {
+		return fmt.Errorf("a PDU must carry room_id")
+	} else if !matrix.ValidRoomID(room) {
 		return fmt.Errorf("the room_id of a PDU must be a room id")
+	} else if hashedRoomIDs != matrix.IsHashedRoomID(room) {
+		if hashedRoomIDs {
+			return fmt.Errorf("the room id %q is not the hash of a create event, which room version %d requires", room, version)
+		}
+		return fmt.Errorf("the room id %q is a hash, which room version %d does not use", room, version)
 	}
 	if id, ok := event["event_id"].(string); ok && id != "" {
 		if err := checkEventID(id, version); err != nil {

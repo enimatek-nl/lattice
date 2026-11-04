@@ -107,13 +107,19 @@ func (s *Service) BuildPDU(ctx context.Context, tx *gorm.DB, draft *EventDraft, 
 	}
 	object := matrix.Object{
 		"type":             draft.Type,
-		"room_id":          draft.RoomID,
 		"sender":           draft.Sender,
 		"origin_server_ts": originServerTS,
 		"content":          content,
 		"depth":            depth,
 		"prev_events":      pduIDList(prevIDs),
 		"auth_events":      pduIDList(authIDs),
+	}
+	if !(eventcrypto.UsesHashedRoomIDs(version) && draft.Type == matrix.TypeCreate) {
+		// Room version 12 leaves the room out of its create event: the room's id is the
+		// hash of that event, so the event cannot name a room that does not exist until
+		// the event is signed. Every other event in such a room names the room, and every
+		// room version before it names it in the create event too.
+		object["room_id"] = draft.RoomID
 	}
 	if !usesDerivedEventIDs(version) {
 		// Room versions 1 and 2 name the server that vouches for an event inside the
@@ -199,6 +205,37 @@ func (s *Service) SignAndIdentify(ctx context.Context, p *pdu) error {
 	return nil
 }
 
+// buildCreatePDU builds, hashes, signs and names a room's create event on its own.
+//
+// Only a room version that takes its room id from the create event needs this: the event
+// has to be signed before the room id it implies exists, so it cannot go through
+// [Service.AppendEvent] - which needs a room row to append to - and it has no graph to
+// cite anyway. The depth of a create event is 1, and it cites nothing before it.
+func (s *Service) buildCreatePDU(ctx context.Context, creator string, content matrix.Object, version string) (*pdu, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	object := matrix.Object{
+		"type":             matrix.TypeCreate,
+		"sender":           creator,
+		"origin_server_ts": s.NowMS(),
+		"content":          content,
+		"depth":            1,
+		"prev_events":      []any{},
+		"auth_events":      []any{},
+		"state_key":        "",
+	}
+	if !usesDerivedEventIDs(version) {
+		object["origin"] = s.serverName
+		object["event_id"] = matrix.NewEventID()
+	}
+	p := &pdu{object: object, version: version}
+	if err := s.SignAndIdentify(ctx, p); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
 // usesDerivedEventIDs reports whether a room version derives event ids from the
 // event itself. Versions 1 and 2 take the id from a field of the event, chosen by the
 // origin server, so those events need an id before they can be hashed. An unknown
@@ -276,11 +313,15 @@ func selectAuthEvents(state persist.StateRepo, draft *EventDraft, version string
 		return nil
 	}
 
-	// Every room version this server speaks cites the create event: it is what makes
-	// the room the same room, and the authorisation rules read its creator and its
-	// m.federate property.
-	if err := add(matrix.TypeCreate, ""); err != nil {
-		return nil, err
+	// Every room version before 12 cites the create event: it is what makes the room the
+	// same room, and the authorisation rules read its creator and its m.federate property.
+	// Room version 12 stops citing it, because the room id - which every event carries -
+	// is the hash of that create event, so the event is named by the room already. Rule 3.2
+	// of that version then rejects an event that cites it anyway.
+	if !eventcrypto.UsesHashedRoomIDs(version) {
+		if err := add(matrix.TypeCreate, ""); err != nil {
+			return nil, err
+		}
 	}
 	if err := add(matrix.TypePowerLevels, ""); err != nil {
 		return nil, err

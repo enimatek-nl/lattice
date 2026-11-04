@@ -331,17 +331,12 @@ func (a *App) handleFederationMakeKnock(w http.ResponseWriter, r *http.Request) 
 //	@Router	/_matrix/federation/v1/send_knock/{roomID}/{eventID} [put]
 //	@Router	/_matrix/federation/v2/send_knock/{roomID}/{eventID} [put]
 func (a *App) handleFederationSendKnock(w http.ResponseWriter, r *http.Request) {
-	event, err := federationBody(r)
+	body, err := federationBody(r)
 	if err != nil {
 		a.writeError(w, r, err)
 		return
 	}
-	event, err = eventInBody(event)
-	if err != nil {
-		a.writeError(w, r, err)
-		return
-	}
-	answer, err := a.svc.ServeSendKnock(r.Context(), r.PathValue("roomID"), r.PathValue("eventID"), event,
+	answer, err := a.svc.ServeSendKnock(r.Context(), r.PathValue("roomID"), r.PathValue("eventID"), body,
 		federation.Peer(r.Context()))
 	if err != nil {
 		a.writeError(w, r, err)
@@ -365,18 +360,16 @@ func (a *App) handleFederationSendKnock(w http.ResponseWriter, r *http.Request) 
 //	@Router	/_matrix/federation/v1/knock/{roomID}/{eventID} [post]
 //	@Router	/_matrix/federation/v2/knock/{roomID}/{eventID} [post]
 func (a *App) handleFederationKnock(w http.ResponseWriter, r *http.Request) {
-	event, err := federationBody(r)
+	body, err := federationBody(r)
 	if err != nil {
 		a.writeError(w, r, err)
 		return
 	}
-	event, err = eventInBody(event)
-	if err != nil {
-		a.writeError(w, r, err)
-		return
-	}
-	answer, err := a.svc.ServeKnock(r.Context(), r.PathValue("roomID"), r.PathValue("eventID"), event,
-		federation.Peer(r.Context()))
+	// MSC3788 ships the state the knock is authorised with beside the event; MSC4311 asks for
+	// it as complete events. The room's server keeps them, because a knock about a stranger is
+	// only judgemental when the state behind it is here.
+	answer, err := a.svc.ServeKnock(r.Context(), r.PathValue("roomID"), r.PathValue("eventID"),
+		body, federation.Peer(r.Context()))
 	if err != nil {
 		a.writeError(w, r, err)
 		return

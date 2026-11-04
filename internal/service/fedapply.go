@@ -72,7 +72,7 @@ const applyWorkBudget = 20 * time.Second
 // rules allowed this".
 
 func (s *Service) applyIncomingPDU(ctx context.Context, pdu matrix.Object, version, peer, eventID string) (string, string, error) {
-	roomID := federation.EventField(pdu, "room_id")
+	roomID := roomOfPDU(pdu, version, "")
 	if eventID == "" || roomID == "" {
 		return OutcomeRejected, "the event names no id or no room", nil
 	}
@@ -153,7 +153,7 @@ func (s *Service) applyIncomingPDU(ctx context.Context, pdu matrix.Object, versi
 		return OutcomeRejected, problem, nil
 	}
 
-	if err := s.storeIncomingPDU(ctx, pdu, eventID, softFailure, false); err != nil {
+	if err := s.storeIncomingPDU(ctx, pdu, eventID, roomID, softFailure, false); err != nil {
 		return "", "", err
 	}
 	if softFailure != "" {
@@ -249,7 +249,7 @@ func (s *Service) gatherAuthChain(ctx context.Context, graph *authcheck.Graph, p
 			// What a peer hands over as authority is kept, not merely consulted: this
 			// server is being told what the room's rules and memberships were, and a room
 			// whose state cannot be read is a room whose future events cannot be judged.
-			if kept, err := s.keepCitedState(judged, id, graph.Version); err != nil {
+			if kept, err := s.keepCitedState(judged, id, graph.Version, roomOfPDU(pdu, graph.Version, "")); err != nil {
 				return chain, learned, fmt.Sprintf("keeping an event the auth chain cites: %v", err)
 			} else if kept {
 				learned = true
@@ -273,12 +273,18 @@ func (s *Service) gatherAuthChain(ctx context.Context, graph *authcheck.Graph, p
 // - true on this server alone, and the reason an honest invite is soft-failed into a
 // corner nobody has to look at. The kept event is an outlier: it is state this server can
 // consult, and not history it will hand to anybody as its own.
-func (s *Service) keepCitedState(pdu matrix.Object, eventID, version string) (bool, error) {
+func (s *Service) keepCitedState(pdu matrix.Object, eventID, version, inRoom string) (bool, error) {
 	key, isState := pdu["state_key"].(string)
 	if !isState {
 		return false, nil
 	}
-	roomID := federation.EventField(pdu, "room_id")
+	roomID := roomOfPDU(pdu, version, inRoom)
+	if roomID == "" {
+		// The event names no room, this server is not working in one, and it is not the one
+		// event of a room version that hashes room ids which cannot name a room. A state event
+		// that cannot be placed in a room is not a piece of anybody's state.
+		return false, nil
+	}
 	typ := federation.EventField(pdu, "type")
 	if _, err := s.db.StateRepo.Get(roomID, typ, key); err == nil {
 		// The room already describes this piece of its state. Whichever event the room
@@ -367,7 +373,14 @@ func (s *Service) authChainIsAuthorised(graph *authcheck.Graph, chain map[string
 		if ev == nil {
 			continue
 		}
-		if ev.Type != matrix.TypeCreate && len(ev.AuthIDs) == 0 {
+		// An event that cites no authority of its own is a tell of an invented chain in the
+		// versions where every event's set has to hold the room's create event. Room version 12
+		// selects no create event at all, and a room's earliest events - the creator's own
+		// membership, written before there are levels or memberships to select - then have
+		// nothing left to cite, so an empty set there is what the selection algorithm produces
+		// rather than a tell. Those rooms are left to the rules below, which read the event
+		// against the state it cites and refuse a join that is not one of the room's first.
+		if !graph.HashedRoomIDs() && ev.Type != matrix.TypeCreate && len(ev.AuthIDs) == 0 {
 			return fmt.Sprintf("the auth chain carries %s, which cites no auth events of its own", id)
 		}
 		if problem := authcheck.Rules(graph, stateOfAuthIDs(graph, ev), ev); problem != nil {
@@ -454,14 +467,36 @@ func withEventID(pdu matrix.Object, eventID string) matrix.Object {
 	return named
 }
 
+// roomOfPDU names the room an event belongs to. An event usually says so itself; the one
+// event of a room version 12 room that cannot is its create event, because there the room
+// id is the hash of that event and an event cannot cite an identifier it defines. For that
+// event the room is read back out of the event's own id, and a caller already working in
+// the room - a join handed this state over, a peer delivered it for that room - says so.
+func roomOfPDU(pdu matrix.Object, version, inRoom string) string {
+	if roomID := federation.EventField(pdu, "room_id"); roomID != "" {
+		return roomID
+	}
+	if inRoom != "" {
+		return inRoom
+	}
+	if eventcrypto.UsesHashedRoomIDs(version) {
+		if id := federation.EventField(pdu, "event_id"); id != "" {
+			if roomID, err := matrix.RoomIDFromEventID(id); err == nil {
+				return roomID
+			}
+		}
+	}
+	return ""
+}
+
 // storeIncomingPDU writes an accepted event to the room: the event itself, its place
 // in the graph, and the state and side effects it carries when the rules allowed it.
 // A soft-failed event is written and nothing else - that is what makes it a claim the
 // room does not currently apply.
 // notInTimeline says whether the event belongs to this room's timeline. The state that
 // arrives with a join from another server does not: see [persist.Event.NotInTimeline].
-func (s *Service) storeIncomingPDU(ctx context.Context, pdu matrix.Object, eventID, softFailure string, notInTimeline bool) error {
-	roomID := federation.EventField(pdu, "room_id")
+func (s *Service) storeIncomingPDU(ctx context.Context, pdu matrix.Object, eventID, forRoom, softFailure string, notInTimeline bool) error {
+	roomID := roomOfPDU(pdu, "", forRoom)
 	encoded := matrix.Encode(objectOf(pdu, "content"))
 	pos := s.nextStreamPos()
 	draft := &EventDraft{

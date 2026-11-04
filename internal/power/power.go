@@ -9,6 +9,8 @@
 package power
 
 import (
+	"math"
+
 	"github.com/enimatek-nl/lattice/internal/matrix"
 )
 
@@ -82,6 +84,69 @@ func ApplyDefaults(levels matrix.PowerLevelsContent) matrix.PowerLevelsContent {
 		levels.StateDefault = DefaultState
 	}
 	return levels
+}
+
+// Infinite is the power level a room creator holds in a room version that privileges its
+// creators - room version 12 and later. It is not a level that can be written into a
+// power levels event: the largest integer canonical JSON can name is 2^53-1, and this is
+// deliberately beyond it, so "no level written by hand outranks a creator" is a fact of
+// the comparison rather than a rule that has to be remembered at each call site.
+const Infinite = int64(math.MaxInt64)
+
+// CreatorsOf returns the room creators an m.room.create event names: its sender, plus the
+// users in its content.additional_creators array when the room version reads that array.
+//
+// Room version 12 is the first version to define additional creators, and it defines them
+// because its room id is the hash of this event: whoever the create event names as its
+// makers is settled at the room's birth and cannot be argued about afterwards.
+func CreatorsOf(content matrix.Object, sender string, privileged bool) []string {
+	creators := []string{sender}
+	if !privileged {
+		return creators
+	}
+	list, ok := content["additional_creators"].([]any)
+	if !ok {
+		if typed, typedOK := content["additional_creators"].([]string); typedOK {
+			list = make([]any, len(typed))
+			for i, v := range typed {
+				list[i] = v
+			}
+		}
+	}
+	for _, entry := range list {
+		user, ok := entry.(string)
+		if !ok || user == "" {
+			continue
+		}
+		creators = append(creators, user)
+	}
+	return creators
+}
+
+// LevelOf returns the effective power level of a user in a room, given the creators that
+// room names and whether naming them is what privileges them.
+//
+// A creator of a room version that privileges them cannot be out-ranked by anything the
+// power levels event says, so they are answered before the users map is read - which is
+// also the order the authorisation rules want, since such a room refuses to list a
+// creator in that map at all.
+func LevelOf(levels matrix.PowerLevelsContent, userID string, creators []string, privileged bool) int64 {
+	if privileged {
+		for _, creator := range creators {
+			if creator != "" && creator == userID {
+				return Infinite
+			}
+		}
+	}
+	if level, ok := levels.Users[userID]; ok {
+		return level
+	}
+	for _, creator := range creators {
+		if creator != "" && creator == userID {
+			return Admin
+		}
+	}
+	return levels.UsersDefault
 }
 
 // Level returns the effective power level of a user: the level the room gave

@@ -62,6 +62,13 @@ func (s *Service) ServeInvite(ctx context.Context, roomID, eventID string, body 
 	if !s.roomVersionIsSupported(version) {
 		return nil, matrix.ErrForbidden("the room is version %s, which this server cannot speak", version)
 	}
+	if eventcrypto.UsesHashedRoomIDs(version) && !shipsCreateEvent(state) {
+		// In this version of room nothing else in the invite says what the room is called:
+		// the room id is the hash of the create event, and an invited server that was not given
+		// that event cannot check the id it is being asked to keep a room under, nor the id
+		// every event in it will carry. MSC4311 asks that this be refused by name.
+		return nil, matrix.ErrMissingParam("the invite for %s ships no m.room.create, and in room version %s that event is the room's name", roomID, version)
+	}
 	if problem := s.inviteIsBackedByTheRoom(event, state, roomID); problem != "" {
 		return nil, matrix.ErrForbidden("%s", problem)
 	}
@@ -117,6 +124,17 @@ func (s *Service) inviteIsBackedByTheRoom(event matrix.Object, state []matrix.Ob
 		return fmt.Sprintf("the invite for %s does not describe %s as joined to the room", roomID, sender)
 	}
 	return ""
+}
+
+// shipsCreateEvent says whether an invite's accompanying state names the room by its create
+// event.
+func shipsCreateEvent(state []matrix.Object) bool {
+	for _, ev := range state {
+		if federation.EventField(ev, "type") == matrix.TypeCreate {
+			return true
+		}
+	}
+	return false
 }
 
 // inviteRoomVersionClaim is the room version the inviting server named in the invite body, if
@@ -233,18 +251,8 @@ func (s *Service) storeInvitedRoom(ctx context.Context, roomID, version string, 
 	}); err != nil && !persist.IsDuplicate(err) {
 		return matrix.ErrInternal(err)
 	}
-	for _, ev := range state {
-		id := federation.EventField(ev, "event_id")
-		if id == "" {
-			// Stripped state is not required to carry ids, and a state event of a room
-			// version from 3 onwards does not carry one inside itself. Without an id this
-			// server can only keep the piece of state, which it does under the type and
-			// state key the room's own rules name it by.
-			continue
-		}
-		if _, err := s.keepCitedState(ev, id, version); err != nil {
-			return err
-		}
+	if err := s.keepInviteState(ctx, roomID, version, state); err != nil {
+		return err
 	}
 	outcome, reason, err := s.applyIncomingPDU(ctx, invite, version, federation.EventField(invite, "sender"), eventID)
 	if err != nil {
@@ -285,7 +293,7 @@ func (s *Service) InviteRemoteServer(ctx context.Context, roomID, invitee string
 		return matrix.ErrInternal(err)
 	}
 	event := withEventID(matrix.MustParseObject([]byte(stored.JSON)), row.EventID)
-	state := s.strippedStateObjects(ctx, roomID, invitee)
+	state := s.inviteStateForPeer(ctx, roomID, invitee)
 	body := matrix.Object{
 		"event":             event,
 		"invite_room_state": state,
@@ -311,17 +319,81 @@ func (s *Service) InviteRemoteServer(ctx context.Context, roomID, invitee string
 	return nil
 }
 
-// strippedStateObjects renders the state an invite is authorised by in the object form the
-// federation endpoint carries. It is the same block a client is shown for a room it has
-// not joined: the room's identity, how it is entered, and the two memberships the
-// invitation is between.
-func (s *Service) strippedStateObjects(ctx context.Context, roomID, invitee string) []matrix.Object {
-	events := s.strippedState(ctx, roomID, invitee)
-	out := make([]matrix.Object, 0, len(events))
-	for _, ev := range events {
-		out = append(out, matrix.MustParseObject(matrix.Encode(ev)))
+// hasHashes says whether an event arrives with the hashes that make it an event rather than
+// a description of one. MSC4311 hands complete events in an invite's state; a peer that
+// still sends the older tuples sends nothing like this.
+func hasHashes(pdu matrix.Object) bool {
+	_, ok := pdu["hashes"].(map[string]any)
+	return ok
+}
+
+// inviteStateForPeer is the state an inviting server hands to the invited one. MSC4311 asks
+// for complete events here rather than the trimmed tuples a client is shown: the invited
+// server holds no copy of this room, so an event it cannot hash - a tuple with no hashes,
+// signatures, depth or prev_events - is an event it cannot verify, cannot put in a graph,
+// and in a room whose id is the hash of its create event, cannot even name the room with.
+// Which pieces of state travel is the same choice the client API makes (see inviteStateRows).
+func (s *Service) inviteStateForPeer(ctx context.Context, roomID, invitee string) []matrix.Object {
+	rows := s.inviteStateRows(ctx, roomID, invitee)
+	ids := make([]string, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.EventID)
+	}
+	if len(ids) == 0 {
+		return []matrix.Object{}
+	}
+	events, err := s.db.EventRepo.GetByIDs(ids)
+	if err != nil {
+		return nil
+	}
+	out := make([]matrix.Object, 0, len(rows))
+	for _, row := range rows {
+		stored, ok := events[row.EventID]
+		if !ok {
+			continue
+		}
+		out = append(out, withEventID(matrix.MustParseObject([]byte(stored.JSON)), row.EventID))
 	}
 	return out
+}
+
+// keepInviteState keeps the state a peer shipped alongside an invite or a knock. A peer that
+// follows MSC4311 hands complete events, and a complete event of a room version from 3
+// onwards carries no id inside itself - the id is the hash of the event - so hashing is how
+// this server gets the name the event will be met by in the room's graph. In a room version
+// whose id is the hash of its create event, that is also the only way this server can learn
+// the room's id at all before it joins.
+func (s *Service) keepInviteState(ctx context.Context, roomID, version string, state []matrix.Object) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	for _, ev := range state {
+		id := federation.EventField(ev, "event_id")
+		if id == "" && hasHashes(ev) {
+			// MSC4311 hands complete events, and a complete event of a room version from 3
+			// onwards carries no id inside itself: the id is the hash of the event. Hashing it
+			// here is how this server gets the name it will meet again in the room's graph - and
+			// in a version whose room id is the hash of its create event, it is the only way this
+			// server can learn the room's id at all.
+			derived, err := eventcrypto.EventID(ev, version)
+			if err != nil {
+				log.Printf("federation: the state of the invite of %s carries an event this server cannot hash: %v", roomID, err)
+				continue
+			}
+			id = derived
+		}
+		if id == "" {
+			// A tuple - type, state key, sender, content, with no hashes on it - is not an
+			// event this server can name or check, and hashing the tuple would invent an id no
+			// server has ever seen for a piece of state whose real event is elsewhere. It is
+			// left out, and the join that follows brings the room's own events.
+			continue
+		}
+		if _, err := s.keepCitedState(ev, id, version, roomID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // stateListOf reads a list of events out of a federation body, tolerating the empty

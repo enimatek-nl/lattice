@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 
+	"github.com/enimatek-nl/lattice/internal/eventcrypto"
 	"github.com/enimatek-nl/lattice/internal/matrix"
 	"github.com/enimatek-nl/lattice/internal/power"
 )
@@ -19,6 +20,12 @@ const (
 	PowerDefaultRedact  = power.DefaultRedact
 	PowerDefaultState   = power.DefaultState
 	PowerDefaultMessage = power.DefaultMessage
+	// PowerTombstone is the level a room version 12 room asks for to put up its
+	// m.room.tombstone. Room version 12 gives its creators power no level can name, so the
+	// ordinary administrator level no longer reaches the event that ends a room: the level
+	// has to be raised above the room's own state default to keep the door shut to everyone
+	// but the creators.
+	PowerTombstone = 150
 )
 
 // powerLevels decodes the current m.room.power_levels event, falling back to
@@ -38,11 +45,32 @@ func (s *Service) powerLevels(ctx context.Context, roomID string) matrix.PowerLe
 // PowerLevel returns the effective power level of a user in a room.
 func (s *Service) PowerLevel(ctx context.Context, roomID, userID string) int64 {
 	levels := s.powerLevels(ctx, roomID)
+	creators, privileged := s.roomCreators(ctx, roomID)
+	return power.LevelOf(levels, userID, creators, privileged)
+}
+
+// roomCreators returns the people a room names as its creators, and whether naming them
+// is what gives them power.
+//
+// Room version 12 is where that changes: its create event names a sender and may name
+// additional_creators beside it, and every one of them holds a level no power levels
+// event can write. Earlier versions know only the creator, and give them the administrator
+// level the way they give anybody else their level.
+func (s *Service) roomCreators(ctx context.Context, roomID string) ([]string, bool) {
+	version := DefaultRoomVersion
 	creator := ""
 	if room, err := s.db.RoomRepo.Get(roomID); err == nil {
+		version = RoomVersionOf(room)
 		creator = room.Creator
 	}
-	return power.Level(levels, userID, creator)
+	privileged := eventcrypto.UsesHashedRoomIDs(version)
+	content := matrix.Object{}
+	if raw, err := s.db.StateRepo.Content(roomID, matrix.TypeCreate, ""); err == nil {
+		if err := matrix.DecodeContent(matrix.RawMessage(raw), &content); err != nil {
+			content = matrix.Object{}
+		}
+	}
+	return power.CreatorsOf(content, creator, privileged), privileged
 }
 
 // MembershipOf returns the current membership of a user in a room, or an empty

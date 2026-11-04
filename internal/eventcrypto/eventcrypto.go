@@ -68,6 +68,41 @@ var contentKeysV11 = map[string][]string{
 	matrix.TypeRedaction:   {"redacts"},
 }
 
+// UsesHashedRoomIDs reports whether a room version names its rooms by a hash of the
+// create event instead of by an identifier the creating server invented. Room version
+// 12 does: the room's id is the create event's id with ! in place of $, which is why a
+// v12 room id carries no server name and why the create event itself cannot carry one.
+func UsesHashedRoomIDs(roomVersion string) bool {
+	number, err := roomVersionNumber(roomVersion)
+	if err != nil {
+		return false
+	}
+	return number >= 12
+}
+
+// RoomIDForCreateEvent returns the room id that a room version 12 create event names:
+// the event's own id, which is its reference hash in URL-safe unpadded base64, with the
+// room sigil instead of the event one. The room id cannot be chosen first in this room
+// version - it is an output of signing the create event, not an input to it - so a
+// server creating such a room builds the event, hashes it, and takes the room's name
+// from the result.
+func RoomIDForCreateEvent(event matrix.Object, roomVersion string) (string, error) {
+	if !UsesHashedRoomIDs(roomVersion) {
+		return "", fmt.Errorf("room version %s names its rooms by hand, not by a hash", roomVersion)
+	}
+	if typ, _ := event["type"].(string); typ != matrix.TypeCreate {
+		return "", fmt.Errorf("a room id is hashed from the create event, and this event is a %s", typ)
+	}
+	if _, has := event["room_id"]; has {
+		return "", fmt.Errorf("a room version 12 create event must not carry a room_id to hash")
+	}
+	id, err := EventID(event, roomVersion)
+	if err != nil {
+		return "", err
+	}
+	return matrix.RoomIDFromEventID(id)
+}
+
 // UseRoom11Algorithms reports whether a room version uses the room version 11
 // algorithms: the redaction rules, and the stricter canonical JSON. Room versions
 // have no ordering, so this asks the version's own number, and a version the server

@@ -285,7 +285,10 @@ func (s *Service) roomPeers(ctx context.Context, roomID string) []string {
 		servers = nil
 	}
 	out := make([]string, 0, len(servers)+1)
-	if origin := matrix.DomainOf(roomID); origin != s.serverName {
+	// The server the room id names is worth asking first, but a room version 12 room id
+	// names no server: such a room is known to this server through the servers it has
+	// already met inside the room, which is what the list below holds.
+	if origin := matrix.DomainOf(roomID); origin != "" && origin != s.serverName {
 		out = append(out, origin)
 	}
 	for _, server := range servers {
@@ -414,13 +417,13 @@ func (s *Service) storeJoinedRoom(ctx context.Context, roomID, version string, p
 				roomID, id, problem)
 			continue
 		}
-		if err := s.storeIncomingPDU(ctx, judged, id, "", true); err != nil {
+		if err := s.storeIncomingPDU(ctx, judged, id, roomID, "", true); err != nil {
 			return err
 		}
 	}
 	// The join event itself does belong to the timeline: it is the moment this server
 	// joined, and it happened here.
-	return s.storeIncomingPDU(ctx, packet.object, packet.eventID, "", false)
+	return s.storeIncomingPDU(ctx, packet.object, packet.eventID, roomID, "", false)
 }
 
 // buildRemotePDU assembles an event whose place in the graph was decided somewhere
@@ -481,7 +484,8 @@ func roomVersionOfError(err error) (string, int) {
 // joinServers orders the servers a join may be attempted through: the ones the client
 // named, in order, and then the server the room id itself names. The room id's server is
 // last rather than first on purpose - it is the server that made the room, which is also
-// the one most likely to have been deleted or to be refusing this server.
+// the one most likely to have been deleted or to be refusing this server. A room version
+// 12 room id names no server, so for those rooms the caller's list is the whole answer.
 func joinServers(roomID string, via []string) []string {
 	var out []string
 	seen := map[string]bool{}
@@ -854,7 +858,7 @@ func (s *Service) ServeSendJoin(ctx context.Context, roomID, eventID string, eve
 	// server learns who else it can ask, and leaving out the server it is talking to
 	// contradicts the connection the answer came down.
 	servers := append([]string{s.serverName}, serversBefore...)
-	if err := s.storeIncomingPDU(ctx, judged, eventID, "", false); err != nil {
+	if err := s.storeIncomingPDU(ctx, judged, eventID, roomID, "", false); err != nil {
 		return nil, err
 	}
 	// The join has to be carried to the rest of the room. Answering the joining server alone

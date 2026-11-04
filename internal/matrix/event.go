@@ -199,8 +199,12 @@ type CreateContent struct {
 
 // Predecessor links an upgraded room to its predecessor.
 type Predecessor struct {
-	RoomID  string `json:"room_id"`
-	EventID string `json:"event_id"`
+	RoomID string `json:"room_id"`
+	// EventID is the last event of the old room at the moment of the upgrade. Room version
+	// 12 rooms leave it out: their event ids are hashes this server computed, and a peer that
+	// did not see the old room cannot check one - so the room is what carries the history,
+	// not a claim about its last event.
+	EventID string `json:"event_id,omitempty"`
 }
 
 // NameContent is the content of an m.room.name event.
