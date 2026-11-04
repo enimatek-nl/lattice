@@ -2096,3 +2096,35 @@ Openings this leaves:
   the room's current state minus the keys its timeline already carries, which is what the sync
   semantics ask for; the distinction is now carried by two named methods instead of one
   parameter that was ignored.
+
+---
+
+### 27. Two half-open ends closed: the state handshake, and the far end of a page (2026-11-04)
+
+The queue in `TODO.md` opens with what the last steps left half-done. Two of them, both about
+asking a question in the form the other side actually answers.
+
+- [x] **The federation state handshake asked the wrong door.** Synapse registers
+      `GET /_matrix/federation/v1|v2/state/{roomId}/{eventId}` — the event id in the **path** — and we
+      registered only `GET /v3/state/{roomId}?event_id=`. A peer asking us the specified way was
+      answered with nothing, and our own `peerStateAt` asked *peers* the query form, which they answer
+      with nothing, dropping us to `state_ids` plus one `/event` fetch per state event and losing the
+      auth chain resolution needs to weigh two claims about one key. We now serve v1, v2 and v3, and
+      ask v2 (path, full events), then v1, then v3, before the ids fallback. The answer is unchanged;
+      only the door.
+- [x] **`/messages` never read its far bound.** `to` was parsed nowhere, so a client asking for the
+      window between two tokens got everything from `from` forward — the rest of the room. The near
+      token is exclusive (it has been read), the far token inclusive (it has not), in both directions.
+      Complement's `TestRoomMessagesLazyLoading` passes `to=`: making the far bound exclusive turned
+      it red immediately, making it inclusive turned it green again — the suite pinning the semantics.
+
+Openings this leaves:
+
+- **Token inclusivity elsewhere is unexamined.** Writing the test surfaced that a backward
+  `/messages` walk from a sync's `next_batch` does not return the event written *at* that token. Same
+  off-by-one family; it needs its own pass rather than a guess.
+- **The v1 shape on a v3 path.** The handler answers v1's bare event on the v1 route and v2's object
+  elsewhere, including v3. Untested, and not worth a third case until a peer asks for one.
+- **Not re-run this round:** the Complement server-server package, which is where the handshake change
+  would show up. The 89 two-server tests in `tests/federation` are green; the upstream federation
+  tally stands at 61/91 from before this change.

@@ -74,9 +74,10 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
 ### A. Things left half-open by the last steps (cheapest real wins)
 
 - [ ] The `/messages` chunk of a departed `joined` room — `TestLeftRoomFixture` is one check from green (step 24).
-- [ ] The federation state handshake: ask peers the path form they actually serve (`GET /v1|v2/state/{roomId}/{eventId}`) and serve the v3 query form. Today `peerStateAt` asks a path peers do not register, so it falls back to `state_ids` plus one fetch per event and loses the auth chain (step 11's machinery, verified 2026-11-04).
+- [x] The federation state handshake in both directions: this server now serves the v3 query form (`GET /_matrix/federation/v3/state/{roomId}?event_id=`) as well as the v1/v2 path forms, and asks peers v2 → v1 → v3 before falling back to `state_ids` plus a fetch per event. Asking only the query form was answered with nothing by a server that has the state and not that route (step 11's machinery, closed 2026-11-04).
 - [ ] `TestJumpToDateEndpoint`: `timestamp_to_event` should walk the graph, not stream positions (step 26).
-- [ ] `/messages?to=` is parsed nowhere — a page asked with both ends gets everything from `from` forward (step 25).
+- [x] `/messages?to=` is honoured: `from` is exclusive and `to` inclusive in both directions, so a window asked by its two ends returns that window and not the rest of the room (closed 2026-11-04; `TestRoomMessagesLazyLoading`, which passes `to=`, is green again).
+- [ ] Token inclusivity around `from` is worth a pass: a backward `/messages` walk from a sync's `next_batch` does not return the event written *at* that token — the same class of off-by-one the last `TestLeftRoomFixture` check sits next to.
 - [ ] MSC2675 is not applied to `/threads`, `/members?at=` or `/state/{eventId}` (step 23).
 - [ ] `m.ignored_user_list` filters sync timelines and invites only; `/messages`, `/search` and `/relations` still carry an ignored user's words (step 25).
 - [ ] Lazy loading is recomputed per response instead of remembered per device (step 25).
