@@ -19,6 +19,10 @@ type HistoryParams struct {
 	Limit     int
 	Filter    string
 	NotBefore string
+	// To bounds the page at the other end. A client that asks for a window between two tokens is
+	// asking for a piece of the room's history, and answering with everything from `from` forward
+	// hands it the rest of the room as well.
+	To string
 }
 
 // HistoryResult is a page of room history.
@@ -50,6 +54,10 @@ func (s *Service) History(ctx context.Context, params HistoryParams) (*HistoryRe
 	if err != nil {
 		return nil, err
 	}
+	to, err := s.ParseToken(params.To)
+	if err != nil {
+		return nil, err
+	}
 	notBefore, err := s.ParseToken(params.NotBefore)
 	if err != nil {
 		return nil, err
@@ -64,6 +72,28 @@ func (s *Service) History(ctx context.Context, params HistoryParams) (*HistoryRe
 	gate, err := s.historyGateFor(ctx, params.RoomID, params.UserID)
 	if err != nil {
 		return nil, err
+	}
+	// The page ends where the client said it does. `from` and `to` name a window; answering with
+	// everything from `from` forward hands over the rest of the room as well, and a client that
+	// asked for a piece of history to render one stretch of it is given the room instead.
+	if to > 0 {
+		// The near bound is exclusive and the far one inclusive, which is how the two ends of a
+		// walk differ: the token a page starts from has already been read, the token it stops at
+		// has not. A client paging with `from=<previous end>&to=<somewhere>` would otherwise lose
+		// the event sitting at `to` and see a hole in the room.
+		bounded := make([]*persist.Event, 0, len(events))
+		for _, event := range events {
+			if dir == "f" {
+				if event.StreamPos <= to {
+					bounded = append(bounded, event)
+				}
+				continue
+			}
+			if event.StreamPos >= to {
+				bounded = append(bounded, event)
+			}
+		}
+		events = bounded
 	}
 	readable, _ := gate.keepReadable(events)
 	// A former member of a room whose history opened at the join reads it as of their leave:

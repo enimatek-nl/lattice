@@ -173,6 +173,7 @@ func (a *App) handleMessages(w http.ResponseWriter, r *http.Request) {
 		Limit:     limit,
 		Filter:    queryValue(r, "filter", ""),
 		NotBefore: queryValue(r, "not_before", ""),
+		To:        queryValue(r, "to", ""),
 	})
 	if err != nil {
 		a.writeError(w, r, err)

@@ -401,15 +401,33 @@ func (s *Service) settleStateWithPeer(ctx context.Context, roomID, version, peer
 // event is not going to fetch a room's history to decide which of two claims about one key
 // stands. The resolution still runs; it just weighs less, and says so.
 func (s *Service) peerStateAt(ctx context.Context, transport *federation.Transport, peer, roomID, atEventID string) (state, chain []matrix.Object, why string) {
-	query := url.Values{"event_id": []string{atEventID}}
-	body, err := transport.Get(ctx, peer, "/_matrix/federation/v1/state/"+url.PathEscape(roomID), query)
-	if err == nil {
-		return pduArray(body, "pdus"), pduArray(body, "auth_chain"), ""
+	// The forms a peer may serve, in the order that costs least: v2 names the event in the path
+	// and answers the full events, which is what a resolution needs and is what Synapse registers;
+	// v1 is the same question in its older shape; v3 moves the id into the query. Asking only the
+	// query form, as this server used to, is answered with nothing by a peer that has the state
+	// and not that route - and a "nothing" here costs a fetch per state event afterwards.
+	forms := []struct {
+		path  string
+		query url.Values
+	}{
+		{"/_matrix/federation/v2/state/" + url.PathEscape(roomID) + "/" + url.PathEscape(atEventID), nil},
+		{"/_matrix/federation/v1/state/" + url.PathEscape(roomID) + "/" + url.PathEscape(atEventID), nil},
+		{"/_matrix/federation/v3/state/" + url.PathEscape(roomID), url.Values{"event_id": []string{atEventID}}},
 	}
-	if !isUnrecognized(err) {
-		return nil, nil, fmt.Sprintf("%s could not say what the state of %s was at %s: %v", peer, roomID, atEventID, err)
+	for _, form := range forms {
+		body, err := transport.Get(ctx, peer, form.path, form.query)
+		if err == nil {
+			return pduArray(body, "pdus"), pduArray(body, "auth_chain"), ""
+		}
+		if !isUnrecognized(err) {
+			return nil, nil, fmt.Sprintf("%s could not say what the state of %s was at %s: %v", peer, roomID, atEventID, err)
+		}
 	}
-	body, err = transport.Get(ctx, peer, "/_matrix/federation/v1/state_ids/"+url.PathEscape(roomID), query)
+	// No peer route handed over the state as full events. `state_ids` names the ids instead, and
+	// each one is then asked for by name - a dozen requests where one would have done, which is
+	// why the forms above are tried first.
+	body, err := transport.Get(ctx, peer, "/_matrix/federation/v1/state_ids/"+url.PathEscape(roomID),
+		url.Values{"event_id": []string{atEventID}})
 	if err != nil {
 		return nil, nil, fmt.Sprintf("%s could not say what the state of %s was at %s: %v", peer, roomID, atEventID, err)
 	}

@@ -89,6 +89,10 @@ func (a *App) registerFederationRoutes() {
 	a.federated("GET /_matrix/federation/v1/state_ids/{roomID}", a.handleFederationStateIDs)
 	a.federated("GET /_matrix/federation/v1/state/{roomID}/{eventID}", a.handleFederationRoomState)
 	a.federated("GET /_matrix/federation/v2/state/{roomID}/{eventID}", a.handleFederationRoomState)
+	// The v3 read names the event in the query rather than the path. A server that registers
+	// only the path form answers a peer asking the newer way with nothing at all, which reads to
+	// that peer as a server that cannot state what its own room held.
+	a.federated("GET /_matrix/federation/v3/state/{roomID}", a.handleFederationRoomState)
 	a.federated("GET /_matrix/federation/v1/event_auth/{roomID}/{eventID}", a.handleFederationEventAuth)
 	a.federated("POST /_matrix/federation/v1/get_missing_events/{roomID}", a.handleFederationMissingEvents)
 	// Older history, and the event nearest a moment. Backfill is how a server that joined
@@ -904,8 +908,17 @@ func (a *App) handleFederationStateIDs(w http.ResponseWriter, r *http.Request) {
 // Version 1 answers the event and version 2 an object holding it, which is the same
 // difference the join handshake has between its two versions.
 func (a *App) handleFederationRoomState(w http.ResponseWriter, r *http.Request) {
+	eventID := r.PathValue("eventID")
+	if eventID == "" {
+		// v3 asks with `?event_id=` instead of a path segment.
+		eventID = queryValue(r, "event_id", "")
+	}
+	if eventID == "" {
+		a.writeError(w, r, matrix.ErrInvalidRequest("a state read has to name the event whose state is asked for"))
+		return
+	}
 	answer, err := a.svc.ServeRoomStateEvent(r.Context(), r.PathValue("roomID"),
-		r.PathValue("eventID"), federation.Peer(r.Context()))
+		eventID, federation.Peer(r.Context()))
 	if err != nil {
 		a.writeError(w, r, err)
 		return
