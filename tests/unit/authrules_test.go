@@ -37,6 +37,13 @@ type ruleCase struct {
 	auth []string
 	// rejected names events this server already rejected, with the reason.
 	rejected map[string]string
+	// originating says this judgement is about an event the server holding the graph is about
+	// to sign itself, and admits names the rooms it has confirmed the joiner belongs to. The
+	// two go together, and belong to the restricted join rule alone: who belongs to a room on
+	// the allow list is not a fact about this room, so a peer carries a claim for this server
+	// to check, and this server has the fact instead.
+	originating bool
+	admits      []string
 	// want is empty when the rules allow the event, and otherwise a fragment of
 	// the refusal.
 	want string
@@ -303,6 +310,37 @@ func TestAuthorizationRules(t *testing.T) {
 			event: membershipEvent("$join", dave, matrix.MembershipJoin, dave,
 				matrix.Object{"join_authorised_via_users_server": dave}),
 			want: "its allow list names no room this server can read",
+		},
+		{
+			// The same rule read about an event this server is about to sign. It has no claim
+			// to check and the fact instead: the caller says which room on the allow list the
+			// joiner belongs to, and the rule still reads the allow list to see that the room
+			// admits people through it.
+			name: "a restricted join this server originates is admitted by a room it belongs to",
+			state: withJoinRule(basics(matrix.JoinRulesRestricted),
+				admitsThrough(matrix.JoinRulesRestricted, "!allowed:domain")),
+			event:       membershipEvent("$join", dave, matrix.MembershipJoin, dave, nil),
+			originating: true,
+			admits:      []string{"!allowed:domain"},
+		},
+		{
+			// The confirmation is not a permission. A room the allow list does not name admits
+			// nothing, however confidently the caller lists it.
+			name: "a room confirmed but not on the allow list admits a restricted join to nothing",
+			state: withJoinRule(basics(matrix.JoinRulesRestricted),
+				admitsThrough(matrix.JoinRulesRestricted, "!allowed:domain")),
+			event:       membershipEvent("$join", dave, matrix.MembershipJoin, dave, nil),
+			originating: true,
+			admits:      []string{"!elsewhere:domain"},
+			want:        "names no authorising user",
+		},
+		{
+			// Originating explains where the facts come from; it does not waive the question.
+			name:        "a restricted join this server originates still asks who admits it",
+			state:       withJoinRule(basics(matrix.JoinRulesRestricted), admitsThrough(matrix.JoinRulesRestricted, "!allowed:domain")),
+			event:       membershipEvent("$join", dave, matrix.MembershipJoin, dave, nil),
+			originating: true,
+			want:        "names no authorising user",
 		},
 		{
 			name:  "a restricted join cannot be authorised by a user that is not joined",
@@ -602,6 +640,8 @@ func TestAuthorizationRules(t *testing.T) {
 				version = "11"
 			}
 			g := authcheck.NewGraph(version)
+			g.Originating = tt.originating
+			g.Admits = tt.admits
 			state := authcheck.State{}
 			for _, event := range append(append([]*authcheck.Event{}, tt.state...), tt.extra...) {
 				if event.RoomID == "" {
