@@ -2625,6 +2625,13 @@ What each turned out to be:
 `HierarchyRoom.ChildrenState` became a pointer so the two answers can differ: a client is always
 shown the key, empty for a room that is not a space; a child described to a peer omits it.
 
+A run over the neighbourhood of these routes (join, invite, federation, members, sync, the room
+directory, state, redaction, leave/ban/kick, knock, restricted, hierarchy, event auth and gap
+filling): **35 green, 5 red**, and the five are the known ones - room version 12 twice, the
+application-service bridge user, `TestFederationRoomsInvite`, and
+`TestFederationRedactSendsWithoutEvent`. Nothing that was green went red.
+
+
 ### 19. Knocking: a knock is a question, not a door (2026-11-04)
 
 `POST /join` on a `knock` room accepted a user whose membership was `knock`, and a
@@ -2662,8 +2669,7 @@ which also writes a membership through the state endpoint to pin the second door
 `TestZZDebugKnockTimeline`, no assertions, only `t.Logf`, and counted in the compat totals
 - is deleted.
 
-A run over the neighbourhood of these routes (join, invite, federation, members, sync, the room
-directory, state, redaction, leave/ban/kick, knock, restricted, hierarchy, event auth and gap
-filling): **35 green, 5 red**, and the five are the known ones - room version 12 twice, the
-application-service bridge user, `TestFederationRoomsInvite`, and
-`TestFederationRedactSendsWithoutEvent`. Nothing that was green went red.
+The knock and restricted group after the change - `TestKnocking` and its MSC3787 twin, the
+public-room-directory knocks, the restricted join and fail-over set, the space summaries and
+the room summary - is **21 tests, 19 green**; the two red are the room version 12 power-level
+cases that were red before it.
