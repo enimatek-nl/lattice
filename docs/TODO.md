@@ -2930,7 +2930,7 @@ Target: [MSC4186](https://github.com/matrix-org/matrix-spec-proposals/blob/main/
 Served at `POST /_matrix/client/v4/sync` and, while the revision that carries it is still
 unstable, at `POST /_matrix/client/unstable/org.matrix.simplified_msc3575/sync`, with
 `org.matrix.simplified_msc3575: true` in `/versions`. As predicted, the pinned Complement
-checkout has no `msc4186` package: the gate was this repository's own suite, **14** tests in
+checkout has no `msc4186` package: the gate was this repository's own suite, **16** tests in
 `tests/compat/sliding_sync_test.go`. The one upstream case that reaches the endpoint is
 `tests/msc4306`'s sliding-sync thread subscription, and it stays red because it asks for the
 `io.element.msc4308.thread_subscriptions` extension, which needs MSC4306 (gap 9), not this one.
