@@ -116,12 +116,22 @@ func (s *Service) stateEventUntil(roomID, typ, stateKey string, until uint64) (*
 	if err != nil {
 		return nil, matrix.ErrInternal(err)
 	}
+	// Which version of a key the room was carrying at a point is decided by the room's own
+	// ordering, not by the order this server received things. Two versions of one key can sit on
+	// two branches of the graph and both be in the room; neither is "later" in any sense the room
+	// agrees with, and answering by stream position would make the state of a past event depend on
+	// which peer pushed first. Depth is how far down the room's graph a version sits, and the
+	// room breaks a tie between equal depths by the time its own server stamped the event and then
+	// by the event id - the same ordering state resolution uses to choose between competing
+	// versions of one key, applied here to a single key.
 	var best *persist.Event
 	for _, version := range versions {
 		if version.StreamPos > until {
-			break
+			continue
 		}
-		best = version
+		if best == nil || newerByVersion(version, best) {
+			best = version
+		}
 	}
 	if best == nil && len(versions) > 0 && versions[0].Depth <= 2 {
 		// A room's opening belongs to it from its first moment. The create event and the
@@ -136,4 +146,17 @@ func (s *Service) stateEventUntil(roomID, typ, stateKey string, until uint64) (*
 		return nil, matrix.ErrNotFound("no state event of type %q with key %q at that point", typ, stateKey)
 	}
 	return best, nil
+}
+
+// newerByVersion says the room prefers one version of a state key over another: greater depth,
+// then the later origin timestamp, then the greater event id. It is the ordering state resolution
+// uses, restricted to the two events this question is about.
+func newerByVersion(candidate, current *persist.Event) bool {
+	if candidate.Depth != current.Depth {
+		return candidate.Depth > current.Depth
+	}
+	if candidate.OriginServerTS != current.OriginServerTS {
+		return candidate.OriginServerTS > current.OriginServerTS
+	}
+	return candidate.EventID > current.EventID
 }

@@ -120,7 +120,10 @@ func (s *Service) History(ctx context.Context, params HistoryParams) (*HistoryRe
 		// state key is kept, so the state as it stood at the start of the page cannot be
 		// rebuilt; what is sent is the room as it is now, which is what a client paging
 		// backwards uses to name the room it is looking at.
-		state, err := s.stateEvents(ctx, params.RoomID, events[0].StreamPos, nil, nil, nil, params.UserID)
+		// The state of a page is the state the room held when the page began, rebuilt from the
+		// versions the room wrote of each key. Today's state would name the room the client is
+		// paging through as it is now, which is a different room than the one in front of them.
+		state, err := s.stateAsOf(ctx, params.RoomID, events[0].StreamPos, nil, nil, nil, params.UserID)
 		if err != nil {
 			return nil, err
 		}
@@ -228,13 +231,15 @@ func (s *Service) EventContext(ctx context.Context, roomID, eventID, userID stri
 	if err != nil {
 		return nil, matrix.ErrInternal(err)
 	}
-	state, err := s.stateEvents(ctx, roomID, center.StreamPos, nil, nil, nil, "")
+	// The state around the centre event is the state that room was carrying when that event was
+	// written - not the room's current state. A name, a topic or a membership that moved since
+	// then would otherwise be shown as the context of an event that never saw it, and in a forked
+	// history "moved since then" is exactly where today's state and that event's state part.
+	state, err := s.stateAsOf(ctx, roomID, center.StreamPos, nil, nil, nil, userID)
 	if err != nil {
 		return nil, err
 	}
 	// The neighbour blocks are history and follow the room's decision about when it opened.
-	// The state block does not: it is the room's current state, which is what the room says
-	// about itself to everyone it lets in.
 	before, _ = gate.keepReadable(before)
 	after, _ = gate.keepReadable(after)
 	result := &EventContextResult{

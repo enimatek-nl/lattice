@@ -318,7 +318,7 @@ func (s *Service) joinedRoomSync(ctx context.Context, userID, roomID string, sin
 		members = senderKeysIn(events)
 	}
 	if since == 0 || s.membershipAfter(roomID, userID, since) {
-		state, err := s.stateEvents(ctx, roomID, since, filter, stateKeysIn(events), members, userID)
+		state, err := s.stateEvents(ctx, roomID, filter, stateKeysIn(events), members, userID)
 		if err != nil {
 			return nil, false, err
 		}

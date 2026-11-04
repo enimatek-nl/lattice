@@ -3213,3 +3213,50 @@ Openings this leaves:
 - **`TestLeftRoomFixture` is still one check away** (the same `/messages` chunk as before), and
   `TestSync` has timed out under a full parallel run twice while passing on its own - worth a
   look at the long-poll wake-up.
+
+### 26. Reading a room as of a point, when the room's history forked (2026-11-04)
+
+`coverage-comparison.md` carried one line about a bug rather than a gap: *"we serve both, but our
+walk is wrong in a forked history"*. Two halves, both fixed.
+
+- [x] **`/context` answered today's state around a past event.** `stateEvents` took a position and
+      never used it: it listed the room's current state rows. So the context of an event written
+      under one room name carried the name the room adopted afterwards, and a membership that
+      moved since was shown as the context of an event that never saw it. The same lie sat in the
+      state block of a backward `/messages` page, which the code comment admitted ("what is sent
+      is the room as it is now"). `stateAsOf` now answers each key with the version the room was
+      carrying at the point asked, and keys the room had not written by then are absent.
+- [x] **"as of" was decided by arrival order.** The version of a state key chosen for a position
+      was the one with the highest *stream position* at or before it — the order this server
+      persisted them. Two versions of one key can sit on two branches of the graph, both in the
+      room, neither "later" in any sense the room agrees with; answering by stream position makes
+      the state of a past event depend on which peer pushed first. The choice now follows the
+      ordering state resolution uses for competing versions of one key: greater depth, then the
+      later origin timestamp, then the greater event id (`newerByVersion`). The same room and the
+      same event cannot give different answers because of delivery order.
+
+Why this rather than per-event state snapshots: Synapse answers "the state at E" with a state group
+per event, so it is a lookup. This server keeps one row per state key plus a version list, and the
+as-of reads are rebuilt from that. Full resolution over the ancestry of E (fetching E's graph and
+running the room's conflict rules over the candidate set) is the complete fix and is what
+`resolveState` already does for the room's *current* state; the ordering rule above is the bounded
+piece of it — it cannot order two versions whose depths this server cannot compare against E, and
+where the room's history is itself a hole (step 15's graph gaps) the honest answer is the missing
+key, not a confidently chosen one.
+
+Openings this leaves:
+
+- **No per-event snapshots.** As-of reads cost one lookup per state key. Correct, and heavier than
+  a state-group table.
+- **The ordering rule is resolution's tiebreak, not resolution.** A fork whose branches both
+  survive to the queried event is decided by (depth, ts, id) over the two versions rather than by
+  running the room's conflict rules over the branch's ancestry — the same answer in the cases the
+  rulebook reaches, different in the ones where auth rules would veto one branch first.
+- **`TestJumpToDateEndpoint` is still red**, and it lives in Complement's `tests` package, not
+  `tests/csapi`, so it was never inside the 106-test tally the docs quote. Picking *which* event a
+  timestamp names in a forked history is the same family of bug, one level up: it walks positions
+  where it should walk the graph.
+- **As-of reads are used by `/context` and backward `/messages`.** A sync's state block is still
+  the room's current state minus the keys its timeline already carries, which is what the sync
+  semantics ask for; the distinction is now carried by two named methods instead of one
+  parameter that was ignored.

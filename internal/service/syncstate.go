@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sort"
 
 	"github.com/enimatek-nl/lattice/internal/matrix"
@@ -264,20 +265,63 @@ func stateKeysIn(events []*persist.Event) map[string]bool {
 }
 
 // stateEvents returns the full current state of a room.
-func (s *Service) stateEvents(ctx context.Context, roomID string, since uint64, filter *SyncFilter, skip, members map[string]bool, reader string) ([]matrix.Event, error) {
+// stateEvents returns the state a room holds now. A caller that wants the state as it stood at a
+// point asks [Service.stateAsOf] instead: the two are different questions and the difference is a
+// forked history, where the version of a key the room was carrying then is not the one it carries
+// today.
+func (s *Service) stateEvents(ctx context.Context, roomID string, filter *SyncFilter, skip, members map[string]bool, reader string) ([]matrix.Event, error) {
+	return s.stateFrom(ctx, roomID, 0, filter, skip, members, reader)
+}
+
+// stateAsOf answers the same question at a position: for every key the room holds, the version the
+// room was carrying at that point, and no key it had not written yet. A room whose history forked
+// is read as the branch's conflict was decided, not as the last thing this server stored.
+func (s *Service) stateAsOf(ctx context.Context, roomID string, until uint64, filter *SyncFilter, skip, members map[string]bool, reader string) ([]matrix.Event, error) {
+	return s.stateFrom(ctx, roomID, until, filter, skip, members, reader)
+}
+
+func (s *Service) stateFrom(ctx context.Context, roomID string, until uint64, filter *SyncFilter, skip, members map[string]bool, reader string) ([]matrix.Event, error) {
 	rows, err := s.db.StateRepo.List(roomID, nil, "")
 	if err != nil {
 		return nil, matrix.ErrInternal(err)
 	}
-	return s.stateEventsWire(rows, func(row *persist.RoomState) bool {
+	if until == 0 {
+		return s.stateEventsWire(rows, func(row *persist.RoomState) bool {
+			if skip[stateKeyOf(row.Type, row.StateKey)] {
+				return false
+			}
+			if row.Type == matrix.TypeMember && !keepsMember(members, row.StateKey, reader) {
+				return false
+			}
+			return filter.allowedInState(row.Type, row.Sender)
+		})
+	}
+	// One lookup per state key: the row says which keys the room has, and the events table says
+	// which version of each the room was carrying at the point asked for. A key the room had not
+	// written by then is simply absent from the answer.
+	out := make([]matrix.Event, 0, len(rows))
+	for _, row := range rows {
 		if skip[stateKeyOf(row.Type, row.StateKey)] {
-			return false
+			continue
 		}
 		if row.Type == matrix.TypeMember && !keepsMember(members, row.StateKey, reader) {
-			return false
+			continue
 		}
-		return filter.allowedInState(row.Type, row.Sender)
-	})
+		version, err := s.stateEventUntil(roomID, row.Type, row.StateKey, until)
+		if err != nil {
+			var absent *matrix.Error
+			if errors.As(err, &absent) && absent.Code == matrix.ErrCodeNotFound {
+				// The room had not written this key by that point.
+				continue
+			}
+			return nil, err
+		}
+		if !filter.allowedInState(version.Type, version.Sender) {
+			continue
+		}
+		out = append(out, version.Matrix())
+	}
+	return out, nil
 }
 
 // stateDelta returns state events of a room that changed after a position.
