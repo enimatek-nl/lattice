@@ -678,6 +678,14 @@ Still open from step 9, deliberately:
       `state_ids`, `get_missing_events`, backfill), which is where they are needed for a
       reason other than this one.
 
+- [ ] **Locally originated events are not judged by `authcheck`.** The room rules as the
+      specification writes them run only on events arriving over federation; a locally
+      written event is judged by the service's own guards instead. That is how a knock came
+      to be an invitation at home while every peer holding the same room refused the same
+      join (step 19). The rule was fixed in the guard; the drift is not, and every rule this
+      server enforces has to be written down twice - and kept in step by hand - until the
+      two authorisers are one.
+
 Done when: an event created on server B appears on server A with A's own decision
 recorded — done, and pinned by `intake_test.go`. The other half of the sentence, "and A
 and B resolve the same state after a deliberate fork", waits for a fork two servers can
