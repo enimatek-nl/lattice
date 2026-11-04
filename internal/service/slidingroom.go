@@ -236,7 +236,7 @@ func (s *Service) slidingWindow(ctx context.Context, roomID, userID string, limi
 		if err != nil {
 			return nil, matrix.ErrInternal(err)
 		}
-		return s.slidingEvents(rows, roomID, userID)
+		return s.slidingEvents(ctx, rows, roomID, userID)
 	}
 	// Read the newest events before the horizon and keep the ones that came after it: the
 	// window has to be capped, and capping it from the wrong end would send the oldest news
@@ -257,7 +257,7 @@ func (s *Service) slidingWindow(ctx context.Context, roomID, userID string, limi
 			break
 		}
 	}
-	return s.slidingEvents(kept, roomID, userID)
+	return s.slidingEvents(ctx, kept, roomID, userID)
 }
 
 // slidingReadAhead is how far past the limit the window reads so that a gap of already-seen
@@ -267,7 +267,16 @@ const slidingReadAhead = 100
 // slidingEvents turns stored events into the window's oldest-first order, with the bundled
 // aggregations /v3/sync attaches: a client reading a room through sliding sync sees reactions,
 // edits and thread counts the same way it sees them anywhere else.
-func (s *Service) slidingEvents(rows []*persist.Event, roomID, userID string) ([]slidingEvent, error) {
+func (s *Service) slidingEvents(ctx context.Context, rows []*persist.Event, roomID, userID string) ([]slidingEvent, error) {
+	// MSC2675: a room whose history opened when the user joined does not show them the
+	// events it held before that, and a window filled from a peer is exactly how those
+	// events arrive. The cursors of the window are unaffected: they name positions in the
+	// room, not events the client was shown.
+	gate, err := s.historyGateFor(ctx, roomID, userID)
+	if err != nil {
+		return nil, err
+	}
+	rows, _ = gate.keepReadable(rows)
 	out := make([]slidingEvent, 0, len(rows))
 	wire := make([]matrix.Event, 0, len(rows))
 	for i := len(rows) - 1; i >= 0; i-- {

@@ -151,6 +151,21 @@ func (s *Service) Search(ctx context.Context, params SearchParams) (*SearchResul
 	if err != nil {
 		return nil, matrix.ErrInternal(err)
 	}
+	// MSC2675: a match in a room that opened its history when the user joined does not
+	// entitle them to the text of an event from before that. The match is dropped rather
+	// than answered with a stub, because a search hit is the event.
+	gates := s.historyGates(ctx, params.UserID)
+	kept := make([]*persist.Event, 0, len(events))
+	for _, event := range events {
+		allowed, err := gates.allows(event)
+		if err != nil {
+			return nil, err
+		}
+		if allowed {
+			kept = append(kept, event)
+		}
+	}
+	events = kept
 	if len(events) == 0 {
 		return empty, nil
 	}

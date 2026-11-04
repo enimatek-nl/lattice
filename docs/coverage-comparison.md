@@ -4,7 +4,7 @@ Two documents, one yardstick. [spec-coverage.md](spec-coverage.md) is the covera
 Rust homeserver (spec v1.19, default room version 12, Complement as its conformance gate:
 88/90 federation and 105/107 client-server). [coverage.md](coverage.md) is ours (spec v1.19,
 default room version 11, Complement **61 green of 91** server-server as of 2026-11-04 and
-**66 green of 106** client-API as of 2026-11-02, plus this repository's own 317 tests: 160
+**66 green of 106** client-API as of 2026-11-02, plus this repository's own 318 tests: 161
 client-API, 88 two-server, 69 unit). Their claims are theirs - this comparison reads what each
 document says and what our own runs measure, not their code. The client-API tally has not been
 re-measured since 2026-11-02: the run attempted on 2026-11-04 did not finish inside its budget
@@ -31,7 +31,7 @@ different amounts of this server.
 |---|---|---|---|
 | Versions, well-known, capabilities | done | done | parity |
 | Registration, login, UIA, devices, profile | done, plus shared-secret admin registration, appservice device masquerading | password/dummy/token flows, UIA, devices, profile, refresh tokens | **behind on how a user gets authenticated elsewhere**: no SSO, no OIDC, no MAS, no 3PID. Their "no 3PID" is our "no 3PID" too. |
-| Rooms, membership, events | done | done | parity; they list `timestamp_to_event` and `/context`, we serve both, but our walk is wrong in a forked history |
+| Rooms, membership, events | done | done, MSC2675's per-event visibility applied to every read that carries history | parity; they list `timestamp_to_event` and `/context`, we serve both, but our walk is wrong in a forked history |
 | Relations, threads, search, spaces | done: recursion, `/threads`, bundled aggregations, Postgres full-text search, `/hierarchy` with remote children | `/relations` without `recurse`, `/threads`, bundled aggregations, `/hierarchy` both directions, substring search | **behind**: relation recursion and a real search index |
 | `/sync` (classic) | done, incl. `state_after`, lazy loading, threaded receipts, per-thread counts, ignored users | same shape, three holes | **behind**: `lazy_load` not lazy, `m.ignored_user_list` not applied, no `state_after`; the MSC3814 `e2ee` section is declared and never filled |
 | Simplified Sliding Sync (MSC4186) | done: lists with ranges and filters, subscriptions, per-connection deltas with position retry, `required_state` wildcards (`*`, `$ME`, `$LAZY`), and the to-device, e2ee, account-data, receipts and typing extensions | done: the same five extensions at `/v4/sync` and the `org.matrix.simplified_msc3575` path — ranges with a `count` that ignores them, the eight filters, subscriptions, per-connection deltas with `initial`/`expanded_timeline`/state stubs, and a `pos` refused `M_UNKNOWN_POS` unless it was issued to this device, which still pages `/messages` | **near parity, and the five extensions match**, including the state-key tokens: their document's `*`, `$ME` and `$LAZY` are answered here too, which is worth saying because MSC4186 defines only the wildcard - the other two come from the proxy, and the clients that used it are still in the wild. What we do not have is `topic`, `truncate` or per-list `bump_event_types`. Their document contradicts itself on the MSC4308 thread-subscription extension (the sliding-sync row says it is missing, the MSC row says it passes Complement); we do not have MSC4306 at all, so we do not have it either |
@@ -50,7 +50,7 @@ different amounts of this server.
 | MatrixRTC (MSC4143/4195) | done over LiveKit, incl. federation `get_token` and legacy JWT endpoints | not implemented (planned: the plan is in [TODO.md](TODO.md)) | **behind**; the OpenID pieces they need are already here |
 | Operations | rate limiting, retention, fuzz targets, load-test swarm, deployment assets | rate limiting, session expiry, deployment, CLI, endpoint coverage tool | partly behind: no retention, no fuzzing, no load harness; the coverage tool is something they do not have |
 | Room versions | 1-12, default 12 | 1-12 understood, default 11 | **near parity**. v12's hashed room ids, `additional_creators`, the creator rules and state resolution v2.1 are in, in both directions; what is left is the default a new room gets and the two v12 knock/restricted Complement cases |
-| Tests | Complement as the gate | Complement **and** 160 client-API, 88 two-server, 69 unit tests in-repo | different, and in our favour: a two-server suite in the repository is what found the restricted-join, knock and state-resolution findings |
+| Tests | Complement as the gate | Complement **and** 161 client-API, 88 two-server, 69 unit tests in-repo | different, and in our favour: a two-server suite in the repository is what found the restricted-join, knock and state-resolution findings |
 
 ## Where Lattice lacks, ranked by what it unlocks
 

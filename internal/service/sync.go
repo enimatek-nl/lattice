@@ -249,6 +249,15 @@ func (s *Service) joinedRoomSync(ctx context.Context, userID, roomID string, sin
 	if err != nil {
 		return nil, false, matrix.ErrInternal(err)
 	}
+	// MSC2675: which of a room's events a member may see depends on when they were in it, so
+	// events backfilled from a peer do not arrive in a timeline that the room closed before
+	// the user joined. `limited` still counts what the room holds, as the specification
+	// means it: it describes the gap, not what was withheld.
+	gate, err := s.historyGateFor(ctx, roomID, userID)
+	if err != nil {
+		return nil, false, err
+	}
+	events, _ = gate.keepReadable(events)
 	room := &matrix.JoinedRoom{
 		Timeline: matrix.Timeline{
 			Events:    toWire(events),

@@ -214,6 +214,10 @@ type EventRepo interface {
 	// when dir is "b" (backwards) and ascending when dir is "f". from is the
 	// exclusive stream position to start at.
 	History(roomID string, from uint64, dir string, limit int, notBefore uint64) ([]*Event, error)
+	// StateHistory lists every version of one state key of a room in the order the room
+	// applied them, oldest first. MSC2675 asks what a user's membership was at the moment
+	// an event happened, and the room's own membership events are the only record of it.
+	StateHistory(roomID, eventType, stateKey string) ([]*Event, error)
 	// Timeline returns the events of a room with a stream position greater than
 	// since, oldest first.
 	Timeline(roomID string, since uint64, limit int) ([]*Event, error)
@@ -375,6 +379,17 @@ func (r *EventRepoImpl) History(roomID string, from uint64, dir string, limit in
 		q = q.Limit(limit)
 	}
 	err := q.Order(order).Find(&events).Error
+	return events, err
+}
+
+// StateHistory implements [EventRepo].
+func (r *EventRepoImpl) StateHistory(roomID, eventType, stateKey string) ([]*Event, error) {
+	var events []*Event
+	// Not hiddenFromTimeline: a state event that never showed in a timeline window still
+	// happened, and a membership that arrived as state is exactly what the caller is
+	// reconstructing. Only an event this server's state does not support is left out.
+	err := r.db.Where("room_id = ? AND type = ? AND state_key = ? AND soft_failed = ?",
+		roomID, eventType, stateKey, false).Order("stream_pos asc").Find(&events).Error
 	return events, err
 }
 

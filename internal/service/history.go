@@ -58,7 +58,15 @@ func (s *Service) History(ctx context.Context, params HistoryParams) (*HistoryRe
 	if err != nil {
 		return nil, matrix.ErrInternal(err)
 	}
-	result := &HistoryResult{Chunk: toWire(events)}
+	// MSC2675: which events of the window the user may see depends on when they were in the
+	// room. The page's cursors stay those of the window that was walked, filtered or not, so
+	// a client paging on never lands on a position it was never told about.
+	gate, err := s.historyGateFor(ctx, params.RoomID, params.UserID)
+	if err != nil {
+		return nil, err
+	}
+	readable, _ := gate.keepReadable(events)
+	result := &HistoryResult{Chunk: toWire(readable)}
 	if err := s.annotateThreads(params.RoomID, params.UserID, result.Chunk); err != nil {
 		return nil, err
 	}
@@ -121,6 +129,16 @@ func (s *Service) RoomEvent(ctx context.Context, roomID, eventID, userID string)
 		// far as clients are concerned, whichever way they ask for it by id.
 		return nil, matrix.ErrNotFound("no event %s in room %s", eventID, roomID)
 	}
+	gate, err := s.historyGateFor(ctx, roomID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if !gate.allows(event) {
+		// The event is in the room and the user may read the room; what says no is the
+		// room's own decision about when its history opened. MSC2675 asks for 403 here,
+		// not the 404 an event that does not exist earns.
+		return nil, matrix.ErrForbidden("this room hides events from before your membership")
+	}
 	wire := event.Matrix()
 	// MSC2675 lists GET /rooms/{roomId}/event/{eventId} among the endpoints that
 	// bundle a thread's summary, so a client opening one event sees the same
@@ -154,6 +172,13 @@ func (s *Service) EventContext(ctx context.Context, roomID, eventID, userID stri
 		}
 		return nil, matrix.ErrInternal(err)
 	}
+	gate, err := s.historyGateFor(ctx, roomID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if !gate.allows(center) {
+		return nil, matrix.ErrForbidden("this room hides events from before your membership")
+	}
 	if limit <= 0 || limit > 100 {
 		limit = 10
 	}
@@ -169,6 +194,11 @@ func (s *Service) EventContext(ctx context.Context, roomID, eventID, userID stri
 	if err != nil {
 		return nil, err
 	}
+	// The neighbour blocks are history and follow the room's decision about when it opened.
+	// The state block does not: it is the room's current state, which is what the room says
+	// about itself to everyone it lets in.
+	before, _ = gate.keepReadable(before)
+	after, _ = gate.keepReadable(after)
 	result := &EventContextResult{
 		Event:        center.Matrix(),
 		EventsBefore: toWire(before),
@@ -265,8 +295,15 @@ func (s *Service) Relations(ctx context.Context, roomID, eventID, relType, event
 	}
 	next := ""
 	if len(events) == limit {
+		// The cursor names a position in the room, and is taken before the visibility filter
+		// so that paging continues where the walk stopped rather than where the showing did.
 		next = s.Token(events[len(events)-1].StreamPos)
 	}
+	gate, err := s.historyGateFor(ctx, roomID, userID)
+	if err != nil {
+		return nil, "", err
+	}
+	events, _ = gate.keepReadable(events)
 	return toWire(events), next, nil
 }
 
@@ -631,4 +668,127 @@ func (s *Service) ReportUser(ctx context.Context, targetID, reporterID, reason s
 	}
 	log.Printf("user report user=%s by=%s reason=%q", targetID, reporterID, reason)
 	return nil
+}
+
+// historyGate answers the half of MSC2675 that a room-level permission check cannot: not
+// whether a user may read a room, but which of its events they may read. A room whose history
+// visibility is `joined` shows a member the events that were sent while they were a member, and
+// `invited` opens the history from the invite onwards. Without this half, a member who joined
+// last week can ask for the room's first event by id and be answered, in a room that decided
+// they should not see it.
+//
+// The gate reads the room's membership events for this user once and answers from them. A room
+// that named `shared`, named nothing, or named a visibility this server does not know needs
+// none of that - the room is open to everyone the room-level check admitted, which is what
+// every read on this server has always done - so the common case costs no query at all.
+type historyGate struct {
+	visibility string
+	userID     string
+	// positions and memberships are where this user's membership of the room changed and
+	// what it became there, oldest first: the room's own record of the user's comings and
+	// goings.
+	positions   []uint64
+	memberships []string
+}
+
+// historyGateFor builds the gate for one room and one user. Callers have already decided that
+// the user may read the room at all; the gate only answers the "when" half.
+func (s *Service) historyGateFor(ctx context.Context, roomID, userID string) (*historyGate, error) {
+	gate := &historyGate{visibility: s.HistoryVisibility(ctx, roomID), userID: userID}
+	if gate.visibility != matrix.HistoryJoined && gate.visibility != matrix.HistoryInvited {
+		return gate, nil
+	}
+	rows, err := s.db.EventRepo.StateHistory(roomID, matrix.TypeMember, userID)
+	if err != nil {
+		return nil, matrix.ErrInternal(err)
+	}
+	for _, row := range rows {
+		var content matrix.MemberContent
+		if err := matrix.DecodeContent(matrix.RawMessage(row.Content), &content); err != nil || content.Membership == "" {
+			continue
+		}
+		gate.positions = append(gate.positions, row.StreamPos)
+		gate.memberships = append(gate.memberships, content.Membership)
+	}
+	return gate, nil
+}
+
+// allows reports whether this user may read this event.
+func (g *historyGate) allows(event *persist.Event) bool {
+	switch g.visibility {
+	case matrix.HistoryJoined, matrix.HistoryInvited:
+	default:
+		return true
+	}
+	// A user's own membership events are theirs whatever the room decided. A client that
+	// cannot see the event which opened or closed their membership cannot tell the user why
+	// a room appeared or went away.
+	if event.Type == matrix.TypeMember && event.StateKey == g.userID {
+		return true
+	}
+	switch g.membershipAt(event.StreamPos) {
+	case matrix.MembershipJoin:
+		return true
+	case matrix.MembershipInvite:
+		// An invite is the point at which `invited` opened the room to this user; for
+		// `joined` it is not enough, because the room chose the join as that point.
+		return g.visibility == matrix.HistoryInvited
+	}
+	return false
+}
+
+// membershipAt is what the user's membership was at a position: the last change at or before it,
+// and nothing when the room says the user was not in it yet.
+func (g *historyGate) membershipAt(pos uint64) string {
+	membership := ""
+	for i, at := range g.positions {
+		if at > pos {
+			break
+		}
+		membership = g.memberships[i]
+	}
+	return membership
+}
+
+// keepReadable drops from a batch the events this user may not read, and says how many it
+// dropped: a caller that trimmed a page wants to know that it did.
+func (g *historyGate) keepReadable(events []*persist.Event) ([]*persist.Event, int) {
+	if g.visibility != matrix.HistoryJoined && g.visibility != matrix.HistoryInvited {
+		return events, 0
+	}
+	kept := make([]*persist.Event, 0, len(events))
+	for _, event := range events {
+		if g.allows(event) {
+			kept = append(kept, event)
+		}
+	}
+	return kept, len(events) - len(kept)
+}
+
+// historyGates holds one gate per room for a read that crosses rooms - a search, a sync - so
+// that a hundred rooms cost a hundred cheap questions rather than one per event.
+type historyGates struct {
+	service *Service
+	ctx     context.Context
+	userID  string
+	gates   map[string]*historyGate
+}
+
+func (s *Service) historyGates(ctx context.Context, userID string) *historyGates {
+	return &historyGates{service: s, ctx: ctx, userID: userID, gates: map[string]*historyGate{}}
+}
+
+// allows answers for the room the event belongs to, building that room's gate the first time
+// an event of it arrives.
+func (h *historyGates) allows(event *persist.Event) (bool, error) {
+	gate, ok := h.gates[event.RoomID]
+	if !ok {
+		var err error
+		gate, err = h.service.historyGateFor(h.ctx, event.RoomID, h.userID)
+		if err != nil {
+			return false, err
+		}
+		h.gates[event.RoomID] = gate
+	}
+	return gate.allows(event), nil
 }

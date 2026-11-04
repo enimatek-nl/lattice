@@ -1009,3 +1009,168 @@ func TestAdminReports(t *testing.T) {
 		t.Errorf("unauthenticated report listing: got %d, want 401", resp.Status)
 	}
 }
+
+// TestHistoryVisibilityOpensTheRoomWhenTheUserArrived is MSC2675's second half. A room-level
+// permission check answers "may this user read the room"; the room also decides *when its
+// history opened*, and a room that chose `joined` or `invited` said that a member sees the
+// events from the moment they arrived, not the ones that were there before. Without this half,
+// a member who joined last week can ask for the room's first event by id and be answered - and
+// a batch of those events can arrive unasked in a timeline filled from a peer.
+func TestHistoryVisibilityOpensTheRoomWhenTheUserArrived(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	bob := server.Register("bob", "builders")
+	carol := server.Register("carol", "kettle")
+
+	setVisibility := func(roomID, visibility string) {
+		server.MustDo(http.MethodPut,
+			"/_matrix/client/v3/rooms/"+url.PathEscape(roomID)+"/state/m.room.history_visibility",
+			alice.Token, map[string]any{"history_visibility": visibility}, http.StatusOK)
+	}
+	chunk := func(session *Session, roomID string) []map[string]any {
+		resp := server.MustDo(http.MethodGet,
+			"/_matrix/client/v3/rooms/"+roomID+"/messages?dir=b&limit=50", session.Token, nil, http.StatusOK)
+		raw, _ := resp.Body["chunk"].([]any)
+		events := make([]map[string]any, 0, len(raw))
+		for _, entry := range raw {
+			event, ok := entry.(map[string]any)
+			if !ok {
+				continue
+			}
+			events = append(events, event)
+		}
+		return events
+	}
+	holds := func(events []map[string]any, eventID string) bool {
+		for _, event := range events {
+			if id, _ := event["event_id"].(string); id == eventID {
+				return true
+			}
+		}
+		return false
+	}
+	// summaryOf renders a page legibly, because an event id says nothing about what was shown.
+	summaryOf := func(events []map[string]any) string {
+		parts := make([]string, 0, len(events))
+		for _, event := range events {
+			text := ""
+			if content, ok := event["content"].(map[string]any); ok {
+				if body, ok := content["body"].(string); ok {
+					text = `"` + body + `"`
+				}
+			}
+			if text == "" {
+				if key, ok := event["state_key"].(string); ok {
+					text = "key " + key
+				}
+			}
+			typ, _ := event["type"].(string)
+			parts = append(parts, typ+" "+text)
+		}
+		return strings.Join(parts, ", ")
+	}
+	membershipOf := func(events []map[string]any, stateKey string) bool {
+		for _, event := range events {
+			key, _ := event["state_key"].(string)
+			if event["type"] == matrix.TypeMember && key == stateKey {
+				return true
+			}
+		}
+		return false
+	}
+
+	// A room whose history opens at the join.
+	joined := server.CreateRoom(alice, map[string]any{"preset": "private_chat", "name": "Joined"})
+	setVisibility(joined, matrix.HistoryJoined)
+	before := server.Send(alice, joined, "hv-before", "spoken before bob arrived")
+	server.MustDo(http.MethodPost, "/_matrix/client/v3/rooms/"+joined+"/invite", alice.Token,
+		map[string]any{"user_id": bob.UserID}, http.StatusOK)
+	server.MustDo(http.MethodPost, "/_matrix/client/v3/join/"+url.PathEscape(joined), bob.Token, nil, http.StatusOK)
+	after := server.Send(alice, joined, "hv-after", "spoken after bob arrived")
+
+	if resp := server.Do(http.MethodGet, "/_matrix/client/v3/rooms/"+joined+"/event/"+before, bob.Token, nil); resp.Status != http.StatusForbidden {
+		t.Errorf("bob read an event from before his join to a joined-visibility room: got %d %s", resp.Status, resp.Raw)
+	}
+	if resp := server.Do(http.MethodGet, "/_matrix/client/v3/rooms/"+joined+"/event/"+after, bob.Token, nil); resp.Status != http.StatusOK {
+		t.Errorf("bob was refused an event from after his join: got %d %s", resp.Status, resp.Raw)
+	}
+	if resp := server.Do(http.MethodGet, "/_matrix/client/v3/rooms/"+joined+"/event/"+before, alice.Token, nil); resp.Status != http.StatusOK {
+		t.Errorf("the creator was refused the room's own history: got %d %s", resp.Status, resp.Raw)
+	}
+
+	page := chunk(bob, joined)
+	if holds(page, before) {
+		t.Errorf("/messages showed bob an event from before his join: %s", summaryOf(page))
+	}
+	if !holds(page, after) {
+		t.Errorf("/messages hid bob an event from after his join: %s", summaryOf(page))
+	}
+	// His own membership events stay his whatever the room decided: a client that cannot see
+	// the event which ended or began a membership cannot explain the room to the user.
+	if !membershipOf(page, bob.UserID) {
+		t.Errorf("bob's own membership was hidden from him: %s", summaryOf(page))
+	}
+
+	// The same rule across a timeline that arrived in one batch: bob's first sync must not
+	// carry the older event, which is how a room filled from a peer would otherwise hand it over.
+	synced, _ := server.Sync(bob, "?timeout=0")
+	if room, ok := synced.Rooms.Join[joined]; ok {
+		for _, event := range room.Timeline.Events {
+			if event.ID == before {
+				t.Errorf("/sync carried an event from before bob's join: %s", event.ID)
+			}
+		}
+	} else {
+		t.Errorf("bob's sync has no join section for %s", joined)
+	}
+
+	// A room whose history opens at the invite: the invited user may read what is said to them
+	// while they have not yet joined, and not what was said before.
+	knocking := server.CreateRoom(alice, map[string]any{"preset": "private_chat", "name": "Invited"})
+	setVisibility(knocking, matrix.HistoryInvited)
+	preInvite := server.Send(alice, knocking, "hv-pre", "spoken before the invite")
+	server.MustDo(http.MethodPost, "/_matrix/client/v3/rooms/"+knocking+"/invite", alice.Token,
+		map[string]any{"user_id": bob.UserID}, http.StatusOK)
+	duringInvite := server.Send(alice, knocking, "hv-during", "spoken while bob was only invited")
+
+	if resp := server.Do(http.MethodGet, "/_matrix/client/v3/rooms/"+knocking+"/event/"+preInvite, bob.Token, nil); resp.Status != http.StatusForbidden {
+		t.Errorf("bob read an event from before his invite to an invited-visibility room: got %d %s", resp.Status, resp.Raw)
+	}
+	if resp := server.Do(http.MethodGet, "/_matrix/client/v3/rooms/"+knocking+"/event/"+duringInvite, bob.Token, nil); resp.Status != http.StatusOK {
+		t.Errorf("an invited user was refused an event sent after the invite: got %d %s", resp.Status, resp.Raw)
+	}
+	if holds(chunk(bob, knocking), preInvite) {
+		t.Errorf("/messages of an invited-visibility room showed bob a pre-invite event")
+	}
+
+	// A room open to the world answers a stranger; a room that said nothing (`shared`, the
+	// default) does not. The difference is the room-level half, and it belongs to both.
+	open := server.CreateRoom(alice, map[string]any{"preset": "private_chat", "name": "Open"})
+	setVisibility(open, matrix.HistoryWorldReadable)
+	public := server.Send(alice, open, "hv-open", "open to whoever asks")
+	if resp := server.Do(http.MethodGet, "/_matrix/client/v3/rooms/"+open+"/event/"+public, carol.Token, nil); resp.Status != http.StatusOK {
+		t.Errorf("a world-readable room refused a stranger: got %d %s", resp.Status, resp.Raw)
+	}
+	if resp := server.Do(http.MethodGet, "/_matrix/client/v3/rooms/"+joined+"/event/"+after, carol.Token, nil); resp.Status != http.StatusForbidden {
+		t.Errorf("a shared room answered a stranger: got %d %s", resp.Status, resp.Raw)
+	}
+
+	// Search is a read of the same history: a match in a room that hides the event does not
+	// entitle anybody to its text.
+	found := server.MustDo(http.MethodPost, "/_matrix/client/v3/search", bob.Token,
+		map[string]any{"search_categories": map[string]any{
+			"room_events": map[string]any{"search_key": map[string]any{"term": []string{"spoken before"}}},
+		}}, http.StatusOK)
+	{
+		categories, _ := found.Body["categories"].(map[string]any)
+		events, _ := categories["room_events"].(map[string]any)
+		results, _ := events["results"].([]any)
+		for _, raw := range results {
+			hit, _ := raw.(map[string]any)
+			event, _ := hit["event"].(map[string]any)
+			if id, _ := event["event_id"].(string); id == before {
+				t.Errorf("/search answered with an event hidden by the room's visibility: %s", found.Raw)
+			}
+		}
+	}
+}

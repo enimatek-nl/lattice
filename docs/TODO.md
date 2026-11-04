@@ -1962,7 +1962,7 @@ suite's own skips are not hiding any of them:
 | Missing | Tests |
 | --- | --- |
 | `unsigned.transaction_id` on the local echo of a `PUT /send` (`/sync`, `/event`, `/messages`) — the transaction log already stores it | TestTxnInEvent, TestTxnScopeOnLocalEcho, TestTxnIdWithRefreshToken |
-| History visibility on `GET /rooms/{roomID}/event/{eventID}`: refuse non-members, and events from before the join | TestFetchEventNonWorldReadable, TestFetchHistoricalJoinedEventDenied, TestFetchHistoricalInvitedEventFromBeforeInvite, TestLeaveEventVisibility |
+| History visibility on `GET /rooms/{roomID}/event/{eventID}`: refuse non-members, and events from before the join — **addressed by step 23**, unverified against the suite since; `TestLeaveEventVisibility` may still be red, because a user who has left reads nothing here (see step 23's openings) | TestFetchEventNonWorldReadable, TestFetchHistoricalJoinedEventDenied, TestFetchHistoricalInvitedEventFromBeforeInvite, TestLeaveEventVisibility |
 | Sync `leave` sections and timeline gaps: a left room reappearing with its old history, `limited` + `prev_batch` on a gapped timeline, room summaries for rooms with no timeline | TestSync, TestSyncTimelineGap, TestGappedSyncLeaveSection, TestOlderLeftRoomsNotInLeaveSection, TestLeftRoomFixture, TestArchivedRoomsHistory, TestRoomSummary |
 | `lazy_load_state` in `/messages` | TestRoomMessagesLazyLoading, TestRoomMessagesLazyLoadingLocalUser |
 | Presence — deferred on purpose (no `m.presence`), so these are expected red | TestPresence, TestPresenceSyncDifferentRooms, TestMembersLocal |
@@ -3047,3 +3047,65 @@ Openings this leaves, in the order they would be picked up:
 - **Eight connections per device, 1000 rooms per connection**, both pruned rather than refused:
   the oldest connections of a device are forgotten, and a room list past the bound expires the
   connection so the client begins again instead of being served a query that grows without end.
+
+### 23. MSC2675 — which events of a room a member may see (2026-11-04)
+
+The specification answers two different questions and this server had answered one of them.
+`RequireReadable` answers *may this user read the room*: joined and invited users can, banned
+users cannot, strangers only if the room is world readable. MSC2675 adds the second: *which of
+its events*, decided by the room's `m.room.history_visibility` and by when the user arrived. A
+room that chose `joined` said that a member sees the events from the moment they joined, and
+`invited` that the room opens at the invite. Nothing consulted that on the client side, so a
+member who joined last week could ask for the room's first event by id and be answered — and a
+batch of those events could arrive unasked, in a timeline filled from a peer.
+
+- [x] **`historyGate`** in `internal/service/history.go` answers the *when* half for one room and
+      one user. It reads the room's own `m.room.member` events for that user once, oldest first,
+      and answers what the membership was at the position of the event being considered: a
+      `join` is readable in both strict modes, an `invite` only in `invited`, because that room
+      chose the invite as the opening and the other chose the join. A room that named `shared`,
+      named nothing, or named a visibility this server does not know needs no query at all — the
+      room-level answer is the whole answer, which is what every read on this server has always
+      done, so the common case is free.
+- [x] **A user's own membership events are theirs whatever the room decided.** A client that
+      cannot see the event which opened or closed a membership cannot tell the user why a room
+      appeared or went away. This is a deliberate widening of the strict rule, and it is said out
+      loud in the code rather than left to be discovered.
+- [x] **Applied where history is read**: `GET /rooms/{id}/event/{eventId}` refuses with 403 as
+      MSC2675 asks (not the 404 an event that does not exist earns), `/messages` and `/context`
+      filter their chunks with the centre event refused outright, `/relations` and `/search`
+      drop matches, and the timelines of `/sync` and of a sliding-sync window are filtered as
+      they are rendered. Pagination cursors are taken *before* the filter, because a cursor names
+      a position in the room and not an event the client was shown: a filtered page still pages
+      on to the right place.
+- [x] **`StateHistory`** in `internal/persist/event.go` — every version of one state key of a
+      room, oldest applied first. Not `hiddenFromTimeline`: a state event that never appeared in
+      a timeline window still happened, and a membership that arrived over federation as state is
+      exactly what the caller is reconstructing. Only an event this server's state does not
+      support is left out.
+- [x] **Own test** `TestHistoryVisibilityOpensTheRoomWhenTheUserArrived`: a `joined` room refuses
+      its pre-join event by id to the late joiner and answers it to the creator, `/messages` and
+      the first `/sync` timeline leave the pre-join event out for the joiner while keeping his own
+      membership, an `invited` room hides what was said before the invite and answers what was
+      said while he was only invited, a `world_readable` room answers a stranger and a `shared`
+      one does not, and `/search` does not hand over the text of a hidden event. Verified against
+      a build with the gate forced open, which fails five of its assertions.
+
+Openings this leaves, in the order they would be picked up:
+
+- **`/threads`, `/members?at=` and `/state/{eventId}` are not filtered.** `/threads` would have to
+  decide what a thread means when its latest event is hidden; `/members?at=` and the state at an
+  event want the per-event state snapshot that is already an open item under room version 12.
+- **A user who has left reads nothing** except in a world-readable room, because that is what
+  `RequireReadable` has always said. MSC2675 does not settle what a former member may read, and
+  MSC2666 ("recently joined") is not implemented, so a client that leaves a room and pages its
+  history is refused where Synapse would often answer.
+- **The visibility applied is the room's current decision.** MSC2675 is read that way — the
+  setting in force when the question is asked — but a room that changed its visibility mid-history
+  is judged as it is now, not as it was when the event was sent.
+- **The count in `/search` is of what was shown.** Filtering after the match means `limited` and
+  `count` describe the filtered batch; a client may be told a page was short when the room was
+  hiding matches rather than running out of them.
+- **`limited` in a timeline counts what the room holds**, filtered or not. That is what the
+  specification means the flag to describe — the gap in the history — but it means a client can be
+  told a timeline is limited by events it was never allowed to see.
