@@ -5,7 +5,9 @@ planning document in the repository. [README.md](README.md) is what the server
 does today for a stranger; the endpoint index the specification asks for is
 [internal/coverage/SPECS.md](internal/coverage/SPECS.md) and `make endpoints`
 writes the generated implemented/missing table to `ENDPOINTS.md` (generated, not
-committed). This file is
+committed). [docs/coverage.md](coverage.md) states what the server covers area by area,
+and [docs/coverage-comparison.md](coverage-comparison.md) reads it against the coverage
+document of the Rust reference server ([docs/spec-coverage.md](spec-coverage.md)). This file is
 now a **release plan: work the steps in order, one at a time**. Steps 1-10 are
 done, so the next one is **step 11**; federation is steps 6-12. The history that
 used to fill this file lives in git; only facts a future session must not
