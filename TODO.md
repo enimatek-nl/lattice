@@ -2730,3 +2730,23 @@ still reads the room's allow list, so a room named there admits nothing unless t
 admits people through it. `readCurrentState` and the new local read share one state reader
 (`stateForAuth`), which is also where a locally judged event's state comes from the append
 transaction rather than from outside it.
+
+A run of the guards' side of this - `knock`, `restricted`, `spaces`, `room summary`, `join`,
+`invite`, `redact`, `ban`, `kick`, `leave` - is **23 tests, 20 green**, the three red being the
+pair of room version 12 power-level cases and the application-service bridge user. Nothing that
+was green went red, which is the point of the exercise: a room's rules, read by one list, refuse
+the same events at both doors.
+
+The first complete run of Complement's `./tests` package (all **91** tests) since this landed:
+**61 green, 30 red**, against the **40 green, 51 red** measured at the start of this stretch of
+federation work. The 30 sit in these places - the MSC4289 privileged-creators group (6),
+MSC4291 room-ids-as-hash (5), MSC4297 state resolution v2 (2), MSC4311 stripped state (3), room
+version 12 (3), the auth-chain rejection set (`TestCorruptedAuthChain`,
+`TestInboundFederationRejectsEventsWithRejectedAuthEvents`, `TestUnrejectRejectedEvents`,
+`TestOutboundFederationIgnoresMissingEventWithBadJSONForRoomVersion6`), the federation odds
+already listed (`TestFederationRoomsInvite`, `TestFederationRedactSendsWithoutEvent`,
+`TestIsDirectFlagFederation`, `TestACLsForEDUs`, the application-service bridge user), presence,
+and `/jump_to_date`. That run is also the one that found the volume-lock limit of the other note arriving in
+bulk rather than once: without `-parallel 2`, **30** tests failed with
+`exceeded num_locks (2048)` deploy errors and nothing was measured. A complete run of this
+package wants `-parallel 2`, and a `podman volume prune -f` before it.
