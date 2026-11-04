@@ -47,17 +47,26 @@ type HierarchyParams struct {
 
 // HierarchyRoom is one room of a space hierarchy.
 type HierarchyRoom struct {
-	RoomID           string         `json:"room_id"`
-	Name             string         `json:"name,omitempty"`
-	Topic            string         `json:"topic,omitempty"`
-	AvatarURL        string         `json:"avatar_url,omitempty"`
-	CanonicalAlias   string         `json:"canonical_alias,omitempty"`
-	JoinRules        string         `json:"join_rules"`
-	RoomType         string         `json:"room_type,omitempty"`
-	NumJoinedMembers int64          `json:"num_joined_members"`
-	WorldReadable    bool           `json:"world_readable"`
-	GuestsCanJoin    bool           `json:"guests_can_join"`
-	ChildrenState    []matrix.Event `json:"children_state"`
+	RoomID           string `json:"room_id"`
+	Name             string `json:"name,omitempty"`
+	Topic            string `json:"topic,omitempty"`
+	AvatarURL        string `json:"avatar_url,omitempty"`
+	CanonicalAlias   string `json:"canonical_alias,omitempty"`
+	JoinRules        string `json:"join_rule"`
+	RoomType         string `json:"room_type,omitempty"`
+	NumJoinedMembers int64  `json:"num_joined_members"`
+	WorldReadable    bool   `json:"world_readable"`
+	GuestsCanJoin    bool   `json:"guest_can_join"`
+	// ChildrenState are the m.space.child links this entry carries so that whoever reads it knows
+	// where the tree continues. It is a pointer so that the two answers can differ: a client is
+	// always shown the key, empty for a room that is not a space, while a child described to a
+	// peer omits it - the links of that room are asked about with the room, not carried along.
+	ChildrenState *[]matrix.Event `json:"children_state,omitempty"`
+	// AllowedRooms are the rooms whose membership admits a joiner, for a restricted room. The
+	// client endpoint does not need them - this server has already decided for its own user - but
+	// the federation answer carries them, because the peer answering for a room it hosts cannot
+	// know which of the asking server's users the rule admits.
+	AllowedRooms []string `json:"allowed_room_ids,omitempty"`
 }
 
 // HierarchyResult is a page of the room hierarchy.
@@ -160,7 +169,15 @@ func (s *Service) walkHierarchy(ctx context.Context, rootID string, r reader, w 
 				continue
 			}
 			visited[link.roomID] = true
-			if !s.LocalRoom(link.roomID) {
+			// A room this server holds is described from its own copy, whichever server the
+			// room id says owns it: local knowledge beats a peer's description, and the spec
+			// says the same. A room it does not hold is asked about from the servers the link
+			// names, one room per question.
+			here, err := s.roomExistsLocal(ctx, link.roomID)
+			if err != nil {
+				return nil, false, err
+			}
+			if !here {
 				if asked >= remoteHierarchyAsks {
 					// The walk has asked enough. The rest of the space exists; this
 					// request is not going to describe it, and the answer says so.
@@ -168,39 +185,42 @@ func (s *Service) walkHierarchy(ctx context.Context, rootID string, r reader, w 
 					continue
 				}
 				asked++
-				remote, err := s.RemoteHierarchy(ctx, link.roomID, link.via, hierarchyDefaultRooms,
-					w.maxDepth-current.depth-1, w.minDepth-current.depth-1, w.suggestedOnly)
+				answer, err := s.RemoteHierarchy(ctx, link.roomID, link.via, w.suggestedOnly)
 				if err != nil {
 					log.Printf("federation: the space below %s cannot be read: %v", link.roomID, err)
 					incomplete = true
 					continue
 				}
-				if remote.IncompleteChain {
-					incomplete = true
+				// A peer that names a child as one nobody can reach has answered the question
+				// once for everybody: the room is not asked about again.
+				for _, room := range answer.InaccessibleChildren {
+					visited[room] = true
 				}
-				// The page starts at the child itself and already holds everything below it
-				// within the window, so its rooms are added without being queued: asking this
-				// server's way down a tree another server already walked would double every
-				// request and could only find less.
-				for _, entry := range remote.Rooms {
-					if entry.RoomID == "" || described[entry.RoomID] {
-						continue
+				if answer.Room.RoomID == "" || described[answer.Room.RoomID] ||
+					!s.remoteRoomShows(ctx, answer.Room, r) {
+					continue
+				}
+				described[answer.Room.RoomID] = true
+				out = append(out, answer.Room)
+				// The child links the answer carries say where the tree goes next. They are
+				// queued rather than folded in here, so each room below is asked of the server
+				// that actually holds it.
+				if current.depth+1 < w.maxDepth {
+					for _, child := range entrySpaceLinks(answer.Room) {
+						if visited[child.roomID] {
+							continue
+						}
+						visited[child.roomID] = true
+						stack = append(stack, node{roomID: child.roomID, depth: current.depth + 2})
 					}
-					visited[entry.RoomID] = true
-					described[entry.RoomID] = true
-					out = append(out, entry)
 				}
 				continue
 			}
-			here, err := s.roomExistsLocal(ctx, link.roomID)
-			if err != nil {
-				return nil, false, err
-			}
-			if !here {
+			if !s.hierarchyShows(ctx, link.roomID, r) {
 				incomplete = true
 				continue
 			}
-			if !s.readableBy(ctx, link.roomID, r) {
+			if !s.hierarchyShows(ctx, link.roomID, r) {
 				incomplete = true
 				continue
 			}
@@ -208,6 +228,117 @@ func (s *Service) walkHierarchy(ctx context.Context, rootID string, r reader, w 
 		}
 	}
 	return out, incomplete, nil
+}
+
+// hierarchyShows decides whether a room of a space goes into the tree for a reader.
+//
+// The endpoint lists rooms the reader has joined *or could join*. Reading is not the test: a
+// public room that keeps its history to its members is unreadable to an outsider and perfectly
+// joinable, and a space that hides it cannot be joined out of the summary, which is what the
+// summary is for. What stays out is a room the reader cannot get into: an invite-only room they
+// were not invited to, a restricted room whose allow list names no room they belong to, or a
+// sub-space that is itself closed, whose whole branch then stays closed.
+//
+// A server asking over federation is answered by [Service.readableBy] instead: it is not asking
+// for one person, and what it is given has to be filtered by the person it asked for.
+func (s *Service) hierarchyShows(ctx context.Context, roomID string, r reader) bool {
+	if r.userID == "" {
+		return s.readableBy(ctx, roomID, r)
+	}
+	if s.canRead(ctx, roomID, r.userID) {
+		return true
+	}
+	return s.joinableBy(ctx, roomID, r.userID)
+}
+
+// remoteRoomShows decides whether a room described by another server goes into the tree for the
+// user this walk is answering. The peer answered for servers, not people: it was told nobody was
+// asking, and it included the room because *some* user of this server could get in. Deciding for
+// the one person who asked is this server's job, and the fields the peer sent - the join rule,
+// whether the room is world readable, and the rooms its allow list names - are what makes that
+// decision possible. Where this server holds one of those rooms it knows the answer; where it does
+// not, it cannot confirm the condition, and a room whose condition cannot be confirmed is a room
+// this user cannot be shown.
+func (s *Service) remoteRoomShows(ctx context.Context, entry HierarchyRoom, r reader) bool {
+	if r.userID == "" {
+		return true
+	}
+	if entry.WorldReadable {
+		return true
+	}
+	switch s.MembershipOf(ctx, entry.RoomID, r.userID) {
+	case matrix.MembershipJoin, matrix.MembershipInvite:
+		return true
+	}
+	switch entry.JoinRules {
+	case matrix.JoinRulesPublic, matrix.JoinRulesKnock:
+		return true
+	case matrix.JoinRulesRestricted, matrix.JoinRulesKnockRestricted:
+		for _, admitting := range entry.AllowedRooms {
+			if s.MembershipOf(ctx, admitting, r.userID) == matrix.MembershipJoin {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// entrySpaceLinks reads the child links a hierarchy entry carries, in the shape
+// [Service.spaceLinks] reads out of local state. A link with an empty body was removed from the
+// space and is not an edge.
+func entrySpaceLinks(entry HierarchyRoom) []spaceLink {
+	events := []matrix.Event{}
+	if entry.ChildrenState != nil {
+		events = *entry.ChildrenState
+	}
+	links := make([]spaceLink, 0, len(events))
+	for _, event := range events {
+		if event.StateKey == nil || event.Type != matrix.TypeSpaceChild {
+			continue
+		}
+		content := matrix.MustParseObject([]byte(event.Content))
+		if len(content) == 0 {
+			continue
+		}
+		link := spaceLink{roomID: *event.StateKey, suggested: content["suggested"] == true}
+		if listed, ok := content["via"].([]any); ok {
+			for _, entry := range listed {
+				if server, isText := entry.(string); isText {
+					link.via = append(link.via, server)
+				}
+			}
+		}
+		links = append(links, link)
+	}
+	return links
+}
+
+// joinableBy reports whether the room's own join rule lets this user in as things stand. A public
+// room, or one open to knocking, asks nothing of them. A restricted one asks membership of a room
+// on its allow list, and only of a room this server can still read: a copy of an admitting room
+// this server has left says nothing about anybody. An invite-only room asks an invite, which
+// [Service.canRead] has already refused.
+func (s *Service) joinableBy(ctx context.Context, roomID, userID string) bool {
+	rule, err := s.db.StateRepo.JoinRule(roomID)
+	if err != nil {
+		return false
+	}
+	switch rule {
+	case matrix.JoinRulesPublic, matrix.JoinRulesKnock:
+		return true
+	case matrix.JoinRulesRestricted, matrix.JoinRulesKnockRestricted:
+		for _, admitting := range s.roomsThatAdmit(ctx, roomID) {
+			if !s.canReadMembershipOf(admitting) {
+				continue
+			}
+			if s.MembershipOf(ctx, admitting, userID) == matrix.MembershipJoin {
+				return true
+			}
+		}
+		return false
+	default:
+		return false
+	}
 }
 
 // hierarchyEntry renders one room of the hierarchy.
@@ -231,8 +362,9 @@ func (s *Service) hierarchyEntry(ctx context.Context, roomID string, w walkWindo
 		NumJoinedMembers: joined,
 		WorldReadable:    s.HistoryVisibility(ctx, roomID) == matrix.HistoryWorldReadable,
 		GuestsCanJoin:    s.guestsCanConnect(ctx, roomID),
-		ChildrenState:    s.hierarchyStateEvents(ctx, roomID, w),
 	}
+	events := s.hierarchyStateEvents(ctx, roomID, w)
+	entry.ChildrenState = &events
 	return entry, nil
 }
 

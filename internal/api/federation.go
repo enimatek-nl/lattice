@@ -884,27 +884,10 @@ func (a *App) handleFederationPublicRooms(w http.ResponseWriter, r *http.Request
 
 // handleFederationHierarchy answers GET /_matrix/federation/v1/hierarchy/{roomID}.
 func (a *App) handleFederationHierarchy(w http.ResponseWriter, r *http.Request) {
-	limit, err := queryInt(r, "limit", 0)
-	if err != nil {
-		a.writeError(w, r, err)
-		return
-	}
-	maxDepth, err := queryInt(r, "max_depth", service.HierarchyUnbounded)
-	if err != nil {
-		a.writeError(w, r, err)
-		return
-	}
-	minDepth, err := queryInt(r, "min_depth", 0)
-	if err != nil {
-		a.writeError(w, r, err)
-		return
-	}
+	// The federation endpoint names one parameter and does not paginate: it answers one room and
+	// its children, and a walk that wants more asks again.
 	result, err := a.svc.ServeHierarchy(r.Context(), r.PathValue("roomID"), federation.Peer(r.Context()),
 		service.HierarchyParams{
-			Limit:         limit,
-			MaxDepth:      maxDepth,
-			MinDepth:      minDepth,
-			From:          r.URL.Query().Get("from"),
 			SuggestedOnly: queryBool(r, "suggested_only", false),
 		})
 	if err != nil {

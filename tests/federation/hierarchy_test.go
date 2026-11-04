@@ -207,9 +207,9 @@ func TestASpaceWalkedWithoutSayingHowDeep(t *testing.T) {
 	}
 }
 
-// TestAPeerWalksTheSpaceRootedHere is the inbound half: another server asks for the tree
-// that starts at one of our rooms, and is answered the rooms it may read - which is not
-// every room we hold.
+// TestAPeerWalksTheSpaceRootedHere is the inbound half: another server asks about one of our
+// rooms, and is answered the room plus the children it may read - which is not every room we
+// hold, and not the whole tree either.
 func TestAPeerWalksTheSpaceRootedHere(t *testing.T) {
 	c := newCluster(t)
 	one, two := c.one(), c.two()
@@ -224,23 +224,26 @@ func TestAPeerWalksTheSpaceRootedHere(t *testing.T) {
 	worldReadable(t, one, alice, child)
 	linkSpace(t, one, alice, open, child, one.name)
 
-	answer := federationGET(t, two, one, "/_matrix/federation/v1/hierarchy/"+open+"?max_depth=1")
+	answer := federationGET(t, two, one, "/_matrix/federation/v1/hierarchy/"+open)
 	if answer.Status != http.StatusOK {
 		t.Fatalf("%s asking %s for the hierarchy of %s: %d %s",
 			two.name, one.name, open, answer.Status, answer.Raw)
 	}
-	rooms, _ := answer.Body["rooms"].([]any)
-	if len(rooms) < 2 {
-		t.Fatalf("the hierarchy of %s is answered with %d rooms, which leaves out its child: %s",
-			open, len(rooms), answer.Raw)
+	asked, _ := answer.Body["room"].(matrix.Object)
+	if asked == nil || asked["room_id"] != open {
+		t.Fatalf("the hierarchy answer for %s does not describe the room asked for: %s", open, answer.Raw)
+	}
+	children, _ := answer.Body["children"].([]any)
+	if len(children) == 0 {
+		t.Fatalf("the hierarchy of %s is answered with no children, which leaves out %s: %s", open, child, answer.Raw)
 	}
 	names := map[string]bool{}
-	for _, entry := range rooms {
-		room, _ := entry.(matrix.Object)
-		if room == nil {
+	for _, item := range children {
+		entry, _ := item.(matrix.Object)
+		if entry == nil {
 			continue
 		}
-		if id, _ := room["room_id"].(string); id != "" {
+		if id, _ := entry["room_id"].(string); id != "" {
 			names[id] = true
 		}
 	}
@@ -257,13 +260,79 @@ func TestAPeerWalksTheSpaceRootedHere(t *testing.T) {
 		"creation_content": map[string]any{"type": "m.space"},
 	})
 	linkSpace(t, one, alice, quiet, child, one.name)
-	closed := federationGET(t, two, one, "/_matrix/federation/v1/hierarchy/"+quiet+"?max_depth=1")
-	if closed.Status != http.StatusForbidden {
+	closed := federationGET(t, two, one, "/_matrix/federation/v1/hierarchy/"+quiet)
+	if closed.Status != http.StatusNotFound {
 		t.Errorf("%s asking for the hierarchy of the space %s was answered %d, want %d: %s",
-			two.name, quiet, closed.Status, http.StatusForbidden, closed.Raw)
+			two.name, quiet, closed.Status, http.StatusNotFound, closed.Raw)
 	}
-	if _, found := closed.Body["rooms"]; found {
-		t.Errorf("a refused hierarchy of %s still answers with rooms: %s", quiet, closed.Raw)
+	if _, found := closed.Body["room"]; found {
+		t.Errorf("a refused hierarchy of %s still answers with a room: %s", quiet, closed.Raw)
+	}
+}
+
+// TestARestrictedSpaceChildIsOfferedToTheServerItAdmits is a restricted room seen over the
+// federation hierarchy endpoint. The peer is not told who is asking, so it answers for servers:
+// the room is offered when some user of the asking server could get in, and it travels with the
+// rooms its join rules name so the asking server can decide for the one person who asked. Until
+// this server has somebody in the room that admits the join, it cannot make that offer at all -
+// it does not know the asking server has anybody there.
+func TestARestrictedSpaceChildIsOfferedToTheServerItAdmits(t *testing.T) {
+	c := newCluster(t)
+	one, two := c.one(), c.two()
+	alice := one.register("alice", "wonderland")
+	bob := one.register("bob", "rubberduck")
+	charlie := two.register("charlie", "hatter")
+
+	space := one.createRoom(alice, map[string]any{
+		"preset":           "public_chat",
+		"name":             "The space",
+		"creation_content": map[string]any{"type": "m.space"},
+	})
+	worldReadable(t, one, alice, space)
+	room := two.createRoom(charlie, map[string]any{
+		"preset":       "public_chat",
+		"name":         "The room in the space",
+		"room_version": "8",
+	})
+	two.mustDo(http.StatusOK, http.MethodPut, "/_matrix/client/v3/rooms/"+room+"/state/m.room.join_rules", charlie.Token,
+		map[string]any{
+			"join_rule": "restricted",
+			"allow":     []map[string]any{{"type": "m.room_membership", "room_id": space}},
+		})
+	linkSpace(t, one, alice, space, room, two.name)
+
+	seen := func(sess *session) map[string]matrix.Object {
+		t.Helper()
+		rooms, _ := clientHierarchy(t, one, sess, space, -1)
+		return roomsOf(rooms)
+	}
+
+	// Nobody on either server is in the space as far as two can see, so two cannot say that
+	// anybody on one may join: the branch stays closed rather than being described on a guess.
+	if found := seen(alice); found[room] != nil {
+		t.Errorf("two describes the restricted room %s before anybody on one is known to belong to the space: %v", room, found)
+	}
+
+	// charlie joins the space. two now holds the space's membership and can see that one has a
+	// member there: alice. The room is offered, and named with the room that admits the join so
+	// that one can decide for its own users.
+	if got := joinVia(two, charlie, space, serverOne); got.Status != http.StatusOK {
+		t.Fatalf("charlie joining the space: %d %s", got.Status, got.Raw)
+	}
+	found := seen(alice)
+	entry, ok := found[room]
+	if !ok {
+		t.Fatalf("alice, a member of the space, is not shown the room it admits: %v", found)
+	}
+	allowed, _ := entry["allowed_room_ids"].([]any)
+	if len(allowed) == 0 {
+		t.Errorf("the restricted room is described without the rooms that admit a join, so this server cannot tell whose membership the rule asks about: %v", entry)
+	}
+
+	// Bob is on the same server and is not in the space. The peer answered for the server, and
+	// this server is the one that has to answer for the person.
+	if found := seen(bob); found[room] != nil {
+		t.Errorf("bob, who belongs to nothing, is shown a room the space admits: %v", found)
 	}
 }
 

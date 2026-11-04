@@ -137,8 +137,8 @@ func TestSpaceHierarchy(t *testing.T) {
 	if members, _ := rooms[0]["num_joined_members"].(float64); members != 1 {
 		t.Errorf("num_joined_members = %v", rooms[0]["num_joined_members"])
 	}
-	if joinRules, _ := rooms[0]["join_rules"].(string); joinRules != "public" {
-		t.Errorf("join_rules = %v", rooms[0]["join_rules"])
+	if joinRule, _ := rooms[0]["join_rule"].(string); joinRule != "public" {
+		t.Errorf("join_rule = %v", rooms[0]["join_rule"])
 	}
 	children := childrenOf(t, rooms[0])
 	if len(children) != 2 {
@@ -288,5 +288,70 @@ func TestSpaceHierarchy(t *testing.T) {
 	if resp := server.Do(http.MethodGet, "/_matrix/client/v1/rooms/"+url.PathEscape(secret)+"/hierarchy",
 		outsider.Token, nil); resp.Status != http.StatusForbidden {
 		t.Errorf("hierarchy of a private room: got %d %s, want 403", resp.Status, resp.Raw)
+	}
+}
+
+// TestARestrictedRoomInASpaceIsShownToTheSpace is the summary of a space whose child lets people
+// in through the space. The room is not readable by an outsider - it keeps its history to its
+// members - but it is joinable by a member of the space, and the summary is how a client learns a
+// room is there in order to join it. So the room is shown to the people the space admits and hidden
+// from the ones it does not, which is a different question from who may read it.
+func TestARestrictedRoomInASpaceIsShownToTheSpace(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	bob := server.Register("bob", "rubberduck")
+
+	space := server.CreateRoom(alice, map[string]any{
+		"preset":             "public_chat",
+		"name":               "The space",
+		"type":               "m.space",
+		"history_visibility": "world_readable",
+	})
+	room := server.CreateRoom(alice, map[string]any{
+		"preset":       "public_chat",
+		"name":         "The room in the space",
+		"room_version": "8",
+	})
+	server.MustDo(http.MethodPut, "/_matrix/client/v3/rooms/"+url.PathEscape(room)+"/state/m.room.join_rules",
+		alice.Token, map[string]any{
+			"join_rule": "restricted",
+			"allow":     []map[string]any{{"type": "m.room_membership", "room_id": space}},
+		}, http.StatusOK)
+	server.linkSpace(alice, space, room)
+
+	listed := func(session *Session) map[string]map[string]any {
+		server.t.Helper()
+		resp := server.MustDo(http.MethodGet, "/_matrix/client/v1/rooms/"+url.PathEscape(space)+"/hierarchy",
+			session.Token, nil, http.StatusOK)
+		byID := map[string]map[string]any{}
+		for _, entry := range hierarchyRooms(t, resp.Body) {
+			if id, _ := entry["room_id"].(string); id != "" {
+				byID[id] = entry
+			}
+		}
+		return byID
+	}
+
+	// Bob belongs to nothing. The space is open to be read, so it is shown; the room is neither
+	// readable by him nor joinable, so it is not.
+	found := listed(bob)
+	if found[space] == nil {
+		t.Fatalf("the space itself is not shown to bob: %v", found)
+	}
+	if found[room] != nil {
+		t.Fatalf("a room the space admits is shown to a person the space does not admit: %v", found[room])
+	}
+
+	// Bob joins the space, which is the fact the room's rule asks about. Nothing about the room
+	// changes: it is the same state, read against a different person.
+	server.MustDo(http.MethodPost, "/_matrix/client/v3/join/"+url.PathEscape(space), bob.Token,
+		map[string]any{}, http.StatusOK)
+	found = listed(bob)
+	entry, ok := found[room]
+	if !ok {
+		t.Fatalf("a member of the space is not shown the room it admits: %v", found)
+	}
+	if rule, _ := entry["join_rule"].(string); rule != "restricted" {
+		t.Errorf("the room is described with join_rule %q, want restricted: %v", rule, entry)
 	}
 }

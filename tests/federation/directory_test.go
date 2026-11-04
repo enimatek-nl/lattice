@@ -1,7 +1,6 @@
 package federation
 
 import (
-	"fmt"
 	"net/http"
 	"net/url"
 	"testing"
@@ -187,9 +186,10 @@ func TestARemoteAliasIsResolvedByTheServerThatHostsIt(t *testing.T) {
 	}
 }
 
-// TestASpaceServesItsOwnSideToAPeer is the shape check on the federation hierarchy answer:
-// rooms, in the shape a client would be given, plus the flag that says when the tree was cut
-// short. A peer building a space out of this server's answer has nothing else to go on.
+// TestASpaceServesItsOwnSideToAPeer is the shape check on the federation hierarchy answer: the one
+// room that was asked about, the children of it this server can describe, and the child links that
+// say where the tree continues. It is not the client answer: a peer is not a person, and the tree
+// below a child belongs to whichever server holds that child to describe.
 func TestASpaceServesItsOwnSideToAPeer(t *testing.T) {
 	c := newCluster(t)
 	one, two := c.one(), c.two()
@@ -204,28 +204,40 @@ func TestASpaceServesItsOwnSideToAPeer(t *testing.T) {
 	worldReadable(t, one, alice, child)
 	linkSpace(t, one, alice, space, child, one.name)
 
-	answer := federationGET(t, two, one, fmt.Sprintf("/_matrix/federation/v1/hierarchy/%s?max_depth=1", space))
+	answer := federationGET(t, two, one, "/_matrix/federation/v1/hierarchy/"+space)
 	if answer.Status != http.StatusOK {
 		t.Fatalf("%s asking for the hierarchy of %s: %d %s", two.name, space, answer.Status, answer.Raw)
 	}
-	rooms, _ := answer.Body["rooms"].([]any)
-	byID := map[string]matrix.Object{}
-	for _, entry := range rooms {
-		if room, ok := entry.(matrix.Object); ok {
-			if id, _ := room["room_id"].(string); id != "" {
-				byID[id] = room
-			}
+	room, _ := answer.Body["room"].(matrix.Object)
+	if room == nil || room["room_id"] != space {
+		t.Fatalf("the hierarchy answer of %s does not describe the room that was asked for: %s", space, answer.Raw)
+	}
+	// The links are what let a walk continue. A peer that is told about a space and not about
+	// its children still knows where to ask next.
+	links, _ := room["children_state"].([]any)
+	if len(links) == 0 {
+		t.Fatalf("the hierarchy answer of %s carries no children_state, so a walk cannot continue from it: %s",
+			space, answer.Raw)
+	}
+	children, _ := answer.Body["children"].([]any)
+	var entry matrix.Object
+	for _, item := range children {
+		described, ok := item.(matrix.Object)
+		if !ok {
+			continue
+		}
+		if id, _ := described["room_id"].(string); id == child {
+			entry = described
 		}
 	}
-	entry, ok := byID[child]
-	if !ok {
+	if entry == nil || entry["room_id"] != child {
 		t.Fatalf("the hierarchy of %s does not describe its child %s: %s", space, child, answer.Raw)
 	}
 	if entry["name"] != "Described room" {
 		t.Errorf("the child of %s is described as %v, want the name its own server gives it", space, entry["name"])
 	}
-	if _, found := entry["children_state"]; !found {
-		t.Errorf("the hierarchy of %s describes %s without its children_state, so the walk cannot continue from there",
+	if _, found := entry["children_state"]; found {
+		t.Errorf("the hierarchy of %s describes %s with children_state, which is the shape that invites a peer to skip asking the server that holds it",
 			space, child)
 	}
 }

@@ -36,16 +36,32 @@ const (
 	remoteHierarchyBudget = 15 * time.Second
 )
 
-// ServeHierarchy answers GET /_matrix/federation/v1/hierarchy/{roomId} for a peer: the
-// tree below this room as far as this server can describe it, and only the rooms the
-// asking server may read.
+// HierarchyPeerAnswer is what GET /_matrix/federation/v1/hierarchy/{roomId} answers: the one room
+// that was asked about, the children of that room this server can describe, and the names of the
+// children it will not. It does not recurse: a space below the room belongs to whatever server
+// hosts it to describe, and this answer is small enough to be worth caching.
+type HierarchyPeerAnswer struct {
+	Room     HierarchyRoom   `json:"room"`
+	Children []HierarchyRoom `json:"children"`
+	// InaccessibleChildren names the children of the requested room that are in its state but are
+	// not offered to the asking server. Saying the name is not a leak - the asking server already
+	// read the link - it is the difference between "nobody will tell you about this" and "I could
+	// not tell you".
+	InaccessibleChildren []string `json:"inaccessible_children"`
+}
+
+// ServeHierarchy answers GET /_matrix/federation/v1/hierarchy/{roomId} for a peer.
 //
-// A room that is not world readable is not described to a server that is not in it: a space
-// is a room, and the rule that governs reading a room governs reading its shape. What a
-// refused branch of the tree costs the asker is said plainly in `incomplete_chain`, because
-// "there is more, and you cannot see it" is a different answer from "there is nothing
-// there".
-func (s *Service) ServeHierarchy(ctx context.Context, roomID, peer string, params HierarchyParams) (*HierarchyResult, error) {
+// The answer is about servers, not people: this endpoint is not told who is asking, and a peer may
+// be told about a room when *any* of its members could get in. The peer is trusted to filter that
+// down for the person it asked for, which is why a restricted room travels with the rooms its join
+// rules name (`allowed_room_ids`) - without them the peer cannot tell whether its own user is the
+// one the rule admits.
+//
+// A room that cannot be offered is answered as if it were not here, per the specification's 404:
+// naming a room this server will not open is a different answer from not knowing it, and the
+// specification picks the second.
+func (s *Service) ServeHierarchy(ctx context.Context, roomID, peer string, params HierarchyParams) (*HierarchyPeerAnswer, error) {
 	room, err := s.MustRoom(ctx, roomID)
 	if err != nil {
 		return nil, err
@@ -54,45 +70,108 @@ func (s *Service) ServeHierarchy(ctx context.Context, roomID, peer string, param
 	if err != nil {
 		return nil, err
 	}
-	if !federation.ServerAllowed(acl, peer) {
-		return nil, matrix.ErrForbidden("this room excludes %s", peer)
+	if !federation.ServerAllowed(acl, peer) || !s.offeredTo(ctx, room.ID, peer) {
+		return nil, matrix.ErrNotFound("no room %s is known here", roomID)
 	}
-	r := reader{server: peer}
-	if !s.readableBy(ctx, room.ID, r) {
-		return nil, matrix.ErrForbidden("%s is not part of %s, and the room is not open to be read", peer, room.ID)
-	}
-	result, err := s.hierarchyPage(ctx, room.ID, r, params)
+
+	// One room, one level: the entry carries its own child links so the asker knows where the
+	// tree continues, and the children below them are asked about one at a time.
+	w := walkWindow{maxDepth: 1, suggestedOnly: params.SuggestedOnly}
+	entry, err := s.hierarchyEntry(ctx, room.ID, w)
 	if err != nil {
 		return nil, err
 	}
-	return result, nil
+	entry.AllowedRooms = s.roomsThatAdmit(ctx, room.ID)
+	answer := &HierarchyPeerAnswer{
+		Room:                 entry,
+		Children:             []HierarchyRoom{},
+		InaccessibleChildren: []string{},
+	}
+	links, err := s.spaceLinks(ctx, room.ID)
+	if err != nil {
+		return nil, err
+	}
+	for _, link := range links {
+		if w.suggestedOnly && !link.suggested {
+			continue
+		}
+		here, err := s.roomExistsLocal(ctx, link.roomID)
+		if err != nil {
+			return nil, err
+		}
+		if !here {
+			// This server cannot describe it either, and inventing a name for the list of
+			// rooms nobody can describe would be a guess.
+			continue
+		}
+		if !s.offeredTo(ctx, link.roomID, peer) {
+			answer.InaccessibleChildren = append(answer.InaccessibleChildren, link.roomID)
+			continue
+		}
+		child, err := s.hierarchyEntry(ctx, link.roomID, w)
+		if err != nil {
+			return nil, err
+		}
+		child.ChildrenState = nil
+		child.AllowedRooms = s.roomsThatAdmit(ctx, link.roomID)
+		answer.Children = append(answer.Children, child)
+	}
+	return answer, nil
 }
 
-// RemoteHierarchy asks the servers that can serve one remote room for the tree below it:
-// GET /_matrix/federation/v1/hierarchy/{roomId}.
+// offeredTo reports whether a room may be described to a particular server. World readable is an
+// open door; a server with a member in the room can read it itself; a public room or one open to
+// knocking is one that member could walk into. A restricted room is the case MSC3083 added: it is
+// open to that server's users when one of them belongs to a room on its allow list, and only as far
+// as this server can read that other room - a copy of a room this server has left is not knowledge.
+func (s *Service) offeredTo(ctx context.Context, roomID, peer string) bool {
+	if s.HistoryVisibility(ctx, roomID) == matrix.HistoryWorldReadable {
+		return true
+	}
+	if in, err := s.roomSharesServer(ctx, roomID, peer); err == nil && in {
+		return true
+	}
+	rule, err := s.db.StateRepo.JoinRule(roomID)
+	if err != nil {
+		return false
+	}
+	switch rule {
+	case matrix.JoinRulesPublic, matrix.JoinRulesKnock:
+		return true
+	case matrix.JoinRulesRestricted, matrix.JoinRulesKnockRestricted:
+		for _, admitting := range s.roomsThatAdmit(ctx, roomID) {
+			if !s.canReadMembershipOf(admitting) {
+				continue
+			}
+			members, err := s.db.MembershipRepo.Members(admitting, matrix.MembershipJoin)
+			if err != nil {
+				continue
+			}
+			for _, member := range members {
+				if matrix.DomainOf(member.UserID) == peer {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// RemoteHierarchy asks the servers that can serve one remote room for its summary:
+// GET /_matrix/federation/v1/hierarchy/{roomId}. The answer is one room and its immediate
+// children; the tree below a child is asked about from wherever that child lives.
 //
-// The depth limits are translated before the question is sent: the servers are asked for
-// what lies below *their* room, so the page they return is already filtered for the window
-// this walk is in and this server does not have to guess how deep each entry sat.
-func (s *Service) RemoteHierarchy(ctx context.Context, roomID string, via []string, limit, maxDepth, minDepth int, suggestedOnly bool) (*HierarchyResult, error) {
+// The specification names one query parameter, `suggested_only`, and no pagination: the answer is
+// meant to be small enough to cache, and a walk that wants more asks again.
+func (s *Service) RemoteHierarchy(ctx context.Context, roomID string, via []string, suggestedOnly bool) (*HierarchyPeerAnswer, error) {
 	transport := s.federationTransport()
 	if transport == nil {
 		return nil, matrix.ErrNotFound("this server does not federate, so the space below %s cannot be read", roomID)
 	}
 	ctx, cancel := context.WithTimeout(ctx, remoteHierarchyBudget)
 	defer cancel()
-	if maxDepth < 0 {
-		return nil, matrix.ErrNotFound("the space below %s is deeper than this walk reaches", roomID)
-	}
 	servers := hierarchyServers(roomID, via)
 	query := url.Values{}
-	if limit > 0 {
-		query.Set("limit", strconv.Itoa(limit))
-	}
-	query.Set("max_depth", strconv.Itoa(maxDepth))
-	if minDepth > 0 {
-		query.Set("min_depth", strconv.Itoa(minDepth))
-	}
 	if suggestedOnly {
 		query.Set("suggested_only", "true")
 	}
@@ -103,21 +182,17 @@ func (s *Service) RemoteHierarchy(ctx context.Context, roomID string, via []stri
 			lastFailure = err.Error()
 			continue
 		}
-		answer := &HierarchyResult{}
+		answer := &HierarchyPeerAnswer{}
 		if err := json.Unmarshal([]byte(matrix.Encode(body)), answer); err != nil {
 			lastFailure = "the answer is not a hierarchy: " + err.Error()
 			continue
 		}
-		if len(answer.Rooms) == 0 {
-			lastFailure = server + " answered with no rooms"
-			continue
-		}
-		if answer.Rooms[0].RoomID != roomID {
+		if answer.Room.RoomID != roomID {
 			// The walk is about one room. A peer that answers with a different one is
 			// describing a different space, and putting its rooms in this tree would be
 			// this server's bug rather than that peer's.
-			log.Printf("federation: %s answered the hierarchy of %s with %s first", server, roomID, answer.Rooms[0].RoomID)
-			lastFailure = server + " answered a tree that does not start at " + roomID
+			log.Printf("federation: %s answered the hierarchy of %s with %s", server, roomID, answer.Room.RoomID)
+			lastFailure = server + " answered a room that is not " + roomID
 			continue
 		}
 		return answer, nil
