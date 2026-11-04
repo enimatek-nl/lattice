@@ -4,12 +4,16 @@ Two documents, one yardstick. [spec-coverage.md](spec-coverage.md) is the covera
 Rust homeserver (spec v1.19, default room version 12, Complement as its conformance gate:
 88/90 federation and 105/107 client-server). [coverage.md](coverage.md) is ours (spec v1.19,
 default room version 11, Complement **61 green of 91** server-server as of 2026-11-04 and
-**66 green of 106** client-API as of 2026-11-02, plus this repository's own 318 tests: 161
+**91 green of 106** client-API as of 2026-11-04, plus this repository's own 318 tests: 161
 client-API, 88 two-server, 69 unit). Their claims are theirs - this comparison reads what each
 document says and what our own runs measure, not their code. The client-API tally has not been
 re-measured since 2026-11-02: the run attempted on 2026-11-04 did not finish inside its budget
 (see the Complement section of [TODO.md](TODO.md)), so treat that half of our tally as two
-federation rounds old.
+federation rounds old — both halves were measured on 2026-11-04, the client-API half having
+moved 66 → 91 green the same afternoon that put MSC2675, the sync filters and the `leave`
+section right. What the reference passes and we still do not is the room-version upgrade that
+carries the state across, the relations and thread aggregations, the state-denied and
+restricted-room federation cases, and media.
 
 Read together, the two are the same shape of server - rooms, membership, federation with
 restricted joins, media, E2EE, sync in both its forms. What separates them is where each has
