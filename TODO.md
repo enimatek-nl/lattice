@@ -2574,11 +2574,10 @@ What it took, in the order the discoveries came:
 - **`knock_restricted` answers two ways at once.** Whoever the allow list admits joins without
   knocking; the rest knock and wait. Asking for the knock first made the admitting half a wait.
 
-A hole found on the way, not yet fixed, and not caught by Complement: **a user who knocked can join
-without an invite.** In a `knock` room, `joinRuleProblem` lets a join through when the current
-membership is `knock` (`membership.go`), and the local write does not consult `authcheck`'s join-rule
-branch, which does refuse it. Probe: knock on a `knock` room, then `POST /join` - 200. What the
-spec wants is an invite before the join, so the knock is a way of being seen and not a door.
+A hole found on the way, and closed in step 19: **a user who had knocked could join without an
+invite**, because the join check read the asker's own knock as the room's answer. It is recorded
+here because of how it was found - a probe, not a failure - and because of what it says about the
+two authorisers this server has (step 19).
 - New from the wider sweep: `TestJoinFederatedRoomFromApplicationServiceBridgeUser` — an
   appservice virtual user asking to join a remote room is answered `401 M_UNKNOWN`: the request
   authenticates as the appservice, and the user it names has no device here. Application services
@@ -2625,6 +2624,43 @@ What each turned out to be:
 
 `HierarchyRoom.ChildrenState` became a pointer so the two answers can differ: a client is always
 shown the key, empty for a room that is not a space; a child described to a peer omits it.
+
+### 19. Knocking: a knock is a question, not a door (2026-11-04)
+
+`POST /join` on a `knock` room accepted a user whose membership was `knock`, and a
+`knock_restricted` room accepted it too when the allow list did not admit them. A knock
+puts the asker in the room's state so the room can answer; reading that state as the
+answer lets the asker in on their own question. The rule asks for an invite, and
+retracting a knock stays a leave.
+
+The reason this was worth a step of its own is the shape of the mistake. This server has
+**two authorisers**:
+
+- `authcheck` - the room rules as the specification writes them - runs only on events
+  **arriving over federation** (`fedapply.go`), and its `knock` branch has always refused
+  this: `the room's join rule is knock and X has not been invited (membership: knock)`.
+- Locally originated events go `appendMember` → `AppendEvent` and are judged by the
+  service's own guards (`joinRuleProblem`, power levels, the state guards). Nothing there
+  consults `authcheck`.
+
+So the same join was accepted at home and refused by every peer holding the same room, and
+nothing in the room could see the disagreement from inside. Fixing the rule was four lines;
+the open question behind it is whether local writes should be judged by `authcheck` as
+well, with the service guards reduced to validating the request rather than deciding the
+room's rules. That is a piece of work of its own, and until it is done, every rule has to
+be written down twice and can drift in exactly this way.
+
+Complement does not cover it: its subtest *"Attempting to join a room with join rule
+'knock' without an invite should fail"* (`tests/knocking_test.go:126`) runs **before** the
+knock in that test, so joining after knocking is never tried. Nothing in this server's own
+suite relied on the hole either - every join after a knock in the tests is preceded by an
+invite - which is why it survived as long as it did.
+
+Now asserted: `TestAKnockIsNotADoor` (knock, 403, invite, 200) and the MSC3787 pair test,
+which also writes a membership through the state endpoint to pin the second door. The
+`tests/compat/zz_debug_test.go` probe that had been committed in place of assertions -
+`TestZZDebugKnockTimeline`, no assertions, only `t.Logf`, and counted in the compat totals
+- is deleted.
 
 A run over the neighbourhood of these routes (join, invite, federation, members, sync, the room
 directory, state, redaction, leave/ban/kick, knock, restricted, hierarchy, event auth and gap
