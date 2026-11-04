@@ -123,6 +123,15 @@ func (s *Service) stateEventUntil(roomID, typ, stateKey string, until uint64) (*
 		}
 		best = version
 	}
+	if best == nil && len(versions) > 0 && versions[0].Depth <= 2 {
+		// A room's opening belongs to it from its first moment. The create event and the
+		// creator's membership are the state a room is created with, even though this server
+		// writes them as separate events a position or two apart - so a token that lands between
+		// them is inside the room's beginning, not before the creator joined. Depth is the room's
+		// own count of how far down its graph an event sits, and depth 1 and 2 are the room and
+		// what the room says about who made it.
+		best = versions[0]
+	}
 	if best == nil {
 		return nil, matrix.ErrNotFound("no state event of type %q with key %q at that point", typ, stateKey)
 	}

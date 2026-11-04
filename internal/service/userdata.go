@@ -147,3 +147,29 @@ func (s *Service) GetFilter(ctx context.Context, owner, requester, filterID stri
 	}
 	return matrix.MustParseObject([]byte(filter.Body)), nil
 }
+
+// ignoredUsers answers the list a user keeps under m.ignored_user_list: the people whose words
+// they asked never to be shown. Nil means the user ignores nobody, which is the common case and
+// costs one lookup to find out.
+func (s *Service) ignoredUsers(ctx context.Context, userID string) map[string]bool {
+	row, err := s.db.AccountDataRepo.Get(userID, "", matrix.TypeIgnoredUserList)
+	if err != nil {
+		return nil
+	}
+	var content struct {
+		IgnoredUsers map[string]json.RawMessage `json:"ignored_users"`
+	}
+	if err := json.Unmarshal([]byte(row.Content), &content); err != nil {
+		return nil
+	}
+	if len(content.IgnoredUsers) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(content.IgnoredUsers))
+	for user := range content.IgnoredUsers {
+		if matrix.IsUserID(user) {
+			out[user] = true
+		}
+	}
+	return out
+}

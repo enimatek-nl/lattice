@@ -114,8 +114,13 @@ func (s *Service) buildSync(ctx context.Context, params SyncParams, filter *Sync
 	}
 	changed := false
 
+	// MSC3023 puts hiding the people a user has ignored on the server rather than the client: a
+	// client that is sent their events has to fetch them, decrypt them and be careful not to show
+	// them, and in an encrypted room it cannot read them to decide at all.
+	ignored := s.ignoredUsers(ctx, userID)
+
 	for _, roomID := range joined {
-		room, roomChanged, err := s.joinedRoomSync(ctx, userID, roomID, since, params.Limit, filter)
+		room, roomChanged, err := s.joinedRoomSync(ctx, userID, roomID, since, params.Limit, filter, ignored)
 		if err != nil {
 			return nil, false, err
 		}
@@ -126,6 +131,11 @@ func (s *Service) buildSync(ctx context.Context, params SyncParams, filter *Sync
 		changed = changed || roomChanged
 	}
 	for _, roomID := range invited {
+		// An invite from somebody on the ignore list is not handed over at all: a room that is
+		// in the response unlabelled is a room the client has to explain.
+		if ignored[s.invitedBy(ctx, roomID, userID)] {
+			continue
+		}
 		room, inviteChanged, err := s.invitedRoomSync(ctx, userID, roomID, since)
 		if err != nil {
 			return nil, false, err
@@ -244,7 +254,7 @@ func (s *Service) buildSync(ctx context.Context, params SyncParams, filter *Sync
 }
 
 // joinedRoomSync renders the join section of one room.
-func (s *Service) joinedRoomSync(ctx context.Context, userID, roomID string, since uint64, limit int, filter *SyncFilter) (*matrix.JoinedRoom, bool, error) {
+func (s *Service) joinedRoomSync(ctx context.Context, userID, roomID string, since uint64, limit int, filter *SyncFilter, ignored map[string]bool) (*matrix.JoinedRoom, bool, error) {
 	want := filter.timelineLimit(limit)
 	var events []*persist.Event
 	if want > 0 {
@@ -263,6 +273,12 @@ func (s *Service) joinedRoomSync(ctx context.Context, userID, roomID string, sin
 	kept := make([]*persist.Event, 0, len(events))
 	for _, event := range events {
 		if !filter.allowedInTimeline(event.Type, event.Sender) || !gate.allows(event) {
+			continue
+		}
+		// The words of somebody on the ignore list are not sent. Their membership events are: a
+		// room a user can still see has to be able to say who joined, left or was kicked, or the
+		// room renders as one where things silently happened.
+		if ignored[event.Sender] && event.Type != matrix.TypeMember {
 			continue
 		}
 		kept = append(kept, event)
@@ -294,14 +310,21 @@ func (s *Service) joinedRoomSync(ctx context.Context, userID, roomID string, sin
 
 	// Clients need the room state when they first see a room, and when they
 	// joined after the sync token; later syncs only carry state deltas.
+	// A filter that asks for lazy loaded members gets the membership events of the people this
+	// timeline speaks for, plus the reader's own, and nothing else. The room's other state still
+	// arrives: lazy loading is a promise about the member list, not about the room.
+	var members map[string]bool
+	if filter != nil && filter.LazyLoadState {
+		members = senderKeysIn(events)
+	}
 	if since == 0 || s.membershipAfter(roomID, userID, since) {
-		state, err := s.stateEvents(ctx, roomID, since, filter, stateKeysIn(events))
+		state, err := s.stateEvents(ctx, roomID, since, filter, stateKeysIn(events), members, userID)
 		if err != nil {
 			return nil, false, err
 		}
 		room.State = matrix.State{Events: state, PrevBatch: s.Token(since)}
 	} else {
-		state, err := s.stateDelta(roomID, since, stateKeysIn(events))
+		state, err := s.stateDelta(roomID, since, stateKeysIn(events), members, userID)
 		if err != nil {
 			return nil, false, err
 		}
@@ -459,4 +482,18 @@ func toWire(events []*persist.Event) []matrix.Event {
 		out = append(out, event.Matrix())
 	}
 	return out
+}
+
+// invitedBy names who sent the invite a room is currently held in for a user. An empty answer
+// means the room does not say, which counts as "not somebody the reader ignores".
+func (s *Service) invitedBy(ctx context.Context, roomID, userID string) string {
+	row, err := s.db.MembershipRepo.Get(roomID, userID)
+	if err != nil {
+		return ""
+	}
+	event, err := s.db.EventRepo.Get(row.EventID)
+	if err != nil {
+		return ""
+	}
+	return event.Sender
 }

@@ -3165,3 +3165,51 @@ Openings this leaves, in the order they would be picked up:
 - **The `members` bound is applied by the client-API handler**, not by the membership layer, so a
   federation or admin read of the same room is unbounded. Correct today (those readers are
   servers, not departed members) and worth remembering if that changes.
+
+### 25. Lazy loading that is lazy, and the people a user asked not to see (2026-11-04)
+
+The client-API suite went 91 → **95 green of 106** the same day, on the item coverage-comparison
+ranks fifth. Four tests, one theme: what a response carries.
+
+- [x] **`lazy_load_members` is honoured, and means what it says.** The flag was parsed under one
+      spelling (with the inner key mistagged, so it never fired) and ignored everywhere else.
+      Now: a `/messages` page whose filter asks for lazy members answers a state block of exactly
+      the memberships its own senders need - the membership the room held for each of them at the
+      point their newest event on that page was written, not the one it holds today - and a sync
+      whose filter asks for them carries the memberships of the people its timeline speaks for,
+      plus the reader's own. The room's other state is untouched in both: lazy loading is a
+      promise about the member list, which in most rooms is most of the payload, not about the
+      room. All three spellings clients use are read (`lazy_load_members` flat, the
+      `room_event_filter` wrapper, and MSC4222's `lazy_load_options` block).
+- [x] **MSC3023 is the server's job.** `m.ignored_user_list` was stored and never consulted. The
+      words of somebody on the list are now not sent in a timeline, and an invite from them is
+      not handed over at all - a room the client is invited to by somebody it hid is a room it
+      would have to explain. Their *membership* events are still sent: a room a user can see has
+      to be able to say who joined, left or was kicked, or it renders as a room where things
+      silently happened.
+- [x] **`/members?at=` answers who the room was made of then.** The same position-bound read the
+      departed-room work needed, now on a token the client supplies: a membership that moved
+      after the token is walked back through the room's own versions of that key, and somebody
+      who joined later is not in the room the client is reading.
+- [x] **A room's opening belongs to it from its first moment.** The token a client gets back from
+      an initial sync lands *between* the create event and the creator's membership, because this
+      server writes them as separate events a position apart. Read strictly, "who was in the room
+      at that token" answers nobody - and a room with no members is not a room. Synapse models the
+      creator's join as part of the state the create event carries; the equivalent here is depth:
+      the earliest version of a state key written at depth 1 or 2 - the room, and what the room
+      says about who made it - is in force at any point inside the room's own beginning.
+
+Openings this leaves:
+
+- **Lazy loading is computed per response, not remembered per device.** Synapse caches which
+  memberships it has already sent to a device and does not resend them; this server re-derives
+  the set from the timeline of each response. Correct, and heavier than it needs to be.
+- **The ignore list is applied to sync timelines and invites only.** `/messages`, `/search` and
+  `/relations` still carry an ignored user's words, and the state of a room is not filtered -
+  deliberately for the state, not yet for the others.
+- **`/messages?to=` is parsed nowhere.** A page asked with both ends gets everything from the
+  `from` token forward; Complement's lazy-loading case happens not to notice because nothing
+  later was sent.
+- **`TestLeftRoomFixture` is still one check away** (the same `/messages` chunk as before), and
+  `TestSync` has timed out under a full parallel run twice while passing on its own - worth a
+  look at the long-poll wake-up.

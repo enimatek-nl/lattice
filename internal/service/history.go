@@ -99,6 +99,20 @@ func (s *Service) History(ctx context.Context, params HistoryParams) (*HistoryRe
 		result.End = s.Token(events[len(events)-1].StreamPos + 1)
 	}
 
+	// A filter that asks for lazy loaded members gets a state block of one thing: the membership
+	// events of the people whose events this page carries, as the room had them when those events
+	// were written. That is the whole point of the request - a client paging through a room it is
+	// not looking at does not want the room's member list, and the member list is most of what a
+	// state block is made of.
+	if wantsLazyMembers(params.Filter) {
+		state, err := s.lazyMemberState(params.RoomID, events)
+		if err != nil {
+			return nil, err
+		}
+		result.State = state
+		return result, nil
+	}
+
 	// Backward pagination starts in the past, so the state at the start of the
 	// window has to be supplied as well.
 	if dir == "b" {
@@ -106,7 +120,7 @@ func (s *Service) History(ctx context.Context, params HistoryParams) (*HistoryRe
 		// state key is kept, so the state as it stood at the start of the page cannot be
 		// rebuilt; what is sent is the room as it is now, which is what a client paging
 		// backwards uses to name the room it is looking at.
-		state, err := s.stateEvents(ctx, params.RoomID, events[0].StreamPos, nil, nil)
+		state, err := s.stateEvents(ctx, params.RoomID, events[0].StreamPos, nil, nil, nil, params.UserID)
 		if err != nil {
 			return nil, err
 		}
@@ -214,7 +228,7 @@ func (s *Service) EventContext(ctx context.Context, roomID, eventID, userID stri
 	if err != nil {
 		return nil, matrix.ErrInternal(err)
 	}
-	state, err := s.stateEvents(ctx, roomID, center.StreamPos, nil, nil)
+	state, err := s.stateEvents(ctx, roomID, center.StreamPos, nil, nil, nil, "")
 	if err != nil {
 		return nil, err
 	}
@@ -815,4 +829,82 @@ func (h *historyGates) allows(event *persist.Event) (bool, error) {
 		h.gates[event.RoomID] = gate
 	}
 	return gate.allows(event), nil
+}
+
+// lazyMemberState builds the state block of a lazy loaded page: for each sender in the chunk,
+// the membership event the room held for them at the point their own newest event in the chunk
+// was written. A sender the room never described is simply absent.
+func (s *Service) lazyMemberState(roomID string, events []*persist.Event) ([]matrix.Event, error) {
+	newest := map[string]uint64{}
+	for _, event := range events {
+		if event.Sender == "" {
+			continue
+		}
+		if event.StreamPos > newest[event.Sender] {
+			newest[event.Sender] = event.StreamPos
+		}
+	}
+	type entry struct {
+		sender string
+		event  matrix.Event
+	}
+	entries := make([]entry, 0, len(newest))
+	for sender, pos := range newest {
+		member, err := s.stateEventUntil(roomID, matrix.TypeMember, sender, pos)
+		if err != nil {
+			if persist.IsNotFound(err) {
+				// The room never said what this user was: a peer's event whose membership the
+				// room never carried is not a membership event this server can invent.
+				continue
+			}
+			return nil, err
+		}
+		entries = append(entries, entry{sender: sender, event: member.Matrix()})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].sender < entries[j].sender })
+	out := make([]matrix.Event, 0, len(entries))
+	for _, item := range entries {
+		out = append(out, item.event)
+	}
+	return out, nil
+}
+
+// lazySection is one filter section that may ask for lazy loading, in either spelling.
+type lazySection struct {
+	LazyLoadMembers *bool      `json:"lazy_load_members"`
+	LazyLoadOptions lazyOption `json:"lazy_load_options"`
+}
+
+// wantsLazyMembers reads a lazy-loading request out of the `filter` a /messages request carries.
+// Clients write it three ways: flat on the filter itself, inside the `room_event_filter` wrapper a
+// stored filter document uses, and in the MSC4222 `lazy_load_options` block. A server that reads
+// one spelling answers the other two with the room's whole member list.
+func wantsLazyMembers(raw string) bool {
+	if raw == "" {
+		return false
+	}
+	var doc struct {
+		lazySection
+		RoomEventFilter struct {
+			lazySection
+		} `json:"room_event_filter"`
+		Room struct {
+			State    lazySection `json:"state"`
+			Timeline lazySection `json:"timeline"`
+		} `json:"room"`
+	}
+	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+		return false
+	}
+	for _, section := range []lazySection{
+		doc.lazySection,
+		doc.RoomEventFilter.lazySection,
+		doc.Room.State,
+		doc.Room.Timeline,
+	} {
+		if (section.LazyLoadMembers != nil && *section.LazyLoadMembers) || section.LazyLoadOptions.LazyLoadMembers {
+			return true
+		}
+	}
+	return false
 }

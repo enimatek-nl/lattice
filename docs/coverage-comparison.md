@@ -4,7 +4,7 @@ Two documents, one yardstick. [spec-coverage.md](spec-coverage.md) is the covera
 Rust homeserver (spec v1.19, default room version 12, Complement as its conformance gate:
 88/90 federation and 105/107 client-server). [coverage.md](coverage.md) is ours (spec v1.19,
 default room version 11, Complement **61 green of 91** server-server as of 2026-11-04 and
-**91 green of 106** client-API as of 2026-11-04, plus this repository's own 318 tests: 161
+**95 green of 106** client-API as of 2026-11-04, plus this repository's own 323 tests: 166
 client-API, 88 two-server, 69 unit). Their claims are theirs - this comparison reads what each
 document says and what our own runs measure, not their code. Both halves of our tally were
 measured on 2026-11-04 (the run attempted that morning, which did not finish inside its budget,
@@ -36,7 +36,7 @@ different amounts of this server.
 | Registration, login, UIA, devices, profile | done, plus shared-secret admin registration, appservice device masquerading | password/dummy/token flows, UIA, devices, profile, refresh tokens | **behind on how a user gets authenticated elsewhere**: no SSO, no OIDC, no MAS, no 3PID. Their "no 3PID" is our "no 3PID" too. |
 | Rooms, membership, events | done | done, MSC2675's per-event visibility applied to every read that carries history | parity; they list `timestamp_to_event` and `/context`, we serve both, but our walk is wrong in a forked history |
 | Relations, threads, search, spaces | done: recursion, `/threads`, bundled aggregations, Postgres full-text search, `/hierarchy` with remote children | `/relations` without `recurse`, `/threads`, bundled aggregations, `/hierarchy` both directions, substring search | **behind**: relation recursion and a real search index |
-| `/sync` (classic) | done, incl. `state_after`, lazy loading, threaded receipts, per-thread counts, ignored users | same shape, three holes | **behind**: `lazy_load` not lazy, `m.ignored_user_list` not applied, no `state_after`; the MSC3814 `e2ee` section is declared and never filled |
+| `/sync` (classic) | done, incl. `state_after`, lazy loading, threaded receipts, per-thread counts, ignored users | same shape; lazy loading is real (state blocks carry only the memberships the response speaks for), MSC3023's ignore list is applied server-side, threaded receipts and per-thread counts are here | **near parity**: what is left is `state_after`, the MSC3814 `e2ee` section (declared, never filled), and a lazy block that is recomputed per response rather than cached per device |
 | Simplified Sliding Sync (MSC4186) | done: lists with ranges and filters, subscriptions, per-connection deltas with position retry, `required_state` wildcards (`*`, `$ME`, `$LAZY`), and the to-device, e2ee, account-data, receipts and typing extensions | done: the same five extensions at `/v4/sync` and the `org.matrix.simplified_msc3575` path — ranges with a `count` that ignores them, the eight filters, subscriptions, per-connection deltas with `initial`/`expanded_timeline`/state stubs, and a `pos` refused `M_UNKNOWN_POS` unless it was issued to this device, which still pages `/messages` | **near parity, and the five extensions match**, including the state-key tokens: their document's `*`, `$ME` and `$LAZY` are answered here too, which is worth saying because MSC4186 defines only the wildcard - the other two come from the proxy, and the clients that used it are still in the wild. What we do not have is `topic`, `truncate` or per-list `bump_event_types`. Their document contradicts itself on the MSC4308 thread-subscription extension (the sliding-sync row says it is missing, the MSC row says it passes Complement); we do not have MSC4306 at all, so we do not have it either |
 | Media | done, incl. URL previews, async uploads, remote media | done, same shape | parity; `POST /_matrix/media/v1/report` missing on our side |
 | E2EE | done, incl. key backups, cross-signing, to-device | done, same shape | parity |
@@ -73,11 +73,11 @@ done, because the list is a work queue.
 4. **Auth that is not a password** - SSO (`/login/sso/redirect`), `m.login.token` issuance from an
    identity provider, MSC2965 discovery, and the `/login/get_token` endpoint appservices and
    bridges need.
-5. **Sync and timeline correctness for clients** - real lazy loading, `m.ignored_user_list`
-   applied, `state_after`, `m.fully_marked`, the MSC3814 `e2ee` section filled or removed,
-   account-data deletion (`DELETE` on account data), the `timestamp_to_event` walk. Sliding
-   sync took the *size* of the problem - a client that only wants six rooms no longer pays for
-   the account - but not these.
+5. **Sync and timeline correctness for clients** - *mostly closed on 2026-11-04*: lazy loading
+   is real on both `/sync` and `/messages`, `m.ignored_user_list` is applied server-side, and
+   `/members` reads as of a position. What is left of the item: `state_after`, the MSC3814
+   `e2ee` section filled or removed, account-data deletion (`DELETE` on account data), the
+   `timestamp_to_event` walk, and a `to=` bound on `/messages` that is still ignored.
 6. **Admin surface** - user list/get/create/update/deactivate/reset, room list/details/delete,
    force-join, purge. Today an operator has a CLI and four routes.
 7. **The MSC surface** - relations recursion, thread subscriptions (MSC4306/4308), delayed

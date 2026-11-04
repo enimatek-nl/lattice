@@ -30,8 +30,11 @@ type SyncFilter struct {
 	// NotTypes and NotSenders are the exclusions of both sections.
 	NotTypes   []string
 	NotSenders []string
-	// LazyLoadState requests lazy loaded member state (served in full; the
-	// flag only affects payload size expectations).
+	// LazyLoadState requests lazy loaded member state: the state block carries membership
+	// events only for the users whose events this response hands over. A client that opens a
+	// hundred rooms is not going to read the member list of any of them, and the member list is
+	// the largest thing in the state of most rooms - which is why the flag is a payload promise
+	// rather than a hint.
 	LazyLoadState bool
 }
 
@@ -117,14 +120,15 @@ func (s *Service) syncFilter(ctx context.Context, params SyncParams) (*SyncFilte
 			selection
 			State struct {
 				selection
-				Limit           *int `json:"limit"`
-				LazyLoadOptions struct {
-					LazyLoad bool `json:"lazy_load_options"`
-				} `json:"lazy_load_options"`
+				Limit           *int       `json:"limit"`
+				LazyLoadMembers *bool      `json:"lazy_load_members"`
+				LazyLoadOptions lazyOption `json:"lazy_load_options"`
 			} `json:"state"`
 			Timeline struct {
 				selection
-				Limit *int `json:"limit"`
+				Limit           *int       `json:"limit"`
+				LazyLoadMembers *bool      `json:"lazy_load_members"`
+				LazyLoadOptions lazyOption `json:"lazy_load_options"`
 			} `json:"timeline"`
 		} `json:"room"`
 	}
@@ -149,7 +153,18 @@ func (s *Service) syncFilter(ctx context.Context, params SyncParams) (*SyncFilte
 		filter.TimelineLimit = *body.Room.Timeline.Limit
 		filter.TimelineLimitSet = true
 	}
-	if body.Room.State.LazyLoadOptions.LazyLoad {
+	// Two spellings of the same request are in use: `lazy_load_members` written straight on
+	// the section, which is what clients do today, and the `lazy_load_options` block of
+	// MSC4222. Either one, on either section, asks for the same payload.
+	for _, lazy := range []*bool{
+		body.Room.State.LazyLoadMembers,
+		body.Room.Timeline.LazyLoadMembers,
+	} {
+		if lazy != nil && *lazy {
+			filter.LazyLoadState = true
+		}
+	}
+	if body.Room.State.LazyLoadOptions.LazyLoadMembers || body.Room.Timeline.LazyLoadOptions.LazyLoadMembers {
 		filter.LazyLoadState = true
 	}
 	return filter, nil
@@ -202,6 +217,39 @@ func stateKeyOf(typ, stateKey string) string { return typ + "\x1f" + stateKey }
 // older membership than the one it was just shown, and one that applies it before sees the
 // older one vanish. Each state key is therefore reported once, in whichever of the two
 // places its current version sits.
+// lazyOption is the MSC4222 spelling of a lazy-loading request.
+type lazyOption struct {
+	LazyLoadMembers bool `json:"lazy_load_members"`
+}
+
+// senderKeysIn names the users whose events a response carries. Their membership events are the
+// only ones a lazy loaded state block keeps.
+func senderKeysIn(events []*persist.Event) map[string]bool {
+	if len(events) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(events))
+	for _, event := range events {
+		if event.Sender != "" {
+			out[event.Sender] = true
+		}
+	}
+	return out
+}
+
+// keepsMember says whether a membership event survives lazy loading: the state block keeps the
+// membership of a user this response speaks for, and of the reader themself, because a client
+// cannot show a room it does not know it is standing in.
+func keepsMember(members map[string]bool, stateKey, reader string) bool {
+	if members == nil {
+		return true
+	}
+	if stateKey == reader {
+		return true
+	}
+	return members[stateKey]
+}
+
 func stateKeysIn(events []*persist.Event) map[string]bool {
 	if len(events) == 0 {
 		return nil
@@ -216,7 +264,7 @@ func stateKeysIn(events []*persist.Event) map[string]bool {
 }
 
 // stateEvents returns the full current state of a room.
-func (s *Service) stateEvents(ctx context.Context, roomID string, since uint64, filter *SyncFilter, skip map[string]bool) ([]matrix.Event, error) {
+func (s *Service) stateEvents(ctx context.Context, roomID string, since uint64, filter *SyncFilter, skip, members map[string]bool, reader string) ([]matrix.Event, error) {
 	rows, err := s.db.StateRepo.List(roomID, nil, "")
 	if err != nil {
 		return nil, matrix.ErrInternal(err)
@@ -225,18 +273,24 @@ func (s *Service) stateEvents(ctx context.Context, roomID string, since uint64, 
 		if skip[stateKeyOf(row.Type, row.StateKey)] {
 			return false
 		}
+		if row.Type == matrix.TypeMember && !keepsMember(members, row.StateKey, reader) {
+			return false
+		}
 		return filter.allowedInState(row.Type, row.Sender)
 	})
 }
 
 // stateDelta returns state events of a room that changed after a position.
-func (s *Service) stateDelta(roomID string, since uint64, skip map[string]bool) ([]matrix.Event, error) {
+func (s *Service) stateDelta(roomID string, since uint64, skip, members map[string]bool, reader string) ([]matrix.Event, error) {
 	rows, err := s.db.StateRepo.List(roomID, nil, "")
 	if err != nil {
 		return nil, matrix.ErrInternal(err)
 	}
 	return s.stateEventsWire(rows, func(row *persist.RoomState) bool {
-		return row.StreamPos > since && !skip[stateKeyOf(row.Type, row.StateKey)]
+		if row.StreamPos <= since || skip[stateKeyOf(row.Type, row.StateKey)] {
+			return false
+		}
+		return row.Type != matrix.TypeMember || keepsMember(members, row.StateKey, reader)
 	})
 }
 

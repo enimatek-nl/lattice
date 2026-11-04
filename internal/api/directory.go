@@ -220,6 +220,14 @@ func (a *App) handleMembers(w http.ResponseWriter, r *http.Request) {
 	// A former member of a room whose history opened at the join reads the members the room
 	// had when they left, not the ones it has now.
 	bound, _ := a.svc.HistoryBound(r.Context(), roomID, userID)
+	// `at` asks who was in the room *then* - the question a client that already holds a
+	// pagination token asks. A reader whose own view ended at their leave cannot read past it, so
+	// the two bounds take the earlier.
+	if at, err := a.svc.ParseToken(queryValue(r, "at", "")); err == nil && at > 0 {
+		if bound == 0 || at < bound {
+			bound = at
+		}
+	}
 	members, err := a.svc.Members(r.Context(), roomID, userID, filters, notMembership, bound)
 	if err != nil {
 		a.writeError(w, r, err)
