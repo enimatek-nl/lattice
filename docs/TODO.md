@@ -140,8 +140,8 @@ unlocks:
    namespaces, no `m.login.application_service`. No bridge of any kind can attach, and a bot
    cannot hold an identity on this server.
 3. **Simplified Sliding Sync (MSC4186)** — `POST /_matrix/client/v4/sync` with lists, ranges,
-   filters and subscriptions. The classic `/sync` is complete enough that this is a large build
-   rather than a fix, but it decides whether Element X-class clients can connect. → **step 22**.
+   filters and subscriptions. **Done 2026-11-04** (step 22): both paths are served, and the holes
+   left are listed there.
 4. **Push delivery** — rules, pushers and unread counts are here; nothing is POSTed to a push
    gateway (`POST /_matrix/push/v1/notify` as a *client* of one, `event_id_only`, rejected
    pushkeys). Mobile push does not work, and the missing half is one outbound request loop.
@@ -2909,61 +2909,122 @@ the receipt path above, without which a 250-event chain was unusable.
 Done means: those nineteen Complement tests green, the two v12 knock/restricted ones green, and
 nothing that was green before goes red.
 
-### 22. Simplified Sliding Sync (MSC4186) — the sync modern clients speak
+### 22. Simplified Sliding Sync (MSC4186) — the sync modern clients speak — done (2026-11-04)
 
 Target: [MSC4186](https://github.com/matrix-org/matrix-spec-proposals/blob/main/proposals/4186-simplified-sliding-sync.md).
-`POST /_matrix/client/v4/sync`, and while it is unstable also
-`POST /_matrix/client/unstable/org.matrix.simplified_msc3575/sync`, with
-`org.matrix.simplified_msc3575: true` in `/versions`. Note up front: the pinned Complement
-checkout has **no** `msc4186` package, so the gate here is this repository's own tests, not a
-Complement win; upgrading the checkout is its own decision (see _Complement_ below).
+Served at `POST /_matrix/client/v4/sync` and, while the revision that carries it is still
+unstable, at `POST /_matrix/client/unstable/org.matrix.simplified_msc3575/sync`, with
+`org.matrix.simplified_msc3575: true` in `/versions`. As predicted, the pinned Complement
+checkout has no `msc4186` package: the gate was this repository's own suite, **14** tests in
+`tests/compat/sliding_sync_test.go`. The one upstream case that reaches the endpoint is
+`tests/msc4306`'s sliding-sync thread subscription, and it stays red because it asks for the
+`io.element.msc4308.thread_subscriptions` extension, which needs MSC4306 (gap 9), not this one.
 
-- [ ] **The connection model.** A `pos` token per connection, `conn_id` scoped to user+device, at
-      most one in-flight request per connection, and per-connection state that is safe to receive
-      twice with the same `pos` (a client may cancel and retry). A `pos` not issued to this user
-      and device is rejected with 400 `M_UNKNOWN_POS`; a connection may be expired the same way
-      when the backlog has grown too large. The MSC is explicit that owning a `pos` must grant no
-      capability: permission to see a room is checked per request, never inferred from what the
-      connection has seen.
-- [ ] **`pos` usable in `/messages` and `/relations`.** That constrains the token: it has to carry
-      (or be convertible to) the same stream position `/messages` accepts. Decide this before
-      building the response, not after.
-- [ ] **Lists.** A per-user sequence of rooms sorted by last activity (joined, invited, knocked,
-      left-but-previously-sent, kicked or banned; never-joined bans excluded). Each list: `range`
-      (inclusive, 0-indexed, may be absent → all), `filters`, `timeline_limit`, `required_state`;
-      the response carries `count` — the number matching the filters, ignoring the range. More
-      than 100 lists or 100 subscriptions is 400 `M_INVALID_PARAM`.
-- [ ] **Filters**: `is_dm` (from `m.direct` account data), `spaces` (only rooms directly named by
-      an `m.space.child` of a *joined* space the caller names — no subspace walking),
-      `is_encrypted`, `is_invited`, `room_types`/`not_room_types` (with `null` meaning "no type",
-      `not_room_types` winning), `tags`/`not_tags` (`not_tags` wins).
-- [ ] **`required_state`**: `include`/`exclude` lists of `{type?, state_key?}` (omitted field =
-      wildcard), `lazy_members`. Lazy membership sends the members of timeline senders, the
-      targets of membership events in the timeline, and all membership updates when `limited` is
-      false; lazy memberships are not filtered by `exclude`. State that has been deleted is
-      returned as a `StateStub` — `{"type":…,"state_key":…}` with no `content`.
-- [ ] **Room config combination and expansion.** A room matching several rules gets the superset:
-      maximum `timeline_limit`, union of `required_state` (lazy only if every config asking for
-      all membership is lazy). When the combined config would return more than was returned
-      before, send the wider set and set `expanded_timeline: true`, and return such rooms
-      immediately rather than waiting for an update.
-- [ ] **Subscriptions**: `room_subscriptions` with `timeline_limit` and `required_state`; rooms the
-      user may not see are silently ignored.
-- [ ] **The room result**: `initial`, `name`/`avatar` (null when removed), `topic?`, `heroes`
-      (only when there is no name), `required_state`, `timeline` (with bundled aggregations when
-      `limited`), `prev_batch`, `limited`, `num_live`, `joined_count`, `invited_count`,
-      `bump_stamp`, `membership`, `lists`, `is_dm`; for invite/knock/rejection results,
-      `stripped_state` instead of the joined fields. Reuse what `/sync` already builds — the
-      summary counts and heroes are the same computation.
-- [ ] **Extensions** (each optional, each keyed by name): `to_device`, `e2ee` (device list changes
-      and one-time-key counts), `typing`, `receipts`, `account_data`. The same data the classic
-      `/sync` already assembles; the response shape differs.
-- [ ] **Long-polling**: `timeout` in milliseconds, ignored on the initial request; a request with
-      a `pos` and no changes blocks until something happens or the timeout expires. `set_presence`
-      accepted, unknown value → 400 `M_INVALID_PARAM`.
-- [ ] **Own tests** in `tests/compat`: an initial sync with a range and `count`; growing the range
-      returns the rooms not yet sent; `is_dm`/`tags`/`room_types`/`spaces` filters; a subscription
-      to a room outside every list; a timeline limit increase returning the wider window with
-      `expanded_timeline`; lazy members covering timeline senders; a deleted state event arriving
-      as a `StateStub`; `initial` then delta semantics (omitted field = unchanged); a foreign or
-      stale `pos` → `M_UNKNOWN_POS`; the extension sections.
+The shape of it: `internal/matrix/sliding.go` (the wire types), `internal/service/sliding.go`
+(the connection, the poll loop, the list assembly), `internal/service/slidinglist.go` (ordering
+and filters), `internal/service/slidingroom.go` (one room's result), `internal/service/slidingext.go`
+(the sections that are not rooms), `internal/persist/slidingsync.go` (two tables),
+`internal/api/sliding.go` (the handler).
+
+- [x] **The connection model.** `sliding_sync_connections` holds one row per
+      `(user_id, device_id, conn_id)`, and `sliding_sync_rooms` holds what that connection has
+      been shown of each room: the timeline position, the state position, the config it was sent
+      under, how much of the room's recent history the client holds, and the room's current name,
+      avatar, membership and activity value. A connection belongs to the **device**, not to the
+      token, because a connection outlives the request that carries it and a refreshed token
+      should not orphan it.
+      `pos` is `ss` + base64 of `connKey\0position` (`auth.SlidingSyncPos`): opaque to the client,
+      but carrying which connection it was issued to, because the specification requires that a
+      position this user and device were never given be refused and a bare number holds no memory
+      of that. A token that decodes to another connection, or that names a position other than the
+      one the connection is at, is answered 400 `M_UNKNOWN_POS` (`matrix.ErrUnknownPos`), and the
+      client's recovery — begin again without a `pos` — is the one the MSC prescribes.
+      What a connection has been seen is never a permission: membership, stripped state and
+      counts are re-read from the rooms on every request.
+      The MSC lets a server answer at most one request per connection; this server does not
+      serialise them. A second concurrent request builds from the same knowledge and its commit
+      moves the connection forward, so the first request's answer still arrives but the `pos` it
+      hands out is refused afterwards. That is the documented recovery path rather than a hole.
+- [x] **`pos` usable in `/messages` and `/relations`.** `auth.ParseStreamPos` understands the
+      `ss` form and returns the stream position inside it, so a client that has only ever used
+      sliding sync can page a room. `TestSlidingSyncPosIsABatchToken` pins it.
+      The same reasoning made `prev_batch` a plain stream token.
+- [x] **Lists.** The per-user sequence is assembled in `slidinglist.go`: joined, invited, knocked
+      and left-but-previously-sent rooms, sorted by the stream position of the newest event of the
+      kinds the MSC counts as activity (`bump_stamp` exposes exactly that number, and it is
+      deliberately the same value the ordering uses). `range` is inclusive and 0-indexed; absent
+      means the whole list, bounded by `slidingExpireRooms` (1000) which expires the connection
+      rather than answering with a list the size of the account. `count` is the size of the
+      filtered sequence whatever the range asked for — one filtering pass per list serves both.
+      More than 100 lists or 100 subscriptions is 400 `M_INVALID_PARAM`, as are a `range` whose end
+      precedes its start and an unknown `set_presence`.
+- [x] **Filters**: `is_dm` (from `m.direct`), `spaces` (rooms directly named by an `m.space.child`
+      of a *joined* space the caller names; subspaces are the client's to name), `is_encrypted`,
+      `is_invited`, `room_types`/`not_room_types` (a null entry means "no type"; the negation
+      wins), `tags`/`not_tags` (the negation wins). MSC4186 names no sender or event-type filter,
+      and none was invented.
+- [x] **`required_state`**: `include`/`exclude` of `{type?, state_key?}` with an omitted half as a
+      wildcard, and `lazy_members`, which sends the members of the timeline's senders, the targets
+      of membership events in the window, and the whole membership list when the window is not
+      `limited`. `exclude` does not narrow lazy memberships, as the MSC asks. Deleted state is a
+      `StateStub`: `{"type":…,"state_key":…}` with no `content`. On this server state rows are not
+      removed, so the way state *goes away* is a redaction — a redaction inside the room's recent
+      events names the key that has been covered over, and the stub is sent only to a connection
+      that was previously shown that state. Membership is excluded from the rule: redacting a
+      membership does not end it, and a client told to delete the entry would drop a member who is
+      still in the room.
+- [x] **Config combination and expansion.** A room matched by several lists (or a list and a
+      subscription) is sent once, under the union: the largest `timeline_limit`, the union of
+      `required_state`, lazy only if every config asking for memberships is lazy, and the lists it
+      matched named in `lists`. `sliding_sync_rooms.config` stores that combination so the next
+      request can tell a widened window from an unchanged one; `timeline_limit` beyond what the
+      connection holds resends the newest window with `expanded_timeline: true`, and such rooms are
+      reported immediately rather than waited for.
+- [x] **Subscriptions**: `room_subscriptions` with `timeline_limit` and `required_state`; a room
+      the user is not in and never was is silently left out of the answer, and a room here only
+      because it was subscribed to carries no `lists`.
+- [x] **The room result**: `initial`, `name`/`avatar` as raw JSON so *removed* can be told from
+      *unchanged* (`null` versus absent), `heroes` only when the room has no name of its own,
+      `required_state`, `timeline` (with the thread summary `/sync` attaches), `prev_batch`,
+      `limited`, `num_live`, `joined_count`, `invited_count`, `bump_stamp`, `membership`, `lists`,
+      `is_dm`; and for an invite, knock or rejection, `stripped_state` instead of the joined half.
+      Counts and heroes are the same computation `/sync` already does. Not sent: `topic` — the MSC
+      names it, the summary here is name, avatar and heroes.
+- [x] **Extensions**: `to_device` (`events`, `next_batch`), `e2ee` (`device_one_time_keys_count`,
+      `device_unused_fallback_key_types`, and `device_lists` deltas on a non-initial request),
+      `account_data` (`global`, `rooms`), `receipts` (`rooms`), `typing` (`rooms`). They answer
+      from the same data the classic `/sync` assembles. The reserved `lists`/`rooms` keys narrow
+      which rooms the ephemeral sections cover. A section the client asks for by a name this
+      server does not know is left out of the answer rather than failed: a client that asked for
+      presence still needs its rooms. Not implemented: the `presence` extension and
+      `io.element.msc4308.thread_subscriptions`.
+- [x] **Long-polling**: `timeout` in milliseconds, ignored on the initial request; a request with a
+      `pos` and nothing to say waits on the same hub `/v3/sync` waits on, and answers an empty
+      rooms section when the timeout expires. `set_presence` is validated; presence on this server
+      is local (see the presence decision above), so it has nothing to write.
+- [x] **Own tests** in `tests/compat/sliding_sync_test.go`: an initial window with a range and a
+      `count` that ignores it; a grown range sending only the rooms not yet sent, marked `initial`;
+      deltas that carry only the room that moved and do not repeat an unchanged name; `pos` used as
+      a `/messages` batch token; a foreign, a cross-device and a replayed `pos` refused with
+      `M_UNKNOWN_POS`; the limits (`101` lists, `101` subscriptions, a backwards range, an unknown
+      presence); the unstable path and its `/versions` flag; the seven filters and the invited
+      list's stripped state; a subscription outside every list and one into a stranger's room;
+      a widened window arriving as `expanded_timeline`; lazy members covering the window's senders;
+      a redacted state event arriving as a stub; the five extension sections; the long poll waking
+      on a message and an idle long poll waiting for its timeout; the thread summary on a window's
+      root.
+
+Openings this leaves, in the order they would be picked up:
+
+- **The extension room scoping reads the first section that names `lists` or `rooms`.** A client
+  that scopes `receipts` one way and `account_data` another gets one scope for both.
+- **`timeline_count` is an estimate.** It is how many of the room's recent events the connection is
+  believed to hold, and it decides only whether a widened window has to resend. A client that
+  changes `timeline_limit` back and forth may be resent history it already has.
+- **No `truncate`, no per-list `bump_event_types`.** The event kinds that count as activity are one
+  fixed set for the server, which is also what the room list is sorted by.
+- **No `presence` extension and no thread-subscription extension**, the latter because MSC4306 is
+  not implemented at all.
+- **Eight connections per device, 1000 rooms per connection**, both pruned rather than refused:
+  the oldest connections of a device are forgotten, and a room list past the bound expires the
+  connection so the client begins again instead of being served a query that grows without end.

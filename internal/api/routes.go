@@ -140,6 +140,11 @@ func (a *App) registerEventRoutes() {
 // registerSyncRoutes serves sync and filters.
 func (a *App) registerSyncRoutes() {
 	a.authenticated("GET /_matrix/client/v3/sync", a.handleSync)
+	// Simplified sliding sync (MSC4186) is served at its v4 path and, until the spec
+	// revision that carries it is the one clients target, at the unstable path under the
+	// org.matrix.simplified_msc3575 name.
+	a.authenticated("POST /_matrix/client/v4/sync", a.handleSlidingSync)
+	a.authenticated("POST /_matrix/client/unstable/org.matrix.simplified_msc3575/sync", a.handleSlidingSync)
 	a.authenticated("POST /_matrix/client/v3/user/{userId}/filter", a.handleCreateFilter)
 	a.authenticated("GET /_matrix/client/v3/user/{userId}/filter/{filterId}", a.handleGetFilter)
 	a.authenticated("GET /_matrix/client/v3/user/{userId}/filter/{filterId}/{filterPath}", a.handleGetFilterSection)

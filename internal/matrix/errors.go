@@ -49,6 +49,11 @@ const (
 	ErrCodeThreepidNotFound    ErrorCode = "M_THREEPID_NOT_FOUND"
 	ErrCodeThreepidInUse       ErrorCode = "M_THREEPID_IN_USE"
 	ErrCodeWrongKeyVersion     ErrorCode = "M_WRONG_KEY_VERSION"
+	// ErrCodeUnknownPos is what a sliding sync connection answers when the position it was
+	// handed is not this user's, not this device's, or no longer the position the connection
+	// is at. It is not a rejection of the request's content: it says the conversation the
+	// client thinks it is having is over, and the client's recovery is to begin again.
+	ErrCodeUnknownPos ErrorCode = "M_UNKNOWN_POS"
 )
 
 // Error is a Matrix API error. It carries the HTTP status that should be used
@@ -131,6 +136,11 @@ func NewError(code ErrorCode, status int, message string) *Error {
 // ErrInvalidParam returns a 400 M_INVALID_PARAM error.
 func ErrInvalidParam(format string, args ...any) *Error {
 	return newError(ErrCodeInvalidParam, http.StatusBadRequest, format, args...)
+}
+
+// ErrUnknownPos returns a 400 M_UNKNOWN_POS error.
+func ErrUnknownPos(format string, args ...any) *Error {
+	return newError(ErrCodeUnknownPos, http.StatusBadRequest, format, args...)
 }
 
 // ErrMissingParam returns a 400 M_MISSING_PARAM error.

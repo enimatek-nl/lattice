@@ -16,6 +16,10 @@ var UnstableFeatures = map[string]bool{
 	"org.matrix.msc3440": true, // sync without filter
 	"org.matrix.msc3890": true, // membership endpoints accept ?user_id=
 	"org.matrix.msc4222": true, // GET /rooms/{roomId}/joined_members
+	// Simplified sliding sync is served at /v4/sync and under this unstable name. The flag
+	// is what tells a client that has to ask before using an unstable path that asking is
+	// done.
+	"org.matrix.simplified_msc3575": true,
 }
 
 // unstableFeaturesCopy returns a copy suitable for serialisation.

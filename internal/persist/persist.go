@@ -52,6 +52,7 @@ type Database struct {
 	ServerKeyRepo    ServerKeyRepo
 	SessionRepo      SessionRepo
 	StateRepo        StateRepo
+	SlidingSyncRepo  SlidingSyncRepo
 	ToDeviceRepo     ToDeviceRepo
 	TxnRepo          TxnRepo
 	TypingRepo       TypingRepo
@@ -74,6 +75,8 @@ func models() []any {
 		&RoomMembership{},
 		&AccountData{},
 		&Filter{},
+		&SlidingSyncConnection{},
+		&SlidingSyncRoom{},
 		&Receipt{},
 		&ReadMarker{},
 		&PushRule{},
@@ -261,6 +264,7 @@ func NewFromGORM(gdb *gorm.DB) *Database {
 		ReceivedPDURepo:  NewReceivedPDURepo(gdb),
 		RemoteDeviceRepo: NewRemoteDeviceRepo(gdb),
 		FilterRepo:       NewFilterRepo(gdb),
+		SlidingSyncRepo:  NewSlidingSyncRepo(gdb),
 		KeyBackupRepo:    NewKeyBackupRepo(gdb),
 		MediaRepo:        NewMediaRepo(gdb),
 		MembershipRepo:   NewMembershipRepo(gdb),

@@ -1,6 +1,8 @@
 package persist
 
 import (
+	"strings"
+
 	"github.com/enimatek-nl/lattice/internal/matrix"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -25,6 +27,14 @@ type StateRepo interface {
 	Upsert(state *RoomState) error
 	Get(roomID, typ, stateKey string) (*RoomState, error)
 	Content(roomID, typ, stateKey string) (matrix.RawMessage, error)
+	// ForRooms answers the same state question of many rooms at once, keyed by room id. A
+	// sliding sync filter asks it of every room a user is in, and walking those rooms one
+	// at a time would make the endpoint's least interesting step its slowest.
+	ForRooms(roomIDs []string, typ, stateKey string) (map[string]*RoomState, error)
+	// SpaceChildren returns the room ids that the given rooms name in an m.space.child
+	// event. The sliding sync space filter stops here on purpose: the MSC forbids walking
+	// into subspaces, so it is the client's job to list them.
+	SpaceChildren(spaceIDs []string) (map[string]bool, error)
 	List(roomID string, types []string, notSentBy string) ([]*RoomState, error)
 	Events(roomID string, types []string) ([]*Event, error)
 	MemberEvents(roomID string) ([]*Event, error)
@@ -53,6 +63,45 @@ func (r *StateRepoImpl) Get(roomID, typ, stateKey string) (*RoomState, error) {
 	err := r.db.Where("room_id = ? AND type = ? AND state_key = ?", roomID, typ, stateKey).
 		First(&state).Error
 	return &state, err
+}
+
+// ForRooms implements [StateRepo].
+func (r *StateRepoImpl) ForRooms(roomIDs []string, typ, stateKey string) (map[string]*RoomState, error) {
+	out := map[string]*RoomState{}
+	if len(roomIDs) == 0 {
+		return out, nil
+	}
+	var rows []*RoomState
+	if err := r.db.Where("room_id IN ? AND type = ? AND state_key = ?", roomIDs, typ, stateKey).
+		Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		out[row.RoomID] = row
+	}
+	return out, nil
+}
+
+// SpaceChildren implements [StateRepo].
+func (r *StateRepoImpl) SpaceChildren(spaceIDs []string) (map[string]bool, error) {
+	out := map[string]bool{}
+	if len(spaceIDs) == 0 {
+		return out, nil
+	}
+	var rows []*RoomState
+	if err := r.db.Where("room_id IN ? AND type = ?", spaceIDs, "m.space.child").
+		Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		// A child whose event has been redacted is no longer in the space: the state
+		// row is kept with an empty content, and the emptiness is the leaving.
+		if strings.TrimSpace(row.Content) == "" || row.Content == "{}" {
+			continue
+		}
+		out[row.StateKey] = true
+	}
+	return out, nil
 }
 
 // Content implements [StateRepo]. A missing state key yields a not found error.

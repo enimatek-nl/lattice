@@ -26,6 +26,10 @@ type AccountDataRepo interface {
 	ListGlobal(userID string, since uint64) ([]*AccountData, error)
 	// RoomsForUser lists room ids for which the user has account data of a type.
 	RoomTypes(userID, roomID string) (map[string]string, error)
+	// ContentsForRooms returns the content of one account data type for each of the given
+	// rooms, keyed by room id. The sliding sync tag filter asks which rooms a user has
+	// tagged, and asks it of the whole list at once.
+	ContentsForRooms(userID string, roomIDs []string, typ string) (map[string]string, error)
 }
 
 // AccountDataRepoImpl is the GORM backed AccountDataRepo.
@@ -81,6 +85,23 @@ func (r *AccountDataRepoImpl) RoomTypes(userID, roomID string) (map[string]strin
 	out := make(map[string]string, len(rows))
 	for _, row := range rows {
 		out[row.Type] = row.Content
+	}
+	return out, nil
+}
+
+// ContentsForRooms implements [AccountDataRepo].
+func (r *AccountDataRepoImpl) ContentsForRooms(userID string, roomIDs []string, typ string) (map[string]string, error) {
+	out := map[string]string{}
+	if len(roomIDs) == 0 {
+		return out, nil
+	}
+	var rows []*AccountData
+	if err := r.db.Where("user_id = ? AND room_id IN ? AND type = ?", userID, roomIDs, typ).
+		Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		out[row.RoomID] = row.Content
 	}
 	return out, nil
 }

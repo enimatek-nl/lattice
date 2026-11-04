@@ -3,7 +3,7 @@
 Two documents, one yardstick. [spec-coverage.md](spec-coverage.md) is the coverage document of a
 Rust homeserver (spec v1.19, default room version 12, Complement as its conformance gate:
 88/90 federation and 105/107 client-server). [coverage.md](coverage.md) is ours (spec v1.19,
-default room version 11, Complement 61/91, plus this repository's own 293 tests). Their claims are
+default room version 11, Complement 61/91, plus this repository's own 315 tests). Their claims are
 theirs - this comparison reads what each document says and what our own runs measure, not their
 code.
 
@@ -25,7 +25,7 @@ comparable head-to-head: theirs is 193 of 197 across both packages; ours is 61 o
 | Rooms, membership, events | done | done | parity; they list `timestamp_to_event` and `/context`, we serve both, but our walk is wrong in a forked history |
 | Relations, threads, search, spaces | done: recursion, `/threads`, bundled aggregations, Postgres full-text search, `/hierarchy` with remote children | `/relations` without `recurse`, `/threads`, bundled aggregations, `/hierarchy` both directions, substring search | **behind**: relation recursion and a real search index |
 | `/sync` (classic) | done, incl. `state_after`, lazy loading, threaded receipts, per-thread counts, ignored users | same shape, three holes | **behind**: `lazy_load` not lazy, `m.ignored_user_list` not applied, no `state_after`; the MSC3814 `e2ee` section is declared and never filled |
-| Simplified Sliding Sync (MSC4186) | done, with the list/subscription/delta machinery | not implemented | **the largest single missing feature.** Modern clients (Element X) speak sliding sync; they cannot use this server |
+| Simplified Sliding Sync (MSC4186) | done, with the list/subscription/delta machinery | done: the same machinery at `/v4/sync` and the `org.matrix.simplified_msc3575` path — ranges with a `count` that ignores them, the eight filters, subscriptions, per-connection deltas with `initial`/`expanded_timeline`/state stubs, five extensions, and a `pos` refused `M_UNKNOWN_POS` unless it was issued to this device, which still pages `/messages` | parity in shape, reached a different way: their connection state belongs to a proxy, ours is two tables of our own; they also carry the presence and thread-subscription extensions and `topic`, we do not |
 | Media | done, incl. URL previews, async uploads, remote media | done, same shape | parity; `POST /_matrix/media/v1/report` missing on our side |
 | E2EE | done, incl. key backups, cross-signing, to-device | done, same shape | parity |
 | Push | done: rules evaluated *and delivered* to HTTP pushers | rules, pushers, counts; no Push Gateway | **behind**: nothing reaches a phone. The evaluation half exists, so this is one outbound client away |
@@ -36,7 +36,7 @@ comparable head-to-head: theirs is 193 of 197 across both packages; ours is 61 o
 | Appservices | done: YAML registrations, namespaces, `as_token` auth with `user_id`/`device_id`, ephemeral forwarding, user/alias queries, third-party lookups | not implemented | **behind, and the most consequential structural gap**: no bridges (matrix-bot, hookshot, mautrix-\*), no application-service login, no `receive_ephemeral` |
 | Admin API | Synapse-compatible subset: users, rooms, force-join, delete, purge, server notices | a small custom set plus the CLI | **behind**: no operators' surface for user or room administration |
 | MSC3861 / MAS delegation | done, tested against MAS 1.27 | not implemented | **behind** |
-| Unstable MSCs | seven groups, all Complement-passing: MSC3391, MSC3874, MSC3930, MSC3967, MSC3890, MSC4155, MSC4140, MSC4306/4308 | none under MSC paths; four capability flags | **behind**, and it is where client features arrive first: delayed events, thread subscriptions, invite filtering |
+| Unstable MSCs | seven groups, all Complement-passing: MSC3391, MSC3874, MSC3930, MSC3967, MSC3890, MSC4155, MSC4140, MSC4306/4308 | one unstable path (sliding sync under `org.matrix.simplified_msc3575`) and five capability flags | **behind**, and it is where client features arrive first: delayed events, thread subscriptions, invite filtering, account-data deletion |
 | Search | full-text (`word`), substring (`pg_trgm`) or both | substring only | **behind** |
 | MatrixRTC (MSC4143/4195) | done over LiveKit, incl. federation `get_token` and legacy JWT endpoints | not implemented | **behind**; the OpenID pieces they need are already here |
 | Operations | rate limiting, retention, fuzz targets, load-test swarm, deployment assets | rate limiting, session expiry, deployment, CLI, endpoint coverage tool | partly behind: no retention, no fuzzing, no load harness; the coverage tool is something they do not have |

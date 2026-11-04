@@ -5,11 +5,13 @@
 package auth
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/enimatek-nl/lattice/internal/matrix"
@@ -118,11 +120,60 @@ func randomToken() string {
 // StreamPos renders a stream position as an opaque token.
 func StreamPos(pos uint64) string { return "s" + strconv.FormatUint(pos, 10) }
 
+// SlidingSyncPos renders the position of one sliding sync connection.
+//
+// The token is opaque to the client but not a secret, so it cannot be a bare stream position:
+// the specification requires that a position this user and device were never given is refused,
+// and a number carries no memory of who it was given to. The connection it was issued to rides
+// inside the token, and so does the stream position - which is what lets a client hand the same
+// token to /messages and get the same place in the room.
+func SlidingSyncPos(connID string, pos uint64) string {
+	raw := append([]byte(connID), 0)
+	raw = append(raw, strconv.FormatUint(pos, 10)...)
+	return slidingPosPrefix + base64.RawURLEncoding.EncodeToString(raw)
+}
+
+// slidingPosPrefix marks a sliding sync position token. The prefix is longer than the plain
+// stream token's so that the two can be told apart before any decoding is attempted.
+const slidingPosPrefix = "ss"
+
+// ParseSlidingSyncPos reads the connection id and stream position out of a sliding sync
+// position token. A token of any other shape is an error: the caller answers that with
+// M_UNKNOWN_POS rather than pretending the connection is new.
+func ParseSlidingSyncPos(token string) (connID string, pos uint64, err error) {
+	if !strings.HasPrefix(token, slidingPosPrefix) {
+		return "", 0, fmt.Errorf("token %q is not a sliding sync position", token)
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(token[len(slidingPosPrefix):])
+	if err != nil {
+		return "", 0, fmt.Errorf("sliding sync position %q is unreadable: %w", token, err)
+	}
+	sep := bytes.IndexByte(raw, 0)
+	if sep < 0 {
+		return "", 0, fmt.Errorf("sliding sync position %q names no connection", token)
+	}
+	pos, err = strconv.ParseUint(string(raw[sep+1:]), 10, 64)
+	if err != nil {
+		return "", 0, fmt.Errorf("sliding sync position %q names no position: %w", token, err)
+	}
+	return string(raw[:sep]), pos, nil
+}
+
 // ParseStreamPos converts a sync token back into a stream position. An empty
-// token yields zero (the start of the stream).
+// token yields zero (the start of the stream). A sliding sync position token is
+// understood as well: the MSC says the token a sliding sync connection answers
+// with can be used wherever /v3/sync's next_batch can, and a client that has
+// only ever used sliding sync should still be able to page through a room.
 func ParseStreamPos(token string) (uint64, error) {
 	if token == "" {
 		return 0, nil
+	}
+	if strings.HasPrefix(token, slidingPosPrefix) {
+		_, pos, err := ParseSlidingSyncPos(token)
+		if err != nil {
+			return 0, err
+		}
+		return pos, nil
 	}
 	if len(token) > 1 && (token[0] == 's' || token[0] == 't') {
 		token = token[1:]

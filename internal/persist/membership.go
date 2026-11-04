@@ -13,6 +13,11 @@ type RoomMembership struct {
 	Membership string `json:"membership" gorm:"index;size:16"`
 	EventID    string `json:"event_id" gorm:"size:255"`
 	SentTS     int64  `json:"sent_ts"`
+	// WasJoined says that this user has been joined in the room at some point, which outlives
+	// the membership that said so. It is kept because a ban is reported to the person it
+	// landed on and ignored for a person it never touched: the current membership says "ban"
+	// either way, and the difference is in the room's past.
+	WasJoined bool `json:"was_joined"`
 
 	gorm.Model
 }
@@ -24,6 +29,10 @@ type MembershipRepo interface {
 	// RoomsFor lists the rooms of a user whose membership is one of the given
 	// values (all values when the list is empty).
 	RoomsFor(userID string, memberships ...string) ([]string, error)
+	// RowsFor returns the same rooms as RoomsFor, with the rows rather than the ids:
+	// a caller that has to ask each room how the user came to be out of it does not want
+	// a query per room.
+	RowsFor(userID string, memberships ...string) ([]*RoomMembership, error)
 	// Members lists the members of a room whose membership is one of the given
 	// values.
 	Members(roomID string, memberships ...string) ([]*RoomMembership, error)
@@ -43,10 +52,21 @@ type MembershipRepoImpl struct {
 
 // Set implements [MembershipRepo].
 func (r *MembershipRepoImpl) Set(membership *RoomMembership) error {
+	if membership.Membership != "join" && !membership.WasJoined {
+		// The room keeps the history this row overwrites: a user thrown out of a room they
+		// were in must be told about it, and a user banned before ever entering must not.
+		var previous RoomMembership
+		if err := r.db.Where("room_id = ? AND user_id = ?", membership.RoomID, membership.UserID).
+			First(&previous).Error; err == nil {
+			membership.WasJoined = previous.WasJoined || previous.Membership == "join"
+		}
+	} else if membership.Membership == "join" {
+		membership.WasJoined = true
+	}
 	return r.db.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "room_id"}, {Name: "user_id"}},
 		DoUpdates: clause.AssignmentColumns([]string{
-			"membership", "event_id", "sent_ts", "updated_at",
+			"membership", "event_id", "sent_ts", "was_joined", "updated_at",
 		}),
 	}).Create(membership).Error
 }
@@ -67,6 +87,17 @@ func (r *MembershipRepoImpl) RoomsFor(userID string, memberships ...string) ([]s
 	}
 	err := q.Order("id asc").Pluck("room_id", &ids).Error
 	return ids, err
+}
+
+// RowsFor implements [MembershipRepo].
+func (r *MembershipRepoImpl) RowsFor(userID string, memberships ...string) ([]*RoomMembership, error) {
+	var rows []*RoomMembership
+	query := r.db.Where("user_id = ?", userID)
+	if len(memberships) > 0 {
+		query = query.Where("membership IN ?", memberships)
+	}
+	err := query.Find(&rows).Error
+	return rows, err
 }
 
 // Members implements [MembershipRepo].

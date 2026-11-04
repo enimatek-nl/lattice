@@ -225,6 +225,18 @@ type EventRepo interface {
 	LatestStreamPos() (uint64, error)
 	// LatestRoomStreamPos returns the highest stream position of a room.
 	LatestRoomStreamPos(roomID string) (uint64, error)
+	// LatestPosForRooms returns, per room, the stream position of the newest event this
+	// server holds for it - including state that arrived without a copy in the timeline,
+	// because the room moved on this server all the same. A room with no events is absent
+	// from the answer. Sliding sync orders a user's rooms by this and asks for the whole
+	// list in one query: the order of the room list is the endpoint's subject, so it cannot
+	// be settled by walking the rooms one at a time.
+	LatestPosForRooms(roomIDs []string) (map[string]uint64, error)
+	// LatestBumpPos returns, per room, the stream position of the newest event that counts
+	// as real activity for a room list: a message, an encrypted message, a sticker, a call
+	// or a poll, not a rename or a membership change. The set is the one MSC4186 names for
+	// bump_stamp.
+	LatestBumpPos(roomIDs []string) (map[string]uint64, error)
 	// Count returns the number of persisted events.
 	Count() (int64, error)
 	// MarkRedacted remembers the redaction evidence for an event and reports
@@ -422,6 +434,58 @@ func (r *EventRepoImpl) LatestStreamPos() (uint64, error) {
 		return 0, nil
 	}
 	return *pos, nil
+}
+
+// LatestPosForRooms implements [EventRepo].
+func (r *EventRepoImpl) LatestPosForRooms(roomIDs []string) (map[string]uint64, error) {
+	out := map[string]uint64{}
+	if len(roomIDs) == 0 {
+		return out, nil
+	}
+	var rows []struct {
+		RoomID string
+		Pos    uint64
+	}
+	if err := r.db.Model(&Event{}).
+		Where("room_id IN ?", roomIDs).
+		Select("room_id, max(stream_pos) as pos").
+		Group("room_id").Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, entry := range rows {
+		out[entry.RoomID] = entry.Pos
+	}
+	return out, nil
+}
+
+// LatestBumpPos implements [EventRepo].
+func (r *EventRepoImpl) LatestBumpPos(roomIDs []string) (map[string]uint64, error) {
+	out := map[string]uint64{}
+	if len(roomIDs) == 0 {
+		return out, nil
+	}
+	var rows []struct {
+		RoomID string
+		Pos    uint64
+	}
+	if err := hiddenFromTimeline(r.db.Model(&Event{})).
+		Where("room_id IN ? AND type IN ?", roomIDs, bumpEventTypes).
+		Select("room_id, max(stream_pos) as pos").
+		Group("room_id").Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, entry := range rows {
+		out[entry.RoomID] = entry.Pos
+	}
+	return out, nil
+}
+
+// bumpEventTypes are the event types that count as a room's last real activity, which is
+// what MSC4186 lists for bump_stamp: what somebody did in the room, not what happened to
+// its paperwork.
+var bumpEventTypes = []string{
+	"m.room.create", "m.room.message", "m.room.encrypted", "m.sticker",
+	"m.call.invite", "m.poll.start", "m.beacon_info",
 }
 
 // LatestRoomStreamPos implements [EventRepo].
