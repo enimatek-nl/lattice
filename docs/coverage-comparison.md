@@ -4,7 +4,7 @@ Two documents, one yardstick. [spec-coverage.md](spec-coverage.md) is the covera
 Rust homeserver (spec v1.19, default room version 12, Complement as its conformance gate:
 88/90 federation and 105/107 client-server). [coverage.md](coverage.md) is ours (spec v1.19,
 default room version 11, Complement **61 green of 91** server-server as of 2026-11-04 and
-**66 green of 106** client-API as of 2026-11-02, plus this repository's own 315 tests: 158
+**66 green of 106** client-API as of 2026-11-02, plus this repository's own 317 tests: 160
 client-API, 88 two-server, 69 unit). Their claims are theirs - this comparison reads what each
 document says and what our own runs measure, not their code. The client-API tally has not been
 re-measured since 2026-11-02: the run attempted on 2026-11-04 did not finish inside its budget
@@ -34,7 +34,7 @@ different amounts of this server.
 | Rooms, membership, events | done | done | parity; they list `timestamp_to_event` and `/context`, we serve both, but our walk is wrong in a forked history |
 | Relations, threads, search, spaces | done: recursion, `/threads`, bundled aggregations, Postgres full-text search, `/hierarchy` with remote children | `/relations` without `recurse`, `/threads`, bundled aggregations, `/hierarchy` both directions, substring search | **behind**: relation recursion and a real search index |
 | `/sync` (classic) | done, incl. `state_after`, lazy loading, threaded receipts, per-thread counts, ignored users | same shape, three holes | **behind**: `lazy_load` not lazy, `m.ignored_user_list` not applied, no `state_after`; the MSC3814 `e2ee` section is declared and never filled |
-| Simplified Sliding Sync (MSC4186) | done: lists with ranges and filters, subscriptions, per-connection deltas with position retry, `required_state` wildcards (`*`, `$ME`, `$LAZY`), and the to-device, e2ee, account-data, receipts and typing extensions | done: the same five extensions at `/v4/sync` and the `org.matrix.simplified_msc3575` path — ranges with a `count` that ignores them, the eight filters, subscriptions, per-connection deltas with `initial`/`expanded_timeline`/state stubs, and a `pos` refused `M_UNKNOWN_POS` unless it was issued to this device, which still pages `/messages` | **near parity, and the five extensions match**. Ours answers `*` but not `$ME` or `$LAZY` as state-key tokens, and has no `topic`, `truncate` or per-list `bump_event_types`. Their document contradicts itself on the MSC4308 thread-subscription extension (the sliding-sync row says it is missing, the MSC row says it passes Complement); we do not have MSC4306 at all, so we do not have it either |
+| Simplified Sliding Sync (MSC4186) | done: lists with ranges and filters, subscriptions, per-connection deltas with position retry, `required_state` wildcards (`*`, `$ME`, `$LAZY`), and the to-device, e2ee, account-data, receipts and typing extensions | done: the same five extensions at `/v4/sync` and the `org.matrix.simplified_msc3575` path — ranges with a `count` that ignores them, the eight filters, subscriptions, per-connection deltas with `initial`/`expanded_timeline`/state stubs, and a `pos` refused `M_UNKNOWN_POS` unless it was issued to this device, which still pages `/messages` | **near parity, and the five extensions match**, including the state-key tokens: their document's `*`, `$ME` and `$LAZY` are answered here too, which is worth saying because MSC4186 defines only the wildcard - the other two come from the proxy, and the clients that used it are still in the wild. What we do not have is `topic`, `truncate` or per-list `bump_event_types`. Their document contradicts itself on the MSC4308 thread-subscription extension (the sliding-sync row says it is missing, the MSC row says it passes Complement); we do not have MSC4306 at all, so we do not have it either |
 | Media | done, incl. URL previews, async uploads, remote media | done, same shape | parity; `POST /_matrix/media/v1/report` missing on our side |
 | E2EE | done, incl. key backups, cross-signing, to-device | done, same shape | parity |
 | Push | done: rules evaluated *and delivered* to HTTP pushers | rules, pushers, counts; no Push Gateway | **behind**: nothing reaches a phone. The evaluation half exists, so this is one outbound client away |
@@ -50,7 +50,7 @@ different amounts of this server.
 | MatrixRTC (MSC4143/4195) | done over LiveKit, incl. federation `get_token` and legacy JWT endpoints | not implemented (planned: the plan is in [TODO.md](TODO.md)) | **behind**; the OpenID pieces they need are already here |
 | Operations | rate limiting, retention, fuzz targets, load-test swarm, deployment assets | rate limiting, session expiry, deployment, CLI, endpoint coverage tool | partly behind: no retention, no fuzzing, no load harness; the coverage tool is something they do not have |
 | Room versions | 1-12, default 12 | 1-12 understood, default 11 | **near parity**. v12's hashed room ids, `additional_creators`, the creator rules and state resolution v2.1 are in, in both directions; what is left is the default a new room gets and the two v12 knock/restricted Complement cases |
-| Tests | Complement as the gate | Complement **and** 158 client-API, 88 two-server, 69 unit tests in-repo | different, and in our favour: a two-server suite in the repository is what found the restricted-join, knock and state-resolution findings |
+| Tests | Complement as the gate | Complement **and** 160 client-API, 88 two-server, 69 unit tests in-repo | different, and in our favour: a two-server suite in the repository is what found the restricted-join, knock and state-resolution findings |
 
 ## Where Lattice lacks, ranked by what it unlocks
 
@@ -78,10 +78,9 @@ done, because the list is a work queue.
 6. **Admin surface** - user list/get/create/update/deactivate/reset, room list/details/delete,
    force-join, purge. Today an operator has a CLI and four routes.
 7. **The MSC surface** - relations recursion, thread subscriptions (MSC4306/4308), delayed
-   events (MSC4140), invite filtering (MSC4155), account-data deletion (MSC3391), the
-   `$ME`/`$LAZY` state-key tokens of sliding sync's `required_state`. This is where client
-   features arrive first, and MSC4306 is now on the critical path twice: it is a client feature
-   of its own, and it is what Complement's only sliding-sync case asks for.
+   events (MSC4140), invite filtering (MSC4155), account-data deletion (MSC3391). This is where
+   client features arrive first, and MSC4306 is now on the critical path twice: it is a client
+   feature of its own, and it is what Complement's only sliding-sync case asks for.
 8. **Search index, message retention, fuzzing, a load harness** - quality of life at scale.
 9. **Room version 12 as the default** - understanding v12 is done; choosing it for new rooms is
    a decision about the creators-privileged semantics, not a piece of work.

@@ -263,7 +263,7 @@ func (s *Service) buildSlidingSync(ctx context.Context, userID, deviceID string,
 			}
 		}
 		matched[name] = rooms
-		config := configOf(list.TimelineLimit, list.RequiredState)
+		config := configOf(list.TimelineLimit, list.RequiredState, userID)
 		from, to := slidingRangeBounds(list.Range, len(rooms))
 		for i := from; i <= to; i++ {
 			addSlidingPlan(plans, rooms[i], name, config, conn.known[rooms[i].roomID])
@@ -274,7 +274,8 @@ func (s *Service) buildSlidingSync(ctx context.Context, userID, deviceID string,
 			if entry.roomID != roomID {
 				continue
 			}
-			addSlidingPlan(plans, entry, "", configOf(sub.TimelineLimit, sub.RequiredState), conn.known[roomID])
+			addSlidingPlan(plans, entry, "",
+				configOf(sub.TimelineLimit, sub.RequiredState, userID), conn.known[roomID])
 			break
 		}
 		// A subscription to a room the user may not see, or that does not exist, is

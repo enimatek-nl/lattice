@@ -50,17 +50,23 @@ type slidingStatePattern struct {
 	anyKey   bool
 }
 
-// slidingStatePatternOf reads one required_state element off the wire.
-func slidingStatePatternOf(element matrix.SlidingStateElement) slidingStatePattern {
+// slidingStatePatternOf reads one required_state element off the wire. The state key may be a
+// token rather than a key: "$ME" becomes the requesting user's id, which turns it into an
+// ordinary pattern that stays in force when memberships are lazy loaded, because a config
+// naming one member is not a config asking for all of them.
+func slidingStatePatternOf(element matrix.SlidingStateElement, userID string) slidingStatePattern {
 	pattern := slidingStatePattern{}
 	if element.Type == nil || *element.Type == "*" {
 		pattern.anyType = true
 	} else {
 		pattern.typ = *element.Type
 	}
-	if element.StateKey == nil || *element.StateKey == "*" {
+	switch {
+	case element.StateKey == nil || *element.StateKey == "*":
 		pattern.anyKey = true
-	} else {
+	case *element.StateKey == matrix.SlidingStateKeyMe:
+		pattern.stateKey = userID
+	default:
 		pattern.stateKey = *element.StateKey
 	}
 	return pattern
@@ -174,8 +180,9 @@ func patternKeys(patterns []slidingStatePattern) string {
 	return strings.Join(keys, ",")
 }
 
-// configOf builds the room config of one list or subscription.
-func configOf(timelineLimit int, required matrix.SlidingRequiredState) slidingConfig {
+// configOf builds the room config of one list or subscription, for one user: the only place the
+// request's identity enters the config is the "$ME" token, which resolves to that user.
+func configOf(timelineLimit int, required matrix.SlidingRequiredState, userID string) slidingConfig {
 	if timelineLimit < 0 {
 		timelineLimit = 0
 	}
@@ -184,10 +191,21 @@ func configOf(timelineLimit int, required matrix.SlidingRequiredState) slidingCo
 	}
 	config := slidingConfig{timelineLimit: timelineLimit, lazyMembers: required.LazyMembers}
 	for _, element := range required.Include {
-		config.include = append(config.include, slidingStatePatternOf(element))
+		pattern := slidingStatePatternOf(element, userID)
+		if pattern.stateKey == matrix.SlidingStateKeyLazy {
+			// "$LAZY" asks for the room's memberships the lazy way, which the flag says
+			// better: it is not a state key, so it does not become a pattern looking for one.
+			config.lazyMembers = true
+			continue
+		}
+		config.include = append(config.include, pattern)
 	}
 	for _, element := range required.Exclude {
-		config.exclude = append(config.exclude, slidingStatePatternOf(element))
+		pattern := slidingStatePatternOf(element, userID)
+		if pattern.stateKey == matrix.SlidingStateKeyLazy {
+			continue
+		}
+		config.exclude = append(config.exclude, pattern)
 	}
 	return config
 }

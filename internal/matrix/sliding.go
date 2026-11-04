@@ -69,6 +69,17 @@ type SlidingRequiredState struct {
 	LazyMembers bool `json:"lazy_members,omitempty"`
 }
 
+// The state-key tokens a client that grew up with the sliding sync proxy writes where a state
+// key belongs. MSC4186 defines neither - it asks for lazy loading by the lazy_members flag and
+// for one's own membership by naming it - but the proxy-era clients are in the wild, and no
+// room can hold a state key beginning with "$", so reading the two costs nothing.
+const (
+	// SlidingStateKeyMe means the requesting user's own membership event.
+	SlidingStateKeyMe = "$ME"
+	// SlidingStateKeyLazy means "the memberships of this room, lazily".
+	SlidingStateKeyLazy = "$LAZY"
+)
+
 // SlidingStateElement is one type/state key pair. An omitted half matches everything on that
 // axis, which is why both are pointers.
 type SlidingStateElement struct {

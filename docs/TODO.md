@@ -2930,7 +2930,7 @@ Target: [MSC4186](https://github.com/matrix-org/matrix-spec-proposals/blob/main/
 Served at `POST /_matrix/client/v4/sync` and, while the revision that carries it is still
 unstable, at `POST /_matrix/client/unstable/org.matrix.simplified_msc3575/sync`, with
 `org.matrix.simplified_msc3575: true` in `/versions`. As predicted, the pinned Complement
-checkout has no `msc4186` package: the gate was this repository's own suite, **16** tests in
+checkout has no `msc4186` package: the gate was this repository's own suite, **17** tests in
 `tests/compat/sliding_sync_test.go`. The one upstream case that reaches the endpoint is
 `tests/msc4306`'s sliding-sync thread subscription, and it stays red because it asks for the
 `io.element.msc4308.thread_subscriptions` extension, which needs MSC4306 (gap 9), not this one.
@@ -2981,7 +2981,11 @@ and filters), `internal/service/slidingroom.go` (one room's result), `internal/s
 - [x] **`required_state`**: `include`/`exclude` of `{type?, state_key?}` with an omitted half as a
       wildcard, and `lazy_members`, which sends the members of the timeline's senders, the targets
       of membership events in the window, and the whole membership list when the window is not
-      `limited`. `exclude` does not narrow lazy memberships, as the MSC asks. Deleted state is a
+      `limited`. `exclude` does not narrow lazy memberships, as the MSC asks. The proxy-era
+      state-key tokens are read too, though MSC4186 defines only the wildcard: `$ME` resolves to
+      the requesting user, which makes it an ordinary pattern that survives lazy loading (naming
+      one member is not asking for all of them), and `$LAZY` turns lazy loading on rather than
+      looking for a state key no room can hold. Deleted state is a
       `StateStub`: `{"type":…,"state_key":…}` with no `content`. On this server state rows are not
       removed, so the way state *goes away* is a redaction — a redaction inside the room's recent
       events names the key that has been covered over, and the stub is sent only to a connection

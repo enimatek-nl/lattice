@@ -1071,3 +1071,135 @@ func TestSlidingSyncExtensionsDoNotKeepThePollAwake(t *testing.T) {
 		t.Errorf("the waiting answer carries no key section: %v", second)
 	}
 }
+
+// TestSlidingSyncReadsTheProxyTokens answers for the clients that learned sliding sync from the
+// proxy and still write "$ME" and "$LAZY" where a state key belongs. MSC4186 defines neither
+// token, and asks instead for the lazy_members flag and for naming a member you always want -
+// but those clients are out there, no room can hold a state key beginning with "$", and a
+// server that reads the two costs itself nothing.
+func TestSlidingSyncReadsTheProxyTokens(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	bob := server.Register("bob", "builders")
+	carol := server.Register("carol", "cooker")
+	roomID := server.CreateRoom(alice, map[string]any{"preset": "private_chat", "name": "Down"})
+	for _, other := range []string{bob.UserID, carol.UserID} {
+		server.MustDo("POST", "/_matrix/client/v3/rooms/"+roomID+"/invite", alice.Token,
+			map[string]any{"user_id": other}, 200)
+		joined := bob
+		if other == carol.UserID {
+			joined = carol
+		}
+		server.MustDo("POST", "/_matrix/client/v3/join/"+url.PathEscape(roomID), joined.Token, nil, 200)
+	}
+	// The window's only sender is bob, so a lazy answer would name bob and not alice: that is
+	// what makes "$ME" observable rather than accidental.
+	server.Send(bob, roomID, "one", "bob speaks")
+
+	members := func(answer map[string]any) map[string]bool {
+		out := map[string]bool{}
+		room := slidingRooms(t, answer)[roomID]
+		if room == nil {
+			t.Fatalf("the room is missing from the answer")
+		}
+		state, _ := room["required_state"].([]any)
+		for _, raw := range state {
+			entry, _ := raw.(map[string]any)
+			if entry["type"] == "m.room.member" {
+				key, _ := entry["state_key"].(string)
+				out[key] = true
+			}
+		}
+		return out
+	}
+
+	// "$ME" alongside an everything else: the requester's own membership arrives, and the rest
+	// of the room's members do not, because naming one member is not asking for all of them.
+	named := members(server.slidingSync(t, alice, map[string]any{
+		"conn_id": "me",
+		"lists": map[string]slidingList{
+			"all": {
+				"range":          []int{0, 9},
+				"timeline_limit": 1,
+				"required_state": map[string]any{
+					"include": []map[string]any{
+						{},
+						{"type": "m.room.member", "state_key": "$ME"},
+					},
+					"lazy_members": true,
+				},
+			},
+		},
+	}))
+	if !named[alice.UserID] {
+		t.Errorf("$ME did not bring alice's own membership: %v", named)
+	}
+	if !named[bob.UserID] {
+		t.Errorf("lazy loading did not bring the membership of the window's sender: %v", named)
+	}
+	if named[carol.UserID] {
+		t.Errorf("$ME was read as asking for every member: %v", named)
+	}
+
+	// The same config without the token, to show the token is what made the difference: alice
+	// did not speak in the window, so nothing else would have brought her membership.
+	without := members(server.slidingSync(t, alice, map[string]any{
+		"conn_id": "without-me",
+		"lists": map[string]slidingList{
+			"all": {
+				"range":          []int{0, 9},
+				"timeline_limit": 1,
+				"required_state": map[string]any{
+					"include":      []map[string]any{{}},
+					"lazy_members": true,
+				},
+			},
+		},
+	}))
+	if without[alice.UserID] {
+		t.Errorf("alice's membership arrived without being asked for, so $ME proves nothing: %v", without)
+	}
+
+	// "$LAZY" is a request for the memberships the lazy way, not for a state key that no room
+	// can hold: nobody is answered with a member event keyed "$LAZY", and the membership list
+	// is not dumped.
+	lazy := members(server.slidingSync(t, alice, map[string]any{
+		"conn_id": "lazy",
+		"lists": map[string]slidingList{
+			"all": {
+				"range":          []int{0, 9},
+				"timeline_limit": 1,
+				"required_state": map[string]any{
+					"include": []map[string]any{{"type": "m.room.member", "state_key": "$LAZY"}},
+				},
+			},
+		},
+	}))
+	if lazy["$LAZY"] {
+		t.Errorf("the room was answered with a member event keyed $LAZY: %v", lazy)
+	}
+	if !lazy[bob.UserID] {
+		t.Errorf("$LAZY did not bring the membership of the window's sender: %v", lazy)
+	}
+	if lazy[alice.UserID] || lazy[carol.UserID] {
+		t.Errorf("$LAZY was read as asking for every member: %v", lazy)
+	}
+
+	// And a room that a client asked about plainly is still answered plainly: the tokens turn
+	// nothing on for a config that did not write them.
+	plain := members(server.slidingSync(t, alice, map[string]any{
+		"conn_id": "plain",
+		"lists": map[string]slidingList{
+			"all": {
+				"range":          []int{0, 9},
+				"timeline_limit": 1,
+				"required_state": map[string]any{
+					"include": []map[string]any{{"type": "m.room.member"}},
+				},
+			},
+		},
+	}))
+	if !plain[alice.UserID] || !plain[bob.UserID] || !plain[carol.UserID] || plain["$LAZY"] {
+		t.Errorf("a config asking for memberships was answered with %v, want all three", plain)
+	}
+}
