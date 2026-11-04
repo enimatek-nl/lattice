@@ -1828,6 +1828,21 @@ was built and honours `min_depth`; `joined` and `invited` wait on redacting what
 the asking server. The rest of this section is how to run it, what the run can hide, and
 what every remaining failure is waiting for.
 
+A second run, 2026-11-04, against a freshly cloned Complement main (no `msc4186` package
+exists upstream, so sliding sync itself is not measured there; the one upstream case that
+reaches `POST /unstable/org.matrix.simplified_msc3575/sync` is `tests/msc4306`'s thread
+subscription, which stays red because it asks for a section that needs MSC4306). The
+whole `tests/csapi` package did **not finish in its 40 minute budget**: one of the two
+servers of a two-server deployment sat at 90-100% CPU for the better part of an hour, which
+is worth chasing for its own sake — it is a spin inside this server under one of the
+federation tests, not a Complement problem. A focused group did run to completion:
+`TestServerCapabilities`, `TestVersionStructure`, `TestFilter`, `TestSyncLeaveSection` and
+`TestSyncFilter` green; `TestSync` red on presence and on state events appearing in a
+`m.room.message` timeline, and `TestSyncTimelineGap` red on a ten-event federated batch
+delivered without `limited` — all four known and unchanged by the sliding-sync work, which
+adds two routes, one `/versions` flag and five repository reads and touches no existing
+handler.
+
 [Complement](https://github.com/matrix-org/complement) starts homeservers in
 containers and drives them over the client-server API. It is a second opinion on
 the client API: written by people who did not write this server, against the
