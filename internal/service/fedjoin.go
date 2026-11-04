@@ -525,10 +525,12 @@ func (s *Service) joinAllowed(ctx context.Context, roomID, userID string, prevID
 		return ""
 	}
 	if rule == matrix.JoinRulesInvite {
+		// No exception for a server administrator: the room across the wire does not know that
+		// this server has administrators, and it refuses the join this server would send. Asking
+		// on an administrator's behalf for a room whose rule asks for an invite they do not hold
+		// buys a refusal and nothing else.
 		if members == nil || members.Membership != matrix.MembershipInvite {
-			if !s.IsAdmin(ctx, userID) {
-				return fmt.Sprintf("room %s needs an invite to join", roomID)
-			}
+			return fmt.Sprintf("room %s needs an invite to join", roomID)
 		}
 	}
 	return ""

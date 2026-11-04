@@ -678,13 +678,10 @@ Still open from step 9, deliberately:
       `state_ids`, `get_missing_events`, backfill), which is where they are needed for a
       reason other than this one.
 
-- [ ] **Locally originated events are not judged by `authcheck`.** The room rules as the
-      specification writes them run only on events arriving over federation; a locally
-      written event is judged by the service's own guards instead. That is how a knock came
-      to be an invitation at home while every peer holding the same room refused the same
-      join (step 19). The rule was fixed in the guard; the drift is not, and every rule this
-      server enforces has to be written down twice - and kept in step by hand - until the
-      two authorisers are one.
+- [x] ~~**Locally originated events are not judged by `authcheck`.**~~ Done in step 20: the
+      rules are read once, of `authcheck`, for what this server writes and what a peer
+      sends. Two rules that had drifted apart were found doing it - a server administrator
+      above a room's join rule, and a ban without the rank rule beside it.
 
 Done when: an event created on server B appears on server A with A's own decision
 recorded — done, and pinned by `intake_test.go`. The other half of the sentence, "and A
@@ -2681,3 +2678,55 @@ The knock and restricted group after the change - `TestKnocking` and its MSC3787
 public-room-directory knocks, the restricted join and fail-over set, the space summaries and
 the room summary - is **21 tests, 19 green**; the two red are the room version 12 power-level
 cases that were red before it.
+
+
+### 20. Authorization: one rulebook (2026-11-04)
+
+A room's rules are written down in `internal/authcheck` - the specification's list, read
+event kind by event kind, with the room version deciding which entries of it apply. That
+list ran only on events **arriving from a peer** (`fedapply.go`). Everything this server
+originated was judged by guards written beside the endpoints that asked for the events, and
+the two had drifted. The drift is invisible from inside: this server accepts what it wrote,
+and every peer holding the same room refuses the identical event, which is how the knock
+that opened a door (step 19) survived as long as it did.
+
+Now the same list is asked about a locally written event inside the append transaction -
+after the event is built and identified, before a row is written - so the state it reads is
+the state the event was built against and an event the room refuses leaves nothing behind:
+no stream position, no transaction record, no membership row. [authcheck.Rules] and not
+[authcheck.Check]: the extra check in `Check` reads an event's own choice of auth events,
+and exists to catch a sender picking friendlier rules for itself. This server picked them,
+with the same selection the rule would recompute, so the rule would only be checking this
+server's arithmetic.
+
+Two rules turned out to be enforced wrong at home, found by asking the rulebook instead of
+the guard. Both are recorded because they were probes, not failures:
+
+- **A server administrator was above a room's join rule.** `joinRuleProblem` let an
+  administrator join an invite-only room with no invite, because the guard asked whether the
+  user ran the server. The room's rules know no server administrators; the membership event
+  signed for that join is refused by every other server in the room, so the membership
+  existed on one server. Administrators still read rooms they are not in, which is a
+  question this server answers for itself. Before: `200`. Now: `403`, in the rulebook's
+  words.
+- **A moderator could ban somebody who outranks them.** The ban guard asked for the ban
+  level and not for the rank beside it, so a member holding 50 banned a member holding 100 -
+  while the *kick* guard refused the same pair. One rule held in one of its two places.
+  Before: `200`. Now: `403` for both.
+
+What the guards kept is what no room rule says: that a membership is not written for another
+user by their own hand (`you cannot invite yourself`, `you cannot ban yourself this way`),
+that a canonical alias has to resolve to this room, that a room's encryption is set once,
+that an `m.room.create` is not replaced. The **redaction level** stays on the service side
+deliberately: a member with no power redacting their own message is this server's policy and
+not a rule a peer checks, so putting it in the rule list would make this server refuse what
+every other server accepts.
+
+The graph gains two fields for the difference between asking a peer and deciding at home.
+`Originating` says this judgement is about an event the server holding the graph is about to
+sign; `Admits` names the rooms the caller has confirmed the joiner belongs to, for a
+restricted join - a fact that is not in this room and no snapshot of it can carry. The rule
+still reads the room's allow list, so a room named there admits nothing unless the room
+admits people through it. `readCurrentState` and the new local read share one state reader
+(`stateForAuth`), which is also where a locally judged event's state comes from the append
+transaction rather than from outside it.

@@ -223,7 +223,7 @@ func (s *Service) KnockRoom(ctx context.Context, idOrAlias, userID, reason strin
 	if err != nil {
 		return "", matrix.ErrInternal(err)
 	}
-	if problem := s.knockProblemWith(ctx, joinRule, s.MembershipOf(ctx, room.ID, userID)); problem != nil {
+	if problem := knockRuleProblem(joinRule); problem != nil {
 		return "", problem
 	}
 	content := matrix.MemberContent{
@@ -238,9 +238,9 @@ func (s *Service) KnockRoom(ctx context.Context, idOrAlias, userID, reason strin
 	return room.ID, nil
 }
 
-// knockProblemWith is knockProblem with the join rule already read, for the callers that needed it
-// for another reason anyway.
-func (s *Service) knockProblemWith(ctx context.Context, joinRule, current string) error {
+// knockRuleProblem answers the one knock question a caller needs before it starts: is this a room
+// that can be knocked on at all.
+func knockRuleProblem(joinRule string) error {
 	// Only the question the caller needs before it starts: does this room admit knocks at all?
 	// A room that does not is not worth asking, and asking a peer costs a round trip for an
 	// answer the room's rules already give.

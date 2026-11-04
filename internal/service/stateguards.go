@@ -25,7 +25,7 @@ func (s *Service) validateStateEvent(ctx context.Context, roomID, sender, typ, s
 			return matrix.ErrInternal(err)
 		}
 	case matrix.TypeMember:
-		return s.validateMemberStateWrite(ctx, roomID, sender, stateKey, matrix.MustParseObject(content))
+		return validateMemberStateWrite(sender, stateKey, matrix.MustParseObject(content))
 	case matrix.TypeCanonicalAlias:
 		return s.validateCanonicalAlias(ctx, roomID, content)
 	}
@@ -81,14 +81,16 @@ func (s *Service) validateCanonicalAlias(ctx context.Context, roomID string, con
 	return nil
 }
 
-// validateMemberStateWrite reads a membership written through the state endpoint.
+// validateMemberStateWrite reads a membership written through the state endpoint. It is a plain
+// function because nothing in it reads the room: what the room thinks of the membership is decided
+// by its rules when the event is appended.
 //
 // The endpoint is allowed to carry m.room.member: it is how a room's moderators ban or kick
 // without the dedicated endpoints, and how a room is set up at all in some clients. Which power
 // a membership asks of the sender, whether the joiner is banned, whether the join rule admits
 // them, whether a kicked user sits below the kicker - all of that is the room's rules, and the
 // rules are read once, when the event is appended. See [Service.judgeLocalEvent].
-func (s *Service) validateMemberStateWrite(ctx context.Context, roomID, sender, stateKey string, content matrix.Object) error {
+func validateMemberStateWrite(sender, stateKey string, content matrix.Object) error {
 	membership, _ := content["membership"].(string)
 	if membership == "" {
 		return matrix.ErrInvalidRequest("an m.room.member event must state a membership")

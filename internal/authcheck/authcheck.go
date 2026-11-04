@@ -532,7 +532,7 @@ func checkMember(g *Graph, state State, event *Event) error {
 				return nil
 			}
 			if !claimsAuthoriser {
-				if g.admitsFrom(g.Admits, state) {
+				if g.admitsConfirmedJoin(state) {
 					return nil
 				}
 				return fmt.Errorf("the room is joined through a space, and the event names no authorising user")
@@ -1047,12 +1047,13 @@ func membershipOf(g *Graph, state State, userID string) string {
 // admitsByName reports whether the room's join rules name at least one room it admits people
 // through. Malformed entries are dropped when the rules are read, so a list of junk reads as no
 // list, and a join whose only claim is membership of a room on that list has nothing to stand on.
-// admitsFrom reports whether the caller has confirmed the joiner's membership of a room this room
-// admits joins through. The confirmation is the caller's - it is a fact about another room - and
-// the allow list is read here, so a confirmation about a room the rule does not name carries
-// nothing.
-func (g *Graph) admitsFrom(confirmed []string, state State) bool {
-	if !g.Originating || len(confirmed) == 0 {
+// admitsConfirmedJoin reports whether the caller has confirmed the joiner's membership of a room
+// this room admits joins through. The confirmation is the caller's - it is a fact about another
+// room, and no snapshot of this one can carry it - and the allow list is read here, so a
+// confirmation about a room the rule does not name carries nothing.
+func (g *Graph) admitsConfirmedJoin(state State) bool {
+	confirms := g.Admits
+	if !g.Originating || len(confirms) == 0 {
 		return false
 	}
 	event := stateEvent(g, state, matrix.TypeJoinRules, "")
@@ -1067,7 +1068,7 @@ func (g *Graph) admitsFrom(confirmed []string, state State) bool {
 		if rule.RoomID == "" {
 			continue
 		}
-		for _, room := range confirmed {
+		for _, room := range confirms {
 			if room == rule.RoomID {
 				return true
 			}

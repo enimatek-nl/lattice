@@ -56,7 +56,9 @@ func (s *Service) judgeLocalEvent(ctx context.Context, tx *gorm.DB, roomID, vers
 
 // admittedRooms lists the rooms of a restricted room's allow list that this server holds this
 // user as a joined member of. It is the fact the allow list asks about and a state snapshot of the
-// restricted room cannot carry.
+// restricted room cannot carry. It is read outside the append transaction on purpose: which rooms a
+// user belongs to is not a fact this transaction is changing, and reading it inside would make the
+// judgement wait on a table it has no business locking.
 func (s *Service) admittedRooms(ctx context.Context, roomID, userID string) []string {
 	if err := ctx.Err(); err != nil {
 		return nil

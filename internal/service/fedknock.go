@@ -266,7 +266,7 @@ func (s *Service) ServeSendKnock(ctx context.Context, roomID, eventID string, ev
 			return nil, matrix.ErrInvalidRequest("the path names %s and the event hashes to %s", eventID, derived)
 		}
 	}
-	if problem := s.knockRoomProblem(ctx, roomID, sender); problem != nil {
+	if problem := s.knockRoomProblem(ctx, roomID); problem != nil {
 		return nil, matrix.ErrForbidden("this room refuses the knock of %s: %v", sender, problem)
 	}
 	return s.acceptKnock(ctx, roomID, eventID, event, version, peer)
@@ -291,12 +291,12 @@ func (s *Service) ServeKnock(ctx context.Context, roomID, eventID string, event 
 		return nil, problem
 	}
 	if s.LocalRoom(roomID) {
-		if problem := s.knockRoomProblem(ctx, roomID, sender); problem != nil {
+		if problem := s.knockRoomProblem(ctx, roomID); problem != nil {
 			return nil, matrix.ErrForbidden("this room refuses the knock of %s: %v", sender, problem)
 		}
 		return s.acceptKnock(ctx, roomID, eventID, event, version, peer)
 	}
-	if problem := s.knockRoomProblem(ctx, roomID, sender); problem != nil {
+	if problem := s.knockRoomProblem(ctx, roomID); problem != nil {
 		return nil, matrix.ErrForbidden("this room refuses the knock of %s: %v", sender, problem)
 	}
 	transport := s.federationTransport()
@@ -361,12 +361,11 @@ func (s *Service) knownMembershipBlocksKnock(ctx context.Context, roomID, userID
 	return nil
 }
 
-// knockRoomProblem answers whether a room admits a knock from a user at all, read from
-// the side that is asked to accept it. The room has to be one that can be knocked on,
-// and a user the room has already answered - in the room, invited, or banned - has no
-// knock to make.
-func (s *Service) knockRoomProblem(ctx context.Context, roomID, userID string) error {
-	return s.knockProblemWith(ctx, s.joinRuleOf(ctx, roomID), s.MembershipOf(ctx, roomID, userID))
+// knockRoomProblem answers whether this is a room that can be knocked on, read from the side
+// asked to accept the knock. What the knocking user's own membership means is not decided here: a
+// knock is a membership event, and the room's rules decide those when the event is appended.
+func (s *Service) knockRoomProblem(ctx context.Context, roomID string) error {
+	return knockRuleProblem(s.joinRuleOf(ctx, roomID))
 }
 
 // eventIDOfKnock is the id a knock of a room version with derived ids is named by.
