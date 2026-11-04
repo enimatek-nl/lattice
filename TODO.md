@@ -23,13 +23,13 @@ in `tests/compat/user_script_test.go`. Phases (bare POC, everyday endpoints, the
 layer, federation) are complete or described by the steps below; the old PLAN.md is gone
 because it said nothing these steps do not.
 
-## Current state (verified 2026-11-02)
+## Current state (verified 2026-11-04)
 
 - A working homeserver with its **federation transport in production shape**:
   `make build vet lint` clean (`make lint` = golangci-lint, 0 issues),
-  `go test ./...` green — **117** compatibility tests (~52 s here, ~5½ min
-  with `-race` on this machine), **65** offline unit tests in `tests/unit`
-  (milliseconds), and **43** two-server tests in `tests/federation` (~13 s,
+  `go test ./...` green — **135** compatibility tests (~60 s here, ~5½ min
+  with `-race` on this machine), **70** offline unit tests in `tests/unit`
+  (milliseconds), and **84** two-server tests in `tests/federation` (~40 s,
   ~56 s with `-race`). Coverage: **168 of the 234** indexed endpoints, 33 extra
   routes (`make endpoints`). Steps 1–10 are closed: rate limiting, the
   client-API correctness tails, batched reads, offline unit tests, the
@@ -54,9 +54,10 @@ because it said nothing these steps do not.
   the room directory, spaces and `/hierarchy`, OpenID exchange, device lists, key
   queries and claims, and `TestContentMediaV1`.
   See _Complement_ below for how they run, what a run can hide, and what each remaining
-  failure is waiting for. The transport itself is not among the reasons: the bulk is
-  knocking and restricted rooms (client-side join rules and the space summary that
-  authorises them), room versions past v11, application services, and presence. The
+  failure is waiting for. The transport itself is not among the reasons: knocking,
+  restricted rooms and the space summary that authorises them are green (steps 17 and 18);
+  what is left is room versions past v11, application services, presence, the federation
+  `PUT /invite` endpoint, and redaction of an event the peer has never seen. The
   The federation
   media cases are green; see step 16.
 - The three bugs the federation suite found were not federation bugs: access tokens died
@@ -2582,3 +2583,51 @@ spec wants is an invite before the join, so the knock is a way of being seen and
   appservice virtual user asking to join a remote room is answered `401 M_UNKNOWN`: the request
   authenticates as the appservice, and the user it names has no device here. Application services
   and user-identified requests are their own piece of work.
+
+### 18. Federation XIII — the space summary (2026-11-04)
+
+Green: `TestRestrictedRoomsSpacesSummaryLocal`, `TestRestrictedRoomsSpacesSummaryFederation`,
+`TestClientSpacesSummary` (all subtests), `TestClientSpacesSummaryJoinRules`,
+`TestFederatedClientSpaces`, and `TestRoomSummaryAllowedRoomIDs` - which had never been run
+against this server before, and was red on the first try.
+
+What each turned out to be:
+
+- **The summary lists rooms the reader can reach, not the rooms the reader can read.** A
+  restricted room keeps its history to its members, so an outsider cannot read it, and the walk
+  used reading as its only gate - which hides the room from exactly the person its own join rule
+  admits. `hierarchyShows` now asks `joinableBy` as well: membership of a room on the restricted
+  room's allow list, and only of an admitting room this server can still read.
+- **A public room the reader is not in stays out.** MSC2946's phrase is "joined or potentially
+  joinable", and read literally that lists every public room a space links. The implementations
+  do not do that, and a summary of a space is not a directory of everything reachable from it.
+  Recorded here because the phrase invites the wrong reading.
+- **The federation hierarchy answer is shaped for servers, not people.** It was answered in the
+  client shape (`rooms`, recursed, paginated) and parsed the same way, which is fine between two
+  copies of this server and wrong for everybody else. The specification's answer is `room` (the
+  one room asked about, with its `children_state`), `children` (its immediate children, without
+  links), and `inaccessible_children` (the children that will not be described). One room, no
+  recursion, no pagination: the walk asks room by room. `RemoteHierarchy` asks and parses that,
+  and the walk recurses by following the links the answer carries.
+- **`allowed_room_ids` is what makes that answer decidable.** The peer is not told who is asking,
+  so it answers for the asking *server*: the room is offered when any member of that server could
+  get in, and it travels with the rooms its allow list names so the asker can decide for its own
+  user (`remoteRoomShows`). Until the peer has somebody in an admitting room it cannot make the
+  offer at all, which is the whole point of `TestRestrictedRoomsSpacesSummaryFederation`.
+- **A room that cannot be offered is answered as unknown**, `M_NOT_FOUND`, not `M_FORBIDDEN`, on
+  this endpoint. A local copy of a room wins over a peer's description: a child hosted elsewhere
+  but held here is described from what this server knows rather than asked about.
+- **Two field names were wrong**: `join_rule`, not `join_rules`, and `guest_can_join`, not
+  `guests_can_join`. The room summary (`GET /v1/room_summary/{roomIDOrAlias}`) carried the first
+  mistake too, and needed `allowed_room_ids` for restricted rooms and no key at all for the rest.
+  Our own compat test had been asserting the wrong name, which is what a test written from the
+  implementation rather than the specification buys you.
+
+`HierarchyRoom.ChildrenState` became a pointer so the two answers can differ: a client is always
+shown the key, empty for a room that is not a space; a child described to a peer omits it.
+
+A run over the neighbourhood of these routes (join, invite, federation, members, sync, the room
+directory, state, redaction, leave/ban/kick, knock, restricted, hierarchy, event auth and gap
+filling): **35 green, 5 red**, and the five are the known ones - room version 12 twice, the
+application-service bridge user, `TestFederationRoomsInvite`, and
+`TestFederationRedactSendsWithoutEvent`. Nothing that was green went red.
