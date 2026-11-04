@@ -88,6 +88,11 @@ func (s *Service) AppendEvent(ctx context.Context, draft *EventDraft) (*persist.
 		if err := s.SignAndIdentify(ctx, packet); err != nil {
 			return err
 		}
+		// The room's rules are asked about this event the same way they are asked about an
+		// event arriving from a peer, before anything of it is written.
+		if err := s.judgeLocalEvent(ctx, tx, draft.RoomID, version, packet); err != nil {
+			return err
+		}
 
 		events := persist.NewEventRepo(tx)
 		event := &persist.Event{

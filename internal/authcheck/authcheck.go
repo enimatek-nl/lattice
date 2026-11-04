@@ -131,6 +131,17 @@ type Graph struct {
 	// Rejected names the events that failed their auth checks, with the reason
 	// beside the id. Rule 2 rejects any event that cites one of them.
 	Rejected map[string]string
+	// Originating says this judgement is about an event the server holding the graph is about
+	// to sign and send itself, rather than one a peer delivered. Two of the rules ask about
+	// facts that are not in this room - who belongs to a room on a restricted room's allow
+	// list, and whose server signed an authorising claim - and a peer answers them by carrying
+	// a claim this server can check. The server originating the event has no claim to check and
+	// has the facts instead, so it is asked for them beside: see Admits.
+	Originating bool
+	// Admits names the rooms the caller has confirmed the joiner belongs to, and is read only
+	// when Originating is set. It is not a permission: the rule still reads the room's allow
+	// list, so a room listed here that the allow list does not name admits nothing.
+	Admits []string
 }
 
 // NewGraph returns an empty graph for a room version.
@@ -521,6 +532,9 @@ func checkMember(g *Graph, state State, event *Event) error {
 				return nil
 			}
 			if !claimsAuthoriser {
+				if g.admitsFrom(g.Admits, state) {
+					return nil
+				}
 				return fmt.Errorf("the room is joined through a space, and the event names no authorising user")
 			}
 			if authorisedBy == target && admitsByName(g, state) {
@@ -1033,6 +1047,35 @@ func membershipOf(g *Graph, state State, userID string) string {
 // admitsByName reports whether the room's join rules name at least one room it admits people
 // through. Malformed entries are dropped when the rules are read, so a list of junk reads as no
 // list, and a join whose only claim is membership of a room on that list has nothing to stand on.
+// admitsFrom reports whether the caller has confirmed the joiner's membership of a room this room
+// admits joins through. The confirmation is the caller's - it is a fact about another room - and
+// the allow list is read here, so a confirmation about a room the rule does not name carries
+// nothing.
+func (g *Graph) admitsFrom(confirmed []string, state State) bool {
+	if !g.Originating || len(confirmed) == 0 {
+		return false
+	}
+	event := stateEvent(g, state, matrix.TypeJoinRules, "")
+	if event == nil {
+		return false
+	}
+	var content matrix.JoinRulesContent
+	if err := json.Unmarshal(matrix.Encode(event.Content), &content); err != nil {
+		return false
+	}
+	for _, rule := range content.Allow {
+		if rule.RoomID == "" {
+			continue
+		}
+		for _, room := range confirmed {
+			if room == rule.RoomID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func admitsByName(g *Graph, state State) bool {
 	event := stateEvent(g, state, matrix.TypeJoinRules, "")
 	if event == nil {

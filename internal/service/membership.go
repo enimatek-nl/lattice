@@ -89,17 +89,13 @@ func (s *Service) JoinRoom(ctx context.Context, idOrAlias, userID string, extra 
 	if current == matrix.MembershipJoin {
 		return room.ID, nil
 	}
-	if current == matrix.MembershipBan {
-		return "", matrix.ErrForbidden("you are banned from this room")
-	}
 	if problem := s.joinAccountProblem(ctx, userID); problem != nil {
 		return "", problem
 	}
-
-	problem := s.joinRuleProblem(ctx, room.ID, userID, current)
-	if problem != nil {
-		return "", problem
-	}
+	// What the room's rules say about this join is not decided here. The join is a
+	// membership event, and the event is judged by the room's rules the moment it is
+	// appended - the same list, read the same way, as for a join a peer sends this
+	// room. Deciding it beside the endpoint as well is how the two came to disagree.
 
 	content := matrix.MemberContent{
 		Membership:  matrix.MembershipJoin,
@@ -126,74 +122,6 @@ func (s *Service) JoinRoom(ctx context.Context, idOrAlias, userID string, extra 
 		return "", err
 	}
 	return room.ID, nil
-}
-
-// restrictedJoinAllowed reports whether a user already belongs to one of the
-// rooms that grant restricted access.
-func (s *Service) restrictedJoinAllowed(ctx context.Context, roomID, userID string) bool {
-	raw, err := s.db.StateRepo.Content(roomID, matrix.TypeJoinRules, "")
-	if err != nil {
-		return false
-	}
-	var content matrix.JoinRulesContent
-	if err := matrix.DecodeContent(raw, &content); err != nil {
-		return false
-	}
-	joined := make(map[string]bool)
-	if rooms, err := s.db.MembershipRepo.RoomsFor(userID, matrix.MembershipJoin); err == nil {
-		for _, id := range rooms {
-			joined[id] = true
-		}
-	}
-	return content.GrantsAccessTo(func(room string) bool { return joined[room] })
-}
-
-// joinRuleProblem answers whether the room's current join rule lets this user become a joined
-// member, given the membership they hold now. It is asked by the join endpoints and by the state
-// endpoint, which can carry a membership event: the rule belongs to the room, not to whichever
-// door the request came through.
-func (s *Service) joinRuleProblem(ctx context.Context, roomID, userID, current string) error {
-	joinRule, err := s.db.StateRepo.JoinRule(roomID)
-	if err != nil {
-		return matrix.ErrInternal(err)
-	}
-	switch joinRule {
-	case matrix.JoinRulesPublic:
-		return nil
-	case matrix.JoinRulesInvite:
-		if current != matrix.MembershipInvite && !s.IsAdmin(ctx, userID) {
-			return matrix.ErrForbidden("an invite is required to join this room")
-		}
-		return nil
-	case matrix.JoinRulesKnock:
-		// A knock is a question, not a door. It puts the asker into the room's state so the room
-		// can answer, and the answer that lets them in is an invite. Joining on the knock alone
-		// reads the ask as the answer, and it is the sort of error a server cannot see from the
-		// outside: this server let its own user in, while every peer holding the same room
-		// refuses the same join, because the rules as written ask for an invite.
-		if current != matrix.MembershipInvite {
-			return matrix.ErrForbidden("this room is joined by invitation, and your knock has to be answered first")
-		}
-		return nil
-	case matrix.JoinRulesKnockRestricted:
-		// Two ways in, and neither of them is the knock itself. Whoever the allow list admits
-		// walks in on that; the rest have knocked, which is how they asked, and now wait for the
-		// room to answer.
-		if s.restrictedJoinAllowed(ctx, roomID, userID) {
-			return nil
-		}
-		if current != matrix.MembershipInvite {
-			return matrix.ErrForbidden("this room is joined through another room or by invitation, and your knock has to be answered first")
-		}
-		return nil
-	case matrix.JoinRulesRestricted:
-		if !s.restrictedJoinAllowed(ctx, roomID, userID) && current != matrix.MembershipInvite {
-			return matrix.ErrForbidden("you are not permitted to join this room")
-		}
-		return nil
-	default:
-		return matrix.ErrForbidden("join rule %q is not supported", joinRule)
-	}
 }
 
 // InviteRoom invites a user to a room.
@@ -272,8 +200,6 @@ func (s *Service) InviteRoom(ctx context.Context, roomID, inviter, invitee, reas
 	}
 	return nil
 }
-
-// KnockRoom records a knock on a room, which is the request-to-join flow.
 func (s *Service) KnockRoom(ctx context.Context, idOrAlias, userID, reason string) (string, error) {
 	room, err := s.MustRoom(ctx, idOrAlias)
 	if err != nil {
@@ -312,30 +238,19 @@ func (s *Service) KnockRoom(ctx context.Context, idOrAlias, userID, reason strin
 	return room.ID, nil
 }
 
-// knockProblem answers whether the room's join rule admits a knock from a user holding the given
-// membership. Knocking is not a courtesy: a room that has not said it may be knocked on has no
-// knock to accept, and a user who already has a membership in the room has no reason to knock.
-func (s *Service) knockProblem(ctx context.Context, roomID, current string) error {
-	joinRule, err := s.db.StateRepo.JoinRule(roomID)
-	if err != nil {
-		return matrix.ErrInternal(err)
-	}
-	return s.knockProblemWith(ctx, joinRule, current)
-}
-
 // knockProblemWith is knockProblem with the join rule already read, for the callers that needed it
 // for another reason anyway.
 func (s *Service) knockProblemWith(ctx context.Context, joinRule, current string) error {
+	// Only the question the caller needs before it starts: does this room admit knocks at all?
+	// A room that does not is not worth asking, and asking a peer costs a round trip for an
+	// answer the room's rules already give.
+	//
+	// What the caller's own membership means is not decided here. A knock is a membership
+	// event, and the room's rules decide those when the event is appended - including the one
+	// that a user already joined, invited or banned has nothing to ask, and the one that lets a
+	// knock be made again while the room has not answered it.
 	if joinRule != matrix.JoinRulesKnock && joinRule != matrix.JoinRulesKnockRestricted {
 		return matrix.ErrForbidden("this room does not allow knocking")
-	}
-	// A knock can be made again. The room answers a knock with an invite or a refusal, and a
-	// refusal is a leave - so "I have already knocked" would bar the second try of the one
-	// sequence knocking exists for. A knock of a user already in the room, already invited,
-	// or banned is not a request but a mistake: the room has already answered that user.
-	switch current {
-	case matrix.MembershipJoin, matrix.MembershipInvite, matrix.MembershipBan:
-		return matrix.ErrForbidden("you already have a membership in this room")
 	}
 	return nil
 }

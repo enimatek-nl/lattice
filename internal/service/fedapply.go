@@ -395,41 +395,14 @@ func stateOfAuthIDs(graph *authcheck.Graph, event *authcheck.Event) authcheck.St
 // snapshot the rules read. The events are added as well, because the rules read the
 // content of the state and not only which ids hold it.
 func (s *Service) readCurrentState(roomID string, graph *authcheck.Graph, complete map[string]bool) (authcheck.State, error) {
-	state := authcheck.State{}
-	rows, err := s.db.StateRepo.List(roomID, nil, "")
+	state, err := stateForAuth(s.db.StateRepo, s.db.EventRepo, roomID, graph)
 	if err != nil {
-		return nil, matrix.ErrInternal(err)
+		return nil, err
 	}
-	ids := make([]string, 0, len(rows))
-	for _, row := range rows {
-		state[authcheck.Key{Type: row.Type, StateKey: row.StateKey}] = row.EventID
-		ids = append(ids, row.EventID)
-	}
-	// The state's events are read in one go, because the rules read their content and
-	// the chain walk reads what they cite. A state entry whose event this server does not
-	// hold is added as a summary, which rules can be read against and a chain cannot.
-	stored, err := s.db.EventRepo.ListByIDs(ids)
-	if err != nil {
-		return nil, matrix.ErrInternal(err)
-	}
-	for _, row := range stored {
-		// Named for the same reason as in gatherAuthChain: the id is not inside the event
-		// in the newer room versions, and the graph cannot hold an event it cannot name.
-		graph.Add(pduEvent(withEventID(matrix.MustParseObject([]byte(row.JSON)), row.EventID)))
-		complete[row.EventID] = true
-	}
-	for _, row := range rows {
-		if graph.Lookup(row.EventID) != nil {
-			continue
-		}
-		key := row.StateKey
-		graph.Add(&authcheck.Event{
-			ID:       row.EventID,
-			Type:     row.Type,
-			StateKey: &key,
-			Sender:   row.Sender,
-			Content:  matrix.MustParseObject([]byte(row.Content)),
-		})
+	// Every event this server read out of its own database is held in full, which is what
+	// `complete` records: a state summary can be read against, and a chain cannot.
+	for _, id := range state {
+		complete[id] = true
 	}
 	return state, nil
 }

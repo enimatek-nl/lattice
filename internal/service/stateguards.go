@@ -6,7 +6,6 @@ import (
 
 	"github.com/enimatek-nl/lattice/internal/matrix"
 	"github.com/enimatek-nl/lattice/internal/persist"
-	"github.com/enimatek-nl/lattice/internal/power"
 )
 
 // validateStateEvent rejects state updates that the state endpoints may not
@@ -27,8 +26,6 @@ func (s *Service) validateStateEvent(ctx context.Context, roomID, sender, typ, s
 		}
 	case matrix.TypeMember:
 		return s.validateMemberStateWrite(ctx, roomID, sender, stateKey, matrix.MustParseObject(content))
-	case matrix.TypePowerLevels:
-		return s.validatePowerLevels(ctx, roomID, sender, matrix.MustParseObject(content))
 	case matrix.TypeCanonicalAlias:
 		return s.validateCanonicalAlias(ctx, roomID, content)
 	}
@@ -84,110 +81,45 @@ func (s *Service) validateCanonicalAlias(ctx context.Context, roomID string, con
 	return nil
 }
 
-// validatePowerLevels enforces the power level restrictions of the
-// specification: changing the level of a user requires a level that is at
-// least as high as both the current and the requested level of that user.
-func (s *Service) validatePowerLevels(ctx context.Context, roomID, sender string, content matrix.Object) error {
-	requested := intMap(content["users"])
-	if len(requested) == 0 {
-		return nil
-	}
-	levels := s.powerLevels(ctx, roomID)
-	have := s.PowerLevel(ctx, roomID, sender)
-	for userID, want := range requested {
-		current, explicit := levels.Users[userID]
-		if !explicit {
-			current = s.PowerLevel(ctx, roomID, userID)
-		}
-		if current == want {
-			continue
-		}
-		needed := power.ChangeRequired(current, want)
-		if have < needed {
-			return matrix.ErrForbidden(
-				"changing the power level of %s requires a power level of %d, you have %d", userID, needed, have)
-		}
-	}
-	return nil
-}
-
-// intMap coerces a decoded JSON value into a map of integers.
-func intMap(value any) map[string]int64 {
-	out := map[string]int64{}
-	switch typed := value.(type) {
-	case map[string]any:
-		for key, raw := range typed {
-			switch number := raw.(type) {
-			case float64:
-				out[key] = int64(number)
-			case int64:
-				out[key] = number
-			case int:
-				out[key] = int64(number)
-			}
-		}
-	case map[string]int64:
-		for key, number := range typed {
-			out[key] = number
-		}
-	}
-	return out
-}
-
-// validateMemberStateWrite judges a membership event written through the state
-// endpoint.
+// validateMemberStateWrite reads a membership written through the state endpoint.
 //
-// The endpoint is allowed to carry m.room.member: it is how a room's moderators ban or
-// kick without the dedicated endpoints, and how a room is set up at all in some clients.
-// Refusing it outright was a guess at safety; what the specification actually asks is
-// that the membership decide which power level the sender must hold, so invite needs the
-// room's invite level, a kick its kick level and a ban its ban level. Two memberships
-// stay personal whatever the sender's power: joining and knocking are things only the
-// user in question can do, and no level buys them.
+// The endpoint is allowed to carry m.room.member: it is how a room's moderators ban or kick
+// without the dedicated endpoints, and how a room is set up at all in some clients. Which power
+// a membership asks of the sender, whether the joiner is banned, whether the join rule admits
+// them, whether a kicked user sits below the kicker - all of that is the room's rules, and the
+// rules are read once, when the event is appended. See [Service.judgeLocalEvent].
 func (s *Service) validateMemberStateWrite(ctx context.Context, roomID, sender, stateKey string, content matrix.Object) error {
 	membership, _ := content["membership"].(string)
 	if membership == "" {
 		return matrix.ErrInvalidRequest("an m.room.member event must state a membership")
 	}
+	if _, known := knownMemberships[membership]; !known {
+		return matrix.ErrInvalidRequest("%q is not a membership", membership)
+	}
+	// The room's rules decide a membership written through the state endpoint exactly as they
+	// decide one sent through the join, invite, kick and ban endpoints: the event is judged
+	// when it is appended. What is decided here is what the endpoint means, which no room rule
+	// says: a membership is not something one user can write for another unless the room's own
+	// rules hand them that power, and a room does not invite or ban a moderator through the
+	// moderator's own hand.
 	switch membership {
-	case matrix.MembershipJoin, matrix.MembershipKnock:
-		if stateKey != sender {
-			return matrix.ErrForbidden("only the user themselves can join or knock on a room")
-		}
-		// A membership written through the state endpoint is still an entry into the room, so
-		// the room's join rule decides it. Checking only the power level here would let a room
-		// moderator walk a stranger into an invite-only room, and checking nothing at all would
-		// make the state endpoint a door with no guard.
-		current := s.MembershipOf(ctx, roomID, sender)
-		if membership == matrix.MembershipJoin {
-			return s.joinRuleProblem(ctx, roomID, sender, current)
-		}
-		return s.knockProblem(ctx, roomID, current)
-	case matrix.MembershipLeave:
-		if stateKey == sender {
-			return nil
-		}
-		if !s.Allow(ctx, roomID, sender, "kick", PowerDefaultKick) {
-			return matrix.ErrForbidden("you need permission to remove another user from this room")
-		}
-		return nil
 	case matrix.MembershipInvite:
 		if stateKey == sender {
 			return matrix.ErrForbidden("you cannot invite yourself to a room")
 		}
-		if !s.Allow(ctx, roomID, sender, "invite", PowerDefaultInvite) {
-			return matrix.ErrForbidden("you need permission to invite users to this room")
-		}
-		return nil
 	case matrix.MembershipBan:
 		if stateKey == sender {
 			return matrix.ErrForbidden("you cannot ban yourself from a room this way")
 		}
-		if !s.Allow(ctx, roomID, sender, "ban", PowerDefaultBan) {
-			return matrix.ErrForbidden("you need permission to ban users from this room")
-		}
-		return nil
-	default:
-		return matrix.ErrInvalidRequest("%q is not a membership", membership)
 	}
+	return nil
+}
+
+// knownMemberships are the memberships this server writes.
+var knownMemberships = map[string]bool{
+	matrix.MembershipJoin:   true,
+	matrix.MembershipInvite: true,
+	matrix.MembershipLeave:  true,
+	matrix.MembershipBan:    true,
+	matrix.MembershipKnock:  true,
 }
