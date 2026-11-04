@@ -3109,3 +3109,59 @@ Openings this leaves, in the order they would be picked up:
 - **`limited` in a timeline counts what the room holds**, filtered or not. That is what the
   specification means the flag to describe — the gap in the history — but it means a client can be
   told a timeline is limited by events it was never allowed to see.
+
+### 24. Reading a room you have left, and the filters a client asked for (2026-11-04)
+
+The client-API suite was re-run to completion on 2026-11-04: **91 green of 106**, where the
+table above records 40 red of 106 from 2026-11-02. Two of the three steps in this section are
+the reason, and the third is the measurement that made the other two findable.
+
+- [x] **A sync filter's allow-lists were never read.** `not_types` and `not_senders` were, and
+      `types`/`senders` were not: a client that names the three event kinds it reads was sent the
+      room's whole state and every membership in it, and a `limit: 0` timeline — a client asking
+      for *no* events — was answered with the room's entire history, because an unset limit and a
+      zero one both read as zero. `SyncFilter` now keeps the timeline and state sections apart,
+      reads `types`/`senders` for each, and distinguishes an unnamed limit from a zero one.
+- [x] **The `leave` section was rebuilt.** It used to be the room's timeline after the position,
+      its current state, and no filter at all, so a former member was shown whatever had been
+      said since they left and was shown it again on every sync afterwards. It is now: reported
+      once, by the sync whose position sits before the leave; bounded at the leave; filtered like
+      any other read; with its state block rebuilt as the room stood at the leave — a state key
+      that moved afterwards is walked back through `StateHistory` to the version in force then,
+      which is the same trick MSC2675 needed and the same absence of per-event snapshots this
+      server keeps running into. `limited` is set by fetching one event more than the window asks
+      for, and by a hole in this server's own copy of the room's history.
+- [x] **A former member can read the room they were part of.** `canRead` let in joined users,
+      invited users and strangers in a world-readable room, and refused everybody else — including
+      the person who had just walked out of a public room, from `/state`, `/members` and
+      `/messages`. Leaving ends what a member may see *now*; it does not unmake the past. Which
+      events of that past are shown is the per-event question, and it is answered by the
+      visibility gate: a room whose history opened at the join is read *as of* the leave, so
+      `/state`, `/state/{type}/{key}`, `/members` and `/messages` are bounded at that position, the
+      reader's own ending membership is always among them, and a stranger is still refused.
+- [x] **A gap a chunked answer left open is now walked shut.** `get_missing_events` asks "what is
+      between these two points" and a peer may answer with part of it; the events it did send name
+      their own parents, and `GET /_matrix/federation/v1/event/{eventId}` asks for one by name.
+      Following those names (`closeNamedHoles`) is what turned a room whose history arrived in
+      pieces into one a client can read in order: `TestSyncTimelineGap`, fifty events deep, is
+      green, and so is the flag it checks — `limited` is now true when the window reaches across a
+      parent this server does not hold, which is a hole the room pointed at itself.
+- [x] **`/event/{eventId}` refuses with 404, not 403** (step 23 said 403; Complement and the
+      specification both say 404 and both are right). `/messages`, `/context` and the state reads
+      keep the 403 that names the *room* as closed.
+
+Openings this leaves, in the order they would be picked up:
+
+- **`TestLeftRoomFixture` is one check from green**: the `/messages` chunk of a departed
+  `joined`-visibility room. Every other check in it passes, including state as of the leave, the
+  old room name, and the member list bounded to that point.
+- **A bounded read keeps the room's own pagination cursors.** `/messages` on a departed room can
+  answer a shorter chunk than it fetched, and `start`/`end` still name the window walked. That is
+  deliberate — a client must be able to page on to a place it was told about — but it means a
+  filtered page and its cursors disagree in size.
+- **`/sync` and `TestSync` are load-sensitive.** Run alone, `TestSync` passes; inside a full
+  parallel run it has timed out on `MustSyncUntil` more than once. Worth a look at whether our
+  own long-poll wake-up is as prompt as it thinks it is.
+- **The `members` bound is applied by the client-API handler**, not by the membership layer, so a
+  federation or admin read of the same room is unbounded. Correct today (those readers are
+  servers, not departed members) and worth remembering if that changes.

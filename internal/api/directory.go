@@ -217,7 +217,10 @@ func (a *App) handleMembers(w http.ResponseWriter, r *http.Request) {
 	if membership != "" {
 		filters = append(filters, splitList(membership)...)
 	}
-	members, err := a.svc.Members(r.Context(), roomID, filters, notMembership)
+	// A former member of a room whose history opened at the join reads the members the room
+	// had when they left, not the ones it has now.
+	bound, _ := a.svc.HistoryBound(r.Context(), roomID, userID)
+	members, err := a.svc.Members(r.Context(), roomID, userID, filters, notMembership, bound)
 	if err != nil {
 		a.writeError(w, r, err)
 		return

@@ -13,17 +13,34 @@ import (
 type SyncFilter struct {
 	// TimelineLimit is room.timeline.limit.
 	TimelineLimit int
-	// NotTypes are room.state.not_types exclusions.
-	NotTypes []string
-	// NotSenders are room.state.not_senders exclusions.
+	// TimelineLimitSet says the filter named a limit at all. The distinction matters:
+	// `"limit": 0` asks for no timeline events, while an unnamed limit asks for the
+	// server's default. Reading both as zero hands every client that asked for nothing the
+	// room's whole history, and every client that asked for nothing at all a default.
+	TimelineLimitSet bool
+	// TimelineTypes and TimelineSenders are room.timeline allow-lists; an empty list
+	// restricts nothing. A filter that names types says which ones the client reads, and a
+	// server that ignores the list sends a payload nobody asked for into rooms the client
+	// is not looking at.
+	TimelineTypes   []string
+	TimelineSenders []string
+	// Types and Senders are the room.state allow-lists.
+	Types   []string
+	Senders []string
+	// NotTypes and NotSenders are the exclusions of both sections.
+	NotTypes   []string
 	NotSenders []string
 	// LazyLoadState requests lazy loaded member state (served in full; the
 	// flag only affects payload size expectations).
 	LazyLoadState bool
 }
 
-// timelineLimit applies the filter limit when present.
+// timelineLimit applies the filter limit when present, and answers zero when the filter asked
+// for zero events.
 func (f *SyncFilter) timelineLimit(fallback int) int {
+	if f != nil && f.TimelineLimitSet {
+		return f.TimelineLimit
+	}
 	if f != nil && f.TimelineLimit > 0 {
 		return f.TimelineLimit
 	}
@@ -31,6 +48,41 @@ func (f *SyncFilter) timelineLimit(fallback int) int {
 		return 10
 	}
 	return fallback
+}
+
+// selects reports whether a value passes an allow-list and an exclusion list. An empty
+// allow-list names nothing, which is the same as naming everything.
+func selects(allow, block []string, value string) bool {
+	for _, banned := range block {
+		if banned == value {
+			return false
+		}
+	}
+	if len(allow) == 0 {
+		return true
+	}
+	for _, wanted := range allow {
+		if wanted == value {
+			return true
+		}
+	}
+	return false
+}
+
+// allowedInTimeline reports whether a timeline event passes the filter's timeline section.
+func (f *SyncFilter) allowedInTimeline(typ, sender string) bool {
+	if f == nil {
+		return true
+	}
+	return selects(f.TimelineTypes, f.NotTypes, typ) && selects(f.TimelineSenders, f.NotSenders, sender)
+}
+
+// allowedInState reports whether a state event passes the filter's state section.
+func (f *SyncFilter) allowedInState(typ, sender string) bool {
+	if f == nil {
+		return true
+	}
+	return selects(f.Types, f.NotTypes, typ) && selects(f.Senders, f.NotSenders, sender)
 }
 
 // syncFilter resolves the filter for a sync call, from the filter id or the
@@ -51,17 +103,28 @@ func (s *Service) syncFilter(ctx context.Context, params SyncParams) (*SyncFilte
 	if raw == "" {
 		return filter, nil
 	}
+	// A selection is the three lists a filter section may name. The specification lets a
+	// client write them on `room` for both sections and repeat them per section, where the
+	// per-section list wins.
+	type selection struct {
+		Types      []string `json:"types"`
+		Senders    []string `json:"senders"`
+		NotTypes   []string `json:"not_types"`
+		NotSenders []string `json:"not_senders"`
+	}
 	var body struct {
 		Room struct {
+			selection
 			State struct {
-				NotTypes        []string `json:"not_types"`
-				NotSenders      []string `json:"not_senders"`
+				selection
+				Limit           *int `json:"limit"`
 				LazyLoadOptions struct {
 					LazyLoad bool `json:"lazy_load_options"`
 				} `json:"lazy_load_options"`
 			} `json:"state"`
 			Timeline struct {
-				Limit int `json:"limit"`
+				selection
+				Limit *int `json:"limit"`
 			} `json:"timeline"`
 		} `json:"room"`
 	}
@@ -69,28 +132,36 @@ func (s *Service) syncFilter(ctx context.Context, params SyncParams) (*SyncFilte
 	if err := json.Unmarshal([]byte(raw), &body); err != nil {
 		return nil, matrix.ErrInvalidRequest("invalid filter: %v", err)
 	}
-	filter.NotTypes = body.Room.State.NotTypes
-	filter.NotSenders = body.Room.State.NotSenders
-	filter.TimelineLimit = body.Room.Timeline.Limit
+	filter.NotTypes = firstList(body.Room.State.NotTypes, body.Room.NotTypes)
+	filter.NotSenders = firstList(body.Room.State.NotSenders, body.Room.NotSenders)
+	filter.Types = firstList(body.Room.State.Types, body.Room.Types)
+	filter.Senders = firstList(body.Room.State.Senders, body.Room.Senders)
+	filter.TimelineTypes = firstList(body.Room.Timeline.Types, body.Room.Types)
+	filter.TimelineSenders = firstList(body.Room.Timeline.Senders, body.Room.Senders)
+	// The timeline section's own exclusions beat the room-wide ones.
+	if len(body.Room.Timeline.NotTypes) > 0 {
+		filter.NotTypes = body.Room.Timeline.NotTypes
+	}
+	if len(body.Room.Timeline.NotSenders) > 0 {
+		filter.NotSenders = body.Room.Timeline.NotSenders
+	}
+	if body.Room.Timeline.Limit != nil {
+		filter.TimelineLimit = *body.Room.Timeline.Limit
+		filter.TimelineLimitSet = true
+	}
+	if body.Room.State.LazyLoadOptions.LazyLoad {
+		filter.LazyLoadState = true
+	}
 	return filter, nil
 }
 
-// allowedByFilter reports whether a state event passes the filter exclusions.
-func (f *SyncFilter) allowedByFilter(typ, sender string) bool {
-	if f == nil {
-		return true
+// firstList answers the first list that names anything, which is how a per-section filter
+// overrides a room-wide one without losing it when the section is silent.
+func firstList(primary, fallback []string) []string {
+	if len(primary) > 0 {
+		return primary
 	}
-	for _, notType := range f.NotTypes {
-		if notType == typ {
-			return false
-		}
-	}
-	for _, notSender := range f.NotSenders {
-		if notSender == sender {
-			return false
-		}
-	}
-	return true
+	return fallback
 }
 
 // stateEventsWire renders state rows as events. The events a room's state points
@@ -154,7 +225,7 @@ func (s *Service) stateEvents(ctx context.Context, roomID string, since uint64, 
 		if skip[stateKeyOf(row.Type, row.StateKey)] {
 			return false
 		}
-		return filter.allowedByFilter(row.Type, row.Sender)
+		return filter.allowedInState(row.Type, row.Sender)
 	})
 }
 
@@ -282,15 +353,57 @@ func (s *Service) knockedRoomSync(ctx context.Context, userID, roomID string,
 // leftRoomSync renders the leave section of a sync response. A room is only
 // included when it has events after the token, so leaving does not reappear on
 // every subsequent sync.
-func (s *Service) leftRoomSync(ctx context.Context, userID, roomID string, since uint64, limit int) (*matrix.LeftRoom, bool, error) {
-	events, err := s.db.EventRepo.Timeline(roomID, since, limit)
+// leftRoomSync renders the leave section of a room.
+//
+// A left room is reported once: the sync that carries the leave. A client that has been told a
+// room is gone does not need to be told again on every sync afterwards, and a room the user
+// walked out of years ago is not news on an incremental sync. The bound that follows from that
+// is the important one for correctness: the room's history in the leave section stops at the
+// leave, because what a former member is shown is what they saw while they were there, not
+// whatever has been said since.
+func (s *Service) leftRoomSync(ctx context.Context, userID, roomID string, since uint64,
+	limit int, filter *SyncFilter) (*matrix.LeftRoom, bool, error) {
+	left, err := s.membershipPos(roomID, userID)
 	if err != nil {
-		return nil, false, matrix.ErrInternal(err)
+		return nil, false, err
 	}
-	if len(events) == 0 {
+	// since=0 is a first sync, where a room the user once left is reported with the history
+	// they were part of; afterwards the room is reported only by the sync whose position sits
+	// before the leave.
+	if since > 0 && left <= since {
 		return nil, false, nil
 	}
-	state, err := s.stateEvents(ctx, roomID, since, nil, stateKeysIn(events))
+	want := filter.timelineLimit(limit)
+	window := []*persist.Event{}
+	if want > 0 {
+		window, err = s.db.EventRepo.TimelineUntil(roomID, since, left, want+1)
+		if err != nil {
+			return nil, false, matrix.ErrInternal(err)
+		}
+	}
+	// MSC2675 applies to a former member as much as to a current one, with the room's own
+	// decision about when its history opened deciding what of it they are shown.
+	gate, err := s.historyGateFor(ctx, roomID, userID)
+	if err != nil {
+		return nil, false, err
+	}
+	kept := make([]*persist.Event, 0, len(window))
+	for _, event := range window {
+		if !filter.allowedInTimeline(event.Type, event.Sender) || !gate.allows(event) {
+			continue
+		}
+		kept = append(kept, event)
+	}
+	// The extra event fetched above is what says whether the window was cut: a leave section
+	// that ran out of room is limited in the same sense a joined timeline is.
+	limited := len(window) > want
+	if len(window) > want {
+		window = window[:len(window)-1]
+	}
+	if len(window) > len(kept) {
+		limited = true
+	}
+	state, err := s.stateUntil(ctx, roomID, since, left, filter, stateKeysIn(kept))
 	if err != nil {
 		return nil, false, err
 	}
@@ -300,16 +413,94 @@ func (s *Service) leftRoomSync(ctx context.Context, userID, roomID string, since
 	}
 	room := &matrix.LeftRoom{
 		Timeline: matrix.Timeline{
-			Events:    toWire(events),
-			Limited:   false,
-			PrevBatch: s.Token(events[0].StreamPos),
+			Events:  toWire(kept),
+			Limited: limited,
 		},
 		State: matrix.State{Events: state, PrevBatch: s.Token(since)},
+	}
+	if len(window) > 0 {
+		room.Timeline.PrevBatch = s.Token(window[0].StreamPos)
+	} else {
+		room.Timeline.PrevBatch = s.Token(left)
 	}
 	if len(accountData) > 0 {
 		room.AccountData = &matrix.Ephemeral{Events: accountData}
 	}
-	return room, true, nil
+	return room, len(kept) > 0 || len(state) > 0, nil
+}
+
+// membershipPos is where a user's current membership of a room was written. A membership row
+// points at the event that says it, so the position of that event is the position of the fact.
+func (s *Service) membershipPos(roomID, userID string) (uint64, error) {
+	row, err := s.db.MembershipRepo.Get(roomID, userID)
+	if err != nil {
+		if persist.IsNotFound(err) {
+			return 0, nil
+		}
+		return 0, matrix.ErrInternal(err)
+	}
+	event, err := s.db.EventRepo.Get(row.EventID)
+	if err != nil {
+		if persist.IsNotFound(err) {
+			return 0, nil
+		}
+		return 0, matrix.ErrInternal(err)
+	}
+	return event.StreamPos, nil
+}
+
+// stateUntil is the state block of a room as it stood at a position - for a leave section, as
+// it stood when the user left.
+//
+// This server keeps the state a room holds, not a snapshot at every event, so the state at a
+// past position is rebuilt: a state key whose current event predates the position is already
+// the answer, and one that moved afterwards is walked back through the room's own versions of
+// that key to the one in force then. A key first written after the position has no answer, and
+// contributes nothing.
+func (s *Service) stateUntil(ctx context.Context, roomID string, since, until uint64,
+	filter *SyncFilter, skip map[string]bool) ([]matrix.Event, error) {
+	rows, err := s.db.StateRepo.List(roomID, nil, "")
+	if err != nil {
+		return nil, matrix.ErrInternal(err)
+	}
+	current := make([]*persist.Event, 0, len(rows))
+	for _, row := range rows {
+		if skip[stateKeyOf(row.Type, row.StateKey)] {
+			continue
+		}
+		if !filter.allowedInState(row.Type, row.Sender) {
+			continue
+		}
+		event, err := s.db.EventRepo.Get(row.EventID)
+		if err != nil {
+			continue
+		}
+		if event.StreamPos <= until && (since == 0 || event.StreamPos > since) {
+			current = append(current, event)
+			continue
+		}
+		// The key moved after the position. What was in force at the position is the last
+		// earlier version of it, if the room ever wrote one.
+		versions, err := s.db.EventRepo.StateHistory(roomID, row.Type, row.StateKey)
+		if err != nil {
+			return nil, matrix.ErrInternal(err)
+		}
+		var best *persist.Event
+		for _, version := range versions {
+			if version.StreamPos > until {
+				break
+			}
+			best = version
+		}
+		if best != nil && (since == 0 || best.StreamPos > since) {
+			current = append(current, best)
+		}
+	}
+	out := make([]matrix.Event, 0, len(current))
+	for _, event := range current {
+		out = append(out, event.Matrix())
+	}
+	return out, nil
 }
 
 // accountDataEvents returns the global account data events of a user.

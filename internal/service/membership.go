@@ -398,7 +398,11 @@ type Member struct {
 
 // Members lists members of a room, optionally filtered by membership and
 // excluded by a "not membership" filter.
-func (s *Service) Members(ctx context.Context, roomID string, memberships []string, notMembership string) ([]Member, error) {
+// Members lists members of a room, optionally filtered by membership and excluded by a
+// "not membership" filter, and read as of a position when one is given. The position is what a
+// former member of a room whose history opened at the join is shown: the memberships the room
+// held when they left, not the ones it holds now.
+func (s *Service) Members(ctx context.Context, roomID, reader string, memberships []string, notMembership string, at uint64) ([]Member, error) {
 	all := []string{
 		matrix.MembershipJoin, matrix.MembershipInvite,
 		matrix.MembershipLeave, matrix.MembershipBan, matrix.MembershipKnock,
@@ -417,7 +421,14 @@ func (s *Service) Members(ctx context.Context, roomID string, memberships []stri
 			break
 		}
 	}
-	rows, err := s.db.MembershipRepo.Members(roomID, memberships...)
+	query := memberships
+	if at > 0 {
+		// A bounded read cannot filter in the query: the membership a row holds now is not the
+		// membership the room held at the bound, and the reader's own ending event would be
+		// filtered out before it could be kept for them.
+		query = all
+	}
+	rows, err := s.db.MembershipRepo.Members(roomID, query...)
 	if err != nil {
 		return nil, matrix.ErrInternal(err)
 	}
@@ -426,6 +437,16 @@ func (s *Service) Members(ctx context.Context, roomID string, memberships []stri
 	// behind them can each be read in one query.
 	kept := make([]int, 0, len(rows))
 	for i, row := range rows {
+		// A reader bounded by their own leaving is a member of the room's past, and the event
+		// that ended their membership is theirs to see: a client that cannot find it cannot
+		// explain why the room is gone. The membership filter is not applied to it.
+		if at > 0 && row.UserID == reader {
+			kept = append(kept, i)
+			continue
+		}
+		if at > 0 && !contains(memberships, row.Membership) {
+			continue
+		}
 		if notMembership != "" && row.Membership == notMembership {
 			continue
 		}
@@ -447,6 +468,19 @@ func (s *Service) Members(ctx context.Context, roomID string, memberships []stri
 	}
 	for _, i := range kept {
 		row := rows[i]
+		if at > 0 {
+			event := events[row.EventID]
+			if event == nil || event.StreamPos > at {
+				// This membership moved after the reader's view of the room closed. What they
+				// are shown is the version in force at that point, if the room had one: a member
+				// who arrived later has no version there and is not in the room they are reading.
+				best, err := s.stateEventUntil(roomID, matrix.TypeMember, row.UserID, at)
+				if err != nil {
+					continue
+				}
+				events[row.EventID] = best
+			}
+		}
 		member := Member{
 			UserID:      row.UserID,
 			DisplayName: profiles[row.UserID].DisplayName,
@@ -491,4 +525,14 @@ func (s *Service) JoinedMembers(ctx context.Context, roomID string) (map[string]
 		joined[row.UserID] = entry
 	}
 	return joined, nil
+}
+
+// contains says a list names a value.
+func contains(list []string, value string) bool {
+	for _, entry := range list {
+		if entry == value {
+			return true
+		}
+	}
+	return false
 }

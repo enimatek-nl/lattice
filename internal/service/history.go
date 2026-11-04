@@ -66,6 +66,22 @@ func (s *Service) History(ctx context.Context, params HistoryParams) (*HistoryRe
 		return nil, err
 	}
 	readable, _ := gate.keepReadable(events)
+	// A former member of a room whose history opened at the join reads it as of their leave:
+	// the pagination cursors stay the room's own, so paging on still walks the room, but what
+	// arrives is what they were told while they were in it.
+	if bound, ok := s.HistoryBound(ctx, params.RoomID, params.UserID); ok {
+		until := make([]*persist.Event, 0, len(readable))
+		for _, event := range readable {
+			// Up to and including the bound: the event that ended the membership is part of
+			// what the reader may see - it is their own membership - and it is the newest thing
+			// in the history they are entitled to, so a capped page ends there rather than
+			// reaching an event older still.
+			if event.StreamPos <= bound {
+				until = append(until, event)
+			}
+		}
+		readable = until
+	}
 	result := &HistoryResult{Chunk: toWire(readable)}
 	if err := s.annotateThreads(params.RoomID, params.UserID, result.Chunk); err != nil {
 		return nil, err
@@ -113,9 +129,17 @@ func parseDirection(dir, fallback string) (string, error) {
 }
 
 // RoomEvent returns a single event of a room.
+// RoomEvent answers GET /rooms/{roomID}/event/{eventID}.
+//
+// Every refusal here is a 404 rather than a 403. The specification says the event is not
+// found when the user may not read it, and Complement checks exactly that: an answer that
+// distinguishes "there is no such event" from "there is one and you may not see it" tells a
+// caller what the room holds, which is the very thing history visibility exists to hide.
+// The reads that name a *room* - /messages, /context, /state - keep the 403 that says the
+// room itself is closed.
 func (s *Service) RoomEvent(ctx context.Context, roomID, eventID, userID string) (*matrix.Event, error) {
 	if err := s.RequireReadable(ctx, roomID, userID); err != nil {
-		return nil, err
+		return nil, matrix.ErrNotFound("no event %s in room %s", eventID, roomID)
 	}
 	event, err := s.db.EventRepo.GetInRoom(roomID, eventID)
 	if err != nil {
@@ -134,10 +158,10 @@ func (s *Service) RoomEvent(ctx context.Context, roomID, eventID, userID string)
 		return nil, err
 	}
 	if !gate.allows(event) {
-		// The event is in the room and the user may read the room; what says no is the
-		// room's own decision about when its history opened. MSC2675 asks for 403 here,
-		// not the 404 an event that does not exist earns.
-		return nil, matrix.ErrForbidden("this room hides events from before your membership")
+		// The event is in the room and the user may read the room; what says no is the room's
+		// own decision about when its history opened. The answer is the same 404 an event that
+		// does not exist earns, for the reason above.
+		return nil, matrix.ErrNotFound("no event %s in room %s", eventID, roomID)
 	}
 	wire := event.Matrix()
 	// MSC2675 lists GET /rooms/{roomId}/event/{eventId} among the endpoints that

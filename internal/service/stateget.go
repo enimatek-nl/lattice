@@ -13,6 +13,27 @@ func (s *Service) RoomState(ctx context.Context, roomID, userID string, types []
 	if err := s.RequireReadable(ctx, roomID, userID); err != nil {
 		return nil, err
 	}
+	if bound, ok := s.HistoryBound(ctx, roomID, userID); ok {
+		// The room as it stood when this reader stopped being part of it, rebuilt from the
+		// versions the room wrote of each key rather than the ones it holds now.
+		kept, err := s.stateUntil(ctx, roomID, 0, bound, nil, nil)
+		if err != nil {
+			return nil, err
+		}
+		if len(types) == 0 {
+			return kept, nil
+		}
+		filtered := make([]matrix.Event, 0, len(kept))
+		for _, event := range kept {
+			for _, want := range types {
+				if event.Type == want {
+					filtered = append(filtered, event)
+					break
+				}
+			}
+		}
+		return filtered, nil
+	}
 	rows, err := s.db.StateRepo.Events(roomID, types)
 	if err != nil {
 		return nil, matrix.ErrInternal(err)
@@ -29,6 +50,13 @@ func (s *Service) RoomState(ctx context.Context, roomID, userID string, types []
 func (s *Service) StateContent(ctx context.Context, roomID, typ, stateKey, userID string) (matrix.RawMessage, error) {
 	if err := s.RequireReadable(ctx, roomID, userID); err != nil {
 		return nil, err
+	}
+	if bound, ok := s.HistoryBound(ctx, roomID, userID); ok {
+		event, err := s.stateEventUntil(roomID, typ, stateKey, bound)
+		if err != nil {
+			return nil, err
+		}
+		return matrix.RawMessage(event.Content), nil
 	}
 	raw, err := s.db.StateRepo.Content(roomID, typ, stateKey)
 	if err != nil {
@@ -47,6 +75,13 @@ func (s *Service) StateContent(ctx context.Context, roomID, typ, stateKey, userI
 func (s *Service) StateEventFor(ctx context.Context, roomID, typ, stateKey, userID string) (matrix.Event, error) {
 	if err := s.RequireReadable(ctx, roomID, userID); err != nil {
 		return matrix.Event{}, err
+	}
+	if bound, ok := s.HistoryBound(ctx, roomID, userID); ok {
+		event, err := s.stateEventUntil(roomID, typ, stateKey, bound)
+		if err != nil {
+			return matrix.Event{}, err
+		}
+		return event.Matrix(), nil
 	}
 	event, err := s.StateEvent(ctx, roomID, typ, stateKey)
 	if err != nil {
@@ -72,4 +107,24 @@ func (s *Service) StateEvent(ctx context.Context, roomID, typ, stateKey string) 
 		return nil, matrix.ErrInternal(err)
 	}
 	return event, nil
+}
+
+// stateEventUntil is the event that held a state key at a position: the last version the room
+// wrote of that key at or before it.
+func (s *Service) stateEventUntil(roomID, typ, stateKey string, until uint64) (*persist.Event, error) {
+	versions, err := s.db.EventRepo.StateHistory(roomID, typ, stateKey)
+	if err != nil {
+		return nil, matrix.ErrInternal(err)
+	}
+	var best *persist.Event
+	for _, version := range versions {
+		if version.StreamPos > until {
+			break
+		}
+		best = version
+	}
+	if best == nil {
+		return nil, matrix.ErrNotFound("no state event of type %q with key %q at that point", typ, stateKey)
+	}
+	return best, nil
 }

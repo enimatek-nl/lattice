@@ -38,6 +38,15 @@ const (
 	gapFillEvents = 20
 	// gapFillBudget bounds the asking, network and all, for one arriving event.
 	gapFillBudget = 10 * time.Second
+	// gapFillParents caps the events this server fetches one at a time to close a hole a
+	// chunked answer left open. It is a larger number than gapFillRounds times gapFillEvents
+	// would suggest, because the two ask different questions: get_missing_events asks for the
+	// graph between two points, and a fetch by id asks for one named event. A peer that answers
+	// the first with a chunk leaves the rest named but unheld, and a room whose history is a
+	// long chain needs one question per event in it.
+	gapFillParents = 80
+	// gapFillScan is how far back into a room this server looks for holes to close.
+	gapFillScan = 50
 	// gapStateEvents caps the state events this server fetches by id from a peer that answers
 	// a state question with ids only. A room's whole state is rarely this large, and closing
 	// one gap is not worth an unbounded number of requests.
@@ -69,6 +78,13 @@ func (s *Service) fillGraphGap(ctx context.Context, pdu matrix.Object, version, 
 	// be holding. Asking the peer what its state was at the event that cites the hole, and
 	// settling this server's own picture against it, is what turns two partial views of a room
 	// into one, instead of leaving the room to whichever event was written down last.
+	// A chunked answer to get_missing_events can leave the middle of a chain out: the events it
+	// did send name their own parents, and a server that is in the room may be asked for an
+	// event by id. Walking those named holes is what turns "the peer answered part of it" into
+	// a room whose history this server can actually read.
+	if closed := s.closeNamedHoles(ctx, version, peer, roomID); closed > 0 {
+		log.Printf("federation: %d more events of %s fetched by id closed its gap", closed, roomID)
+	}
 	if settled, settleWhy := s.settleStateWithPeer(ctx, roomID, version, peer, eventID); settled > 0 {
 		log.Printf("federation: %s's state at %s settled %d pieces of state in %s", peer, eventID, settled, roomID)
 	} else if settleWhy != "" {
@@ -416,4 +432,119 @@ func (s *Service) peerStateAt(ctx context.Context, transport *federation.Transpo
 		state = append(state, pdu)
 	}
 	return state, nil, ""
+}
+
+// closeNamedHoles walks the parents of this room's recent events that this server was named
+// but never given, and asks the peer that is in the room for each by id. Each answer names its
+// own parents, so the walk continues back through the chain until the room's history is whole,
+// the peer stops answering, or the budget runs out.
+//
+// This is the second of the two questions a gap asks. get_missing_events asks "what is between
+// these two points", which a peer may answer partially; a fetch by id asks "give me this event",
+// which a peer that is in the room can answer whatever it holds. Only the second closes a chain
+// a chunked answer left in pieces.
+func (s *Service) closeNamedHoles(ctx context.Context, version, peer, roomID string) int {
+	queue := s.holeEdges(ctx, roomID)
+	if len(queue) == 0 {
+		return 0
+	}
+	seen := map[string]bool{}
+	closed := 0
+	for len(queue) > 0 && closed < gapFillParents {
+		id := queue[0]
+		queue = queue[1:]
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		if ctx.Err() != nil {
+			return closed
+		}
+		fetched, err := s.fetchEventFromPeer(ctx, peer, id)
+		if err != nil {
+			// The peer may hold the id but not give it out, or may not hold it at all. Neither
+			// is a reason to stop asking about the rest of the names this server already has.
+			log.Printf("federation: asking %s for %s of %s did not work: %v", peer, id, roomID, err)
+			continue
+		}
+		judged, problem := s.judgeFetchedEvent(ctx, fetched, version, peer)
+		if problem != "" {
+			log.Printf("federation: %s", problem)
+			continue
+		}
+		if roomOfPDU(judged, version, roomID) != roomID {
+			log.Printf("federation: %s answered %s of %s with an event of another room", peer, id, roomID)
+			continue
+		}
+		outcome, reason, err := s.applyIncomingPDU(ctx, judged, version, peer, id)
+		if err != nil {
+			log.Printf("federation: %s of %s could not be processed: %v", id, roomID, err)
+			continue
+		}
+		if outcome == OutcomeRejected {
+			log.Printf("federation: the room refuses %s fetched to close its gap: %s", id, reason)
+			continue
+		}
+		closed++
+		// The event just fetched names its own parents. Those this server still does not hold
+		// are the next holes, and asking about them directly avoids re-scanning the room for
+		// every event that lands.
+		for _, parent := range s.unheld(idsOfPDUList(judged, "prev_events")) {
+			queue = append(queue, parent)
+		}
+	}
+	return closed
+}
+
+// holeEdges names the parents of a room's recent events that this server does not hold: the
+// holes the room points at itself. The scan is bounded, because a hole is found at the seam
+// between what this server holds and what it was not sent, and that seam is near the newest
+// events rather than at the room's beginning.
+func (s *Service) holeEdges(ctx context.Context, roomID string) []string {
+	if ctx.Err() != nil {
+		return nil
+	}
+	rows, err := s.db.EventRepo.History(roomID, 0, "b", gapFillScan, 0)
+	if err != nil {
+		return nil
+	}
+	names := make([]string, 0, len(rows))
+	seen := map[string]bool{}
+	for _, row := range rows {
+		for _, parent := range row.PrevEventIDs() {
+			if parent == "" || seen[parent] {
+				continue
+			}
+			seen[parent] = true
+			names = append(names, parent)
+		}
+	}
+	return s.unheld(names)
+}
+
+// unheld answers the ids of this list that the events table does not have.
+func (s *Service) unheld(ids []string) []string {
+	unique := make([]string, 0, len(ids))
+	seen := map[string]bool{}
+	for _, id := range ids {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		unique = append(unique, id)
+	}
+	if len(unique) == 0 {
+		return nil
+	}
+	held, err := s.db.EventRepo.GetByIDs(unique)
+	if err != nil {
+		return nil
+	}
+	missing := make([]string, 0, len(unique))
+	for _, id := range unique {
+		if _, ok := held[id]; !ok {
+			missing = append(missing, id)
+		}
+	}
+	return missing
 }

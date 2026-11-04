@@ -142,7 +142,7 @@ func (s *Service) buildSync(ctx context.Context, params SyncParams, filter *Sync
 		changed = changed || knockChanged
 	}
 	for _, roomID := range left {
-		room, roomChanged, err := s.leftRoomSync(ctx, userID, roomID, since, params.Limit)
+		room, roomChanged, err := s.leftRoomSync(ctx, userID, roomID, since, params.Limit, filter)
 		if err != nil {
 			return nil, false, err
 		}
@@ -245,22 +245,35 @@ func (s *Service) buildSync(ctx context.Context, params SyncParams, filter *Sync
 
 // joinedRoomSync renders the join section of one room.
 func (s *Service) joinedRoomSync(ctx context.Context, userID, roomID string, since uint64, limit int, filter *SyncFilter) (*matrix.JoinedRoom, bool, error) {
-	events, err := s.db.EventRepo.Timeline(roomID, since, filter.timelineLimit(limit))
-	if err != nil {
-		return nil, false, matrix.ErrInternal(err)
+	want := filter.timelineLimit(limit)
+	var events []*persist.Event
+	if want > 0 {
+		var err error
+		events, err = s.db.EventRepo.Timeline(roomID, since, want)
+		if err != nil {
+			return nil, false, matrix.ErrInternal(err)
+		}
 	}
-	// MSC2675: which of a room's events a member may see depends on when they were in it, so
-	// events backfilled from a peer do not arrive in a timeline that the room closed before
-	// the user joined. `limited` still counts what the room holds, as the specification
-	// means it: it describes the gap, not what was withheld.
+	// The filter's timeline section names what a client reads, and MSC2675 names when the room
+	// opened to them. Both say which of the room's events arrive.
 	gate, err := s.historyGateFor(ctx, roomID, userID)
 	if err != nil {
 		return nil, false, err
 	}
-	events, _ = gate.keepReadable(events)
+	kept := make([]*persist.Event, 0, len(events))
+	for _, event := range events {
+		if !filter.allowedInTimeline(event.Type, event.Sender) || !gate.allows(event) {
+			continue
+		}
+		kept = append(kept, event)
+	}
+	events = kept
 	room := &matrix.JoinedRoom{
 		Timeline: matrix.Timeline{
-			Events:    toWire(events),
+			Events: toWire(events),
+			// prev_batch names where a client walks back from. A capped window has to point at
+			// its own beginning, or the events that were left out of it - the gap the `limited`
+			// flag just announced - would be unreachable by paging.
 			PrevBatch: s.Token(since),
 		},
 		State: matrix.State{Events: []matrix.Event{}},
@@ -324,13 +337,18 @@ func (s *Service) joinedRoomSync(ctx context.Context, userID, roomID string, sin
 	}
 	room.InviteCount = invites
 
-	limited, err := s.timelineLimited(roomID, since, len(events), filter.timelineLimit(limit))
+	limited, err := s.timelineLimited(roomID, since, events, filter.timelineLimit(limit))
 	if err != nil {
 		return nil, false, err
 	}
 	room.Timeline.Limited = limited
-	if len(events) > 0 {
+	if len(events) > 0 && (limited || since == 0) {
 		room.Timeline.PrevBatch = s.Token(events[0].StreamPos)
+	} else if len(events) > 0 {
+		// Nothing was skipped: walking back from where the client stopped is the honest
+		// cursor, and pointing at the first event of a window the client already holds would
+		// make it page over the same ground.
+		room.Timeline.PrevBatch = s.Token(since)
 	} else {
 		pos, err := s.db.EventRepo.LatestRoomStreamPos(roomID)
 		if err != nil {
@@ -356,7 +374,7 @@ func (s *Service) membershipAfter(roomID, userID string, since uint64) bool {
 }
 
 // timelineLimited reports whether events exist that this response did not carry.
-func (s *Service) timelineLimited(roomID string, since uint64, returned, limit int) (bool, error) {
+func (s *Service) timelineLimited(roomID string, since uint64, events []*persist.Event, limit int) (bool, error) {
 	if limit == 0 {
 		return false, nil
 	}
@@ -364,7 +382,19 @@ func (s *Service) timelineLimited(roomID string, since uint64, returned, limit i
 	if err != nil {
 		return false, matrix.ErrInternal(err)
 	}
-	return total > returned, nil
+	if total > len(events) {
+		return true, nil
+	}
+	// The count is not the whole story. A window that reaches across a hole in this server's
+	// own copy of the room is incomplete whatever the count says, because an event inside it
+	// names a parent the room never gave this server: something is missing between, whether or
+	// not this server can count it. Saying so is what lets a client page for the hole instead of
+	// concluding the room stood still.
+	names := make([]string, 0, len(events))
+	for _, event := range events {
+		names = append(names, event.PrevEventIDs()...)
+	}
+	return len(s.unheld(names)) > 0, nil
 }
 
 // annotateThreads attaches the m.thread summary of a thread root to the

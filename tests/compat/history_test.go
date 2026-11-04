@@ -128,13 +128,22 @@ func TestEventPermissions(t *testing.T) {
 
 	carol := server.Register("carol", "kettle")
 	for _, path := range []string{
-		"/_matrix/client/v3/rooms/" + aliceRoom + "/event/" + eventID,
-		"/_matrix/client/v3/rooms/" + other + "/event/" + eventID,
 		"/_matrix/client/v3/rooms/" + other + "/messages",
 		"/_matrix/client/v3/rooms/" + other + "/context/" + eventID,
 	} {
 		if resp := server.Do(http.MethodGet, path, carol.Token, nil); resp.Status != http.StatusForbidden {
 			t.Errorf("%s: got %d %s, want 403", path, resp.Status, resp.Raw)
+		}
+	}
+	// The event endpoints refuse a stranger with 404 rather than 403: saying "you may not see
+	// this one" confirms the room holds an event by that id, which is what the room's history
+	// rule is meant to keep quiet.
+	for _, path := range []string{
+		"/_matrix/client/v3/rooms/" + aliceRoom + "/event/" + eventID,
+		"/_matrix/client/v3/rooms/" + other + "/event/" + eventID,
+	} {
+		if resp := server.Do(http.MethodGet, path, carol.Token, nil); resp.Status != http.StatusNotFound {
+			t.Errorf("%s: got %d %s, want 404", path, resp.Status, resp.Raw)
 		}
 	}
 
@@ -1088,8 +1097,8 @@ func TestHistoryVisibilityOpensTheRoomWhenTheUserArrived(t *testing.T) {
 	server.MustDo(http.MethodPost, "/_matrix/client/v3/join/"+url.PathEscape(joined), bob.Token, nil, http.StatusOK)
 	after := server.Send(alice, joined, "hv-after", "spoken after bob arrived")
 
-	if resp := server.Do(http.MethodGet, "/_matrix/client/v3/rooms/"+joined+"/event/"+before, bob.Token, nil); resp.Status != http.StatusForbidden {
-		t.Errorf("bob read an event from before his join to a joined-visibility room: got %d %s", resp.Status, resp.Raw)
+	if resp := server.Do(http.MethodGet, "/_matrix/client/v3/rooms/"+joined+"/event/"+before, bob.Token, nil); resp.Status != http.StatusNotFound {
+		t.Errorf("a joined-visibility room answered bob with a code that admits an event exists before his join: got %d %s", resp.Status, resp.Raw)
 	}
 	if resp := server.Do(http.MethodGet, "/_matrix/client/v3/rooms/"+joined+"/event/"+after, bob.Token, nil); resp.Status != http.StatusOK {
 		t.Errorf("bob was refused an event from after his join: got %d %s", resp.Status, resp.Raw)
@@ -1133,8 +1142,8 @@ func TestHistoryVisibilityOpensTheRoomWhenTheUserArrived(t *testing.T) {
 		map[string]any{"user_id": bob.UserID}, http.StatusOK)
 	duringInvite := server.Send(alice, knocking, "hv-during", "spoken while bob was only invited")
 
-	if resp := server.Do(http.MethodGet, "/_matrix/client/v3/rooms/"+knocking+"/event/"+preInvite, bob.Token, nil); resp.Status != http.StatusForbidden {
-		t.Errorf("bob read an event from before his invite to an invited-visibility room: got %d %s", resp.Status, resp.Raw)
+	if resp := server.Do(http.MethodGet, "/_matrix/client/v3/rooms/"+knocking+"/event/"+preInvite, bob.Token, nil); resp.Status != http.StatusNotFound {
+		t.Errorf("an invited-visibility room answered bob with a code that admits an event exists before his invite: got %d %s", resp.Status, resp.Raw)
 	}
 	if resp := server.Do(http.MethodGet, "/_matrix/client/v3/rooms/"+knocking+"/event/"+duringInvite, bob.Token, nil); resp.Status != http.StatusOK {
 		t.Errorf("an invited user was refused an event sent after the invite: got %d %s", resp.Status, resp.Raw)
@@ -1151,8 +1160,8 @@ func TestHistoryVisibilityOpensTheRoomWhenTheUserArrived(t *testing.T) {
 	if resp := server.Do(http.MethodGet, "/_matrix/client/v3/rooms/"+open+"/event/"+public, carol.Token, nil); resp.Status != http.StatusOK {
 		t.Errorf("a world-readable room refused a stranger: got %d %s", resp.Status, resp.Raw)
 	}
-	if resp := server.Do(http.MethodGet, "/_matrix/client/v3/rooms/"+joined+"/event/"+after, carol.Token, nil); resp.Status != http.StatusForbidden {
-		t.Errorf("a shared room answered a stranger: got %d %s", resp.Status, resp.Raw)
+	if resp := server.Do(http.MethodGet, "/_matrix/client/v3/rooms/"+joined+"/event/"+after, carol.Token, nil); resp.Status != http.StatusNotFound {
+		t.Errorf("a shared room answered a stranger with anything but not-found: got %d %s", resp.Status, resp.Raw)
 	}
 
 	// Search is a read of the same history: a match in a room that hides the event does not

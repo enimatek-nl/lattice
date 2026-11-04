@@ -97,6 +97,11 @@ type ForwardExtremity struct {
 
 // decodeStringList decodes a JSON array of strings, returning nothing for a column
 // that was never filled.
+// PrevEventIDs names the graph edges of a stored event: the events this one says it was
+// built on. An id there that this server does not hold is a hole in the room's history that
+// the room itself pointed at.
+func (e *Event) PrevEventIDs() []string { return decodeStringList(e.PrevEvents) }
+
 func decodeStringList(raw string) []string {
 	if raw == "" {
 		return nil
@@ -214,6 +219,11 @@ type EventRepo interface {
 	// when dir is "b" (backwards) and ascending when dir is "f". from is the
 	// exclusive stream position to start at.
 	History(roomID string, from uint64, dir string, limit int, notBefore uint64) ([]*Event, error)
+	// TimelineUntil reads a room's events in a window of the stream, oldest first, capped at
+	// the newest end: what a reader that stopped at `since` should be shown, up to and
+	// including `until`. A leave section needs exactly that bound - a former member is shown
+	// what happened while they were there.
+	TimelineUntil(roomID string, since, until uint64, limit int) ([]*Event, error)
 	// StateHistory lists every version of one state key of a room in the order the room
 	// applied them, oldest first. MSC2675 asks what a user's membership was at the moment
 	// an event happened, and the room's own membership events are the only record of it.
@@ -380,6 +390,28 @@ func (r *EventRepoImpl) History(roomID string, from uint64, dir string, limit in
 	}
 	err := q.Order(order).Find(&events).Error
 	return events, err
+}
+
+// TimelineUntil implements [EventRepo].
+func (r *EventRepoImpl) TimelineUntil(roomID string, since, until uint64, limit int) ([]*Event, error) {
+	if until <= since {
+		return nil, nil
+	}
+	var events []*Event
+	q := hiddenFromTimeline(r.db.Where("room_id = ? AND stream_pos > ? AND stream_pos <= ?", roomID, since, until))
+	if limit > 0 {
+		q = q.Order("stream_pos desc").Limit(limit)
+	} else {
+		q = q.Order("stream_pos asc")
+	}
+	err := q.Find(&events).Error
+	if err != nil {
+		return nil, err
+	}
+	for left, right := 0, len(events)-1; left < right; left, right = left+1, right-1 {
+		events[left], events[right] = events[right], events[left]
+	}
+	return events, nil
 }
 
 // StateHistory implements [EventRepo].

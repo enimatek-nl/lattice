@@ -189,9 +189,59 @@ func (s *Service) canRead(ctx context.Context, roomID, userID string) bool {
 	case matrix.MembershipJoin, matrix.MembershipInvite:
 		return true
 	case matrix.MembershipBan:
+		// A ban closes the door on the person it landed on, whatever the room's history
+		// rule says.
 		return false
 	}
-	return s.HistoryVisibility(ctx, roomID) == matrix.HistoryWorldReadable
+	if s.HistoryVisibility(ctx, roomID) == matrix.HistoryWorldReadable {
+		return true
+	}
+	// A room's history also belongs to the people who were in it. Leaving ends what a member
+	// may see *now*; it does not unmake the past they took part in, and a client that has
+	// walked out of a room still has to be able to read the part it was given. Which events of
+	// that past are actually shown is the per-event question MSC2675 asks, answered by
+	// [historyGate] - `joined` and `invited` stop the window at the membership, `shared` and
+	// the world-readable room do not. Somebody who was never in the room has no past here and
+	// is still refused.
+	return s.everJoined(ctx, roomID, userID)
+}
+
+// HistoryBound names where a reader's view of a room stops. A current member has no bound; a
+// former member of a room whose history opened at the join or the invite is shown the room as
+// it stood when their membership ended, and nothing after it. That is the same MSC2675 rule the
+// per-event gate applies to a single event, told at the scale of a whole read: the state, the
+// member list and the history of such a room are read *as of* the leave, because the room
+// decided it was telling its members what happened while they were one.
+func (s *Service) HistoryBound(ctx context.Context, roomID, userID string) (uint64, bool) {
+	if userID == "" || !s.everJoined(ctx, roomID, userID) {
+		return 0, false
+	}
+	switch s.MembershipOf(ctx, roomID, userID) {
+	case matrix.MembershipJoin, matrix.MembershipInvite:
+		return 0, false
+	case matrix.MembershipBan:
+		return 0, false
+	}
+	switch s.HistoryVisibility(ctx, roomID) {
+	case matrix.HistoryJoined, matrix.HistoryInvited:
+	default:
+		return 0, false
+	}
+	pos, err := s.membershipPos(roomID, userID)
+	if err != nil || pos == 0 {
+		return 0, false
+	}
+	return pos, true
+}
+
+// everJoined says this user has been joined in the room at some point. The membership row
+// outlives the join that made it, and keeps that fact for exactly this question.
+func (s *Service) everJoined(ctx context.Context, roomID, userID string) bool {
+	row, err := s.db.MembershipRepo.Get(roomID, userID)
+	if err != nil {
+		return false
+	}
+	return row.WasJoined
 }
 
 // HistoryVisibility returns the history visibility of a room, defaulting to
