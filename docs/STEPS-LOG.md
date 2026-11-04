@@ -2125,6 +2125,8 @@ Openings this leaves:
   off-by-one family; it needs its own pass rather than a guess.
 - **The v1 shape on a v3 path.** The handler answers v1's bare event on the v1 route and v2's object
   elsewhere, including v3. Untested, and not worth a third case until a peer asks for one.
-- **Not re-run this round:** the Complement server-server package, which is where the handshake change
-  would show up. The 89 two-server tests in `tests/federation` are green; the upstream federation
-  tally stands at 61/91 from before this change.
+- **The Complement server-server package is `tests`, not `tests/federation`.** Measured after this
+  change: 78 green of 91, 13 red, listed in `TODO.md`. The "61 of 91" the docs had been quoting was
+  stale by a day and several steps.
+- **Gap filling is where the federation reds cluster** — three of the thirteen are
+  `get_missing_events` cases and three more are rejected-auth-chain bookkeeping.

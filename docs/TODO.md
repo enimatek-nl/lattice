@@ -35,7 +35,7 @@ because it said nothing these steps do not.
 | `make build vet lint` | clean, 0 issues |
 | this repository's own tests | **326** — 167 client-API compatibility, 89 two-server federation, 70 offline unit (`go test ./...`, green) |
 | Complement `tests/csapi` | **95 green of 106** |
-| Complement `tests/federation` | **61 green of 91** (measured 2026-11-04 morning; the per-name list in [COMPLEMENT.md](COMPLEMENT.md) predates the afternoon's work) |
+| Complement server-server (`tests`, not `tests/federation`) | **78 green of 91** (measured 2026-11-04 evening, after the state-handshake change) |
 | endpoints | **180 of 234** indexed routes implemented, 43 routes the index does not name (`make endpoints`) |
 | spec | v1.19, room versions 1-12 understood, new rooms default to v11 |
 | federation | live behind `-federation` (default off); one rulebook judges what this server signs and what a peer sends (step 20) |
@@ -61,10 +61,22 @@ sync filters, the `leave` section, lazy loading, the ignore list and the as-of s
 | `TestPushSync` | push rules as a client sees them in sync (delivery to a gateway is a queue item below) |
 | `TestLeftRoomFixture` | **one check away** — the `/messages` chunk of a departed `joined`-visibility room (step 24) |
 
-Elsewhere: `TestJumpToDateEndpoint` (in Complement's `tests` package, not `tests/csapi` — it was
-never inside the 106) picks an event by stream position where it should walk the graph; and the 30
-red server-server cases, whose per-name record in [COMPLEMENT.md](COMPLEMENT.md) should be
-refreshed against a fresh run.
+Server-server, the `tests` package (**13 red of 91**; this package also holds
+`TestJumpToDateEndpoint`, which is why it never showed up in the 106):
+
+| Test | Waiting on |
+|---|---|
+| `TestGetMissingEventsGapFilling`, `TestOutboundFederationEventSizeGetMissingEvents`, `TestOutboundFederationIgnoresMissingEventWithBadJSONForRoomVersion6` | the gap-filling answers a peer checks shape-for-shape |
+| `TestInboundFederationRejectsEventsWithRejectedAuthEvents`, `TestCorruptedAuthChain`, `TestUnrejectRejectedEvents` | rejected-event bookkeeping: what we refuse because its auth chain is refused, and what we hand back about it |
+| `TestFederationRedactSendsWithoutEvent` | redacting an event the peer has never seen |
+| `TestFederationRoomsInvite` | the invite handshake as the suite drives it |
+| `TestACLsForEDUs`, `TestRemotePresence` | server ACLs applied to EDUs; presence across servers (presence is stored per user, never streamed) |
+| `TestIsDirectFlagFederation` | the `is_direct` flag surviving a cross-server invite |
+| `TestJoinFederatedRoomFromApplicationServiceBridgeUser` | application services (queue B) |
+| `TestJumpToDateEndpoint` | `timestamp_to_event` walking stream positions instead of the graph |
+
+The state-handshake change (step 27) is federation-only and did not move this tally: the package
+measured 78 green with it in.
 
 ## The queue — what is wanted, grouped
 
