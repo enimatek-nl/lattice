@@ -124,6 +124,49 @@ because it said nothing these steps do not.
   whether or not federation is on, because those are properties of the stored event
   and a room created unsigned can never be federated afterwards.
 
+## The gaps, ranked (measured 2026-11-05)
+
+Two coverage documents sit in this directory: [coverage.md](coverage.md) is ours, area by area,
+with an endpoint tally from `cmd/endpoints` (**180 of 234** indexed routes);
+[spec-coverage.md](spec-coverage.md) is the same shape of document for a Rust homeserver, and
+[coverage-comparison.md](coverage-comparison.md) reads them against each other. Nine things come
+out of that reading - things that server does, and this one does not. In order of what each
+unlocks:
+
+1. **Room version 12** — room ids as hashes, room creators with infinite power, state resolution
+   v2.1, stripped state as full events. **Nineteen** Complement tests carry those names, and v12
+   is what the specification now recommends as the default. → **step 21**.
+2. **Application services** — no `/_matrix/app/v1/*` at all, no registration files or
+   namespaces, no `m.login.application_service`. No bridge of any kind can attach, and a bot
+   cannot hold an identity on this server.
+3. **Simplified Sliding Sync (MSC4186)** — `POST /_matrix/client/v4/sync` with lists, ranges,
+   filters and subscriptions. The classic `/sync` is complete enough that this is a large build
+   rather than a fix, but it decides whether Element X-class clients can connect. → **step 22**.
+4. **Push delivery** — rules, pushers and unread counts are here; nothing is POSTed to a push
+   gateway (`POST /_matrix/push/v1/notify` as a *client* of one, `event_id_only`, rejected
+   pushkeys). Mobile push does not work, and the missing half is one outbound request loop.
+5. **The federation paths peers actually ask for** — `PUT /v1|v2/invite/{roomId}/{eventId}` (so:
+   no invite rejection or rescinding over federation), the specified
+   `GET /v1|v2/state/{roomId}?event_id=` (this server registers the event id as a **path**
+   segment, so a peer asking the specified way is answered with nothing), federation
+   `POST /v1/publicRooms` (both public-room routes were registered at `/v3`), and the
+   rejected-event bookkeeping that four Complement tests measure.
+6. **Authentication that is not a password** — `/login/sso/redirect`, `m.login.token` issued by
+   an identity provider, MSC2965 discovery, `POST /v1/login/get_token`. `/auth_metadata` answers
+   a reasoned 404 today.
+7. **Sync and timeline details a client feels** — `lazy_load` accepted and state served in full,
+   `m.ignored_user_list` not applied to a timeline, no `state_after`, top-level `presence` and
+   `org.matrix.msc3814.e2ee` sections declared and never filled, no `DELETE` on account data, no
+   `m.fully_marked`, `/relations` without `recurse`, and the `timestamp_to_event` walk returning
+   an event *after* the asked moment (`TestJumpToDateEndpoint`).
+8. **An admin surface** — the reference has a Synapse-compatible subset (users list/get/create/
+   deactivate/reset, rooms list/details/delete/force-join, purge, server notices). This server
+   has four admin routes, `/_synapse/admin/v2/users/{id}`, and the CLI.
+9. **The MSC surface and the quality of life around it** — delayed events (MSC4140), thread
+   subscriptions (MSC4306), invite filtering (MSC4155), poll push rules (MSC3930), relation
+   filters in `/messages` (MSC3874), account-data deletion (MSC3391); a full-text search index
+   instead of substring matching; `m.room.retention`; fuzz targets; a load harness.
+
 ## Release plan — pick one step at a time, top to bottom
 
 ### 1. Housekeeping — done (2026-11-01)
@@ -2753,3 +2796,141 @@ and `/jump_to_date`. That run is also the one that found the volume-lock limit o
 bulk rather than once: without `-parallel 2`, **30** tests failed with
 `exceeded num_locks (2048)` deploy errors and nothing was measured. A complete run of this
 package wants `-parallel 2`, and a `podman volume prune -f` before it.
+
+### 21. Room version 12 — room ids as hashes, privileged creators, state resolution v2.1
+
+Target: the specification's own page for it, [rooms/v12](https://spec.matrix.org/v1.19/rooms/v12/),
+which is room version 11 plus four things. The gate is Complement's `v12_test.go` — **nineteen**
+tests, all red today:
+
+- `TestMSC4291RoomIDAsHashOfCreateEvent` and its four sub-tests (`_AuthEventsOmitsCreateEvent`,
+  `_UpgradedRooms`, `_CannotSendCreateEvent`, `_RoomIDIsOnCreateEvent`), plus
+  `TestComplementCanCreateValidV12Rooms`.
+- `TestMSC4289PrivilegedRoomCreators` and five more (`_Additional`, `_InvitedAreCreators`,
+  `_AdditionalCreatorsAndInvited`, `_AdditionalValidation`, `_Upgrades`).
+- `TestMSC4297StateResolutionV2_1_starts_from_empty_set` and `_includes_conflicted_subgraph`.
+- `TestMSC4311StrippedStateClientAPI`, `_FullEventsOnStrippedStateFederation`,
+  `_RejectInvalidStrippedStateFederation`.
+- `TestRestrictedRoomsLocalJoinNoCreatorsUsesPowerLevelsV12` and the `KnockRestricted` twin —
+  red only because no v12 room can be created.
+
+Work, in the order that keeps the tree green:
+
+- [ ] **The version plumbing.** `service.SupportedRoomVersions` gains `"12"`;
+      `DefaultRoomVersion` stays **"11"** on purpose: the specification recommends 12, but
+      `TestIsDirectFlagFederation` sends a v12 invite whose stripped state lacks `m.room.create`,
+      which a correct server rejects (MSC4311, v1.16) — so defaulting to 12 turns that test red
+      for being right. Say so in the code, next to the constant.
+- [ ] **Room ids without a domain.** A v12 room id is `!` plus URL-safe unpadded base64 of the
+      create event's reference hash: no `:example.com` behind it. Every place that asks a room id
+      for its host to decide whether the room is local has to stop doing that — locality is
+      "this server has the room", not "the id names this server". The audit has a name:
+      `internal/matrix/id.go` holds the grammar — `NewRoomID` (random, always `!local:domain`),
+      `IsRoomID` and `ValidRoomID` (both require the colon) — and `DomainOf` is called in 42
+      places. `IsRoomID`/`ValidRoomID` must accept `!` plus URL-safe unpadded base64 with no
+      colon, and each caller of `DomainOf` on a room id gets read once and classified: it means
+      where the room lives (→ ask the database), or it is about an alias or a user (→ unchanged;
+      aliases keep their domain in every room version), or it is a room id being used as a
+      federation hint (→ the id says nothing; ask the state which servers hold the room). Record
+      that classification as a comment on `DomainOf` once the first caller is fixed.
+- [ ] **The event format.** `m.room.create` carries **no** `room_id` (auth rule 1.2 rejects one
+      that does); every other event carries the room id. Event ids are the URL-safe unpadded
+      base64 reference hash, as in v4+; the room id is that same hash with `!` instead of `$`, so
+      creating a room means: build the create event without a room id, hash it, and the room's id
+      falls out of the hash. Canonical JSON, hashing and the stored-event marshalling for the
+      client API all have to agree that the create event of a v12 room has no `room_id` key.
+- [ ] **`m.room.create` is not an auth event** in v12 (rule 3.2 note): the auth-event *selection*
+      must not cite it, and the rule must reject an event that does cite it. The rule that
+      verifies a peer's choice of auth events therefore gets stricter, not looser.
+- [ ] **Room creators, formally.** Creators are the create event's `sender` plus
+      `content.additional_creators`. Their power level is **infinite**: `authcheck` must answer
+      infinite for them wherever it reads a level, and rule 10.4 rejects any
+      `m.room.power_levels` whose `users` names a creator. Rule 1.4 validates
+      `additional_creators` as an array of user ids under the same grammar as `sender`.
+- [ ] **Rule 2, the room id check.** An event is rejected unless its `room_id` is the event id of
+      an accepted `m.room.create` with the sigil `!`: the check needs the create event of the room
+      in hand, which the graph already has.
+- [ ] **State resolution v2.1** (`internal/stateres`): the v2 algorithm with three changes —
+      step 2's iterative auth checks start from an **empty** state map instead of the unconflicted
+      one; a **conflicted state subgraph** (paths along `auth_events` between two conflicted
+      events, endpoints included) is defined; and the **full conflicted set** additionally
+      includes that subgraph. Two tests exercise exactly this, and both check the resolved state
+      rather than the code path, so a wrong subgraph shows up as a wrong state map.
+- [ ] **Stripped state as full events (MSC4311).** The `invite_room_state` this server sends is a
+      list of **complete** PDUs (with `room_id`, `hashes`, `signatures`, `depth`, `prev_events`,
+      `origin_server_ts`), not the trimmed tuples it sends today; for v12 it must include
+      `m.room.create`, because nothing else in the invite says what the room id is. Inbound: an
+      invite whose stripped state does not validate (a tuple, a missing create in v12, a state
+      event whose `room_id` is not this room's) is rejected, with the reason in the log.
+- [ ] **Upgrades.** Read `TestMSC4289PrivilegedRoomCreators_Upgrades` and the MSC4289 upgrade
+      text before writing the code: what carries a creator into the new room (a `predecessor`
+      plus `additional_creators`, or a power-levels content carry-over) is exactly what that test
+      asserts, and guessing it wastes an afternoon.
+- [ ] **Own tests**, because Complement is a guest here: a v12 room created, hashed, joined,
+      posted to, knocked on and upgraded in `tests/compat` (the id has no domain, the create
+      event has no `room_id`, the creator cannot be demoted, `users` naming the creator is
+      refused, `additional_creators` holds at rule 1.4); and in `tests/federation` a v12 invite
+      with full stripped state accepted, a v12 invite with a tuple or without the create event
+      refused, and a v12 join through `make_join`/`send_join`.
+
+Done means: those nineteen Complement tests green, the two v12 knock/restricted ones green, and
+nothing that was green before goes red.
+
+### 22. Simplified Sliding Sync (MSC4186) — the sync modern clients speak
+
+Target: [MSC4186](https://github.com/matrix-org/matrix-spec-proposals/blob/main/proposals/4186-simplified-sliding-sync.md).
+`POST /_matrix/client/v4/sync`, and while it is unstable also
+`POST /_matrix/client/unstable/org.matrix.simplified_msc3575/sync`, with
+`org.matrix.simplified_msc3575: true` in `/versions`. Note up front: the pinned Complement
+checkout has **no** `msc4186` package, so the gate here is this repository's own tests, not a
+Complement win; upgrading the checkout is its own decision (see _Complement_ below).
+
+- [ ] **The connection model.** A `pos` token per connection, `conn_id` scoped to user+device, at
+      most one in-flight request per connection, and per-connection state that is safe to receive
+      twice with the same `pos` (a client may cancel and retry). A `pos` not issued to this user
+      and device is rejected with 400 `M_UNKNOWN_POS`; a connection may be expired the same way
+      when the backlog has grown too large. The MSC is explicit that owning a `pos` must grant no
+      capability: permission to see a room is checked per request, never inferred from what the
+      connection has seen.
+- [ ] **`pos` usable in `/messages` and `/relations`.** That constrains the token: it has to carry
+      (or be convertible to) the same stream position `/messages` accepts. Decide this before
+      building the response, not after.
+- [ ] **Lists.** A per-user sequence of rooms sorted by last activity (joined, invited, knocked,
+      left-but-previously-sent, kicked or banned; never-joined bans excluded). Each list: `range`
+      (inclusive, 0-indexed, may be absent → all), `filters`, `timeline_limit`, `required_state`;
+      the response carries `count` — the number matching the filters, ignoring the range. More
+      than 100 lists or 100 subscriptions is 400 `M_INVALID_PARAM`.
+- [ ] **Filters**: `is_dm` (from `m.direct` account data), `spaces` (only rooms directly named by
+      an `m.space.child` of a *joined* space the caller names — no subspace walking),
+      `is_encrypted`, `is_invited`, `room_types`/`not_room_types` (with `null` meaning "no type",
+      `not_room_types` winning), `tags`/`not_tags` (`not_tags` wins).
+- [ ] **`required_state`**: `include`/`exclude` lists of `{type?, state_key?}` (omitted field =
+      wildcard), `lazy_members`. Lazy membership sends the members of timeline senders, the
+      targets of membership events in the timeline, and all membership updates when `limited` is
+      false; lazy memberships are not filtered by `exclude`. State that has been deleted is
+      returned as a `StateStub` — `{"type":…,"state_key":…}` with no `content`.
+- [ ] **Room config combination and expansion.** A room matching several rules gets the superset:
+      maximum `timeline_limit`, union of `required_state` (lazy only if every config asking for
+      all membership is lazy). When the combined config would return more than was returned
+      before, send the wider set and set `expanded_timeline: true`, and return such rooms
+      immediately rather than waiting for an update.
+- [ ] **Subscriptions**: `room_subscriptions` with `timeline_limit` and `required_state`; rooms the
+      user may not see are silently ignored.
+- [ ] **The room result**: `initial`, `name`/`avatar` (null when removed), `topic?`, `heroes`
+      (only when there is no name), `required_state`, `timeline` (with bundled aggregations when
+      `limited`), `prev_batch`, `limited`, `num_live`, `joined_count`, `invited_count`,
+      `bump_stamp`, `membership`, `lists`, `is_dm`; for invite/knock/rejection results,
+      `stripped_state` instead of the joined fields. Reuse what `/sync` already builds — the
+      summary counts and heroes are the same computation.
+- [ ] **Extensions** (each optional, each keyed by name): `to_device`, `e2ee` (device list changes
+      and one-time-key counts), `typing`, `receipts`, `account_data`. The same data the classic
+      `/sync` already assembles; the response shape differs.
+- [ ] **Long-polling**: `timeout` in milliseconds, ignored on the initial request; a request with
+      a `pos` and no changes blocks until something happens or the timeout expires. `set_presence`
+      accepted, unknown value → 400 `M_INVALID_PARAM`.
+- [ ] **Own tests** in `tests/compat`: an initial sync with a range and `count`; growing the range
+      returns the rooms not yet sent; `is_dm`/`tags`/`room_types`/`spaces` filters; a subscription
+      to a room outside every list; a timeline limit increase returning the wider window with
+      `expanded_timeline`; lazy members covering timeline senders; a deleted state event arriving
+      as a `StateStub`; `initial` then delta semantics (omitted field = unchanged); a foreign or
+      stale `pos` → `M_UNKNOWN_POS`; the extension sections.
