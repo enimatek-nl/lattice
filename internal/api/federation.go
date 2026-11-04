@@ -458,7 +458,7 @@ type keyQueryBody struct {
 // document is fetched through the same path that checks a peer's self-signature,
 // its server_name, and its expiry. Lattice acts as a notary for others; acting as
 // a client of someone else's notary is not implemented, and is recorded in
-// TODO.md.
+// docs/FINDINGS.md.
 //
 //	@Summary\tServer keys, notarised
 //	@Description\tFetches the signing keys of other servers, verifies them, and re-signs them with this server's key so the requester can rely on this server's word instead of the peer's.

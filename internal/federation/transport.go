@@ -97,7 +97,7 @@ type Config struct {
 // connection, since the certificate proves the peer owns the hostname. Going
 // through notary servers - the other half of the specification's key exchange,
 // which corroborates a peer's keys with a third party - is not implemented: it is
-// recorded in TODO.md as deferred, along with acting as a notary for others.
+// recorded in docs/FINDINGS.md as deferred, along with acting as a notary for others.
 type Transport struct {
 	cfg      Config
 	identity Identity

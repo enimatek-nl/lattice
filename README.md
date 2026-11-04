@@ -386,8 +386,8 @@ a disagreement between two databases — and `tests/unit` pins the pure rules in
 
 The upstream check is [Complement](https://github.com/matrix-org/complement):
 `make complement-image` builds a container from the static binary and `make complement`
-runs the suite against it. The current tallies, and what each remaining failure is
-waiting for, are written up under _Complement_ in [TODO.md](TODO.md).
+runs the suite against it. The current tallies are in [docs/TODO.md](docs/TODO.md), and what
+each recorded failure was waiting for is written up in [docs/COMPLEMENT.md](docs/COMPLEMENT.md).
 
 A release is a tag. Pushing `v0.2.0` runs `.github/workflows/image.yml`, which builds
 the root `Dockerfile` for `linux/amd64` and `linux/arm64` and publishes `0.2.0`, `0.2`
@@ -431,9 +431,12 @@ parameter of anything that does I/O.
 
 ## Where the plan lives
 
-[TODO.md](TODO.md) is the one planning document: the idea and the way of working, what
-is verified and done, and — under *Complement* — what each remaining failure is waiting
-for. The endpoint index taken from the specification lives beside the tool that reads it
+[docs/TODO.md](docs/TODO.md) is the planning document, kept short on purpose: the idea and the
+way of working, the measured state, the red list, and the queue of what is wanted. Around it:
+[docs/STEPS-LOG.md](docs/STEPS-LOG.md) holds the full record of the 26 steps worked and what each
+one found, [docs/COMPLEMENT.md](docs/COMPLEMENT.md) how the upstream suite is run and what each
+recorded failure was waiting for, [docs/FINDINGS.md](docs/FINDINGS.md) the verified facts, gotchas,
+deferrals and commands, and [docs/RTC-PLAN.md](docs/RTC-PLAN.md) the video-call plan. The endpoint index taken from the specification lives beside the tool that reads it
 at `internal/coverage/SPECS.md`; `make endpoints` compares it with the route table and
 writes `ENDPOINTS.md`, which is generated and not committed.
 
