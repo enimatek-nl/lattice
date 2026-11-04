@@ -69,3 +69,38 @@ func TestAKnockRestrictedRoomAdmitsItsOwnWithoutAKnock(t *testing.T) {
 	knockJoin := server.Do(http.MethodPost, "/_matrix/client/v3/join/"+roomID, carol.Token, map[string]any{})
 	t.Logf("carol joining on her knock alone: status %d", knockJoin.Status)
 }
+
+// TestARestrictedRoomsSummaryNamesTheRoomsThatAdmit is the same rule read from the other end: a
+// room describes how it is entered. A room that admits people through another room says which, so
+// a client can tell a reader why the door is open to them rather than making them try it; a room
+// that admits people that way does not carry the field at all, because an empty list would read as
+// a room with an empty allow list rather than a room with no such rule.
+func TestARestrictedRoomsSummaryNamesTheRoomsThatAdmit(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+
+	space := server.CreateRoom(alice, map[string]any{"preset": "public_chat", "name": "the space", "type": "m.space"})
+	room := server.CreateRoom(alice, map[string]any{
+		"preset": "public_chat", "name": "the room in the space", "room_version": "8",
+	})
+	server.MustDo(http.MethodPut, "/_matrix/client/v3/rooms/"+room+"/state/m.room.join_rules", alice.Token,
+		map[string]any{
+			"join_rule": "restricted",
+			"allow":     []map[string]any{{"type": "m.room_membership", "room_id": space}},
+		}, http.StatusOK)
+
+	summary := server.MustDo(http.MethodGet, "/_matrix/client/v1/room_summary/"+room, alice.Token, nil, http.StatusOK)
+	if got, _ := summary.Body["join_rule"].(string); got != "restricted" {
+		t.Errorf("the summary reports join_rule %q, want restricted: %s", got, summary.Raw)
+	}
+	allowed, _ := summary.Body["allowed_room_ids"].([]any)
+	if len(allowed) != 1 || allowed[0] != space {
+		t.Errorf("the summary names %v as the rooms that admit a join, want just %s: %s", allowed, space, summary.Raw)
+	}
+
+	private := server.CreateRoom(alice, map[string]any{"preset": "private_chat", "name": "the closed room"})
+	other := server.MustDo(http.MethodGet, "/_matrix/client/v1/room_summary/"+private, alice.Token, nil, http.StatusOK)
+	if _, found := other.Body["allowed_room_ids"]; found {
+		t.Errorf("a room with no allow list carries allowed_room_ids anyway: %s", other.Raw)
+	}
+}

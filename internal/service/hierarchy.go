@@ -232,11 +232,11 @@ func (s *Service) walkHierarchy(ctx context.Context, rootID string, r reader, w 
 
 // hierarchyShows decides whether a room of a space goes into the tree for a reader.
 //
-// The endpoint lists rooms the reader has joined *or could join*. Reading is not the test: a
-// public room that keeps its history to its members is unreadable to an outsider and perfectly
-// joinable, and a space that hides it cannot be joined out of the summary, which is what the
-// summary is for. What stays out is a room the reader cannot get into: an invite-only room they
-// were not invited to, a restricted room whose allow list names no room they belong to, or a
+// Reading the room is the first test, and it is not the only one: a restricted room keeps its
+// history to its members and is still open to a member of the space, and hiding it from the person
+// the space admits is hiding the one room the space exists to offer. What stays out is a room the
+// reader has no reach into - an invite-only room they were not invited to, a restricted room whose
+// allow list names no room they belong to, a public room they are not in and cannot read - and a
 // sub-space that is itself closed, whose whole branch then stays closed.
 //
 // A server asking over federation is answered by [Service.readableBy] instead: it is not asking
@@ -271,8 +271,6 @@ func (s *Service) remoteRoomShows(ctx context.Context, entry HierarchyRoom, r re
 		return true
 	}
 	switch entry.JoinRules {
-	case matrix.JoinRulesPublic, matrix.JoinRulesKnock:
-		return true
 	case matrix.JoinRulesRestricted, matrix.JoinRulesKnockRestricted:
 		for _, admitting := range entry.AllowedRooms {
 			if s.MembershipOf(ctx, admitting, r.userID) == matrix.MembershipJoin {
@@ -313,19 +311,19 @@ func entrySpaceLinks(entry HierarchyRoom) []spaceLink {
 	return links
 }
 
-// joinableBy reports whether the room's own join rule lets this user in as things stand. A public
-// room, or one open to knocking, asks nothing of them. A restricted one asks membership of a room
-// on its allow list, and only of a room this server can still read: a copy of an admitting room
-// this server has left says nothing about anybody. An invite-only room asks an invite, which
-// [Service.canRead] has already refused.
+// joinableBy reports whether the room's join rule admits this user through something other than
+// the door they are already standing at: membership of a room on a restricted room's allow list.
+// Only that case is here. A public room is joinable in principle and is still not listed, because
+// the summary is a description of a space, not a directory of everything reachable from it, and the
+// implementations agree that a room an outsider cannot read stays out unless its own rules reach
+// out to that person. A room whose rule is invite asks an invite, which [Service.canRead] has
+// already refused; knocking asks a knock, which is a request and not an admission.
 func (s *Service) joinableBy(ctx context.Context, roomID, userID string) bool {
 	rule, err := s.db.StateRepo.JoinRule(roomID)
 	if err != nil {
 		return false
 	}
 	switch rule {
-	case matrix.JoinRulesPublic, matrix.JoinRulesKnock:
-		return true
 	case matrix.JoinRulesRestricted, matrix.JoinRulesKnockRestricted:
 		for _, admitting := range s.roomsThatAdmit(ctx, roomID) {
 			if !s.canReadMembershipOf(admitting) {

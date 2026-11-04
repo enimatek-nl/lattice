@@ -343,8 +343,13 @@ func (s *Service) RoomSummary(ctx context.Context, idOrAlias, requester string) 
 		"guest_can_join":     s.guestsCanConnect(ctx, room.ID),
 		"aliases":            aliases,
 		"canonical_alias":    s.roomAlias(ctx, room.ID),
-		"join_rules":         joinRule,
+		"join_rule":          joinRule,
 		"room_version":       room.RoomVersion,
+	}
+	// A restricted room says which rooms admit a joiner. Without them the reader cannot tell why
+	// the door is open to them, and cannot tell that it is open at all before trying it.
+	if admitting := s.roomsThatAdmit(ctx, room.ID); len(admitting) > 0 {
+		summary["allowed_room_ids"] = admitting
 	}
 	if avatar := s.roomAvatarURL(ctx, room.ID); avatar != "" {
 		summary["avatar_url"] = avatar
