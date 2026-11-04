@@ -193,7 +193,7 @@ func (a *App) handleFederationMakeJoin(w http.ResponseWriter, r *http.Request) {
 //	@Router	/_matrix/federation/v1/send_join/{roomID}/{eventID} [put]
 //	@Router	/_matrix/federation/v2/send_join/{roomID}/{eventID} [put]
 func (a *App) handleFederationSendJoin(w http.ResponseWriter, r *http.Request) {
-	event, err := federationBody(r)
+	event, err := sendEventBody(r)
 	if err != nil {
 		a.writeError(w, r, err)
 		return
@@ -378,7 +378,7 @@ func (a *App) handleFederationKnock(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleFederationSendLeave(w http.ResponseWriter, r *http.Request) {
-	event, err := federationBody(r)
+	event, err := sendEventBody(r)
 	if err != nil {
 		a.writeError(w, r, err)
 		return
@@ -1035,6 +1035,22 @@ func eventInBody(body matrix.Object) (matrix.Object, error) {
 		return nil, matrix.ErrInvalidRequest("the body carries no event")
 	}
 	return event, nil
+}
+
+// sendEventBody reads the event a send_join or send_leave body carries. The older of these
+// endpoints put the event at the top of the body; the newer ones wrap it in {"event": ...},
+// and servers that were writing this protocol before the wrap arrived keep sending the bare
+// form whatever the version says. Both are read, and telling them apart costs nothing: an
+// event names its own type, which is not a property an envelope happens to have.
+func sendEventBody(r *http.Request) (matrix.Object, error) {
+	body, err := federationBody(r)
+	if err != nil {
+		return nil, err
+	}
+	if wrapped, ok := body["event"].(matrix.Object); ok && federation.EventField(wrapped, "type") != "" {
+		return wrapped, nil
+	}
+	return body, nil
 }
 
 func federationBody(r *http.Request) (matrix.Object, error) {

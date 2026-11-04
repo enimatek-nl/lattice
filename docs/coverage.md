@@ -1,7 +1,9 @@
 # Lattice spec coverage
 
-Target: **Matrix spec v1.19**, default room version **11**, supported room versions **1–11**
-(version 12 is not understood, so a v12 room cannot be joined or created). The endpoint index
+Target: **Matrix spec v1.19**, default room version **11** (the specification recommends 12;
+creating stays on 11 until the creators-privileged semantics are the default people expect),
+supported room versions **1–12**, including the room id that is the hash of a room version 12
+room's create event. The endpoint index
 lives in [`internal/coverage/SPECS.md`](../internal/coverage/SPECS.md) and the tally is
 regenerated with `go run ./cmd/endpoints -out ENDPOINTS.md`:
 **180 of 234** indexed endpoints implemented, **41** routes the index does not name.
@@ -10,8 +12,9 @@ Two gates. This repository's own suites - **139** client-API tests (`tests/compa
 two-server tests (`tests/federation`), **70** offline unit tests (`tests/unit`). And Complement's
 `tests` package (91 top-level tests): the last complete run, 2026-11-04, is
 **61 green, 30 red** (it needs `-parallel 2`; see _Complement_ in
-[docs/TODO.md](TODO.md)). A run of the narrower knock/restricted/spaces/join/invite group is
-23 of 26 green, the three red being room version 12 twice and the application-service bridge.
+[docs/TODO.md](TODO.md)). A run of the join/leave/knock/restricted/room-version/v12-MSC group
+after room version 12 landed has two red: the application-service bridge, and a restricted
+join that is expected to fail over in a draft-MSC3787 room.
 
 | Area | Status |
 |---|---|
@@ -25,7 +28,7 @@ two-server tests (`tests/federation`), **70** offline unit tests (`tests/unit`).
 | Client-Server: E2EE | done: `/keys/upload` (device keys, one-time keys, fallback keys), `/keys/query`, `/keys/claim`, `/keys/device_signing/upload`, `/keys/signatures/upload`, `/keys/changes`, key backup versions and keys (with the delete endpoints), to-device, and the matching federation `user/keys/query`, `user/keys/claim`, `m.device_list_update` and `m.signing_key_update` EDUs. |
 | Client-Server: push | partial: push rules (get, set, delete, defaults), pushers (set/list/delete, `http` and `email` kinds, pushkey validation), `/notifications`, rules evaluated when an event is appended and recorded as unread and highlight counts. Not here: the **Push Gateway API** - no `POST /_matrix/push/v1/notify`, nothing is delivered to a push gateway, so a pusher is a row and a count rather than a notification reaching a phone. |
 | Server-Server: keys / signing | done: `GET /_matrix/key/v2/server` (with `{keyID}`), notary `POST /_matrix/key/v2/query` and the per-server form, key caching and rotation, `X-Matrix` authentication on every inbound request, `GET /_matrix/federation/v1/version`. |
-| Server-Server: join / leave / invite / knock | done: `make_join`/`send_join` v1 and v2, `make_leave`/`send_leave` v1 and v2, `make_knock`/`send_knock` v1 and v2 plus the knock relay between servers that hold a copy, `/event_auth`, restricted joins with `join_authorised_via_users_server` (the authoriser's membership and invite power are checked; **the authoriser's server signature is not** - see the open item in TODO), `/hierarchy` in both directions, `/state_ids`, `/event`, `/event_auth`. Not here: the dedicated invite endpoint `PUT /v1|v2/invite/{roomId}/{eventId}` (so no invite rejection or rescinding over federation), `exchange_third_party_invite`, `3pid/onbind`, `federation GET /v1/state/{roomId}` asked as the specification asks it (see deviations). |
+| Server-Server: join / leave / invite / knock | done: `make_join`/`send_join` v1 and v2, `make_leave`/`send_leave` v1 and v2, `make_knock`/`send_knock` v1 and v2 plus the knock relay between servers that hold a copy, `/event_auth`, restricted joins with `join_authorised_via_users_server` (the authoriser's membership and invite power are checked; **the authoriser's server signature is not** - see the open item in TODO), `/hierarchy` in both directions, `/state_ids`, `/event`, `/event_auth`. Not here: the dedicated invite endpoint `PUT /v1|v2/invite/{roomId}/{eventId}` (so no invite rejection or rescinding over federation), `exchange_third_party_invite`, `3pid/onbind`. A peer's `GET /v1/state/{roomId}?event_id=` **is** asked - it is how a gap in the history is settled (see the state-resolution bullet) - while this server still answers that question at its own, nonstandard path (see deviations). |
 | Server-Server: transactions (`/send`) | done: v1 and v2 `send`, EDUs for typing, receipts, to-device, device lists and signing keys; presence is accepted and dropped by decision (this server keeps presence local); auth-chain gathering with fetches of events this server lacks, rejected-event bookkeeping, server ACLs applied to what arrives and to what is sent. The rejection bookkeeping is incomplete: `TestCorruptedAuthChain`, `TestInboundFederationRejectsEventsWithRejectedAuthEvents`, `TestUnrejectRejectedEvents` and the v6 bad-JSON case are red. |
 | Server-Server: backfill / missing events | done both directions: `backfill`, `get_missing_events`, `timestamp_to_event`, `/event_auth`, history-visibility rules applied to what is handed over. |
 | Server-Server: media | done: `media/download` and `media/thumbnail` (with the size variants), remote media cached and served. |
@@ -38,9 +41,12 @@ two-server tests (`tests/federation`), **70** offline unit tests (`tests/unit`).
 
 ## Deviations and known wrongness
 
-- **Room version 12 is not understood.** That is the largest single group of Complement
-  failures: the three v12 tests, the five MSC4291 room-id-as-hash cases, the six MSC4289
-  privileged-creators cases, and it blocks MSC4297 state resolution v2.
+- **A room version 12 room is understood, and its state is resolved v2.1.** A peer's claim about
+  the state at an event is settled against this server's own view by the resolution algorithm;
+  the outcome is written for a key this server does not hold and refused for one it does - so a
+  peer that has simply never been told about a change cannot undo it by answering a question.
+  The open half is that there is still no per-event state snapshot, which the last bullet below
+  covers.
 - **Federation room state is served at the wrong path.** This server registers
   `GET /_matrix/federation/v1/state/{roomID}/{eventID}`; the specification asks
   `GET /_matrix/federation/v1/state/{roomId}?event_id=`. A peer that asks the specified way gets

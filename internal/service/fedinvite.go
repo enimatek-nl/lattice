@@ -62,12 +62,22 @@ func (s *Service) ServeInvite(ctx context.Context, roomID, eventID string, body 
 	if !s.roomVersionIsSupported(version) {
 		return nil, matrix.ErrForbidden("the room is version %s, which this server cannot speak", version)
 	}
-	if eventcrypto.UsesHashedRoomIDs(version) && !shipsCreateEvent(state) {
-		// In this version of room nothing else in the invite says what the room is called:
-		// the room id is the hash of the create event, and an invited server that was not given
-		// that event cannot check the id it is being asked to keep a room under, nor the id
-		// every event in it will carry. MSC4311 asks that this be refused by name.
-		return nil, matrix.ErrMissingParam("the invite for %s ships no m.room.create, and in room version %s that event is the room's name", roomID, version)
+	if eventcrypto.UsesHashedRoomIDs(version) {
+		if !shipsCreateEvent(state) {
+			// In this version of room nothing else in the invite says what the room is called:
+			// the room id is the hash of the create event, and an invited server that was not
+			// given that event cannot check the id it is being asked to keep a room under, nor
+			// the id every event in it will carry. MSC4311 asks that this be refused by name.
+			return nil, matrix.ErrMissingParam("the invite for %s ships no m.room.create, and in room version %s that event is the room's name", roomID, version)
+		}
+		if tuple := firstIncompleteEvent(state); tuple != "" {
+			// And the same reasoning covers the shape of the rest. A room whose id is a hash is
+			// only as trustworthy as the events it can re-derive that hash from; a tuple - a type,
+			// a state key, a sender and a content object, with no hashes, signatures, depth or
+			// prev_events - names nothing, verifies nothing and joins nothing. An invite that
+			// arrives as tuples in this version is an invite about a room nobody can check.
+			return nil, matrix.ErrMissingParam("the invite for %s ships %s as a stripped state event, and in room version %s the invited server has to be able to check it", roomID, tuple, version)
+		}
 	}
 	if problem := s.inviteIsBackedByTheRoom(event, state, roomID); problem != "" {
 		return nil, matrix.ErrForbidden("%s", problem)
@@ -135,6 +145,21 @@ func shipsCreateEvent(state []matrix.Object) bool {
 		}
 	}
 	return false
+}
+
+// firstIncompleteEvent names the first state event of a list that is not a complete event,
+// or the empty string when every one of them is.
+func firstIncompleteEvent(state []matrix.Object) string {
+	for _, ev := range state {
+		if !hasHashes(ev) {
+			key := federation.EventField(ev, "type")
+			if stateKey, isState := ev["state_key"].(string); isState && stateKey != "" {
+				key += "/" + stateKey
+			}
+			return key
+		}
+	}
+	return ""
 }
 
 // inviteRoomVersionClaim is the room version the inviting server named in the invite body, if

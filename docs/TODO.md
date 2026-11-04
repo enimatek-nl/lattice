@@ -2866,25 +2866,40 @@ Work, in the order that keeps the tree green:
       text before writing the code: what carries a creator into the new room (a `predecessor`
       plus `additional_creators`, or a power-levels content carry-over) is exactly what that test
       asserts, and guessing it wastes an afternoon.
-- [ ] **Wiring state resolution in.** `internal/stateres` is a correct pure function and nothing
-      calls it: two servers that disagree about a key settle by whichever event arrived last.
-      What `TestMSC4297StateResolutionV2_1_*` asks for is the other half of that - when
-      `get_missing_events` cannot close a graph gap, ask the peer for `state_ids`, fetch those
-      events, and resolve this server's state against the peer's before the replayed events are
-      judged. Until that exists the v2.1 changes are exercised only by `tests/unit`.
+- [x] **Wiring state resolution in.** When an arriving event cites a parent this server was
+      never sent, the history walk is only half of the question: this server keeps the state a
+      room *holds*, not a snapshot per event, so a hole in the history is also a hole in its
+      picture of the room. Having walked `get_missing_events`, it asks the peer what its state
+      was at that event (`/state`, falling back to `/state_ids` and `/event`), judges every
+      event the peer hands over, and runs `stateres` over both views. What the resolution names
+      for a key this server does not hold is written down; what it names for a key this server
+      already answers is **not** - a snapshot a peer hands over is evidence about the hole, not
+      a verdict on a piece of state this server resolved from its own graph, and taking it would
+      let a server that has simply not been told about something undo the decision. The
+      disagreement is logged rather than buried.
+
+      Two things this exposed in the receipt path, both worth knowing about separately. The
+      transitive auth-chain check read a chain event against the state it cites, and when the
+      chain walk stopped at its bounded depth that snapshot was missing memberships - so a deep
+      chain refused an honest event with "nobody holds one" because of how far down this server
+      chose to look; those events are left unjudged and counted in a log line. And `send_join`,
+      `send_leave`: version 2 of those endpoints wraps the event in `{"event": ...}`, and the
+      server only ever read the bare body it sends itself - a spec-conformant peer's join was
+      refused for naming no event type.
 
 A run of Complement's v12 gates after this stretch: **MSC4289 (6), MSC4291 (5), MSC4311 (3),
-`TestComplementCanCreateValidV12Rooms`, `TestRoomVersionSupport`, and the two v12
-restricted/knock cases - green**; the two MSC4297 state-resolution tests are the red pair, and
-they are red for the missing wiring above rather than for the algorithm. Three things the run
-found that were worth fixing on the way: a room version 12 `m.room.create` names no room, so
-every place that read a PDU's `room_id` to decide where to keep an event was keeping the room's
-first event under the empty room (`roomOfPDU` now reads the room out of the event's id when the
-event cannot name it); the empty auth set that a v12 room's earliest events legitimately carry
-was being read as a forged chain; and a knock from a server outside the room had nowhere to ask
-when the room id named no server, which is what the endpoint's `via` list is for.
+MSC4297 (2), `TestComplementCanCreateValidV12Rooms`, `TestRoomVersionSupport`, and the two v12
+restricted/knock cases - green**. Five things the run found that were worth fixing on the way:
+a room version 12 `m.room.create` names no room, so every place that read a PDU's `room_id` to
+decide where to keep an event was keeping the room's first event under the empty room
+(`roomOfPDU` now reads the room out of the event's id when the event cannot name it); the empty
+auth set that a v12 room's earliest events legitimately carry was being read as a forged chain;
+a knock from a server outside the room had nowhere to ask when the room id named no server,
+which is what the endpoint's `via` list is for; a peer's `send_knock` body is the bare event in
+the wild and the wrapped one in the spec, so both are read; and MSC4297 needed the two fixes to
+the receipt path above, without which a 250-event chain was unusable.
 
-- [ ] **Own tests**, because Complement is a guest here: a v12 room created, hashed, joined,
+- [x] **Own tests**, because Complement is a guest here: a v12 room created, hashed, joined,
       posted to, knocked on and upgraded in `tests/compat` (the id has no domain, the create
       event has no `room_id`, the creator cannot be demoted, `users` naming the creator is
       refused, `additional_creators` holds at rule 1.4); and in `tests/federation` a v12 invite

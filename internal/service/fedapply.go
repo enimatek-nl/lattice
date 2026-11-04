@@ -293,6 +293,19 @@ func (s *Service) keepCitedState(pdu matrix.Object, eventID, version, inRoom str
 	} else if !persist.IsNotFound(err) {
 		return false, matrix.ErrInternal(err)
 	}
+	return s.storeCitedState(pdu, eventID, version, roomID)
+}
+
+// storeCitedState writes an event and the piece of state it is, with the side effects that
+// go with them, whether or not the room already holds another event for that piece of state.
+// A gap filled by resolution ends here: the room has two claims about one key and the
+// resolution named which of them the room holds.
+func (s *Service) storeCitedState(pdu matrix.Object, eventID, version, roomID string) (bool, error) {
+	key, isState := pdu["state_key"].(string)
+	if !isState {
+		return false, nil
+	}
+	typ := federation.EventField(pdu, "type")
 	pos := s.nextStreamPos()
 	encoded := matrix.Encode(objectOf(pdu, "content"))
 	draft := &EventDraft{
@@ -365,6 +378,7 @@ func (s *Service) keepCitedState(pdu matrix.Object, eventID, version, inRoom str
 // summary are left out too - there is no chain to check them against, and refusing an
 // event because this server stores its own state thinly would be refusing the room.
 func (s *Service) authChainIsAuthorised(graph *authcheck.Graph, chain map[string]bool, complete map[string]bool, arriving string) string {
+	holes := 0
 	for id := range chain {
 		if id == arriving || !complete[id] {
 			continue
@@ -383,9 +397,23 @@ func (s *Service) authChainIsAuthorised(graph *authcheck.Graph, chain map[string
 		if !graph.HashedRoomIDs() && ev.Type != matrix.TypeCreate && len(ev.AuthIDs) == 0 {
 			return fmt.Sprintf("the auth chain carries %s, which cites no auth events of its own", id)
 		}
-		if problem := authcheck.Rules(graph, stateOfAuthIDs(graph, ev), ev); problem != nil {
+		auth := stateOfAuthIDs(graph, ev)
+		if len(auth) < len(ev.AuthIDs) {
+			// The walk above stops at a bounded depth, so an event this deep in a chain cites
+			// authority this server never came by. Reading a rule against a snapshot with holes
+			// in it turns "I cannot see a membership" into "nobody holds one", and that refuses
+			// an honest event because of how far down a room this server chose to look. The event
+			// is left unjudged here; the arriving event is still checked against the set it names
+			// itself, which is the level where an invented authority shows up.
+			holes++
+			continue
+		}
+		if problem := authcheck.Rules(graph, auth, ev); problem != nil {
 			return fmt.Sprintf("the auth chain carries %s, which the rules refuse: %v", id, problem)
 		}
+	}
+	if holes > 0 {
+		log.Printf("federation: %d events of the auth chain of %s were left unjudged: this server could not see the whole set each of them cites", holes, arriving)
 	}
 	return ""
 }
