@@ -242,3 +242,54 @@ Still nothing endpoint-reachable: `createRoom` (T-2003), state resolution (T-200
 endpoint (T-2006), membership endpoints (T-2007), state reads (T-2008) and redaction
 application (T-2009) remain. Authorisation for room versions 1 and 2 is unimplemented by
 decision, and the restricted-room allow list is only enforced on the local send path.
+
+---
+
+# Iteration 5 — M2 State Resolution 2 (T-2005)
+
+Timestamp: 2026-11-05 (UTC)
+
+## Built: `internal/state`
+
+The algorithm was taken from the "State resolution" section quoted from the room version 11
+page (definitions and the five numbered steps) and implemented step by step:
+
+| Piece | Note |
+| --- | --- |
+| `Resolve` | refuses room versions whose algorithm is not implemented instead of running the wrong one; a single state is returned unchanged |
+| `splitStates` | unconflicted map versus conflicted set |
+| `authDifference` | ∪ of the auth chains minus ∩, walked from every event in every state |
+| `powerEventsInFullConflictedSet` | power events (`m.room.power_levels`, `m.room.join_rules`, a leave/ban applied by someone else) widened by their auth chains |
+| `reverseTopologicalPowerOrder` | Kahn's algorithm choosing the smallest available event, comparing sender power level, then `origin_server_ts`, then event ID; leftover events on a cycle are kept rather than dropped |
+| `mainlineOrder` | mainline positions from the power levels event in the partially resolved state |
+| `iterativeAuthChecks` | applies `eventauth.Check` over the state being built, filling missing keys from the event's own auth events and never from a rejected one |
+
+`Snapshot` adapts a `Graph` plus a `State` to the authorisation rules, so resolution and
+authorisation share one event view.
+
+## Evidence
+
+`go test -count=1 ./tests/...`: integration ok, unit ok. `make verify` (`-race`): ok.
+`golangci-lint run ./...`: 0 issues.
+
+`tests/unit/stateresolve_test.go`:
+- a ban applied by a powerful user on one fork beats a self-join on the other, whichever
+  order the forks are handed in;
+- of two conflicting power levels events, the later by the ordering wins, and flipping
+  `origin_server_ts` flips the result — convergence comes from the ordering, not input order;
+- a second `m.room.create` reachable only through an auth chain cannot displace the create
+  event every fork agrees on (step 5);
+- a power levels event granting its sender power from nowhere is dropped, and a rejected
+  event never enters the resolved state;
+- room versions 1 and 12 are refused.
+
+## Honest status and the next check
+
+State resolution is implemented and tested against the specification's own wording, but it
+has **not** been compared with another implementation's resolver on shared fixtures. A
+divergence there is invisible locally and fatal in a federated room, so T-2005a (a
+gomatrixserverlib cross-check with shared fixtures) is recorded as a required follow-up
+before federation work builds on it, alongside REQ-STATE-007.
+
+Still endpoint-inert: `createRoom` (T-2003), the send endpoint (T-2006), membership (T-2007),
+state reads (T-2008), redaction application (T-2009), upgrades (T-2010).

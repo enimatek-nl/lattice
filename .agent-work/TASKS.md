@@ -77,8 +77,13 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
       knock_restricted, v10+ integer power-level validation, the historic `m.room.aliases`
       exemption, creator power bootstrap, and `MayJoinRestricted` for the restricted-room
       allow list — `tests/unit/eventauth_test.go`
-- [ ] T-2005 `internal/state`: current state, forward extremities, State Resolution 2 for
-      v2-v11 (v1 and v2.1 left unimplemented until those versions are offered)
+- [x] T-2005 `internal/state`: State Resolution 2 for room versions 2-11 — unconflicted/
+      conflicted split, auth difference, power events widened by their auth chains, reverse
+      topological power ordering, mainline ordering, iterative auth checks that refuse an
+      event whose auth event was rejected; v1 and v2.1 refused rather than approximated —
+      `tests/unit/stateresolve_test.go`
+- [ ] T-2005a Cross-check state resolution against gomatrixserverlib's resolver with shared
+      fixtures (same fork, same expected winner) before any federation work relies on it
 - [ ] T-2006 `PUT /rooms/{roomId}/send/{eventType}/{txn}` with per-device transaction
       deduplication, depth/prev_events validation, signing, persistence
 - [ ] T-2007 membership events: join/leave/invite/ban/kick (local), member state reads,
