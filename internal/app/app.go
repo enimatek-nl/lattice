@@ -18,6 +18,7 @@ import (
 	"github.com/enimatek/lattice/internal/httpserver"
 	"github.com/enimatek/lattice/internal/keys"
 	"github.com/enimatek/lattice/internal/persist"
+	"github.com/enimatek/lattice/internal/pushrules"
 	"github.com/enimatek/lattice/internal/rooms"
 	"github.com/enimatek/lattice/internal/sync"
 	"github.com/enimatek/lattice/internal/tlsgen"
@@ -29,15 +30,16 @@ const Version = "0.1.0-dev"
 
 // App is the assembled homeserver.
 type App struct {
-	Cfg    *config.Config
-	Log    *slog.Logger
-	DB     *persist.Database
-	Keys   *keys.Service
-	Rooms  *rooms.Service
-	Tokens *auth.TokenService
-	UIA    *auth.UIAService
-	Users  *users.Service
-	Server *httpserver.Server
+	Cfg       *config.Config
+	Log       *slog.Logger
+	DB        *persist.Database
+	Keys      *keys.Service
+	Rooms     *rooms.Service
+	Tokens    *auth.TokenService
+	UIA       *auth.UIAService
+	Users     *users.Service
+	PushRules *pushrules.Service
+	Server    *httpserver.Server
 
 	Started time.Time
 
@@ -70,6 +72,12 @@ func New(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, error
 		return nil, err
 	}
 
+	pushRules := pushrules.NewService(db, log)
+	// A user's push rules are theirs from the moment they exist: their first sync has
+	// to carry them, so they are created with the account rather than guessed at when a
+	// client asks. Accounts that predate this code are covered by the sweep below.
+	userService.AfterRegister = pushRules.EnsureDefaults
+
 	a := &App{
 		Cfg:              cfg,
 		Log:              log,
@@ -78,24 +86,31 @@ func New(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, error
 		Tokens:           tokens,
 		UIA:              uia,
 		Users:            userService,
+		PushRules:        pushRules,
 		Started:          time.Now().UTC(),
 		clientRouter:     httpserver.NewRouter(),
 		federationRouter: httpserver.NewRouter(),
 	}
 
+	if err := pushRules.EnsureAllDefaults(ctx); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+
 	requireAuth := auth.RequireAuth(tokens, userService)
 	client.Register(a.clientRouter, &client.Deps{
-		Cfg:     cfg,
-		Log:     log,
-		Users:   userService,
-		Tokens:  tokens,
-		UIA:     uia,
-		Keys:    signingKeys,
-		Rooms:   roomService,
-		Sync:    sync.NewService(db, log),
-		DB:      db,
-		Version: Version,
-		Started: a.Started,
+		Cfg:       cfg,
+		Log:       log,
+		Users:     userService,
+		Tokens:    tokens,
+		UIA:       uia,
+		Keys:      signingKeys,
+		Rooms:     roomService,
+		PushRules: pushRules,
+		Sync:      sync.NewService(db, log),
+		DB:        db,
+		Version:   Version,
+		Started:   a.Started,
 	}, requireAuth)
 	media.Register(a.clientRouter, &media.Deps{Cfg: cfg}, requireAuth)
 	// Method negotiation must be consistent across listeners: a federation path

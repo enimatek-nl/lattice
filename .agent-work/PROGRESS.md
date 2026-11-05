@@ -536,3 +536,57 @@ Newly passing since the round before: `TestPublicRooms`, `TestRoomState`,
 
 Local evidence: `make verify` `-race` ok — 170 integration, 169 unit tests; `go vet` and
 `golangci-lint run ./...` 0 issues. No Complement assertion was modified.
+
+---
+
+## 2026-11-05 — push rules, and getting them to the client (M3)
+
+Scope: `internal/pushrules` (new), `internal/persist/accountdata.go`,
+`internal/api/client/pushrules.go`, `internal/sync/accountdata.go`, a registration hook in
+`internal/users`, one index pair and one table in the migration.
+
+What is now true:
+
+* A user has push rules from the moment they exist. The server-default set is the
+  specification's, including the rules added in v1.4, v1.7 and v1.9, with the three
+  v1.7-deprecated ones still present because the specification's condition on them is
+  about matching, not existence. Rules that name the user name *them*: an invite rule whose
+  `state_key` pattern was a placeholder would look right and notify nothing.
+* The whole API under `/pushrules` answers, at every depth, including a rule's `enabled`
+  and `actions`, and writes keep the order that *is* the priority: a new rule goes at the
+  head of the user's section, the server's defaults stay behind it, and `before`/`after`
+  cannot refer to a default.
+* The rule set reaches the client. `/sync` now has a top-level `account_data` section, and
+  editing a rule bumps the stream position, so a long-polling sync wakes up instead of
+  timing out.
+* Defaults are created with the account (`users.Service.AfterRegister`) and swept once at
+  start-up for accounts that predate the code.
+
+Three things found on the way, all recorded because each was a trap for the next writer:
+
+1. **A transaction inside a transaction deadlocks on a single-writer database.** The first
+   version of the service opened a transaction and then called a helper that opened
+   another, waiting for the connection the first was holding. The store now has one writer
+   that never opens a transaction (`write`) and one wrapper for callers that hold none
+   (`save`), and the reason is in the comment rather than in a commit message.
+2. **A storage "not found" is not a protocol "not found".** Reading a deleted rule reached
+   the client as a 500. `ruleError` maps it to `M_NOT_FOUND`, the code the push rule
+   endpoints prescribe.
+3. **A rule ID that starts with a dot has to be escaped, and the escape is easy to get
+   wrong.** `%2E.m.rule.master` decodes to `..m.rule.master`, not `.m.rule.master`: the
+   literal dot after the escape is a second dot. It is `%2Em.rule.master`. The test
+   originally asserted against the wrong path, not the wrong server.
+
+Complement (filter: push rules and push sync, room directory, summaries, `/messages`, sync
+filters, logout/devices, registration/login, room creation): **no push-rule failure**;
+`TestPushRuleCacheHealth` and `TestPushSync` pass, including the four "wakes an incremental
+/sync" subtests. Still failing: `TestRoomCreate` (v2/v6, federation), `TestSync` (csapi:
+presence, `device_lists`, a two-server join, MSC4222 `state_after`; tests package:
+presence).
+
+Local evidence: `make verify` `-race` ok — 174 integration, 175 unit tests; `go vet` and
+`golangci-lint run ./...` 0 issues. No Complement assertion was modified.
+
+Honest gap: the rules are stored, edited and delivered, but nothing acts on them yet —
+there is no pusher, no push gateway call, no `GET /notifications`, and the unread and
+highlight counts in `/sync` are still zero. That is task T-3005a, not a footnote.

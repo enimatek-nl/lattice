@@ -72,7 +72,20 @@ Every failure is a *missing feature*, not a wrong answer, except two worth namin
 Rooms, membership, events, state, sync, E2EE key management and federation therefore remain the
 long tail; their Complement coverage is the measuring stick for M2–M5.
 
-## Latest filtered run (2026-11-05, history paging and the room directory)
+## Latest filtered run (2026-11-05, push notifications)
+
+Filter: push rules and push sync, room directory, room summaries, `/messages`, sync
+filters, logout and devices, registration and login, room creation.
+**No push-rule test fails**: `TestPushRuleCacheHealth` and `TestPushSync` (including its
+"adding/changing a rule wakes an incremental `/sync`" subtests) pass. Still failing in this
+filter: `TestRoomCreate` (v2/v6 — federation), `TestSync` in both packages.
+
+`TestSync` in `tests/csapi` fails on four things, and the reasons are now separated:
+presence in `/sync` (2 subtests, T-3001c), `device_lists` (1 subtest, T-3008), a two-server
+join that needs federation (1 subtest, T-4005), and MSC4222 `state_after` (2 subtests, an
+unstable extension deliberately not implemented).
+
+## Earlier filtered run (2026-11-05, history paging and the room directory)
 
 Filter: room directory and public rooms, `/messages`, left and archived rooms, aliases,
 membership, registration/login/devices, versions and capabilities, sync filters, room

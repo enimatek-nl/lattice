@@ -27,6 +27,16 @@ type Service struct {
 	cfg    config.RegistrationConfig
 	log    *slog.Logger
 	server string
+
+	// AfterRegister, when set, is called with the ID of an account that has just been
+	// created. It exists for data a user must already have when their first sync
+	// arrives — the server-default push rules are the example — which is easier to
+	// create with the account than to infer later.
+	//
+	// A failure is logged and does not undo the registration: losing an account
+	// because a piece of derived data could not be written would be worse than a user
+	// who has to be given it again on their next read.
+	AfterRegister func(ctx context.Context, userID string) error
 }
 
 // New builds the account service.
@@ -120,6 +130,13 @@ func (s *Service) Register(ctx context.Context, p RegisterParams) (*Registration
 	})
 	if err != nil {
 		return nil, err
+	}
+
+	if s.AfterRegister != nil {
+		if err := s.AfterRegister(ctx, userID); err != nil {
+			s.log.Warn("the data this server owes a new account could not be written",
+				"user_id", userID, "error", err.Error())
+		}
 	}
 
 	s.log.Info("account registered", "user_id", userID, "device_id", deviceID, "admin", p.Admin)

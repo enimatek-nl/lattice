@@ -111,12 +111,16 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
 - [ ] T-2010 room upgrade path (`m.room.create.predecessor`, `POST /rooms/{roomId}/upgrade`)
 
 - [x] T-3001 `GET /sync` — done, including stored and inline filters, position tokens,
-      `limited`/`prev_batch`, unread counts, ephemeral and account data, and the `leave`
-      section bounded at the membership event that took the user out. Complement
-      `TestSyncFilter`, `TestSyncSendersFilter`, `TestSyncLeaveSection`,
+      `limited`/`prev_batch`, ephemeral and account data, the `leave`
+      section bounded at the membership event that took the user out; `unread_notifications`
+      and `highlight_count` are reported as zero until the push rules are evaluated (T-3005a).
+      Complement `TestSyncFilter`, `TestSyncSendersFilter`, `TestSyncLeaveSection`,
       `TestGappedSyncLeaveSection`, `TestOlderLeftRoomsNotInLeaveSection`,
       `TestArchivedRoomsHistory`, `TestLeaveEventVisibility` and
-      `TestCumulativeJoinLeaveJoinSync` pass
+      `TestCumulativeJoinLeaveJoinSync` pass. An earlier line here claimed `/sync` was the
+      single largest blocker with a list of tests that has since changed; that line is
+      replaced rather than kept beside the current one
+
 - [x] T-3001a history paging: `GET /rooms/{roomID}/messages` in both directions, `end`
       omitted when nothing further is readable, lazy-loaded member state —
       Complement `TestSendAndFetchMessage`, `TestRoomMessagesLazyLoading*`
@@ -132,12 +136,16 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
 - [ ] T-3004 per-event state snapshots, so a read can be answered as of a past position:
       a former member's old state value, `state_at_event`, and the state a joining user is
       given
-- [ ] T-3005 push rules end to end: `GET /pushrules/`, `PUT /pushrules/{kind}/{ruleId}`
-      with `/enabled` and `/actions`, `DELETE /pushrules/{kind}/{ruleId}`, the default rule
-      set. Nothing exists yet, the read side included (Complement `TestPushRuleCacheHealth`)
-- [ ] T-3001 `GET /sync` — now the single largest blocker in the Complement record:
-      `TestRoomCreate`, `TestRoomMembers`, `TestRoomState`, `TestRoomDeleteAlias`,
-      `TestRoomCanonicalAlias`, `TestNotPresentUserCannotBanOthers`,
-      `TestCannotKickLeftUser`, `TestLogout` and `TestDeviceManagement` all fail at the
-      `/sync` step after everything else succeeded (timeline, state, invite rooms, device list changes), `/messages` pagination, `since`/`next_batch` tokens, filter storage
+- [x] T-3005 push rules: the ruleset and its defaults, the whole read/write API under
+      `/pushrules`, and delivery to the client through `account_data` in `/sync` —
+      Complement `TestPushRuleCacheHealth`, `TestPushSync`
+- [ ] T-3005a make the rules mean something: evaluate them when an event is persisted so
+      `unread_notifications` and `highlight_count` in `/sync` are real, then pushers, the
+      push gateway POST and `GET /notifications`. Until this lands the counts a client is
+      told are zero, which is recorded rather than asserted
+- [ ] T-3008 `device_lists` in `/sync`: whose device lists changed. Complement
+      `TestSync/parallel/Device_list_tracking` asks for it; it depends on device keys
+- [ ] T-3001 (leftover numbering, same work as T-3001a-d and T-4005 above): what still
+      fails at a `/sync` step is presence, `device_lists`, MSC4222 `state_after`, and the
+      two-server cases that need federation
 - [x] T-3002 the sync-dependent assertions in `TestLogout` and `TestDeviceManagement` pass
