@@ -36,6 +36,13 @@ type Sender struct {
 	Batch       int
 	// Idle is how long the worker waits when there is nothing to send.
 	Idle time.Duration
+	// CleanupInterval is how often the worker forgets what has expired: transactions it
+	// has already answered, key documents past their life, and events it gave up on.
+	// Zero means an hour.
+	CleanupInterval time.Duration
+	// GivenUpRetention is how long a queue row stays after this server stopped trying,
+	// so that "why did this room never arrive?" can still be answered when somebody asks.
+	GivenUpRetention time.Duration
 }
 
 // NewSender returns a sender with the retry limits this project uses.
@@ -55,6 +62,9 @@ func NewSender(repo persist.FederationRepo, events persist.EventRepo, state pers
 		MaxAttempts: 30,
 		Batch:       maxPDUsPerTransaction,
 		Idle:        2 * time.Second,
+
+		CleanupInterval:  time.Hour,
+		GivenUpRetention: givenUpRetention,
 	}
 }
 
@@ -237,6 +247,48 @@ func (s *Sender) sendBatch(ctx context.Context, destination string, items []*per
 	return len(done), nil
 }
 
+// Cleanup forgets what has expired: transactions this server has already answered, key
+// documents whose life has run out, and queue rows it gave up on.
+//
+// It is not optional housekeeping. Transaction rows are how a replay is answered
+// identically, and they are the reason a sender cannot simply make every retry a fresh
+// request; key documents outlive their usefulness; and a dropped queue row is the record
+// of a room that never arrived. Left alone, all three grow with other people's outages.
+func (s *Sender) Cleanup(ctx context.Context) (int, error) {
+	now := s.now()
+	forgotten := 0
+	transactions, err := s.repo.DropExpiredTransactions(ctx, now)
+	if err != nil {
+		return forgotten, fmt.Errorf("federation: cannot forget answered transactions: %w", err)
+	}
+	forgotten += transactions
+	keys, err := s.repo.DropExpiredServerKeys(ctx, now)
+	if err != nil {
+		return forgotten, fmt.Errorf("federation: cannot forget expired keys: %w", err)
+	}
+	forgotten += keys
+	givenUp, err := s.repo.DropGivenUpQueueItems(ctx, now.Add(-s.retention()))
+	if err != nil {
+		return forgotten, fmt.Errorf("federation: cannot forget given-up queue items: %w", err)
+	}
+	forgotten += givenUp
+	if forgotten > 0 {
+		s.log.Info("federation: forgot what had expired", "records", forgotten,
+			"transactions", transactions, "keys", keys, "given_up_queue_items", givenUp)
+	}
+	return forgotten, nil
+}
+
+// givenUpRetention is how long a queue row stays after this server stopped trying.
+const givenUpRetention = 30 * 24 * time.Hour
+
+func (s *Sender) retention() time.Duration {
+	if s.GivenUpRetention > 0 {
+		return s.GivenUpRetention
+	}
+	return givenUpRetention
+}
+
 // Run works until the context ends. One worker per process is enough for the volumes
 // this project targets; the claim query is written so that more than one would not
 // double-send.
@@ -245,6 +297,9 @@ func (s *Sender) Run(ctx context.Context) error {
 	if idle <= 0 {
 		idle = 2 * time.Second
 	}
+	// The zero value makes the first pass clean up straight away, which is what a
+	// process that was down for a day needs when it comes back.
+	var lastCleanup time.Time
 	for {
 		select {
 		case <-ctx.Done():
@@ -254,6 +309,12 @@ func (s *Sender) Run(ctx context.Context) error {
 		sent, err := s.FlushOnce(ctx)
 		if err != nil {
 			s.log.Warn("federation: the sender hit a problem", "error", err)
+		}
+		if time.Since(lastCleanup) >= s.cleanupInterval() {
+			if _, err := s.Cleanup(ctx); err != nil {
+				s.log.Warn("federation: cannot tidy the federation tables", "error", err)
+			}
+			lastCleanup = time.Now()
 		}
 		if sent == 0 {
 			select {
@@ -336,6 +397,13 @@ func (s *Sender) batch() int {
 		return s.Batch
 	}
 	return maxPDUsPerTransaction
+}
+
+func (s *Sender) cleanupInterval() time.Duration {
+	if s.CleanupInterval > 0 {
+		return s.CleanupInterval
+	}
+	return time.Hour
 }
 
 func (s *Sender) now() time.Time {

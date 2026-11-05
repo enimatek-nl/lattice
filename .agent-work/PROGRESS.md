@@ -865,3 +865,20 @@ federation through a join, and `/make_join`, `/send_join`, `/state_ids`, `/backf
 the reason named rather than fetched (T-4007). EDUs are acknowledged and logged, and nothing
 else happens to them (T-4008). The address policy is applied when discovery resolves a name,
 not when the socket opens, so DNS rebinding is not covered (T-4011).
+
+Follow-up in the same window, found while writing the queue's own tests:
+
+* The federation tables hold promises, and nothing was calling the code that forgets
+  expired ones. `Sender.Cleanup` now drops answered transactions past their replay window,
+  key documents past their trust window and queue rows this server gave up on a month ago,
+  and the worker runs it hourly (immediately on start, so a process that was down for a day
+  tidies itself). A failure that is still recent keeps its row: "why did that room never
+  arrive?" has to be answerable while it is still a live question.
+* `SeenTransaction` took an instant and ignored it. An answer kept past its expiry is not
+  idempotency — it is a stale reply to a new request that happened to reuse a transaction
+  ID. The window is now part of the lookup.
+* New: `tests/unit/federationqueue_test.go` asserts the queue's promises directly — a claim
+  cannot be taken twice, a retry is not claimable before its time, delivered work leaves the
+  table, giving up leaves a record that stops counting as owing.
+
+`make verify` and `golangci-lint run ./...` clean: 191 integration, 211 unit tests.

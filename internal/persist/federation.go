@@ -122,8 +122,8 @@ type FederationRepo interface {
 	// DropExpiredServerKeys removes key rows whose document expired before the instant.
 	DropExpiredServerKeys(ctx context.Context, before time.Time) (int, error)
 
-	// SeenTransaction returns the stored response for a transaction already processed,
-	// or nil.
+	// SeenTransaction returns the stored response for a transaction already processed
+	// and still inside its replay window, or nil.
 	SeenTransaction(ctx context.Context, origin, txnID string, now time.Time) (*FederationTransaction, error)
 	// RecordTransaction stores the response for a processed transaction.
 	RecordTransaction(ctx context.Context, txn *FederationTransaction) error
@@ -152,6 +152,10 @@ type FederationRepo interface {
 	// QueueCount reports how many undelivered items a destination is owed for one
 	// event, which is what makes queueing an event twice a no-op.
 	QueueCount(ctx context.Context, destination, eventID string) (int64, error)
+	// DropGivenUpQueueItems forgets items that were given up on before the instant. A
+	// dropped row exists so a failure is visible to whoever looks, and a row that stays
+	// forever is a table that grows with other people's outages.
+	DropGivenUpQueueItems(ctx context.Context, before time.Time) (int, error)
 }
 
 // NewFederationRepo returns the federation repository bound to db.
@@ -213,7 +217,12 @@ func (r *federationRepo) DropExpiredServerKeys(ctx context.Context, before time.
 // SeenTransaction implements [FederationRepo].
 func (r *federationRepo) SeenTransaction(ctx context.Context, origin, txnID string, now time.Time) (*FederationTransaction, error) {
 	var row FederationTransaction
-	err := r.db.WithContext(ctx).Where("origin = ? AND txn_id = ?", origin, txnID).First(&row).Error
+	// The instant matters: a transaction ID answers a replay only inside the window in
+	// which it still means the same request. An answer kept past its expiry is not
+	// idempotency, it is a stale reply to a new request that happens to reuse an ID.
+	err := r.db.WithContext(ctx).
+		Where("origin = ? AND txn_id = ? AND expires_at > ?", origin, txnID, now.UTC()).
+		First(&row).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
@@ -344,6 +353,14 @@ func (r *federationRepo) QueuedDestinations(ctx context.Context, now time.Time) 
 		Where("dropped_at IS NULL AND next_attempt_at <= ?", now).
 		Distinct().Pluck("destination", &destinations).Error
 	return destinations, err
+}
+
+// DropGivenUpQueueItems implements [FederationRepo].
+func (r *federationRepo) DropGivenUpQueueItems(ctx context.Context, before time.Time) (int, error) {
+	result := r.db.WithContext(ctx).
+		Where("dropped_at IS NOT NULL AND dropped_at <= ?", before.UTC()).
+		Delete(&FederationQueueItem{})
+	return int(result.RowsAffected), result.Error
 }
 
 // QueueDepth implements [FederationRepo].

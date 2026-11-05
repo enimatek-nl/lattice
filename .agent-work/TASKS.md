@@ -249,8 +249,11 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
       `/state_ids`, `/backfill`, `/make_leave`, `/send_leave`, `/invite`, `/event_auth`),
       without which no remote user can be in a room here, which is what makes most of the
       two-server Complement tests unreachable
-- [ ] T-4010 federation transaction and key-cache retention is written but never pruned by a
-      scheduled job; `DropExpiredTransactions`/`DropExpiredServerKeys` need a caller
+- [x] T-4010 `Sender.Cleanup` and the worker's hourly pass: answered transactions past their
+      replay window, key documents past their trust window and queue rows given up on for a
+      month are forgotten, while everything still current survives —
+      `tests/unit/federationqueue_test.go` (which also caught that `SeenTransaction` accepted
+      an instant and ignored it, so an answer kept past its expiry was replayed as if current)
 - [ ] T-4011 the address policy is applied when discovery resolves a name, not when the
       socket is opened. A name whose answer changes between the two (DNS rebinding) is not
       covered; the fix is a dialer that re-checks the address it is about to connect to
