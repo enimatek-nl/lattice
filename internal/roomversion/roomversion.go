@@ -213,7 +213,15 @@ var registry = map[string]Rules{
 // v11 is the default: it is the newest version with the state resolution and
 // room ID shape this project has designed for, and it avoids room version 12's
 // domain-free room IDs and creator power changes, which need separate work.
-var supported = []string{"10", "11"}
+// supported lists the versions this server will create rooms in, oldest first.
+//
+// Versions 7 to 11 are offered because their authorisation rules and state resolution
+// are implemented, and because that is the range where knock and restricted join rules
+// exist. Versions 1 to 6 are not: version 1 uses State Resolution 1, which is not
+// implemented, and offering a version whose conflict resolution is missing would mean
+// promising semantics this server cannot deliver. Events already in older versions can
+// still be authorised, which is what federation and history need.
+var supported = []string{"7", "8", "9", "10", "11"}
 
 // defaultVersion is used when a client asks to create a room without naming a
 // version.

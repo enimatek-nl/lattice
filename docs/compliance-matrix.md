@@ -100,6 +100,20 @@ Full inventory, commands and the per-test list: `.agent-work/COMPLIANCE-MATRIX.m
 | Server faults observed | 0 panics, 0 HTTP 500 responses |
 | Complement assertions changed | none |
 
+### Targeted run after the M2 rooms, membership and alias work (2026-11-05)
+
+The full suite has not been re-run for this iteration; the run below is the rooms,
+membership, alias and M1-regression subset, and it is reported as such.
+
+| Field | Value |
+| --- | --- |
+| Suites run | `./tests`, `./tests/csapi` with `RUN='TestRoomAlias\|TestRoomDeleteAlias\|TestRoomCanonicalAlias\|TestCannotKick*\|TestNotPresentUserCannotBanOthers\|TestRoomCreate\|TestRoomMembers\|TestRoomState\|TestKnocking*\|TestCannotSendNonKnockViaSendKnock\|TestRoomHierarchy\|TestUnknownEndpoints\|TestVersionStructure\|TestServerCapabilities\|TestRegistration\|TestLogin\|TestCanRegisterAdmin\|TestMediaConfig'` |
+| Passed | `TestRoomAlias` (all subtests), `TestCannotKickNonPresentUser`, and every M1 regression suite listed above |
+| Failed and why | `TestRoomCreate`, `TestRoomMembers`, `TestRoomState`, `TestRoomDeleteAlias`, `TestRoomCanonicalAlias`, `TestNotPresentUserCannotBanOthers`, `TestCannotKickLeftUser`: every protocol step before the assertion succeeded, then failed at `GET /sync` (not implemented, T-3001). `TestKnocking`, `TestKnockingInMSC3787Room`: refuse a remote-user invitation with 501 (federation, M4). `TestCannotSendNonKnockViaSendKnock`, `TestRoomHierarchy`: version or endpoint gaps recorded in the tables above |
+| Newly unblocked by this iteration | the alias family and the kick/ban family no longer fail on their own endpoints; they fail on `/sync` |
+| Server faults observed | 0 panics, 0 HTTP 500 |
+| Complement assertions changed | none |
+
 ## Known inconsistencies recorded honestly
 
 1. `GET /versions` advertises v1.1…v1.19 while most endpoints are missing. Clients are not misled

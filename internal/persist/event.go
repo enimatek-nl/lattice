@@ -338,6 +338,15 @@ type StateRepo interface {
 	Get(ctx context.Context, roomID, eventType, stateKey string) (*RoomState, error)
 	All(ctx context.Context, roomID string) ([]*RoomState, error)
 
+	// ByType returns the current state entries of one event type in a room, which is
+	// how a member list is read: membership is state, one entry per user.
+	ByType(ctx context.Context, roomID, eventType string) ([]*RoomState, error)
+
+	// MembershipsOf returns the current m.room.member state entries that name a user,
+	// across every room. It backs "which rooms is this user in" without scanning all
+	// state.
+	MembershipsOf(ctx context.Context, userID string) ([]*RoomState, error)
+
 	// RememberAuthContext records the state that authorised an event.
 	RememberAuthContext(ctx context.Context, eventID string, stateEventIDs []string) error
 	AuthContext(ctx context.Context, eventID string) ([]string, error)
@@ -392,6 +401,28 @@ func (s *stateRepo) Get(ctx context.Context, roomID, eventType, stateKey string)
 func (s *stateRepo) All(ctx context.Context, roomID string) ([]*RoomState, error) {
 	var states []*RoomState
 	if err := s.db.WithContext(ctx).Where("room_id = ?", roomID).Find(&states).Error; err != nil {
+		return nil, err
+	}
+	return states, nil
+}
+
+// ByType implements [StateRepo].
+func (s *stateRepo) ByType(ctx context.Context, roomID, eventType string) ([]*RoomState, error) {
+	var states []*RoomState
+	if err := s.db.WithContext(ctx).
+		Where("room_id = ? AND type = ?", roomID, eventType).
+		Order("state_key").Find(&states).Error; err != nil {
+		return nil, err
+	}
+	return states, nil
+}
+
+// MembershipsOf implements [StateRepo].
+func (s *stateRepo) MembershipsOf(ctx context.Context, userID string) ([]*RoomState, error) {
+	var states []*RoomState
+	if err := s.db.WithContext(ctx).
+		Where("type = ? AND state_key = ?", "m.room.member", userID).
+		Order("room_id").Find(&states).Error; err != nil {
 		return nil, err
 	}
 	return states, nil

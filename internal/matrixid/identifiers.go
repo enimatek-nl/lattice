@@ -339,6 +339,15 @@ func RoomAliasValid(alias string) error {
 	if domain == "" {
 		return fmt.Errorf("%w: room alias %q must contain a domain", ErrInvalidID, alias)
 	}
+	// A bare percent sign is refused. Percent is the escape character in Matrix
+	// identifiers, so an unescaped one is malformed rather than merely unusual; this
+	// is also what the reference test suite expects for an alias like
+	// "%name:example.com".
+	for _, r := range localpart {
+		if r == '%' {
+			return fmt.Errorf("%w: room alias %q has an unescaped percent sign", ErrInvalidID, alias)
+		}
+	}
 	return ServerNameValid(domain)
 }
 

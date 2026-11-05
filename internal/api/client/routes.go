@@ -50,6 +50,15 @@ func Register(r *httpserver.Router, d *Deps, requireAuth func(http.Handler) http
 		}
 	}
 
+	// versioned registers an endpoint under the current v3 prefix and the legacy r0
+	// prefix. Real clients and Complement still call r0 paths, and a homeserver that
+	// answers them with M_UNRECOGNIZED looks broken to software that is following the
+	// specification's own historical prefix.
+	versioned := func(method, path string, h http.HandlerFunc) {
+		r.Handle(method, "/_matrix/client/v3"+path, authed(h))
+		r.Handle(method, "/_matrix/client/r0"+path, authed(h))
+	}
+
 	// Discovery and versions.
 	r.Handle("GET", "/_matrix/client/versions", d.handleVersions)
 	r.Handle("GET", "/.well-known/matrix/client", d.handleWellKnownClient)
@@ -86,15 +95,45 @@ func Register(r *httpserver.Router, d *Deps, requireAuth func(http.Handler) http
 	r.Handle("DELETE", "/_matrix/client/v3/devices/{deviceID}", authed(d.handleDeviceDelete))
 
 	// Rooms and events.
-	r.Handle("POST", "/_matrix/client/v3/createRoom", authed(d.handleCreateRoom))
-	r.Handle("PUT", "/_matrix/client/v3/rooms/{roomID}/send/{eventType}/{txnID}", authed(d.handleRoomSend))
-	r.Handle("PUT", "/_matrix/client/v3/rooms/{roomID}/state/{eventType}", authed(d.handleRoomState))
-	r.Handle("PUT", "/_matrix/client/v3/rooms/{roomID}/state/{eventType}/{stateKey}", authed(d.handleRoomState))
+	versioned("POST", "/createRoom", d.handleCreateRoom)
+	versioned("PUT", "/rooms/{roomID}/send/{eventType}/{txnID}", d.handleRoomSend)
+	versioned("PUT", "/rooms/{roomID}/state/{eventType}", d.handleRoomState)
+	versioned("PUT", "/rooms/{roomID}/state/{eventType}/{stateKey}", d.handleRoomState)
 	// The empty state key is addressed with a trailing slash, which Go's mux treats
 	// as a subtree pattern; handleRoomState rejects the longer paths it also matches.
-	r.Handle("PUT", "/_matrix/client/v3/rooms/{roomID}/state/{eventType}/", authed(d.handleRoomState))
+	versioned("PUT", "/rooms/{roomID}/state/{eventType}/", d.handleRoomState)
+
+	// Membership. The decision about what a sender may do lives in the authorisation
+	// rules, so these endpoints only say which membership change is being requested.
+	versioned("POST", "/join/{roomIDOrAlias}", d.handleJoin)
+	versioned("POST", "/rooms/{roomID}/join", d.handleJoin)
+	versioned("POST", "/rooms/{roomID}/leave", d.handleLeave)
+	versioned("POST", "/rooms/{roomID}/knock", d.handleKnock)
+	versioned("POST", "/rooms/{roomID}/invite", d.handleInvite)
+	versioned("POST", "/rooms/{roomID}/kick", d.handleKick)
+	versioned("POST", "/rooms/{roomID}/ban", d.handleBan)
+	versioned("POST", "/rooms/{roomID}/unban", d.handleUnban)
+
+	// Reading room state and membership.
+	versioned("GET", "/rooms/{roomID}/state", d.handleRoomStateRead)
+	versioned("GET", "/rooms/{roomID}/state/{eventType}", d.handleRoomStateSingle)
+	versioned("GET", "/rooms/{roomID}/state/{eventType}/{stateKey}", d.handleRoomStateSingle)
+	versioned("GET", "/rooms/{roomID}/state/{eventType}/", d.handleRoomStateSingle)
+	versioned("GET", "/rooms/{roomID}/members", d.handleMembers)
+	versioned("GET", "/rooms/{roomID}/joined_members", d.handleJoinedMembers)
+	versioned("GET", "/joined_rooms", d.handleJoinedRooms)
+
+	// Room aliases.
+	versioned("PUT", "/directory/room/{roomAlias}", d.handleAliasPut)
+	versioned("DELETE", "/directory/room/{roomAlias}", d.handleAliasDelete)
+	// Resolving an alias is how a client finds a room to join, and joining may be the
+	// first thing a new client does: requiring a token here would make it impossible
+	// to discover a room to join in the first place.
+	r.Handle("GET", "/_matrix/client/v3/directory/room/{roomAlias}", d.handleAliasGet)
+	r.Handle("GET", "/_matrix/client/r0/directory/room/{roomAlias}", d.handleAliasGet)
+	versioned("GET", "/rooms/{roomID}/aliases", d.handleRoomAliases)
 
 	// Capabilities.
 	r.Handle("GET", "/_matrix/client/v1/capabilities", authed(d.handleCapabilities))
-	r.Handle("GET", "/_matrix/client/v3/capabilities", authed(d.handleCapabilities))
+	versioned("GET", "/capabilities", d.handleCapabilities)
 }
