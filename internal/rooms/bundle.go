@@ -237,6 +237,13 @@ func (s *Service) storeBundleEvent(ctx context.Context, event map[string]any, ru
 	known map[string]map[string]any, latest map[string]int64) (string, bool, bool, error) {
 	eventID, _ := event["event_id"].(string)
 	roomID, _ := event["room_id"].(string)
+	// A room's exclusion of servers holds when the room arrives in a bundle as well as when one
+	// event is offered at a time: otherwise a server the room threw out could hand over the whole
+	// room, or slip an event in among a bundle of someone else's.
+	if err := s.refusedByACL(ctx, event, roomID, eventID); err != nil {
+		return "", false, false, err
+	}
+
 	authIDs := anyStrings(event["auth_events"])
 	stored, err := s.events.ByIDs(ctx, authIDs)
 	if err != nil {

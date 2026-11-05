@@ -207,6 +207,10 @@ func TestRedactionArrivingBeforeItsTargetIsAppliedWhenTheTargetTurnsUp(t *testin
 	// are taken over the redacted form, which is exactly why a redaction does not rename an
 	// event.
 	target["content"] = map[string]any{"msgtype": "m.text", "body": "arrive second"}
+	// The unredacted form also names the server that made the event, which is part of what its
+	// hash covers. Redaction hides that field in the newer room versions, so putting it back is
+	// part of standing in for the difference between what a server serves and what it stores.
+	target["origin"] = hs1.name
 
 	// The redaction arrives while hs2 has the room but not the event it names. It cites a
 	// state event hs2 holds rather than its target: a redaction does not have to descend
@@ -406,6 +410,7 @@ func TestARedactionIsNotShownToAClientUntilItsTargetArrives(t *testing.T) {
 	// what makes the handover checkable — and note the event ID does not change, which is
 	// exactly why a redaction does not rename an event.
 	target["content"] = map[string]any{"msgtype": "m.text", "body": "arrives after its redaction"}
+	target["origin"] = hs1.name
 
 	// hs2 gets the room and the redaction, but not the message the redaction names. It cites
 	// a state event hs2 holds rather than its target: a redaction need not descend from the

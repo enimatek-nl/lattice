@@ -405,12 +405,12 @@ func (s *Service) createRoom(ctx context.Context, rules roomversion.Rules, roomI
 	}
 
 	built := []map[string]any{
-		newStateEvent(roomID, creator, eventauth.TypeCreate, "", createContent, s.now()),
-		newStateEvent(roomID, creator, eventauth.TypeMember, creator,
+		newStateEvent(s.name, roomID, creator, eventauth.TypeCreate, "", createContent, s.now()),
+		newStateEvent(s.name, roomID, creator, eventauth.TypeMember, creator,
 			map[string]any{"membership": eventauth.MembershipJoin}, s.now()),
 	}
 	for _, requested := range initial {
-		built = append(built, newStateEvent(roomID, creator, requested.Type, requested.StateKey, requested.Content, s.now()))
+		built = append(built, newStateEvent(s.name, roomID, creator, requested.Type, requested.StateKey, requested.Content, s.now()))
 	}
 
 	snapshot := newMemorySnapshot()
@@ -523,9 +523,14 @@ func (s *Service) send(ctx context.Context, req SendRequest) (string, error) {
 	}
 
 	event := map[string]any{
-		"type":             req.EventType,
-		"room_id":          req.RoomID,
-		"sender":           req.Sender,
+		"type":    req.EventType,
+		"room_id": req.RoomID,
+		"sender":  req.Sender,
+		// A PDU names the server that made it. The signature is keyed by that server's key, and
+		// a room's exclusion of servers, its auth rules and every other server's decision whether
+		// to believe this one all read the name from here; an event without it is a PDU that
+		// cannot be traced to who sent it.
+		"origin":           s.name,
 		"content":          valueOrEmpty(req.Content),
 		"prev_events":      toAnySlice(prev),
 		"depth":            depth,
@@ -853,12 +858,14 @@ func knownPreset(preset Preset) bool {
 	}
 }
 
-// newStateEvent builds the map form of a state event, before it is sealed.
-func newStateEvent(roomID, sender, eventType, stateKey string, content map[string]any, at time.Time) map[string]any {
+// newStateEvent builds the map form of a state event, before it is sealed. The origin server is
+// named because a PDU has to say who made it: see the note in [Service.send].
+func newStateEvent(origin, roomID, sender, eventType, stateKey string, content map[string]any, at time.Time) map[string]any {
 	return map[string]any{
 		"type":             eventType,
 		"room_id":          roomID,
 		"sender":           sender,
+		"origin":           origin,
 		"content":          valueOrEmpty(content),
 		"depth":            int64(1),
 		"origin_server_ts": at.UnixMilli(),

@@ -1016,3 +1016,48 @@ func TestFederationRefusalIsAVerdict(t *testing.T) {
 		t.Errorf("%s recorded a verdict about an event it could not judge: %s", hs2.name, reason)
 	}
 }
+
+// TestLocallyWrittenEventsNameTheirOriginServer: a PDU says which server made it.
+//
+// The name is not decoration. It is what another server checks the signature against when the
+// sender's own key is not the one in the event's sender field, what a room's exclusion of servers
+// is matched against, and what the auth rules of some room versions read. An event that omits it is
+// a PDU that cannot be traced to whoever sent it, and a homeserver that produces those is asking
+// every peer to guess.
+func TestLocallyWrittenEventsNameTheirOriginServer(t *testing.T) {
+	t.Parallel()
+	hs1, _ := federationPair(t)
+
+	token := hs1.registerUser(t, "originwatcher", "pw-originwatcher")
+	_, created := hs1.clientDo(t, http.MethodPost, "/_matrix/client/v3/createRoom",
+		map[string]any{"preset": "public_chat"}, token)
+	roomID, _ := created["room_id"].(string)
+	_, sent := hs1.clientDo(t, http.MethodPut, "/_matrix/client/v3/rooms/"+roomID+"/send/m.room.message/origin-check",
+		map[string]any{"msgtype": "m.text", "body": "who said this"}, token)
+	eventID, _ := sent["event_id"].(string)
+	if eventID == "" {
+		t.Fatal("the message has no event ID")
+	}
+	entry, err := hs1.app.DB.State.Get(context.Background(), roomID, "m.room.create", "")
+	if err != nil || entry == nil {
+		t.Fatalf("%s has no create event for %s: %v", hs1.name, roomID, err)
+	}
+	// Both a message and a state event: they are written by different paths in the room service,
+	// and a PDU missing its origin server is a protocol fault whichever kind it is.
+	for _, id := range []string{eventID, entry.EventID} {
+		row, err := hs1.app.DB.Events.ByID(context.Background(), id)
+		if err != nil || row == nil {
+			t.Fatalf("%s does not hold %s: %v", hs1.name, id, err)
+		}
+		var event map[string]any
+		if err := json.Unmarshal(row.JSON, &event); err != nil {
+			t.Fatalf("%s's copy of %s is unreadable: %v", hs1.name, id, err)
+		}
+		if origin := stringAny(event, "origin"); origin != hs1.name {
+			t.Errorf("the PDU of %s names %q as its origin server, wanting %s", id, origin, hs1.name)
+		}
+		if stamp, ok := event["origin_server_ts"].(float64); !ok || stamp <= 0 {
+			t.Errorf("the PDU of %s has no origin server timestamp: %v", id, event["origin_server_ts"])
+		}
+	}
+}

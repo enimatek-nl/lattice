@@ -35,6 +35,10 @@ type Deps struct {
 	Joins JoinAcceptor
 	// DB reads events for the federation read endpoints.
 	DB *persist.Database
+	// ACLs answers whether a room has excluded a homeserver. It is the room service: a room's
+	// exclusion is room state, and the endpoints and the event-accepting path have to give the
+	// same answer to it.
+	ACLs RoomACLs
 }
 
 // Register installs the Server-Server and key API routes.

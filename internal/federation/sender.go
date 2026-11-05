@@ -43,6 +43,15 @@ type Sender struct {
 	// GivenUpRetention is how long a queue row stays after this server stopped trying,
 	// so that "why did this room never arrive?" can still be answered when somebody asks.
 	GivenUpRetention time.Duration
+	// ACLs says whether a room has excluded a server, so that a relay does not pass a room's
+	// events to a server the room has thrown out. It is the room service; nil means no filtering,
+	// which is what a sender without a room service wired to it is.
+	ACLs RoomDenials
+}
+
+// RoomDenials is the room service's answer to whether a room excludes a homeserver.
+type RoomDenials interface {
+	DeniesServer(ctx context.Context, roomID, serverName string) (bool, error)
 }
 
 // NewSender returns a sender with the retry limits this project uses.
@@ -90,6 +99,22 @@ func (s *Sender) Relay(ctx context.Context, roomID, eventID string) error {
 		return fmt.Errorf("federation: cannot read the room's members to relay an event: %w", err)
 	}
 	destinations := serverNames(members, s.ours)
+	if s.ACLs != nil && len(destinations) > 0 {
+		// A room that has excluded a server is not served by passing events to it. The exclusion
+		// is the room's decision, made in its state, and a server that keeps a room's traffic
+		// flowing to a server the room threw out is undoing that decision on the room's behalf.
+		allowed := make([]string, 0, len(destinations))
+		for _, destination := range destinations {
+			denied, err := s.ACLs.DeniesServer(ctx, roomID, destination)
+			if err != nil {
+				return fmt.Errorf("federation: cannot read whether the room excludes %s: %w", destination, err)
+			}
+			if !denied {
+				allowed = append(allowed, destination)
+			}
+		}
+		destinations = allowed
+	}
 	if len(destinations) == 0 {
 		return nil
 	}

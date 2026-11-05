@@ -87,6 +87,15 @@ func (s *Service) AcceptRemoteEvent(ctx context.Context, pdu []byte, verify Veri
 		return eventID, nil
 	}
 
+	// The room's own exclusion of servers is checked before anything else that costs anything:
+	// authorising an event from a server the room has thrown out is work spent on an event that
+	// cannot be kept. It comes after the duplicate check because an event already held here was
+	// taken before the exclusion existed, and refusing it now would answer a retry with a verdict
+	// that contradicts this server's own history.
+	if err := s.refusedByACL(ctx, event, roomID, eventID); err != nil {
+		return "", err
+	}
+
 	if verify == nil {
 		return "", ErrNoRemoteVerification
 	}
