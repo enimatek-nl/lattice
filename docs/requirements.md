@@ -77,16 +77,53 @@ Test paths are relative to the repository root.
 | REQ-KEY-005 | SS §Transport | Federation listener serves HTTPS with TLS ≥ 1.2; CA-signed certificate supported | MUST | implemented | `tests/integration/lifecycle_test.go`, `tests/unit/tlsgen_test.go` |
 | REQ-FED-001 | SS §PDUs/EDUs, joins, backfill, `/send/:txn` | Full federation exchange | MUST | not implemented | M4; tracked in `.agent-work/PLAN.md` |
 
-## 6. Rooms, events, state (deliberately not implemented yet)
+## 6. Rooms, events and state (M2 in progress)
 
-| ID | Spec section | Requirement | Level | Status |
-| --- | --- | --- | --- | --- |
-| REQ-EVT-001 | Room Versions §Event authorization | Room-version-aware event authorization as a dedicated subsystem | MUST | not implemented (M2) |
-| REQ-STATE-001 | Room Versions §State resolution | Resolve conflicted state with the algorithm for the room version; never last-write-wins | MUST | not implemented (M2) |
-| REQ-ROOM-001 | CS §Rooms | `POST /createRoom`, membership, `PUT /send/{type}/{txn}` | MUST | not implemented (M2) |
-| REQ-SYNC-001 | CS §Sync | `GET /sync`, `/messages`, filters | MUST | not implemented (M3) |
-| REQ-MEDIA-001 | CS §Media repository | Upload/download/thumbnail | MUST | not implemented; `POST /_matrix/media/v3/upload` answers 501 with a Matrix error so the path still negotiates 405 correctly |
-| REQ-TXN-001 | CS §Idempotency | Transaction ID semantics for `PUT /send` | MUST | not implemented (M2) |
+Protocol primitives first: none of this is reachable from an endpoint yet, but these are
+the parts that must be byte-exact before any room is created.
+
+| ID | Spec section | Requirement | Level | Status | Tests |
+| --- | --- | --- | --- | --- | --- |
+| REQ-VER-001 | Room Versions §grammar | Room version strings are opaque, ≤ 32 characters, `[a-z0-9.-]` | MUST | implemented | `tests/unit/roomversion_test.go` |
+| REQ-VER-002 | Room Versions §feature matrix | Per-version behaviour is selected from a registry: state resolution, event ID format, authorisation rule set, redaction profile, join-rule support, integer power levels, `content.creator`, `content.redacts`, domain-free room IDs | MUST | implemented (v1–v12 registered; v10 and v11 offered for new rooms) | `tests/unit/roomversion_test.go` |
+| REQ-VER-003 | CS §Capabilities | Only versions this server can create rooms in are advertised in `m.room_versions.available` | MUST | implemented in the registry; the handler still reports an aspirational default — see `docs/compliance-matrix.md` | as above |
+| REQ-EVT-001 | SS §Signing Events (content hash) | Content hash = SHA-256 over canonical JSON with `hashes`, `signatures`, `unsigned` removed; stored unpadded base64 under `hashes.sha256` | MUST | implemented | `tests/unit/eventseal_test.go` |
+| REQ-EVT-002 | SS §Signing Events (reference hash) | Reference hash = the event put through the redaction algorithm, then `signatures`/`unsigned` removed, then canonical JSON, then SHA-256 | MUST | implemented | `tests/unit/redaction_test.go` (goldens taken from gomatrixserverlib) |
+| REQ-EVT-003 | Room Versions §Event IDs | Event ID = `$` + reference hash, standard unpadded base64 in v3 and URL-safe unpadded base64 in v4+; assigned by the origin server in v1–v2 | MUST | implemented | `tests/unit/redaction_test.go` |
+| REQ-EVT-004 | SS §Signing Events (signing) | Sign the **redacted** event so signatures survive redaction; record under `signatures.<origin>.<key id>` | MUST | implemented | `tests/unit/eventseal_test.go` verifies over the redacted form and checks event-ID stability |
+| REQ-EVT-005 | SS §Signing Events (receipt) | `event_id`, `outlier`, `destinations`, `age_ts`, `unsigned` are not part of what is hashed; recomputing an identifier ignores the supplied `event_id` | MUST | implemented | `tests/unit/eventseal_test.go` |
+| REQ-RED-001 | Room Versions §Redactions (v1–v10) | Strip every top-level key except `event_id`, `type`, `room_id`, `sender`, `state_key`, `content`, `hashes`, `signatures`, `depth`, `prev_events`, `prev_state`, `auth_events`, `origin`, `origin_server_ts`, `membership` | MUST | implemented | `tests/unit/redaction_test.go` |
+| REQ-RED-002 | Room Versions §Redactions (v11+) | `origin`, `membership` and `prev_state` are no longer protected; `m.room.create` keeps its whole content; `m.room.redaction` keeps `content.redacts`; `m.room.power_levels` also keeps `invite`; a redacted `m.room.member` keeps `third_party_invite.signed` | MUST | implemented | `tests/unit/redaction_test.go` |
+| REQ-RED-003 | Room Versions §Redactions (v9) | `content.join_authorised_via_users_server` is protected in v9+ but not in v8 | MUST | implemented | `tests/unit/redaction_test.go` |
+| REQ-RED-004 | Room Versions §Redactions (v6) | `m.room.aliases` loses its special redaction/auth handling in v6 | MUST | implemented | `tests/unit/redaction_test.go` |
+| REQ-RED-005 | Room Versions §Handling redactions | Apply a redaction only if the sender's power level is at least the redact level **or** the sender's domain matches the redacted event's sender domain | MUST | not implemented | M2 (needs power levels and event lookup) |
+| REQ-RED-006 | Room version 12 §Redactions | Additional protection of relation information | MUST | not implemented — v12 currently reuses the v11 profile and is not offered | recorded, M6 |
+| REQ-EVT-006 | Room Versions §Event format | `auth_events` ≤ 10, `prev_events` ≤ 20, `depth` < 2^53−1 and equal to max(prev depths)+1 | MUST | not implemented | M2 event validation |
+| REQ-EVT-007 | Appendices §Canonical JSON | In v6+ non-integer numbers and out-of-range integers make an event invalid (`M_BAD_JSON` on CS endpoints, discard over federation) | MUST | partial — canonical encoding is enforced, the per-version rejection rule is not wired up | M2 |
+| REQ-STATE-001 | Room Versions §State resolution | State Resolution 1 for v1, State Resolution 2 for v2–v11, the revised algorithm for v12 | MUST | not implemented; the registry selects the algorithm | M2 |
+| REQ-AUTH-020 | Room Versions §Authorisation rules | Room-version-specific event authorisation as a subsystem separate from handlers | MUST | not implemented | M2 (`internal/eventauth`) |
+| REQ-AUTH-021 | SS §Auth events selection | `auth_events` must match the selection algorithm; duplicates, foreign-room events and rejected auth events invalidate the event | MUST | not implemented | M2 |
+| REQ-AUTH-022 | Room Versions §Authorisation rule 9 (v10+) | Integer-only power-level content validation | MUST | not implemented | M2 |
+| REQ-TXN-001 | CS §Idempotency | Transaction IDs on `PUT /send/{type}/{txn}` are per-device and replay yields the same event | MUST | not implemented | M2 |
+| REQ-ROOM-001 | CS §Rooms | `POST /createRoom` with version negotiation, initial state, presets | MUST | not implemented | M2 |
+| REQ-ROOM-002 | Room Versions §room IDs | v12's domain-free room IDs and privileged creators | MUST | represented in the registry, not implemented | M6 |
+
+### Interpretation decisions where the specification and implementations need reconciling
+
+1. **`redacts` in room versions 3–10.** The per-version PDU tables list a top-level
+   `redacts` property for redaction events, but the same pages' redaction strip list does
+   not protect it, so the redacted form — hence the reference hash and event ID — drops
+   it. gomatrixserverlib drops it; Synapse's Rust redaction implementation could not be
+   read at the time of writing. This project follows the normative strip list, which also
+   matches gomatrixserverlib. If a peer preserves the key instead, our event ID for a
+   v3–v10 redaction event would differ from theirs; that is a falsifiable choice, checked
+   as soon as redaction runs against Complement. Tracked in `.agent-work/BLOCKERS.md`.
+2. **`format_version` in room versions 1–2.** Historic events carry it; the strip list
+   does not protect it, so neither do we. v1/v2 rooms are not offered for creation.
+3. **Transport keys on receipt.** `event_id`, `outlier`, `destinations` and `age_ts` are
+   removed before hashing and signing, as both gomatrixserverlib and Synapse do; the
+   specification states this in the receiving behaviour rather than in the hash
+   definition.
 
 ## 7. Operational requirements
 

@@ -58,6 +58,22 @@ Specification: Matrix v1.19 (`docs/specification-version.md`).
 | Identifier grammar (server names, user/room/alias/event/device IDs, downcasing) | implemented | `tests/unit/matrixid_test.go` |
 | ed25519 signing key generation, persistence, key id format | implemented | `tests/unit/storage_test.go` |
 
+### Protocol primitives (M2, in progress — not reachable from any endpoint yet)
+
+| Capability | Status | Evidence |
+| --- | --- | --- |
+| Room version registry v1-v12 (state res, event ID format, auth rule set, redaction profile, join rules, integer power levels, creator placement, redacts placement, domain-free room IDs) | implemented | `tests/unit/roomversion_test.go` |
+| Room version grammar validation | implemented | `tests/unit/roomversion_test.go` |
+| Only supported versions offered/advertised (`roomversion.Supported`/`Available`) | implemented (registry); the `/capabilities` handler does not use it yet | see deviation 2 below |
+| Redaction algorithm, per room version | implemented | `tests/unit/redaction_test.go` |
+| Content hash, reference hash, event ID derivation | implemented | `tests/unit/redaction_test.go`, `tests/unit/eventseal_test.go` |
+| Hashing + signing an outgoing event (signature over the redacted form) | implemented | `tests/unit/eventseal_test.go` |
+| Cross-implementation agreement on redaction and event IDs | verified against gomatrixserverlib v0.0.0-20260716140101-4fe595dc7f58 by golden test | `TestRedactionAndEventIDsAgainstReferenceImplementation` |
+| Event authorisation rules per room version | not implemented | M2 |
+| State resolution (v1 / v2 / v2.1) | not implemented | M2 |
+| Event graph storage, forward extremities, depth validation | not implemented | M2 |
+| Redaction application rules (power level or same domain) | not implemented | M2 |
+
 ## Complement run record
 
 Full inventory, commands and the per-test list: `.agent-work/COMPLIANCE-MATRIX.md`.
@@ -78,7 +94,7 @@ Full inventory, commands and the per-test list: `.agent-work/COMPLIANCE-MATRIX.m
 1. `GET /versions` advertises v1.1…v1.19 while most endpoints are missing. Clients are not misled
    about individual endpoints (they answer `M_UNRECOGNIZED`), but the range overstates coverage; a
    narrowing decision is tracked as an open item.
-2. `capabilities.m.room_versions` names a default room version that cannot be created yet.
+2. `capabilities.m.room_versions` advertises `11` as default and v1-v11 as available, while no room can be created yet. The registry now exposes the honest set (`Supported`/`Available` return v10 and v11 only); wiring `/capabilities` to it happens together with `createRoom`, because advertising versions without the endpoints that use them would be equally misleading.
 3. `TestFilter` passing is incidental; the filter endpoint is not implemented.
 4. `TestLogout`/`TestDeviceManagement` subtests fail only because the assertion vehicle (`/sync`)
    does not exist; the logout/device behaviour itself is covered by this project's integration tests.
