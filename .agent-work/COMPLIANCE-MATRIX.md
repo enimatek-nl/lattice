@@ -8,7 +8,8 @@ Complement reference: `https://github.com/matrix-org/complement`, checkout at
 
 ```sh
 make docker                                    # builds complement-lattice:latest
-scripts/complement.sh                          # M1-target filter
+scripts/complement.sh                          # M1-target filter; finds the checkout in
+                                               # $COMPLEMENT_DIR, ../complement or ~/complement
 # full suite:
 cd ~/complement
 COMPLEMENT_BASE_IMAGE=localhost/complement-lattice:latest \

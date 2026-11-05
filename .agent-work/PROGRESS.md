@@ -42,7 +42,9 @@ assembled server over real HTTP and TLS listeners.
 
 ### Complement evidence
 
-Checkout `7b38a63c9db3337292bee5887fc8533be3a57b9f`; image `complement-lattice:latest`.
+Checkout `7b38a63c9db3337292bee5887fc8533be3a57b9f`; image `complement-lattice:latest` rebuilt from the
+committed source and re-run afterwards (`scripts/complement.sh`, exit 1 as expected pre-`/sync`): the
+targeted subset reproduces exactly — only the four `/sync`-asserting subtests fail.
 
 Targeted M1 subset: `TestVersionStructure`, `TestUnknownEndpoints`, `TestRegistration`, `TestLogin`,
 `TestServerCapabilities`, `TestCanRegisterAdmin`, `TestMediaConfig` pass.
