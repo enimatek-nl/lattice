@@ -112,7 +112,8 @@ func applyPragmas(gdb *gorm.DB) error {
 func (d *Database) migrate(log *slog.Logger) error {
 	if err := d.db.AutoMigrate(&User{}, &Device{}, &AccessToken{}, &SigningKey{},
 		&Room{}, &Event{}, &EventEdge{}, &RoomState{}, &EventAuthContext{}, &EventTxn{}, &RoomAlias{}, &Filter{}, &AccountData{}, &Presence{}, &DeviceListChange{}, &DeviceKeyDoc{}, &OneTimeKey{},
-		&ServerSigningKey{}, &ServerKeyDocument{}, &FederationTransaction{}, &FederationQueueItem{}); err != nil {
+		&ServerSigningKey{}, &ServerKeyDocument{}, &FederationTransaction{}, &FederationQueueItem{},
+		&EventRejection{}); err != nil {
 		return fmt.Errorf("persist: migration failed: %w", err)
 	}
 	statements := []string{

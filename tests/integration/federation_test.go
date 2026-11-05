@@ -20,14 +20,17 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/enimatek/lattice/internal/app"
 	"github.com/enimatek/lattice/internal/config"
+	"github.com/enimatek/lattice/internal/events"
 	"github.com/enimatek/lattice/internal/federation"
 	"github.com/enimatek/lattice/internal/logging"
+	"github.com/enimatek/lattice/internal/roomversion"
 )
 
 // Federation tests need two homeservers. One server cannot show what federation is
@@ -865,4 +868,151 @@ func replaceKeyID(t *testing.T, header, keyID string) string {
 		t.Fatalf("the credential's key parameter is not quoted: %s", header)
 	}
 	return header[:at] + keyID + header[at+end:]
+}
+
+// TestFederationRefusalIsAVerdict checks what a server remembers about an event it
+// refused. The event is not stored — storing it would fork this room's history against
+// every server that recomputes its hash — but the verdict has to survive it, for three
+// reasons the specification cares about: the same event offered again gets the same
+// answer, an event citing the refused one is refused *because of it* rather than reported
+// as a gap, and a refusal that was only "this server could not judge yet" is not recorded
+// at all, because the missing part may still turn up and the same event may then be good.
+func TestFederationRefusalIsAVerdict(t *testing.T) {
+	t.Parallel()
+	hs1, hs2 := federationPair(t)
+
+	token := hs1.registerUser(t, "feddave", "pw-feddave")
+	_, created := hs1.clientDo(t, http.MethodPost, "/_matrix/client/v3/createRoom",
+		map[string]any{"preset": "private_chat"}, token)
+	roomID, _ := created["room_id"].(string)
+	_, sent := hs1.clientDo(t, http.MethodPut,
+		"/_matrix/client/v3/rooms/"+roomID+"/send/m.room.message/txn-verdict",
+		map[string]any{"msgtype": "m.text", "body": "the one that stays home"}, token)
+	subjectID, _ := sent["event_id"].(string)
+
+	snapshot := hs1.roomSnapshot(t, roomID, token)
+	version := "11"
+	for _, event := range snapshot.State {
+		if stringAny(event, "type") != "m.room.create" {
+			continue
+		}
+		if content, ok := event["content"].(map[string]any); ok {
+			if asked, ok := content["room_version"].(string); ok && asked != "" {
+				version = asked
+			}
+		}
+	}
+	rules := roomversion.MustGet(version)
+
+	// Everything except that one message goes to hs2: it ends up with a real room, and
+	// with one message it has never seen, which is the subject this test needs.
+	var given []map[string]any
+	subject := map[string]any{}
+	for _, event := range byDepth(dedupe(snapshot.State, snapshot.Messages)) {
+		if stringAny(event, "event_id") == subjectID {
+			subject = event
+			continue
+		}
+		given = append(given, event)
+	}
+	if len(subject) == 0 {
+		t.Fatalf("the message meant to be refused is not in %s's history", hs1.name)
+	}
+	_, answer := hs1.sendTransaction(t, hs2, "verdict-setup", given)
+	for eventID, result := range answer.PDUs {
+		if result.Error != "" {
+			t.Fatalf("%s refused %s while being told about the room: %s", hs2.name, eventID, result.Error)
+		}
+	}
+
+	// The subject arrives with a signature its origin server never made.
+	forged := cloneEvent(t, subject)
+	forged["signatures"] = map[string]any{
+		hs1.name: map[string]string{"ed25519:nonsense": "not-a-signature"},
+	}
+	_, answer = hs1.sendTransaction(t, hs2, "verdict-forged", []map[string]any{forged})
+	refused, ok := answer.PDUs[subjectID]
+	if !ok {
+		t.Fatalf("the answer does not mention %s: %v", subjectID, answer.PDUs)
+	}
+	if refused.Error == "" {
+		t.Fatalf("%s accepted an event its origin server did not sign", hs2.name)
+	}
+	if !strings.Contains(refused.Error, "signature") {
+		t.Errorf("refused for the wrong reason: %s", refused.Error)
+	}
+
+	// The verdict outlives the event.
+	ctx := context.Background()
+	reasons, err := hs2.app.DB.Events.Rejections(ctx, []string{subjectID})
+	if err != nil {
+		t.Fatalf("reading the refusals recorded by %s: %v", hs2.name, err)
+	}
+	if !strings.Contains(reasons[subjectID], "signature") {
+		t.Errorf("%s did not remember why it refused %s: %v", hs2.name, subjectID, reasons)
+	}
+
+	// An event that cites the refused one is refused for that reason. This is the case
+	// the memory exists for: without it, hs2 would answer "I have never seen that auth
+	// event" — a gap someone could still fill — when the truth is that it saw it and said
+	// no.
+	cited := cloneEvent(t, given[len(given)-1])
+	cited["content"] = map[string]any{"msgtype": "m.text", "body": "cites an event that was refused"}
+	authEvents, _ := cited["auth_events"].([]any)
+	cited["auth_events"] = append(append([]any{}, authEvents...), subjectID)
+	delete(cited, "event_id")
+	if err := events.Seal(hs1.name, rules, cited, hs1.app.Keys); err != nil {
+		t.Fatalf("sealing the citing event: %v", err)
+	}
+	citingID, err := events.EventID(rules, cited)
+	if err != nil {
+		t.Fatalf("the citing event's ID: %v", err)
+	}
+	cited["event_id"] = citingID
+
+	_, answer = hs1.sendTransaction(t, hs2, "verdict-cite", []map[string]any{cited})
+	result, ok := answer.PDUs[citingID]
+	if !ok {
+		t.Fatalf("the answer does not mention %s: %v", citingID, answer.PDUs)
+	}
+	if result.Error == "" {
+		t.Errorf("%s accepted an event whose auth event it had refused", hs2.name)
+	} else if !strings.Contains(result.Error, "rejected on receipt") || !strings.Contains(result.Error, subjectID) {
+		t.Errorf("the cascade was not named: %s", result.Error)
+	}
+	if reasons, err := hs2.app.DB.Events.Rejections(ctx, []string{citingID}); err != nil {
+		t.Fatalf("reading the recorded refusal: %v", err)
+	} else if !strings.Contains(reasons[citingID], "rejected on receipt") {
+		t.Errorf("%s did not remember its verdict about the citing event: %v", hs2.name, reasons)
+	}
+
+	// A refusal that was only a gap is not a verdict, and is not recorded as one: the
+	// missing event may still arrive, and the same event may then be perfectly good.
+	gapped := cloneEvent(t, subject)
+	gapped["content"] = map[string]any{"msgtype": "m.text", "body": "cites an event nobody mentioned"}
+	authEvents, _ = gapped["auth_events"].([]any)
+	gapped["auth_events"] = append(append([]any{}, authEvents...), "$never-mentioned:hs1")
+	delete(gapped, "event_id")
+	if err := events.Seal(hs1.name, rules, gapped, hs1.app.Keys); err != nil {
+		t.Fatalf("sealing the gapped event: %v", err)
+	}
+	gappedID, err := events.EventID(rules, gapped)
+	if err != nil {
+		t.Fatalf("the gapped event's ID: %v", err)
+	}
+	gapped["event_id"] = gappedID
+
+	_, answer = hs1.sendTransaction(t, hs2, "verdict-gap", []map[string]any{gapped})
+	result, ok = answer.PDUs[gappedID]
+	if !ok {
+		t.Fatalf("the answer does not mention %s: %v", gappedID, answer.PDUs)
+	}
+	if result.Error == "" {
+		t.Fatalf("%s accepted an event whose auth event it cannot resolve", hs2.name)
+	}
+	if reasons, err := hs2.app.DB.Events.Rejections(ctx, []string{gappedID}); err != nil {
+		t.Fatalf("reading the recorded refusals: %v", err)
+	} else if reason, recorded := reasons[gappedID]; recorded {
+		t.Errorf("%s recorded a verdict about an event it could not judge: %s", hs2.name, reason)
+	}
 }

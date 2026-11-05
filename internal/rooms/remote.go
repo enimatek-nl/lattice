@@ -76,7 +76,13 @@ func (s *Service) AcceptRemoteEvent(ctx context.Context, pdu []byte, verify Veri
 	}
 
 	existing, err := s.events.ByID(ctx, eventID)
-	if err == nil && existing != nil {
+	if err != nil && !notFound(err) {
+		// A storage failure is not the sender's fault. Treating it as "not stored here"
+		// would answer a database problem with a verdict about someone else's event, and
+		// that verdict would then be remembered.
+		return "", fmt.Errorf("rooms: cannot look up the event being offered: %w", err)
+	}
+	if existing != nil {
 		// The same event arriving twice is not an error and must not be stored twice.
 		return eventID, nil
 	}
@@ -85,7 +91,8 @@ func (s *Service) AcceptRemoteEvent(ctx context.Context, pdu []byte, verify Veri
 		return "", ErrNoRemoteVerification
 	}
 	if err := verify(event, rules); err != nil {
-		return "", fmt.Errorf("the event failed its signature and hash checks: %w", err)
+		reason := fmt.Sprintf("the event failed its signature and hash checks: %v", err)
+		return "", s.refuse(ctx, roomID, eventID, reason)
 	}
 
 	// The auth events the sender cited have to be present here, both to authorise this
@@ -96,7 +103,14 @@ func (s *Service) AcceptRemoteEvent(ctx context.Context, pdu []byte, verify Veri
 	if err != nil {
 		return "", fmt.Errorf("rooms: cannot read the auth events of a remote event: %w", err)
 	}
-	if len(authEvents) != len(authIDs) {
+	refusals, err := s.events.Rejections(ctx, authIDs)
+	if err != nil {
+		return "", fmt.Errorf("rooms: cannot read the refusals recorded for a remote event: %w", err)
+	}
+	if len(authEvents)+len(refusals) < len(authIDs) {
+		// Nothing is known about at least one of the events it relies on. That is a gap,
+		// not a verdict: the gap may be filled (T-4007) and the same event may then be
+		// perfectly good. It is therefore not recorded as a refusal.
 		return "", fmt.Errorf("the auth events it cites are not stored here, so it cannot be authorised")
 	}
 	prevIDs := anyStrings(event["prev_events"])
@@ -113,7 +127,8 @@ func (s *Service) AcceptRemoteEvent(ctx context.Context, pdu []byte, verify Veri
 		}
 	}
 
-	snapshot := &citedSnapshot{byID: map[string]map[string]any{}, byKey: map[eventauth.Key]map[string]any{}}
+	snapshot := &citedSnapshot{byID: map[string]map[string]any{},
+		byKey: map[eventauth.Key]map[string]any{}, refusals: refusals}
 	for _, entry := range authEvents {
 		body, err := events.Parse(entry.JSON)
 		if err != nil {
@@ -125,7 +140,8 @@ func (s *Service) AcceptRemoteEvent(ctx context.Context, pdu []byte, verify Veri
 		}
 	}
 	if err := eventauth.Check(rules, event, snapshot, eventauth.Opts{}); err != nil {
-		return "", fmt.Errorf("the event is not authorised by the events it cites: %w", err)
+		reason := fmt.Sprintf("the event is not authorised by the events it cites: %v", err)
+		return "", s.refuse(ctx, roomID, eventID, reason)
 	}
 
 	// The current-state check decides whether this event is relayed to clients, not
@@ -173,6 +189,38 @@ func (s *Service) AcceptRemoteEvent(ctx context.Context, pdu []byte, verify Veri
 	return accepted, nil
 }
 
+// refuse records this server's verdict about an event and returns the error to hand back
+// to the sender.
+//
+// Only verdicts about the event itself belong here: it is malformed for its room version,
+// its ID is not the hash its content makes, its content hash does not match, its origin
+// server did not sign it, or the events it cites do not authorise it. A refusal that was
+// really "this server could not judge yet" — unknown room, missing predecessors, an auth
+// event nobody has sent us — is not recorded, because the missing context may arrive and
+// the same event may then be entirely good. Recording that kind of refusal would turn a
+// temporary gap into a permanent ban on an event this server never actually judged.
+//
+// The verdict outlives the event because the event is not stored: the rules say an event
+// citing a refused auth event is itself refused, and the sender is entitled to the same
+// answer the second time it asks.
+func (s *Service) refuse(ctx context.Context, roomID, eventID, reason string) error {
+	if eventID != "" {
+		if stored, err := s.events.ByID(ctx, eventID); err == nil && stored != nil {
+			// Nothing is recorded against an event this server holds. An ID that was
+			// accepted is not refused, and recording it would let a stranger's claim —
+			// bytes under a good event's ID — become a verdict against that good event.
+			return errors.New(reason)
+		}
+		if err := s.events.RecordRejection(ctx, &persist.EventRejection{
+			EventID: eventID, RoomID: roomID, Reason: reason, Refuser: s.name,
+		}); err != nil {
+			s.log.Warn("rooms: cannot record a refusal",
+				slog.String("event_id", eventID), slog.Any("error", err))
+		}
+	}
+	return errors.New(reason)
+}
+
 // adoptRemoteRoom records a room from a remote create event.
 //
 // The room version comes from the create event, because that is what the room's rules
@@ -214,6 +262,8 @@ func (s *Service) adoptRemoteRoom(ctx context.Context, event map[string]any) (bo
 type citedSnapshot struct {
 	byID  map[string]map[string]any
 	byKey map[eventauth.Key]map[string]any
+	// refusals holds the auth events this server was told about and refused, by ID.
+	refusals map[string]string
 }
 
 // State implements [eventauth.Snapshot].
@@ -228,10 +278,17 @@ func (s *citedSnapshot) Event(id string) (map[string]any, bool) {
 	return event, ok
 }
 
-// Rejected implements [eventauth.Snapshot]. An event this server has never seen cannot
-// be a rejected one; the caller refuses an event whose auth events are missing before
-// getting here.
-func (s *citedSnapshot) Rejected(string) bool { return false }
+// Rejected implements [eventauth.Snapshot].
+//
+// Two different things can be absent from this server: an event it has never been told
+// about, and an event it was told about and refused. The caller has already stopped the
+// first; the second is reported here, because an event that cites a refused auth event is
+// not merely unresolvable — it is invalid, and saying so is what stops the sender offering
+// the same chain again.
+func (s *citedSnapshot) Rejected(id string) bool {
+	_, refused := s.refusals[id]
+	return refused
+}
 
 // ErrNoRemoteVerification says a caller forgot to supply the signature checker. Storing
 // an unverified event from a stranger is not an option, so this is a fault in this

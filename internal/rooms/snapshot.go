@@ -63,12 +63,14 @@ func (m *memorySnapshot) Rejected(string) bool { return false }
 // single authorisation pass asks for the same create, power levels and membership
 // events repeatedly.
 type dbSnapshot struct {
-	events persist.EventRepo
-	ctx    context.Context
-	roomID string
-	state  map[eventauth.Key]map[string]any
-	byID   map[string]map[string]any
-	err    error
+	events   persist.EventRepo
+	ctx      context.Context
+	roomID   string
+	state    map[eventauth.Key]map[string]any
+	byID     map[string]map[string]any
+	err      error
+	rejected map[string]string
+	asked    map[string]bool
 }
 
 // State implements [eventauth.Snapshot].
@@ -112,12 +114,41 @@ func (d *dbSnapshot) load(id string) (map[string]any, error) {
 
 // Rejected implements [eventauth.Snapshot].
 //
-// This server does not yet persist the outcome of the checks performed when an event
-// arrives, so nothing is reported as rejected. That is a real gap and it is tracked:
-// an event that failed on receipt could still be used as an auth event by these
-// lookups. It matters as soon as federated events are accepted, not for events this
-// server created itself.
-func (d *dbSnapshot) Rejected(string) bool { return false }
+// A refusal is a verdict this server stands by even though it did not keep the event.
+// Without it, the same refused event can be offered again, or an event citing it judged
+// as though nothing had been decided — and two servers that once agreed that an event was
+// bad would then disagree about its successors. Events this server accepted are never
+// reported here, because an accepted event is stored and `Event` answers for it.
+func (d *dbSnapshot) Rejected(id string) bool {
+	if id == "" {
+		return false
+	}
+	if _, refused := d.rejected[id]; refused {
+		return true
+	}
+	if d.asked[id] {
+		return false
+	}
+	if d.asked == nil {
+		d.asked = map[string]bool{}
+	}
+	d.asked[id] = true
+	reasons, err := d.events.Rejections(d.ctx, []string{id})
+	if err != nil {
+		if !notFound(err) {
+			d.err = err
+		}
+		return false
+	}
+	if reason, ok := reasons[id]; ok {
+		if d.rejected == nil {
+			d.rejected = map[string]string{}
+		}
+		d.rejected[id] = reason
+		return true
+	}
+	return false
+}
 
 // notFound recognises both the repository sentinel and the driver-level error, so a
 // missing event is treated as missing whatever layer reported it.
