@@ -2,15 +2,18 @@
 package client
 
 import (
-	"github.com/enimatek/lattice/internal/auth"
 	"log/slog"
 	"net/http"
 	"time"
 
+	"github.com/enimatek/lattice/internal/auth"
+
 	"github.com/enimatek/lattice/internal/config"
 	"github.com/enimatek/lattice/internal/httpserver"
 	"github.com/enimatek/lattice/internal/keys"
+	"github.com/enimatek/lattice/internal/matrixerr"
 	"github.com/enimatek/lattice/internal/persist"
+	"github.com/enimatek/lattice/internal/rooms"
 	"github.com/enimatek/lattice/internal/users"
 )
 
@@ -22,9 +25,20 @@ type Deps struct {
 	Tokens  *auth.TokenService
 	UIA     *auth.UIAService
 	Keys    *keys.Service
+	Rooms   *rooms.Service
 	DB      *persist.Database
 	Version string
 	Started time.Time
+}
+
+// serviceError writes a service-layer failure with the status the protocol prescribes
+// and logs anything that is not a protocol error, so a storage fault is visible in the
+// log but not in the response.
+func (d *Deps) serviceError(w http.ResponseWriter, err error) {
+	if _, isProtocol := matrixerr.As(err); !isProtocol {
+		d.Log.Error("a room operation failed", slog.String("error", err.Error()))
+	}
+	matrixerr.WriteServiceError(w, err)
 }
 
 // Register installs the Client-Server API routes on r. requireAuth is the
@@ -70,6 +84,15 @@ func Register(r *httpserver.Router, d *Deps, requireAuth func(http.Handler) http
 	r.Handle("GET", "/_matrix/client/v3/devices/{deviceID}", authed(d.handleDeviceGet))
 	r.Handle("PUT", "/_matrix/client/v3/devices/{deviceID}", authed(d.handleDevicePut))
 	r.Handle("DELETE", "/_matrix/client/v3/devices/{deviceID}", authed(d.handleDeviceDelete))
+
+	// Rooms and events.
+	r.Handle("POST", "/_matrix/client/v3/createRoom", authed(d.handleCreateRoom))
+	r.Handle("PUT", "/_matrix/client/v3/rooms/{roomID}/send/{eventType}/{txnID}", authed(d.handleRoomSend))
+	r.Handle("PUT", "/_matrix/client/v3/rooms/{roomID}/state/{eventType}", authed(d.handleRoomState))
+	r.Handle("PUT", "/_matrix/client/v3/rooms/{roomID}/state/{eventType}/{stateKey}", authed(d.handleRoomState))
+	// The empty state key is addressed with a trailing slash, which Go's mux treats
+	// as a subtree pattern; handleRoomState rejects the longer paths it also matches.
+	r.Handle("PUT", "/_matrix/client/v3/rooms/{roomID}/state/{eventType}/", authed(d.handleRoomState))
 
 	// Capabilities.
 	r.Handle("GET", "/_matrix/client/v1/capabilities", authed(d.handleCapabilities))

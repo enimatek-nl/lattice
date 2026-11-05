@@ -1,0 +1,698 @@
+// Package rooms creates rooms and puts events into them.
+//
+// This is where the M2 primitives meet: the room version registry decides the rules,
+// internal/eventauth decides whether an event is allowed, internal/events computes
+// hashes, event IDs and signatures, and internal/persist stores the event graph and
+// the room state. Keeping that orchestration here means the HTTP layer stays a
+// transport and the rules stay in one place.
+//
+// Local sending does not run state resolution. A room this server created has a
+// single chain of forward extremities and its current state is what the state rows
+// say. State resolution becomes necessary when the graph forks, which is what
+// receiving federated events does; internal/state holds that algorithm.
+package rooms
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"sort"
+	"time"
+
+	"gorm.io/gorm"
+
+	"github.com/enimatek/lattice/internal/eventauth"
+	"github.com/enimatek/lattice/internal/events"
+	"github.com/enimatek/lattice/internal/matrixerr"
+	"github.com/enimatek/lattice/internal/matrixid"
+	"github.com/enimatek/lattice/internal/persist"
+	"github.com/enimatek/lattice/internal/roomversion"
+)
+
+// maxPrevEvents is how many predecessors a created event cites. The specifications
+// cap prev_events at 10; a room holding more forward extremities than that needs the
+// forks merged first, which is federation work.
+const maxPrevEvents = 10
+
+// Preset names the initial-state layouts the Client-Server API defines.
+type Preset string
+
+// The presets defined by the Client-Server API.
+const (
+	PresetPrivateChat        Preset = "private_chat"
+	PresetPublicChat         Preset = "public_chat"
+	PresetTrustedPrivateChat Preset = "trusted_private_chat"
+)
+
+// CreateRequest describes a room to create.
+type CreateRequest struct {
+	Creator     string
+	Preset      Preset
+	RoomVersion string
+	// CreationContent is merged into m.room.create. The creator, the room version
+	// and a predecessor are never taken from the client.
+	CreationContent map[string]any
+	// InitialState is applied after the preset, so a client can replace a preset
+	// entry for the same (type, state_key) pair.
+	InitialState []StateContent
+	// PowerLevelOverride merges into the preset's m.room.power_levels event.
+	PowerLevelOverride map[string]any
+	Name               string
+	Topic              string
+	AvatarURL          string
+}
+
+// StateContent is one requested state event.
+type StateContent struct {
+	Type     string
+	StateKey string
+	Content  map[string]any
+}
+
+// SendRequest describes an event to add to a room.
+type SendRequest struct {
+	RoomID    string
+	Sender    string
+	DeviceID  string
+	TxnID     string
+	EventType string
+	// StateKey is only used when IsState is set; a state event may legitimately have
+	// an empty state key.
+	StateKey string
+	IsState  bool
+	Content  map[string]any
+}
+
+// Service creates rooms and appends events to them.
+type Service struct {
+	db     *persist.Database
+	rooms  persist.RoomRepo
+	events persist.EventRepo
+	state  persist.StateRepo
+	signer events.Signer
+	name   string
+	log    *slog.Logger
+	// now is replaced in tests. A homeserver's timestamps must come from the server,
+	// but a test has to control them to make ordering assertions.
+	now func() time.Time
+}
+
+// New builds the room service. signer must not be nil: an unsigned event is refused
+// by every other server, so there is no useful unsigned mode.
+func New(db *persist.Database, signer events.Signer, serverName string, log *slog.Logger) (*Service, error) {
+	if db == nil {
+		return nil, errors.New("rooms: a database is required")
+	}
+	if signer == nil {
+		return nil, errors.New("rooms: a signer is required")
+	}
+	if serverName == "" {
+		return nil, errors.New("rooms: a server name is required")
+	}
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
+	return &Service{
+		db:     db,
+		rooms:  db.Rooms,
+		events: db.Events,
+		state:  db.State,
+		signer: signer,
+		name:   serverName,
+		log:    log,
+		now:    func() time.Time { return time.Now().UTC() },
+	}, nil
+}
+
+// WithTx returns a service whose repositories work inside tx, so a multi-step
+// operation is atomic.
+func (s *Service) WithTx(tx *gorm.DB) *Service {
+	return &Service{
+		db:     s.db,
+		rooms:  s.rooms.WithTx(tx),
+		events: s.events.WithTx(tx),
+		state:  s.state.WithTx(tx),
+		signer: s.signer,
+		name:   s.name,
+		log:    s.log,
+		now:    s.now,
+	}
+}
+
+// Create makes a new room and returns its ID. The room and its initial state are
+// written in one transaction: a room that exists without its create event would be
+// unreadable to anything that looked at it in between.
+func (s *Service) Create(ctx context.Context, req CreateRequest) (string, error) {
+	rules, _, err := roomversion.Pick(req.RoomVersion)
+	if err != nil {
+		return "", matrixerr.New(matrixerr.CodeUnsupportedRoomVersion,
+			"This server cannot create a room in that room version.").
+			WithExtra(map[string]any{"room_version": req.RoomVersion})
+	}
+	if req.Preset == "" {
+		req.Preset = PresetPrivateChat
+	}
+	if !knownPreset(req.Preset) {
+		return "", matrixerr.Newf(matrixerr.CodeInvalidParam,
+			"The preset %q is not one this server knows.", string(req.Preset))
+	}
+
+	roomID, err := s.newRoomID()
+	if err != nil {
+		return "", err
+	}
+
+	createContent := map[string]any{}
+	for key, value := range req.CreationContent {
+		if key == "creator" || key == "room_version" || key == "predecessor" {
+			continue
+		}
+		createContent[key] = value
+	}
+	createContent["creator"] = req.Creator
+	createContent["room_version"] = rules.ID
+
+	initial := presetState(req.Preset, req.Creator)
+	// name, topic and avatar in the createRoom body are shorthand for state events.
+	if req.Name != "" {
+		initial = append(initial, StateContent{Type: "m.room.name", Content: map[string]any{"name": req.Name}})
+	}
+	if req.Topic != "" {
+		initial = append(initial, StateContent{Type: "m.room.topic", Content: map[string]any{"topic": req.Topic}})
+	}
+	if req.AvatarURL != "" {
+		initial = append(initial, StateContent{Type: "m.room.avatar", Content: map[string]any{"url": req.AvatarURL}})
+	}
+	if len(req.PowerLevelOverride) > 0 {
+		initial = append(initial, StateContent{
+			Type:    eventauth.TypePowerLevels,
+			Content: MergePowerLevels(presetPowerLevels(req.Creator), req.PowerLevelOverride),
+		})
+	}
+	initial = append(initial, req.InitialState...)
+
+	var created string
+	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
+		id, err := s.WithTx(tx).createRoom(ctx, rules, roomID, req.Creator, createContent, initial)
+		if err != nil {
+			return err
+		}
+		created = id
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return created, nil
+}
+
+// createRoom writes the room row and then its initial state, in dependency order.
+// Each initial event cites the one before it, so the room starts as a short chain
+// rather than as several roots.
+func (s *Service) createRoom(ctx context.Context, rules roomversion.Rules, roomID, creator string, createContent map[string]any, initial []StateContent) (string, error) {
+	if err := s.rooms.Create(ctx, &persist.Room{
+		RoomID:      roomID,
+		RoomVersion: rules.ID,
+		Creator:     creator,
+		CreatedTS:   s.now().UnixMilli(),
+	}); err != nil {
+		return "", fmt.Errorf("rooms: cannot store the room: %w", err)
+	}
+
+	built := []map[string]any{
+		newStateEvent(roomID, creator, eventauth.TypeCreate, "", createContent, s.now()),
+		newStateEvent(roomID, creator, eventauth.TypeMember, creator,
+			map[string]any{"membership": eventauth.MembershipJoin}, s.now()),
+	}
+	for _, requested := range initial {
+		built = append(built, newStateEvent(roomID, creator, requested.Type, requested.StateKey, requested.Content, s.now()))
+	}
+
+	snapshot := newMemorySnapshot()
+	var previous string
+	var lastStream int64
+	for index, event := range built {
+		if previous == "" {
+			event["prev_events"] = []any{}
+		} else {
+			event["prev_events"] = []any{previous}
+		}
+		event["depth"] = int64(index + 1)
+		event["auth_events"] = toAnySlice(eventauth.SelectEventIDs(rules, event, snapshot))
+
+		// Seal first, because the event ID is a hash of the sealed event.
+		if err := events.Seal(s.name, rules, event, s.signer); err != nil {
+			return "", fmt.Errorf("rooms: cannot sign the initial state: %w", err)
+		}
+		eventID, err := events.EventID(rules, event)
+		if err != nil {
+			return "", fmt.Errorf("rooms: cannot compute the event ID of the initial state: %w", err)
+		}
+		event["event_id"] = eventID
+
+		// Authorising our own construction is not busywork. It is the only thing
+		// standing between a bug in this builder and a room that every other server
+		// refuses as soon as it federates.
+		if err := eventauth.Check(rules, event, snapshot, eventauth.Opts{}); err != nil {
+			return "", fmt.Errorf("rooms: the initial state we built is not authorised: %w", err)
+		}
+
+		stream, err := s.events.NextStreamOrdering(ctx)
+		if err != nil {
+			return "", err
+		}
+		lastStream = stream
+		if err := s.persistEvent(ctx, event, stream); err != nil {
+			return "", err
+		}
+		snapshot.add(event)
+		previous = eventID
+	}
+
+	if err := s.rooms.SetLatestStream(ctx, roomID, lastStream); err != nil {
+		return "", err
+	}
+	s.log.Debug("room created",
+		slog.String("room_id", roomID),
+		slog.String("room_version", rules.ID),
+		slog.String("creator", creator))
+	return roomID, nil
+}
+
+// Send appends an event to a room and returns its event ID. A repeated transaction ID
+// from the same device returns the event ID produced the first time, which is what
+// makes `PUT /send/{type}/{txn}` safe to retry.
+func (s *Service) Send(ctx context.Context, req SendRequest) (string, error) {
+	var eventID string
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
+		id, err := s.WithTx(tx).send(ctx, req)
+		if err != nil {
+			return err
+		}
+		eventID = id
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return eventID, nil
+}
+
+func (s *Service) send(ctx context.Context, req SendRequest) (string, error) {
+	if req.TxnID != "" && req.DeviceID != "" {
+		existing, err := s.events.TxnLookup(ctx, req.DeviceID, req.TxnID)
+		if err != nil && !notFound(err) {
+			return "", fmt.Errorf("rooms: cannot look up the transaction: %w", err)
+		}
+		if existing != nil {
+			return existing.EventID, nil
+		}
+	}
+
+	room, err := s.rooms.ByRoomID(ctx, req.RoomID)
+	if err != nil {
+		if notFound(err) {
+			return "", matrixerr.Newf(matrixerr.CodeNotFound, "Room %q is not known to this server.", req.RoomID)
+		}
+		return "", fmt.Errorf("rooms: cannot load the room: %w", err)
+	}
+	rules, ok := roomversion.Get(room.RoomVersion)
+	if !ok {
+		return "", matrixerr.Newf(matrixerr.CodeIncompatibleRoomVersion,
+			"Room %q uses room version %s, which this server cannot authorise events in.",
+			req.RoomID, room.RoomVersion).WithExtra(map[string]any{"room_version": room.RoomVersion})
+	}
+
+	snapshot, err := s.loadState(ctx, req.RoomID)
+	if err != nil {
+		return "", err
+	}
+	prev, err := s.prevEvents(ctx, req.RoomID)
+	if err != nil {
+		return "", err
+	}
+	depth, err := s.depth(ctx, prev)
+	if err != nil {
+		return "", err
+	}
+
+	event := map[string]any{
+		"type":             req.EventType,
+		"room_id":          req.RoomID,
+		"sender":           req.Sender,
+		"content":          valueOrEmpty(req.Content),
+		"prev_events":      toAnySlice(prev),
+		"depth":            depth,
+		"origin_server_ts": s.now().UnixMilli(),
+		"auth_events":      []any{},
+	}
+	if req.IsState {
+		event["state_key"] = req.StateKey
+	}
+	event["auth_events"] = toAnySlice(eventauth.SelectEventIDs(rules, event, snapshot))
+
+	if err := eventauth.Check(rules, event, snapshot, eventauth.Opts{}); err != nil {
+		return "", s.refused(err, req)
+	}
+	if err := events.Seal(s.name, rules, event, s.signer); err != nil {
+		return "", fmt.Errorf("rooms: cannot sign the event: %w", err)
+	}
+	eventID, err := events.EventID(rules, event)
+	if err != nil {
+		return "", fmt.Errorf("rooms: cannot compute the event ID: %w", err)
+	}
+	event["event_id"] = eventID
+
+	stream, err := s.events.NextStreamOrdering(ctx)
+	if err != nil {
+		return "", err
+	}
+	if err := s.persistEvent(ctx, event, stream); err != nil {
+		return "", err
+	}
+	if req.TxnID != "" && req.DeviceID != "" {
+		if err := s.events.TxnSave(ctx, &persist.EventTxn{
+			DeviceID: req.DeviceID, TxnID: req.TxnID, EventID: eventID,
+		}); err != nil {
+			if !errors.Is(err, persist.ErrConflict) {
+				return "", fmt.Errorf("rooms: cannot record the transaction: %w", err)
+			}
+			// A concurrent retry won the race; its event is the answer to this one.
+			existing, lookupErr := s.events.TxnLookup(ctx, req.DeviceID, req.TxnID)
+			if lookupErr != nil || existing == nil {
+				return "", fmt.Errorf("rooms: a transaction collision left no stored event: %v", err)
+			}
+			return existing.EventID, nil
+		}
+	}
+	if err := s.rooms.SetLatestStream(ctx, req.RoomID, stream); err != nil {
+		return "", err
+	}
+	return eventID, nil
+}
+
+// refused turns an authorisation refusal into the Matrix error a client sees. The
+// rule text goes to the server log; the client gets M_FORBIDDEN, which is what the
+// specification defines and does not advertise which rule to probe.
+func (s *Service) refused(err error, req SendRequest) error {
+	s.log.Debug("event refused by the authorisation rules",
+		slog.String("room_id", req.RoomID),
+		slog.String("sender", req.Sender),
+		slog.String("type", req.EventType),
+		slog.String("reason", err.Error()))
+	if failure, ok := eventauth.AsFailure(err); ok {
+		return matrixerr.New(matrixerr.CodeForbidden, "You are not allowed to send that event in this room.").
+			WithExtra(map[string]any{"rule": failure.Rule})
+	}
+	return matrixerr.New(matrixerr.CodeForbidden, "That event could not be authorised in this room.")
+}
+
+// persistEvent writes the event, its reference edges, its state entry and the state
+// that authorised it.
+func (s *Service) persistEvent(ctx context.Context, event map[string]any, stream int64) error {
+	canonical, err := events.Canonical(event)
+	if err != nil {
+		return fmt.Errorf("rooms: cannot encode the event: %w", err)
+	}
+	eventID, _ := event["event_id"].(string)
+	roomID, _ := event["room_id"].(string)
+	eventType, _ := event["type"].(string)
+
+	row := &persist.Event{
+		EventID:        eventID,
+		RoomID:         roomID,
+		Type:           eventType,
+		Sender:         stringOr(event["sender"]),
+		Depth:          int64Of(event["depth"]),
+		OriginServerTS: int64Of(event["origin_server_ts"]),
+		ReceivedTS:     s.now().UnixMilli(),
+		JSON:           canonical,
+		StreamOrdering: stream,
+	}
+	if stateKey, ok := event["state_key"].(string); ok {
+		key := stateKey
+		row.StateKey = &key
+	}
+	if err := s.events.Insert(ctx, row); err != nil {
+		if errors.Is(err, persist.ErrConflict) {
+			// The same event ID twice inside one transaction means an ID collision,
+			// which is a server fault rather than something the client caused.
+			return fmt.Errorf("rooms: event ID %q already exists", eventID)
+		}
+		return fmt.Errorf("rooms: cannot store the event: %w", err)
+	}
+
+	for _, reference := range anyStrings(event["prev_events"]) {
+		if err := s.events.Link(ctx, eventID, reference, persist.EdgePrev); err != nil {
+			return fmt.Errorf("rooms: cannot record a prev_event: %w", err)
+		}
+	}
+	authIDs := anyStrings(event["auth_events"])
+	for _, reference := range authIDs {
+		if err := s.events.Link(ctx, eventID, reference, persist.EdgeAuth); err != nil {
+			return fmt.Errorf("rooms: cannot record an auth_event: %w", err)
+		}
+	}
+	if len(authIDs) > 0 {
+		if err := s.state.RememberAuthContext(ctx, eventID, authIDs); err != nil {
+			return fmt.Errorf("rooms: cannot record the authorisation context: %w", err)
+		}
+	}
+	if row.IsState() {
+		if err := s.state.Set(ctx, &persist.RoomState{
+			RoomID: roomID, Type: eventType, StateKey: *row.StateKey, EventID: eventID,
+		}); err != nil {
+			return fmt.Errorf("rooms: cannot update the room state: %w", err)
+		}
+	}
+	return nil
+}
+
+// prevEvents returns the forward extremities a new event should cite.
+func (s *Service) prevEvents(ctx context.Context, roomID string) ([]string, error) {
+	extremities, err := s.events.ForwardExtremities(ctx, roomID)
+	if err != nil {
+		return nil, fmt.Errorf("rooms: cannot load the forward extremities: %w", err)
+	}
+	if len(extremities) <= maxPrevEvents {
+		return extremities, nil
+	}
+	// More extremities than an event may cite means this room has forks that have not
+	// been merged. Citing the newest keeps sending working, and logging it keeps the
+	// situation from being invisible.
+	s.log.Warn("a room has more forward extremities than an event may cite",
+		slog.String("room_id", roomID), slog.Int("extremities", len(extremities)))
+	sort.Strings(extremities)
+	return extremities[len(extremities)-maxPrevEvents:], nil
+}
+
+// depth is one more than the shallowest predecessor, which is how Matrix orders
+// history without trusting insertion order.
+func (s *Service) depth(ctx context.Context, prev []string) (int64, error) {
+	if len(prev) == 0 {
+		return 1, nil
+	}
+	rows, err := s.events.ByIDs(ctx, prev)
+	if err != nil {
+		return 0, fmt.Errorf("rooms: cannot load the predecessor events: %w", err)
+	}
+	if len(rows) != len(prev) {
+		return 0, errors.New("rooms: a predecessor event is missing while computing depth")
+	}
+	best := int64(-1)
+	for _, row := range rows {
+		if best < 0 || row.Depth < best {
+			best = row.Depth
+		}
+	}
+	return best + 1, nil
+}
+
+// loadState reads the room's current state into a snapshot the rules can query.
+//
+// Holding the state in memory for one operation is a deliberate SQLite-era decision:
+// a room's state is small next to its history, and the alternative — a query for
+// every state lookup inside the rules — is slower and harder to keep consistent
+// mid-operation. A room large enough for this to hurt is a scalability item, not a
+// correctness one.
+func (s *Service) loadState(ctx context.Context, roomID string) (*dbSnapshot, error) {
+	rows, err := s.state.All(ctx, roomID)
+	if err != nil {
+		return nil, fmt.Errorf("rooms: cannot load the room state: %w", err)
+	}
+	snapshot := &dbSnapshot{
+		events: s.events, ctx: ctx, roomID: roomID,
+		state: map[eventauth.Key]map[string]any{}, byID: map[string]map[string]any{},
+	}
+	for _, row := range rows {
+		event, err := snapshot.load(row.EventID)
+		if err != nil {
+			if notFound(err) {
+				// A state row pointing at an event we do not have. Skipping it is
+				// safer than authorising against a hole in the state.
+				continue
+			}
+			return nil, fmt.Errorf("rooms: cannot load a state event: %w", err)
+		}
+		snapshot.state[eventauth.Key{Type: row.Type, StateKey: row.StateKey}] = event
+	}
+	return snapshot, nil
+}
+
+// newRoomID makes a room ID whose localpart is opaque, as the specification requires.
+func (s *Service) newRoomID() (string, error) {
+	local, err := matrixid.GenerateRandomString(nil, 22)
+	if err != nil {
+		return "", fmt.Errorf("rooms: cannot generate a room ID: %w", err)
+	}
+	roomID := "!" + local + ":" + s.name
+	if err := matrixid.RoomIDValid(roomID); err != nil {
+		return "", fmt.Errorf("rooms: generated an invalid room ID: %w", err)
+	}
+	return roomID, nil
+}
+
+// presetState returns the initial state for a preset.
+//
+// The specification names the three presets but leaves their contents to the
+// implementation, so these are our choices and they follow Synapse where the effect
+// is observable: a public room is world readable and open to joins; private rooms
+// are invite-only with history shared with members; the trusted variant lets every
+// member invite. docs/requirements.md records this as an interpretation decision.
+func presetState(preset Preset, creator string) []StateContent {
+	joinRule := "invite"
+	history := "shared"
+	levels := presetPowerLevels(creator)
+	switch preset {
+	case PresetPublicChat:
+		joinRule = "public"
+		history = "world_readable"
+	case PresetTrustedPrivateChat:
+		levels["invite"] = 0
+	case PresetPrivateChat:
+	}
+	return []StateContent{
+		{Type: eventauth.TypeJoinRules, Content: map[string]any{"join_rule": joinRule}},
+		{Type: "m.room.history_visibility", Content: map[string]any{"history_visibility": history}},
+		{Type: eventauth.TypePowerLevels, Content: levels},
+	}
+}
+
+// presetPowerLevels is the power level layout a new room starts with.
+func presetPowerLevels(creator string) map[string]any {
+	return map[string]any{
+		"users":          map[string]any{creator: 100},
+		"users_default":  0,
+		"events_default": 0,
+		"state_default":  50,
+		"invite":         0,
+		"kick":           50,
+		"ban":            50,
+		"redact":         50,
+		"events":         map[string]any{},
+		"notifications":  map[string]any{"room": 50},
+	}
+}
+
+// MergePowerLevels overlays a client's override on the preset. The nesting is one
+// level deep on purpose: the nested power level maps are users, events and
+// notifications, and replacing those wholesale would let an override erase the
+// creator.
+func MergePowerLevels(base, override map[string]any) map[string]any {
+	out := make(map[string]any, len(base)+len(override))
+	for key, value := range base {
+		out[key] = value
+	}
+	for key, value := range override {
+		nestedBase, baseOK := out[key].(map[string]any)
+		nestedOverride, overrideOK := value.(map[string]any)
+		if baseOK && overrideOK {
+			merged := make(map[string]any, len(nestedBase)+len(nestedOverride))
+			for nestedKey, nestedValue := range nestedBase {
+				merged[nestedKey] = nestedValue
+			}
+			for nestedKey, nestedValue := range nestedOverride {
+				merged[nestedKey] = nestedValue
+			}
+			out[key] = merged
+			continue
+		}
+		out[key] = value
+	}
+	return out
+}
+
+func knownPreset(preset Preset) bool {
+	switch preset {
+	case PresetPrivateChat, PresetPublicChat, PresetTrustedPrivateChat:
+		return true
+	default:
+		return false
+	}
+}
+
+// newStateEvent builds the map form of a state event, before it is sealed.
+func newStateEvent(roomID, sender, eventType, stateKey string, content map[string]any, at time.Time) map[string]any {
+	return map[string]any{
+		"type":             eventType,
+		"room_id":          roomID,
+		"sender":           sender,
+		"content":          valueOrEmpty(content),
+		"depth":            int64(1),
+		"origin_server_ts": at.UnixMilli(),
+		"prev_events":      []any{},
+		"auth_events":      []any{},
+		"state_key":        stateKey,
+	}
+}
+
+func valueOrEmpty(content map[string]any) map[string]any {
+	if content == nil {
+		return map[string]any{}
+	}
+	return content
+}
+
+func toAnySlice(values []string) []any {
+	out := make([]any, 0, len(values))
+	for _, value := range values {
+		out = append(out, value)
+	}
+	return out
+}
+
+func anyStrings(value any) []string {
+	switch typed := value.(type) {
+	case []any:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if text, ok := item.(string); ok {
+				out = append(out, text)
+			}
+		}
+		return out
+	case []string:
+		return typed
+	default:
+		return nil
+	}
+}
+
+func stringOr(value any) string {
+	text, _ := value.(string)
+	return text
+}
+
+func int64Of(value any) int64 {
+	switch typed := value.(type) {
+	case int64:
+		return typed
+	case int:
+		return int64(typed)
+	case float64:
+		return int64(typed)
+	default:
+		return 0
+	}
+}

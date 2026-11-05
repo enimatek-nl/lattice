@@ -8,6 +8,7 @@ import (
 
 	"github.com/enimatek/lattice/internal/httpx"
 	"github.com/enimatek/lattice/internal/matrixerr"
+	"github.com/enimatek/lattice/internal/roomversion"
 )
 
 // specVersions lists the global Matrix specification versions this server
@@ -17,15 +18,13 @@ const (
 	specVersionMinor = 19
 )
 
-// defaultRoomVersion is the room version used for newly created rooms. Room
-// creation is implemented in the rooms milestone; the value is reported here so
-// clients can plan, and the compliance matrix records the gap explicitly.
-const defaultRoomVersion = "11"
+// The room versions this server reports are the ones in internal/roomversion, which is
+// the same table that decides the rules applied to a room. There is one source of
+// truth on purpose: an advertised version the server cannot create a room in is a
+// promise the server breaks on the first request.
+func defaultRoomVersion() string { return roomversion.Default().ID }
 
-// availableRoomVersions maps room version identifiers to their stability.
-var availableRoomVersions = map[string]string{
-	"11": "stable",
-}
+func availableRoomVersions() map[string]string { return roomversion.Available() }
 
 // handleVersions implements GET /_matrix/client/versions.
 func (d *Deps) handleVersions(w http.ResponseWriter, r *http.Request) {
@@ -47,20 +46,17 @@ func (d *Deps) unstableFeatures() map[string]bool {
 
 // handleCapabilities implements GET /_matrix/client/v1/capabilities.
 func (d *Deps) handleCapabilities(w http.ResponseWriter, r *http.Request) {
-	available := make(map[string]string, len(availableRoomVersions))
-	for version, stability := range availableRoomVersions {
-		available[version] = stability
-	}
+	available := availableRoomVersions()
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"capabilities": map[string]any{
 			"m.room_versions": map[string]any{
-				"default":   defaultRoomVersion,
+				"default":   defaultRoomVersion(),
 				"available": available,
 			},
-			// m.change_password is false because password changes are not
-			// implemented yet; advertising it would be a lie. The advertised room
-			// version is likewise aspirational until the rooms milestone, which the
-			// compliance matrix records as a known inconsistency.
+			// m.change_password is false because password changes are not implemented
+			// yet; advertising it would be a lie. The room versions above are now
+			// honest: internal/roomversion lists only versions this server can create
+			// rooms in.
 			"m.change_password": map[string]any{"enabled": false},
 		},
 	})

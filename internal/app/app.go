@@ -18,6 +18,7 @@ import (
 	"github.com/enimatek/lattice/internal/httpserver"
 	"github.com/enimatek/lattice/internal/keys"
 	"github.com/enimatek/lattice/internal/persist"
+	"github.com/enimatek/lattice/internal/rooms"
 	"github.com/enimatek/lattice/internal/tlsgen"
 	"github.com/enimatek/lattice/internal/users"
 )
@@ -31,6 +32,7 @@ type App struct {
 	Log    *slog.Logger
 	DB     *persist.Database
 	Keys   *keys.Service
+	Rooms  *rooms.Service
 	Tokens *auth.TokenService
 	UIA    *auth.UIAService
 	Users  *users.Service
@@ -61,6 +63,11 @@ func New(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, error
 	tokens := auth.NewTokenService(db.Tokens)
 	uia := auth.NewUIAService(5*time.Minute, 8192)
 	userService := users.New(db, tokens, cfg.Registration, cfg.ServerName, log)
+	roomService, err := rooms.New(db, signingKeys, cfg.ServerName, log)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 
 	a := &App{
 		Cfg:              cfg,
@@ -83,6 +90,7 @@ func New(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, error
 		Tokens:  tokens,
 		UIA:     uia,
 		Keys:    signingKeys,
+		Rooms:   roomService,
 		DB:      db,
 		Version: Version,
 		Started: a.Started,
