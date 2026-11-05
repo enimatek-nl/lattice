@@ -469,7 +469,8 @@ re-run. Steps 9 to 13 do the same against `COMPLEMENT_PKG=./tests` — 91 tests,
 red (the Complement section has the command, the harness facts and the baseline).
 **Each step names the tests it is expected to turn green**, so "federation got
 better" is a measurement rather than a feeling. Iterate with `COMPLEMENT_RUN`: a
-full server-server run is around 40 minutes, because most of those tests start two
+full server-server run is around 4 minutes (measured 2026-11-04: 92 cases in 4m12s, the
+slowest 11s), because most of those tests start two
 containers and wait for them.
 
 One ordering rule falls out of that baseline. The failures are the *peer* answering
