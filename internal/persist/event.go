@@ -194,6 +194,9 @@ type EventRepo interface {
 	// synchronisation questions in stream order; see sync.go for why stream order is the
 	// right ordering for that question and not for anything about the event graph.
 	EventsAfter(ctx context.Context, roomID string, after int64, limit int) ([]*Event, error)
+	// EventsWindow pages a room's timeline in either direction from a stream position,
+	// for `/messages`.
+	EventsWindow(ctx context.Context, roomID string, from int64, backwards bool, limit int) ([]*Event, error)
 	CountAfter(ctx context.Context, roomID string, after int64) (int64, error)
 	LatestEvents(ctx context.Context, roomID string, limit int) ([]*Event, error)
 	MaxStreamOrdering(ctx context.Context) (int64, error)
