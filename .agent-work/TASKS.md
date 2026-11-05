@@ -110,9 +110,34 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
       form stored, hashes/signatures stay valid
 - [ ] T-2010 room upgrade path (`m.room.create.predecessor`, `POST /rooms/{roomId}/upgrade`)
 
+- [x] T-3001 `GET /sync` — done, including stored and inline filters, position tokens,
+      `limited`/`prev_batch`, unread counts, ephemeral and account data, and the `leave`
+      section bounded at the membership event that took the user out. Complement
+      `TestSyncFilter`, `TestSyncSendersFilter`, `TestSyncLeaveSection`,
+      `TestGappedSyncLeaveSection`, `TestOlderLeftRoomsNotInLeaveSection`,
+      `TestArchivedRoomsHistory`, `TestLeaveEventVisibility` and
+      `TestCumulativeJoinLeaveJoinSync` pass
+- [x] T-3001a history paging: `GET /rooms/{roomID}/messages` in both directions, `end`
+      omitted when nothing further is readable, lazy-loaded member state —
+      Complement `TestSendAndFetchMessage`, `TestRoomMessagesLazyLoading*`
+- [x] T-3001b the room directory: `GET`/`POST /publicRooms` with search and paging,
+      `GET`/`PUT /directory/list/room/{roomID}`, `visibility` on `/createRoom`, and
+      `GET /v1/room_summary/{roomIdOrAlias}` — Complement `TestPublicRooms`,
+      `TestRoomState`, `TestRoomSummaryAllowedRoomIDs`
+- [ ] T-3001c `presence` in `/sync` and `PUT /presence/{userID}/status` (Complement
+      `TestSync/parallel/Newly_joined_room_includes_presence_in_incremental_sync`)
+- [ ] T-3001d depth-ordered history paging: order by depth then stream position and widen
+      the token to carry both, so a room whose events arrive out of depth order pages the
+      way the reference server pages it (Complement `TestLeftRoomFixture`)
+- [ ] T-3004 per-event state snapshots, so a read can be answered as of a past position:
+      a former member's old state value, `state_at_event`, and the state a joining user is
+      given
+- [ ] T-3005 push rules end to end: `GET /pushrules/`, `PUT /pushrules/{kind}/{ruleId}`
+      with `/enabled` and `/actions`, `DELETE /pushrules/{kind}/{ruleId}`, the default rule
+      set. Nothing exists yet, the read side included (Complement `TestPushRuleCacheHealth`)
 - [ ] T-3001 `GET /sync` — now the single largest blocker in the Complement record:
       `TestRoomCreate`, `TestRoomMembers`, `TestRoomState`, `TestRoomDeleteAlias`,
       `TestRoomCanonicalAlias`, `TestNotPresentUserCannotBanOthers`,
       `TestCannotKickLeftUser`, `TestLogout` and `TestDeviceManagement` all fail at the
       `/sync` step after everything else succeeded (timeline, state, invite rooms, device list changes), `/messages` pagination, `since`/`next_batch` tokens, filter storage
-- [ ] T-3002 Unblocks Complement `TestLogout` behavioural subtests and `TestDeviceManagement/DELETE…` (they assert through `/sync`)
+- [x] T-3002 the sync-dependent assertions in `TestLogout` and `TestDeviceManagement` pass

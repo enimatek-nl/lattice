@@ -479,6 +479,17 @@ Health during the run: no HTTP 500, no panics.
 
 ---
 
+## 2026-11-05 — correction to the two records above
+
+The commit messages for `941e3e3` and `0e3bf5d` said `.agent-work/TASKS.md` and
+`.agent-work/REQUIREMENTS.md` were updated. They were not: the edits were anchored on text
+that this project's files do not contain, so they silently matched nothing. The code, the
+tests and the Complement numbers in those messages are accurate; the tracking files were
+left stale. `0e3bf5d`'s successor fixes that — the requirement rows for the room, sync and
+read behaviour added during M2/M3, and the task list, are written in this file pair now, in
+the formats these files actually use. Recorded here because AGENTS.md §16 treats an
+inaccurate record as a defect, not a detail.
+
 ## 2026-11-05 — history paging, the room directory, room summaries (M3)
 
 Scope: `internal/stream` (pagination positions), `internal/rooms/history.go`,
