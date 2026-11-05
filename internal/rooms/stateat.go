@@ -3,7 +3,6 @@ package rooms
 import (
 	"context"
 	"fmt"
-	"log/slog"
 
 	"github.com/enimatek/lattice/internal/persist"
 )
@@ -17,11 +16,9 @@ import (
 //     not per message;
 //   - a message keeps its predecessor's snapshot;
 //   - an event with several predecessors, or predecessors that disagree about the state,
-//     stands at a join of branches. What its state *is* there is decided by State
-//     Resolution 2 — T-2017 — and until that is wired, this server records the snapshot of
-//     the most recently persisted predecessor and says so in the log. That is a known
-//     wrong answer in a narrow place, chosen over an unseen one: the snapshot is recorded,
-//     so the resolution can be recomputed later without losing the shape of the fork.
+//     stands at a join of branches. There is no such thing as "the" state there until the
+//     branches are resolved, so the predecessors' snapshots are handed to the algorithm the
+//     room version names and the answer becomes the snapshot this event descends from.
 func (s *Service) recordStateAt(ctx context.Context, event map[string]any, row *persist.Event) error {
 	roomID, eventID := row.RoomID, row.EventID
 	if roomID == "" || eventID == "" {
@@ -69,12 +66,7 @@ func (s *Service) baseStateGroup(ctx context.Context, roomID string, event map[s
 	if len(prevs) == 0 {
 		return s.groups.EmptyGroup(ctx, roomID)
 	}
-	var (
-		base   int64
-		baseAt int64
-		shared = true
-		found  int
-	)
+	var known []int64
 	for _, prev := range prevs {
 		groupID, err := s.groups.GroupOf(ctx, prev)
 		if err != nil {
@@ -87,35 +79,13 @@ func (s *Service) baseStateGroup(ctx context.Context, roomID string, event map[s
 			}
 			return 0, fmt.Errorf("rooms: cannot read a predecessor's state snapshot: %w", err)
 		}
-		found++
-		if base == 0 {
-			base, baseAt = groupID, s.streamOf(ctx, prev)
-			continue
-		}
-		if groupID != base {
-			shared = false
-			if at := s.streamOf(ctx, prev); at > baseAt {
-				base, baseAt = groupID, at
-			}
-		}
+		known = append(known, groupID)
 	}
-	if found == 0 {
+	if len(known) == 0 {
 		return s.groups.EmptyGroup(ctx, roomID)
 	}
-	if !shared {
-		s.log.Warn("an event joins branches with different state; the snapshot is provisional until state resolution is wired (T-2017)",
-			slog.String("room_id", roomID),
-			slog.String("event_id", stringOr(event["event_id"])))
+	if len(uniqueGroups(known)) == 1 {
+		return known[0], nil
 	}
-	return base, nil
-}
-
-// streamOf reads how recently an event was persisted, which is the only ordering available
-// for choosing between disagreeing snapshots before state resolution decides the question.
-func (s *Service) streamOf(ctx context.Context, eventID string) int64 {
-	row, err := s.events.ByID(ctx, eventID)
-	if err != nil {
-		return 0
-	}
-	return row.StreamOrdering
+	return s.resolveGroups(ctx, roomID, known)
 }

@@ -661,6 +661,11 @@ func (s *Service) persistEvent(ctx context.Context, event map[string]any, stream
 	if err := s.recordStateAt(ctx, event, row); err != nil {
 		return err
 	}
+	// And the room's current state is wherever the branches say it is, which after a fork
+	// is not wherever the last write left it.
+	if err := s.reconcileCurrentState(ctx, row, len(anyStrings(event["prev_events"]))); err != nil {
+		return err
+	}
 	// A redaction and the destruction it causes are stored together, and an event that
 	// arrives late gets the chance to settle a redaction that has been waiting for it.
 	if err := s.noteRedaction(ctx, event); err != nil {
