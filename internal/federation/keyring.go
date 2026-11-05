@@ -39,7 +39,10 @@ type Keyring struct {
 	// HTTP makes the key requests. Key endpoints carry no credential, so this client
 	// needs no signer — but it does need the resolver, so it dials the address the
 	// name pointed at.
-	HTTP     *http.Client
+	HTTP *http.Client
+	// clients hands out the per-destination clients that verify a key document's TLS
+	// connection against the server's name rather than the address it resolved to.
+	clients  *nameVerifyingClients
 	ours     string
 	notaries []string
 	log      *slog.Logger
@@ -61,6 +64,7 @@ func NewKeyring(repo persist.FederationRepo, resolver Resolver, httpClient *http
 		repo:      repo,
 		resolver:  resolver,
 		HTTP:      httpClient,
+		clients:   newNameVerifyingClients(httpClient),
 		ours:      serverName,
 		notaries:  notaries,
 		log:       log,
@@ -210,6 +214,15 @@ func (k *Keyring) fetch(ctx context.Context, serverName string) (*persist.Server
 	return nil, nil, fmt.Errorf("federation: no usable key document for %s (%s)", serverName, strings.Join(problems, "; "))
 }
 
+// httpFor returns the client to reach a resolved key endpoint with: one that verifies the
+// certificate against the server's name when the address is an IP that name resolved to.
+func (k *Keyring) httpFor(resolved Target) *http.Client {
+	if k.clients == nil {
+		return k.HTTP
+	}
+	return k.clients.clientFor(resolved)
+}
+
 // fetchDirect GETs /_matrix/key/v2/server from the server itself.
 func (k *Keyring) fetchDirect(ctx context.Context, serverName string) ([]byte, error) {
 	target, err := k.resolver.Resolve(ctx, serverName)
@@ -222,7 +235,7 @@ func (k *Keyring) fetchDirect(ctx context.Context, serverName string) ([]byte, e
 	}
 	request.Host = target.HostHeader
 	request.Header.Set("Accept", "application/json")
-	response, err := k.HTTP.Do(request)
+	response, err := k.httpFor(target).Do(request)
 	if err != nil {
 		return nil, fmt.Errorf("cannot reach %s: %w", serverName, err)
 	}
@@ -264,7 +277,7 @@ func (k *Keyring) fetchViaNotary(ctx context.Context, notary, serverName string)
 	}
 	request.Host = target.HostHeader
 	request.Header.Set("Content-Type", "application/json")
-	response, err := k.HTTP.Do(request)
+	response, err := k.httpFor(target).Do(request)
 	if err != nil {
 		return nil, fmt.Errorf("cannot reach the notary %s: %w", notary, err)
 	}

@@ -58,15 +58,24 @@ func (d *Deps) handleMakeJoin(w http.ResponseWriter, r *http.Request) {
 		d.answerServiceError(w, "make_join", roomID, err)
 		return
 	}
-	// A server that asked for a room version it can speak and got a different one cannot
-	// take part in the room. Saying so here saves it from authorising events against rules
-	// the room never chose. The query parameter is spelled `ver` because that is what the
-	// Server-Server API calls it.
+	// The specification reserves M_INCOMPATIBLE_ROOM_VERSION for a room version the *asking*
+	// server cannot speak, and the answer to that is a refusal. An ask for a version this server
+	// can speak but the room did not choose is a different thing: the template handed over is in
+	// the room's own version, and the response names that version, so the asker signs what the
+	// room actually uses. Refusing here would be turning a question of fact — which version does
+	// this room use — into a failure, and every server that asks before it knows ends up unable to
+	// join. The parameter is spelled `ver` because that is what the Server-Server API calls it.
 	if asked := r.URL.Query().Get("ver"); asked != "" && asked != roomVersion {
-		matrixerr.Write(w, http.StatusBadRequest, matrixerr.Newf(matrixerr.CodeIncompatibleRoomVersion,
-			"Room %q uses room version %s, not %s.", roomID, roomVersion, asked).
-			WithExtra(map[string]any{"room_version": roomVersion}))
-		return
+		if _, speakable := roomversion.Get(asked); !speakable {
+			matrixerr.Write(w, http.StatusBadRequest, matrixerr.Newf(matrixerr.CodeIncompatibleRoomVersion,
+				"Room %q uses room version %s, which is not the version %s this server was asked in. "+
+					"%s is not a room version this server can take part in.", roomID, roomVersion, asked, asked).
+				WithExtra(map[string]any{"room_version": roomVersion}))
+			return
+		}
+		d.Log.Debug("federation: a join was asked in a room version the room did not choose; "+
+			"the template was answered in the room's own version",
+			"room_id", roomID, "asked_version", asked, "room_version", roomVersion)
 	}
 	origin, _ := r.Context().Value(originContextKey{}).(string)
 	if d.refusedByRoomACL(w, r, roomID, origin) {

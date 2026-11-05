@@ -27,6 +27,16 @@ export LATTICE_REGISTRATION_OPEN="${LATTICE_REGISTRATION_OPEN:-true}"
 export LATTICE_REGISTRATION_SHARED_SECRET="${LATTICE_REGISTRATION_SHARED_SECRET:-complement}"
 export LATTICE_BCRYPT_COST="${LATTICE_BCRYPT_COST:-4}"
 
+# Outbound federation address policy for the harness. In the tests that involve a second
+# homeserver, Complement *is* that homeserver: it runs a federation stub on the host machine at
+# host.docker.internal, which resolves to an address on the Docker bridge network. This server's
+# default policy declines to dial private ranges — that is the SSRF protection, not a mistake — so
+# without this the tests cannot federate at all and the failure looks like a protocol bug. The image
+# names the ranges the harness lives on instead of switching the policy off. The link-local range
+# is there because Docker's embedded DNS answers host.docker.internal with a link-local address on
+# some networks, which is the second homeserver these tests talk to.
+export LATTICE_FEDERATION_IP_ALLOW="${LATTICE_FEDERATION_IP_ALLOW:-127.0.0.0/8,172.16.0.0/12,169.254.0.0/16}"
+
 TLS_DIR="${LATTICE_TLS_DIR:-$LATTICE_DATA_DIR/tls}"
 export LATTICE_TLS_CERT_FILE="${LATTICE_TLS_CERT_FILE:-$TLS_DIR/$SERVER_NAME.crt}"
 export LATTICE_TLS_KEY_FILE="${LATTICE_TLS_KEY_FILE:-$TLS_DIR/$SERVER_NAME.key}"

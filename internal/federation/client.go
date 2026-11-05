@@ -3,7 +3,6 @@ package federation
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,7 +10,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"sync"
 	"time"
 )
 
@@ -23,11 +21,9 @@ type Client struct {
 	origin   string
 	signer   Signer
 	log      *slog.Logger
-	// mu guards byDestination, which holds one HTTP client per destination so that
-	// verifying a certificate against the server's name does not cost a new connection
-	// on every request.
-	mu            sync.Mutex
-	byDestination map[string]*http.Client
+	// clients hands out the per-destination HTTP clients that verify a certificate against
+	// the server's name while dialing the address that name resolved to.
+	clients *nameVerifyingClients
 }
 
 // NewClient returns a client that signs with signer and reaches servers through the
@@ -40,12 +36,12 @@ func NewClient(resolver Resolver, httpClient *http.Client, origin string, signer
 		log = slog.New(slog.DiscardHandler)
 	}
 	return &Client{
-		resolver:      resolver,
-		HTTP:          httpClient,
-		origin:        origin,
-		signer:        signer,
-		log:           log,
-		byDestination: map[string]*http.Client{},
+		resolver: resolver,
+		HTTP:     httpClient,
+		clients:  newNameVerifyingClients(httpClient),
+		origin:   origin,
+		signer:   signer,
+		log:      log,
 	}
 }
 
@@ -94,38 +90,11 @@ func (c *Client) Do(ctx context.Context, destination, method, target string, bod
 	return Response{StatusCode: response.StatusCode, Body: payload}, nil
 }
 
-// clientFor picks the HTTP client used for one resolved target.
-//
-// Discovery answers with an address, because that is what a socket needs, while the
-// certificate belongs to the *name*. Go verifies a certificate against the host in the
-// URL, so dialing https://203.0.113.9:8448 would check a name nobody asked for and
-// reject the very certificate that proves who is on the other end. When the address is
-// an IP and the name is not, this uses a client that verifies against the name while
-// still connecting to the address. One client per destination is kept so connections are
-// reused rather than rebuilt per request.
+// clientFor picks the HTTP client for one resolved target: one that verifies the certificate
+// against the server's name while connecting to the address that name resolved to. See
+// [nameVerifyingClients] for why that distinction is not cosmetic.
 func (c *Client) clientFor(resolved Target) *http.Client {
-	if resolved.HostHeader == "" || !hostIsIP(uHost(resolved.DialURL)) || hostIsIP(resolved.HostHeader) {
-		return c.HTTP
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if existing, ok := c.byDestination[resolved.ServerName]; ok {
-		return existing
-	}
-	HTTP := *c.HTTP
-	if base, ok := c.HTTP.Transport.(*http.Transport); ok && base != nil {
-		clone := base.Clone()
-		config := clone.TLSClientConfig
-		if config == nil {
-			config = &tls.Config{}
-		}
-		config = config.Clone()
-		config.ServerName = resolved.HostHeader
-		clone.TLSClientConfig = config
-		HTTP.Transport = clone
-	}
-	c.byDestination[resolved.ServerName] = &HTTP
-	return &HTTP
+	return c.clients.clientFor(resolved)
 }
 
 // uHost extracts the host of a URL without caring whether it parses.
