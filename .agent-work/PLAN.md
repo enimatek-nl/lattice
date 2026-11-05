@@ -2,9 +2,14 @@
 
 Milestones are ordered by dependency. Each has an independently verifiable acceptance gate.
 
-**Current status (2026-11-05): M0 and M1 are complete and verified** — see `ACCEPTANCE-CRITERIA.md`
-(M1 verdict) and `PROGRESS.md`. The next milestone is **M2 — rooms and events** (`TASKS.md` T-2000…).
-M3+ are the staged roadmap from AGENTS.md §13 refined against the Complement inventory.
+**Current status (2026-11-08).** M0 and M1 are complete and verified — see `ACCEPTANCE-CRITERIA.md`
+(M1 verdict). M2 (rooms and events), M3 (client synchronisation) and M4 (federation foundation) are
+implemented and exercised by this project's integration tests, with parts of M4 and M5 verified
+against Complement; the honest per-feature picture is in `docs/compliance-matrix.md` and the
+running record is in `PROGRESS.md`. Room versions 1 through 11 are offered for new rooms; version 12
+and the unstable versions are recognised and refused (T-4019). The largest open items are device-list
+EDUs over federation (T-4009c), sync filtering (T-4020), depth-based paging (T-3001d) and the
+address-policy re-check at dial time (T-4011). M6/M7 remain as staged.
 
 ## M0 — Stage 0: research and architecture (this iteration, done)
 

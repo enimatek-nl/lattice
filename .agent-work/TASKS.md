@@ -413,22 +413,25 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
       (`TestEventOfferedWithoutItsLabelIsNamedByItsContent`: an unlabelled event and a mislabelled
       one, each stored under the ID its content makes and readable by it). Complement's
       `TestSyncTimelineGap` passes now
-- [ ] T-4017 the three Complement `csapi` failures that remain in the filtered set:
-      `TestRoomCreate/creates_a_room_with_the_given_version` (room versions 1 and 2 — T-4013) is the
-      only failure left in the filtered set. `TestSync` and all of its subtests, including
-      `Device_list_tracking`, pass as of 2026-11-05; the device-list case does not need EDUs over
-      federation, and the earlier note claiming it did was a guess. 
-      `TestSyncTimelineGap`. The first two are understood and tracked. `TestSyncTimelineGap` was
-      diagnosed on 2026-11-05 and is not a sync bug: the harness's second homeserver could not be
-      reached for keys (the image's address policy, then the certificate name rule), and with the
-      handshake working it stopped at the event identifier (T-4018). It now passes repeatedly. Three
-      real defects came out of that diagnosis, all fixed: the key endpoints verified certificates
-      against the resolved address rather than the server's name (DEC-034); `/make_join` read one
-      `ver` out of an unordered list and compared it with the room's version, so this server refused a
-      perfectly capable asker at random (DEC-035, DEC-037); and a PDU with no `event_id` was refused
-      although the room version computes it (DEC-036). What still fails in that set is
-      `TestRoomCreate` (room versions 1 and 2 — T-4013) and
-      `TestSync/parallel/Device_list_tracking` (T-4009c)
+- [~] T-4017 the Complement failures that remain in the sets this project has been running.
+      The full `./tests` + `./tests/csapi` suite was run on 2026-11-08 as a baseline: 60 top-level
+      passing, 136 failing. In the rooms/sync/federation area the picture is: `TestRoomCreate`
+      (including `creates_a_room_with_the_given_version`, the room version 2 ask), `TestSync`,
+      `TestSyncTimelineGap`, `TestRoomState`, `TestRedact`, `TestPresence` and
+      `TestServerCapabilities` all pass. What still fails there is the device-list tracking case —
+      `TestDeviceListUpdates` and `TestSync/parallel/Device_list_tracking` — which needs device-list
+      EDUs over federation (T-4009c), and `TestSyncOmitsStateChangeOnFilteredEvents`, which needs
+      sync filtering (T-4020).
+- [ ] T-4019 room version 12 and the unstable versions: the revised state resolution (v2.1 — the
+      conflicted-subgraph and empty-start cases Complement's MSC4297 tests exercise) and the
+      pseudo-identifier event format. The rules are registered, so these versions are recognised and
+      refused honestly today; implementing them is what turns the refusal into support.
+- [ ] T-4020 sync filtering (`/filter`, filter IDs, the lazy-loading and event-field limits), which
+      is what `TestSyncOmitsStateChangeOnFilteredEvents` asks for and what several clients assume.
+- [ ] T-4021 `PUT /upgrade` accepts any version this server *knows* (`roomversion.Get`) rather than
+      any it can actually run (`roomversion.Supported`): a room upgraded into version 12 or an
+      unstable version lands in a state this server cannot resolve. Offer only the supported set,
+      and refuse the rest with `M_UNSUPPORTED_ROOM_VERSION` as creation already does.
 - [ ] T-4014 audit the remaining federation responses for the same mistake as T-4006a: any
       object that carries a signature must be written as the bytes that signature covers.
       `pdus` are already carried as raw stored bytes; the transaction answer and the error
