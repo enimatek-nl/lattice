@@ -77,6 +77,9 @@ func (s *Service) JoinTemplate(ctx context.Context, roomID, userID string) (map[
 		"origin_server_ts": s.now().UnixMilli(),
 	}
 	event["auth_events"] = toAnySlice(eventauth.SelectEventIDs(rules, event, snapshot))
+	if err := s.nameAndReference(event, ctx, rules, nil); err != nil {
+		return nil, "", err
+	}
 
 	if err := eventauth.Check(rules, event, snapshot, eventauth.Opts{}); err != nil {
 		failure, reason := "the room's own rules", ""
@@ -153,7 +156,7 @@ func (s *Service) AuthChainPDUs(ctx context.Context, seeds []string) ([]json.Raw
 			return nil, fmt.Errorf("rooms: a stored auth event does not parse: %w", err)
 		}
 		out = append(out, json.RawMessage(rawForm(stored)))
-		queue = append(queue, anyStrings(event["auth_events"])...)
+		queue = append(queue, events.ReferencedIDs(event, "auth_events")...)
 	}
 	return out, nil
 }

@@ -130,8 +130,39 @@ func TestMayRedactFollowsTheRedactLevelOrTheDomain(t *testing.T) {
 		{name: "an unparseable sender has no domain to match", sender: "not-a-user",
 			target: "@someone:example.org", want: false},
 	} {
-		if got := levels.MayRedact(tc.sender, tc.target); got != tc.want {
+		if got := levels.MayRedact(roomversion.MustGet("11"), tc.sender, tc.target, "", ""); got != tc.want {
 			t.Errorf("%s: MayRedact(%q, %q) = %v, want %v", tc.name, tc.sender, tc.target, got, tc.want)
+		}
+	}
+
+	// Room versions 1 and 2 ask a different question at the second condition. They compare the
+	// domain carried by the event IDs — the one on the event being redacted against the one on the
+	// redaction — rather than the domains of the two senders. The answers come apart for real pairs
+	// of events, so a single rule cannot stand in for both versions.
+	legacy := roomversion.MustGet("2")
+	for _, tc := range []struct {
+		name            string
+		sender          string
+		targetSender    string
+		redactionDomain string
+		targetEventID   string
+		want            bool
+	}{
+		{name: "an event this server named may be redacted by it, whoever sent it",
+			sender: "@guest:elsewhere.org", targetSender: "@someone:example.org",
+			redactionDomain: "example.org", targetEventID: "$a4ecee13e2accdadf56c1025:example.org", want: true},
+		{name: "an event another server named may not, even against a local sender",
+			sender: "@nobody:example.org", targetSender: "@someone:example.org",
+			redactionDomain: "example.org", targetEventID: "$a4ecee13e2accdadf56c1025:elsewhere.org", want: false},
+		{name: "the redact level still decides on its own",
+			sender: "@admin:example.org", targetSender: "@someone:elsewhere.org",
+			redactionDomain: "elsewhere.org", targetEventID: "$a4ecee13e2accdadf56c1025:elsewhere.org", want: true},
+		{name: "an identifier with no domain matches nothing",
+			sender: "@nobody:example.org", targetSender: "@someone:example.org",
+			redactionDomain: "example.org", targetEventID: "$a4ecee13e2accdadf56c1025", want: false},
+	} {
+		if got := levels.MayRedact(legacy, tc.sender, tc.targetSender, tc.redactionDomain, tc.targetEventID); got != tc.want {
+			t.Errorf("%s: MayRedact in room version 2 = %v, want %v", tc.name, got, tc.want)
 		}
 	}
 
@@ -139,10 +170,11 @@ func TestMayRedactFollowsTheRedactLevelOrTheDomain(t *testing.T) {
 	// stranger on another server cannot redact, and a local user can — which is the rule as
 	// written, not a hole to plug here.
 	unconfigured := eventauth.DefaultPowerLevels()
-	if !unconfigured.MayRedact("@alice:example.org", "@bob:example.org") {
+	modern := roomversion.MustGet("11")
+	if !unconfigured.MayRedact(modern, "@alice:example.org", "@bob:example.org", "", "") {
 		t.Errorf("a local user may not redact a local event with the default levels")
 	}
-	if unconfigured.MayRedact("@mallory:elsewhere.org", "@bob:example.org") {
+	if unconfigured.MayRedact(modern, "@mallory:elsewhere.org", "@bob:example.org", "", "") {
 		t.Errorf("a user from another server may redact at the default levels")
 	}
 }

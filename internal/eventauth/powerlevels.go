@@ -16,9 +16,11 @@ package eventauth
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/enimatek/lattice/internal/matrixid"
+	"math"
 	"strconv"
+	"strings"
 
+	"github.com/enimatek/lattice/internal/matrixid"
 	"github.com/enimatek/lattice/internal/roomversion"
 )
 
@@ -101,7 +103,7 @@ func LoadPowerLevels(rules roomversion.Rules, content map[string]any) (*PowerLev
 		if !ok {
 			return
 		}
-		v, ok := asInt(raw)
+		v, ok := asInt(rules, raw)
 		if !ok {
 			if rules.EnforceIntegerPowerLevels {
 				errs = append(errs, fmt.Errorf("power level %q is not an integer", key))
@@ -128,7 +130,7 @@ func LoadPowerLevels(rules roomversion.Rules, content map[string]any) (*PowerLev
 			}
 		} else {
 			for userID, v := range entries {
-				n, ok := asInt(v)
+				n, ok := asInt(rules, v)
 				if !ok {
 					if rules.EnforceIntegerPowerLevels {
 						errs = append(errs, fmt.Errorf("power level for %s is not an integer", userID))
@@ -156,7 +158,7 @@ func LoadPowerLevels(rules roomversion.Rules, content map[string]any) (*PowerLev
 			continue
 		}
 		for eventType, v := range entries {
-			n, ok := asInt(v)
+			n, ok := asInt(rules, v)
 			if !ok {
 				if rules.EnforceIntegerPowerLevels {
 					errs = append(errs, fmt.Errorf("power level for %s is not an integer", eventType))
@@ -196,26 +198,80 @@ func (p *PowerLevels) ForEvent(eventType string, isState bool) int {
 
 // asInt reads a JSON number that is an integer. Numbers arrive as json.Number from
 // internal/events, and as int64/float64 from hand-built maps in tests.
-func asInt(v any) (int, bool) {
+// asInt reads one power-level value. The strict reading is the one room version 6 and later require,
+// where the event had to be canonical JSON and a power level is an integer.
+//
+// The permissive reading is what room versions 1 through 5 allow, and it is not a curiosity: those
+// rooms are old and numerous, and the pages for them document two relaxations that servers had to
+// honour to use them at all. An integer-valued property may be written as a string — a bare base-10
+// integer, optionally signed, optionally zero-padded, optionally surrounded by whitespace — and a
+// number may be written as a float, in which case it is truncated at the decimal point. A room whose
+// power levels were written that way is not a room with no power levels: reading the values as absent
+// would silently demote every moderator in it, which is exactly the sort of quiet wrong answer this
+// server tries not to give.
+func asInt(rules roomversion.Rules, v any) (int, bool) {
+	permissive := !rules.StrictCanonicalJSON
 	switch n := v.(type) {
 	case json.Number:
-		i, err := strconv.ParseInt(n.String(), 10, 64)
-		if err != nil {
+		if i, err := strconv.ParseInt(n.String(), 10, 64); err == nil {
+			return int(i), true
+		}
+		if !permissive {
 			return 0, false
 		}
-		return int(i), true
+		// A number written with a fractional part is valid JSON, and in those versions it is a valid
+		// power level once it is truncated.
+		return truncateFloat(n.String())
 	case int:
 		return n, true
 	case int64:
 		return int(n), true
 	case float64:
 		if n != float64(int64(n)) {
-			return 0, false
+			if !permissive || isNaNOrInfinite(n) {
+				return 0, false
+			}
+			return int(int64(n)), true
 		}
 		return int(int64(n)), true
+	case string:
+		if !permissive {
+			return 0, false
+		}
+		trimmed := strings.TrimSpace(n)
+		i, err := strconv.ParseInt(trimmed, 10, 64)
+		if err != nil {
+			return 0, false
+		}
+		return int(i), true
 	default:
 		return 0, false
 	}
+}
+
+// truncateFloat handles a JSON number that decoded as text but carries a fractional part: the value
+// is cut at the decimal point, as the room version pages describe. Anything that is not a plain
+// decimal number — an exponent is plain enough to read, an infinity or a NaN is not a power level —
+// has no answer here.
+func truncateFloat(text string) (int, bool) {
+	whole := text
+	if i := strings.IndexAny(whole, ".eE"); i >= 0 {
+		whole = whole[:i]
+	}
+	if whole == "" || whole == "-" || whole == "+" {
+		return 0, false
+	}
+	i, err := strconv.ParseInt(whole, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return int(i), true
+}
+
+// isNaNOrInfinite names the values the room version pages exclude by name. A float that cannot be
+// held in an integer has no power level to report.
+func isNaNOrInfinite(n float64) bool {
+	return math.IsNaN(n) || math.IsInf(n, 0) || n > float64(math.MaxInt64) || n < float64(math.MinInt64)
 }
 
 func stringKeyedMap(v any) (map[string]any, bool) {
@@ -242,22 +298,49 @@ func stringOf(event map[string]any, key string) (string, bool) {
 }
 
 // MayRedact reports whether a redaction sent by redactionSender may be applied to an
-// event sent by targetSender.
+// event sent by targetSender, in the way the room's own version states the rule.
 //
-// Two conditions, either sufficient, as the pinned specification states them: the
-// sender's power level is at least the room's redact level, or the sender's domain matches
-// the domain of the event's original sender. The second is what lets a homeserver clean up
-// its own users' messages without granting anybody power over another server's events.
+// The first condition is the same everywhere: the sender's power level is at least the
+// room's redact level. The second differs by version, and the difference is not cosmetic.
+// From room version 3 on it compares *people*: a homeserver may redact an event whose
+// original sender is one of its own users, which is how a server cleans up after its own
+// users without granting anybody power over another server's events. Room versions 1 and 2
+// compare *names*: the domain of the event_id of the event being redacted against the
+// domain of the event_id of the redaction. Those come out differently for the same pair of
+// events — an event placed in a room by alice:hs1 but named by hs1's own identifier, for
+// instance — so the version decides which pair of names is compared, rather than one rule
+// quietly standing in for the other.
+//
+// redactionDomain is the domain the redaction's own event ID carries; for a redaction this
+// server is about to create, that is this server's name, which the caller knows and the
+// event does not yet.
 //
 // Note what this is not: the ability to *send* a redaction is decided by the authorisation
 // rules, which do not consider the redact level at all. This decides whether the redaction
 // is applied once it has arrived, which is why an event can be accepted by the rules and
 // still never destroy anything.
-func (p *PowerLevels) MayRedact(redactionSender, targetSender string) bool {
+func (p *PowerLevels) MayRedact(rules roomversion.Rules, redactionSender, targetSender, redactionDomain, targetEventID string) bool {
 	if p.User(redactionSender) >= p.Redact {
 		return true
 	}
+	if rules.AuthRuleset == "v1" {
+		return eventDomain(targetEventID) == redactionDomain
+	}
 	return sameDomain(redactionSender, targetSender)
+}
+
+// eventDomain returns the namespacing domain of an event ID: the part after the colon in
+// $opaque_id:domain, which is the shape room versions 1 and 2 use. A derived identifier has
+// no such part, and an unparseable one has no domain to match.
+func eventDomain(eventID string) string {
+	if len(eventID) < 2 || eventID[0] != '$' {
+		return ""
+	}
+	if _, domain, ok := strings.Cut(eventID[1:], ":"); !ok {
+		return ""
+	} else {
+		return domain
+	}
 }
 
 // sameDomain compares the server part of two user IDs. An unparseable ID has no domain to

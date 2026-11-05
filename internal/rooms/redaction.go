@@ -89,7 +89,9 @@ func (s *Service) Redact(ctx context.Context, req RedactRequest) (string, error)
 	if err != nil {
 		return "", err
 	}
-	allowed, err := s.mayRedact(ctx, rules, req.RoomID, req.Sender, sender)
+	// A redaction this server is about to create carries this server's name in its
+	// identifier, which is the fact room versions 1 and 2 compare.
+	allowed, err := s.mayRedact(ctx, rules, req.RoomID, req.Sender, sender, s.name, req.TargetID)
 	if err != nil {
 		return "", err
 	}
@@ -222,7 +224,7 @@ func (s *Service) applyRedaction(ctx context.Context, redactionID, targetID stri
 	}
 	sender, _ := redactionEvent["sender"].(string)
 	targetSender, _ := targetEvent["sender"].(string)
-	allowed, err := s.mayRedact(ctx, rules, roomID, sender, targetSender)
+	allowed, err := s.mayRedact(ctx, rules, roomID, sender, targetSender, eventDomain(redactionID), targetID)
 	if err != nil {
 		return err
 	}
@@ -255,12 +257,12 @@ func (s *Service) applyRedaction(ctx context.Context, redactionID, targetID stri
 }
 
 // mayRedact answers the permission question with the room's power levels.
-func (s *Service) mayRedact(ctx context.Context, rules roomversion.Rules, roomID, redactionSender, targetSender string) (bool, error) {
+func (s *Service) mayRedact(ctx context.Context, rules roomversion.Rules, roomID, redactionSender, targetSender, redactionDomain, targetEventID string) (bool, error) {
 	levels := eventauth.DefaultPowerLevels()
 	row, err := s.state.Get(ctx, roomID, "m.room.power_levels", "")
 	if err != nil {
 		if notFound(err) {
-			return levels.MayRedact(redactionSender, targetSender), nil
+			return levels.MayRedact(rules, redactionSender, targetSender, redactionDomain, targetEventID), nil
 		}
 		return false, fmt.Errorf("rooms: cannot read the room's power levels: %w", err)
 	}
@@ -273,7 +275,7 @@ func (s *Service) mayRedact(ctx context.Context, rules roomversion.Rules, roomID
 	if err != nil {
 		return false, fmt.Errorf("rooms: the room's power levels do not parse: %w", err)
 	}
-	return levels.MayRedact(redactionSender, targetSender), nil
+	return levels.MayRedact(rules, redactionSender, targetSender, redactionDomain, targetEventID), nil
 }
 
 // roomRules returns the room version rules a room's events are judged by.

@@ -60,11 +60,13 @@ type Rules struct {
 	EventIDs EventIDFormat
 
 	// AuthRuleset selects the authorisation rule table for this version. The
-	// rule sets are grouped by the version that introduced a change: "v1" is
-	// the original, "v2" is State-Resolution-2 era authorisation (versions 2-5),
-	// "v3" is the version 6 rewrite, "v4" adds integer power-level validation
-	// and knock_restricted (version 10), and "v5" is the version 11 wording.
-	// Room version 12 uses "v6". The identifier is a label, not a hierarchy.
+	// rule sets are grouped by the version that introduced a change: "v1" is the
+	// rule table of room versions 1 and 2, which the specification gives as one
+	// identical list on both pages (room version 2 changes only state resolution),
+	// "v2" is the version 3 rewrite used through version 5, "v3" is the version 6
+	// rewrite, "v4" adds integer power-level validation and knock_restricted
+	// (version 10), and "v5" is the version 11 wording. Room version 12 uses "v6".
+	// The identifier is a label, not a hierarchy.
 	AuthRuleset string
 
 	// RedactionProfile selects the strip list and content allow lists.
@@ -139,7 +141,7 @@ var registry = map[string]Rules{
 	},
 	"2": {
 		ID: "2", Stable: true, StateRes: StateResV2, EventIDs: EventIDServerAssigned,
-		AuthRuleset: "v2", RedactionProfile: RedactionPreV11, SpecialCaseAliases: true,
+		AuthRuleset: "v1", RedactionProfile: RedactionPreV11, SpecialCaseAliases: true,
 		CreatorInCreateContent: true,
 	},
 	"3": {
@@ -205,26 +207,21 @@ var registry = map[string]Rules{
 	},
 }
 
-// supported is the subset this server creates rooms in and advertises in
-// capabilities. Older versions stay in the registry so that existing rooms (and
-// federated events) keep being handled with their own rules; they are simply not
-// offered for new rooms.
+// supported lists the versions this server offers for new rooms, in the order it
+// prefers them. Room versions 1 and 2 are last rather than first, and they are here
+// because their differences are implemented rather than glossed over: the
+// authorisation table those two versions share (which the later tables changed, in
+// clauses that decide real events), State Resolution 1, event identifiers chosen by
+// the origin server, references written as [event_id, {"sha256": hash}] pairs, and
+// the pre-canonical-JSON forms a power level may take. A room in either version is a
+// decade old in many cases and its rules have to be computed as that version states
+// them, or two servers holding it disagree about who is in it.
 //
-// v11 is the default: it is the newest version with the state resolution and
-// room ID shape this project has designed for, and it avoids room version 12's
-// domain-free room IDs and creator power changes, which need separate work.
-// supported lists the versions this server will create rooms in, oldest first.
-//
-// Versions 3 to 11 are offered because their authorisation rules and state resolution
-// are implemented. Version 1 is not: it uses State Resolution 1, which this server does
-// not implement, and offering a version whose conflict resolution is missing would mean
-// promising semantics it cannot deliver. Version 2 is not offered either: it shares
-// State Resolution 2 with later versions, but its authorisation rules differ (a
-// `m.room.redaction` event is not subject to the authorisation rules before version 3)
-// and its event IDs are server-assigned, so offering it would mean claiming support for
-// rules this server does not apply. Events already in older versions can
-// still be authorised, which is what federation and history need.
-var supported = []string{"3", "4", "5", "6", "7", "8", "9", "10", "11"}
+// Room version 12 and the unstable versions are deliberately absent: this server has
+// rules for them, so it can recognise and refuse them, but it does not implement the
+// revised state resolution or the pseudo-identifier event format, and offering a
+// version whose semantics cannot be delivered is a promise the server would break.
+var supported = []string{"3", "4", "5", "6", "7", "8", "9", "10", "11", "1", "2"}
 
 // defaultVersion is used when a client asks to create a room without naming a
 // version.

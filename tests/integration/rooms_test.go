@@ -233,7 +233,11 @@ func TestCreateRoomVersionNegotiation(t *testing.T) {
 		}
 	}
 
-	for _, rejected := range []string{"1", "12", "com.example.not-a-version"} {
+	// Room versions this server has rules for but does not implement, and a version that is
+	// nothing at all. Versions 1 and 2 are absent from this list because they are implemented
+	// and offered: they appear in the loop above, which creates a room in every advertised
+	// version and reads it back.
+	for _, rejected := range []string{"12", "com.example.not-a-version"} {
 		res := h.post(t, "/_matrix/client/v3/createRoom", map[string]any{"room_version": rejected}, token)
 		if res.status != http.StatusBadRequest {
 			t.Errorf("room_version %q: status %d, want 400 (body %s)", rejected, res.status, res.body)

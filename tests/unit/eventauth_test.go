@@ -1,7 +1,6 @@
 package unit
 
 import (
-	"errors"
 	"strings"
 	"testing"
 
@@ -807,15 +806,78 @@ func TestSelectAuthEvents(t *testing.T) {
 	}
 }
 
-// TestRulesetForRoomVersionOne records that room version 1 is refused rather than
-// authorised with the wrong table.
-func TestRulesetForRoomVersionOne(t *testing.T) {
+// TestRoomVersionOneAndTwoFollowTheirOwnRules replaces the placeholder that refused these versions
+// outright. The two pages give one identical rule list, and it differs from the later tables in
+// clauses that decide real events — the aliases special case, the requirement that the create event
+// be cited, and the memberships that do not exist yet. Authorising them with the later table would
+// be a guess about rooms that are old but very much present in the matrix.
+func TestRoomVersionOneAndTwoFollowTheirOwnRules(t *testing.T) {
 	t.Parallel()
-	state := baseState(t, "1", "public", defaultPL())
-	event := mkEvent("m.room.message", "$msg:example.org", "@alice:example.org", map[string]any{"body": "hi"})
-	err := eventauth.Check(roomversion.MustGet("1"), event, state, eventauth.Opts{})
-	if !errors.Is(err, eventauth.ErrRulesetUnsupported) {
-		t.Errorf("room version 1 authorisation = %v, want ErrRulesetUnsupported", err)
+	for _, version := range []string{"1", "2"} {
+		rules := roomversion.MustGet(version)
+		t.Run("room version "+version, func(t *testing.T) {
+			state := baseState(t, version, "public", defaultPL())
+
+			// A joined member's message is an ordinary event.
+			msg := authorise(rules, mkEvent("m.room.message", "$msg:example.org", "@alice:example.org",
+				map[string]any{"body": "hi"}), state)
+			if err := eventauth.Check(rules, msg, state, eventauth.Opts{}); err != nil {
+				t.Errorf("a joined member's message was refused: %v", err)
+			}
+
+			// A stranger may join a public room of this version.
+			stranger := authorise(rules, mkEvent("m.room.member", "$stranger:example.org", "@carol:example.org",
+				map[string]any{"membership": "join"}, stateKey("@carol:example.org")), state)
+			if err := eventauth.Check(rules, stranger, state, eventauth.Opts{}); err != nil {
+				t.Errorf("joining a public room was refused: %v", err)
+			}
+
+			// Rule 4 of their page: a server publishes its own alias list without needing a power
+			// level or a joined membership. Room version 6 dropped this, so it belongs to the
+			// versions that still have it.
+			alias := authorise(rules, mkEvent("m.room.aliases", "$alias:example.org", "@bob:example.org",
+				map[string]any{"aliases": []any{"#room:example.org"}}, stateKey("example.org")), state)
+			if err := eventauth.Check(rules, alias, state, eventauth.Opts{}); err != nil {
+				t.Errorf("a server naming its own aliases was refused: %v", err)
+			}
+			foreign := authorise(rules, mkEvent("m.room.aliases", "$alias2:example.org", "@bob:example.org",
+				map[string]any{"aliases": []any{}}, stateKey("elsewhere.org")), state)
+			if err := eventauth.Check(rules, foreign, state, eventauth.Opts{}); err == nil {
+				t.Errorf("a server was allowed to publish another server's alias list")
+			}
+			// Rule 2.4: these versions reject an event whose auth events do not include the
+			// m.room.create event. The state here has no create event at all, so the selection
+			// algorithm cites none and the rule is what answers, rather than a mismatch between the
+			// cited events and the ones the algorithm picks.
+			orphan := eventauth.NewMemoryState(
+				mkEvent("m.room.member", "$memberalice:example.org", "@alice:example.org",
+					map[string]any{"membership": "join"}, stateKey("@alice:example.org")),
+				mkEvent("m.room.join_rules", "$joinrules:example.org", "@alice:example.org",
+					map[string]any{"join_rule": "public"}, stateKey("")),
+			)
+			orphaned := authorise(rules, mkEvent("m.room.message", "$orphan:example.org", "@alice:example.org",
+				map[string]any{"body": "hi"}), orphan)
+			if err := eventauth.Check(rules, orphaned, orphan, eventauth.Opts{}); err == nil {
+				t.Errorf("an event citing no create event in a room version %s room was allowed", version)
+			} else if failure, ok := eventauth.AsFailure(err); !ok || failure.Rule != "2.4" {
+				t.Errorf("an event citing no create event was refused by %v, wanting rule 2.4", err)
+			}
+
+			// Knocking is not a membership these versions have.
+			knock := authorise(rules, mkEvent("m.room.member", "$knock:example.org", "@carol:example.org",
+				map[string]any{"membership": "knock"}, stateKey("@carol:example.org")), state)
+			if err := eventauth.Check(rules, knock, state, eventauth.Opts{}); err == nil {
+				t.Errorf("a knock was allowed in a room version that has no knock join rule")
+			}
+		})
+	}
+
+	// The later tables are unaffected by the v1/v2 clauses.
+	state := baseState(t, "11", "public", defaultPL())
+	msg := authorise(roomversion.MustGet("11"), mkEvent("m.room.message", "$msg:example.org",
+		"@alice:example.org", map[string]any{"body": "hi"}), state)
+	if err := eventauth.Check(roomversion.MustGet("11"), msg, state, eventauth.Opts{}); err != nil {
+		t.Errorf("a room version 11 message was refused: %v", err)
 	}
 }
 

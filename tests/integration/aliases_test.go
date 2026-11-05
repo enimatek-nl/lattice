@@ -254,7 +254,7 @@ func TestRoomVersionRangeIsWiderThanTheDefault(t *testing.T) {
 	capabilities := h.mustStatus(t, h.get("/_matrix/client/v3/capabilities", aliceToken), http.StatusOK).decoded(t)
 	roomVersions, _ := capabilities["capabilities"].(map[string]any)["m.room_versions"].(map[string]any)
 	available, _ := roomVersions["available"].(map[string]any)
-	for _, version := range []string{"3", "4", "5", "6", "7", "8", "9", "10", "11"} {
+	for _, version := range []string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"} {
 		if available[version] == nil {
 			t.Errorf("room version %s is not advertised", version)
 			continue
@@ -264,12 +264,12 @@ func TestRoomVersionRangeIsWiderThanTheDefault(t *testing.T) {
 			t.Errorf("room created as %s is stored as %s", version, got)
 		}
 	}
-	// Version 1 needs State Resolution 1 and version 2 has authorisation rules this
-	// server does not apply, so neither is offered: advertising a version whose rules are
-	// missing would create rooms this server cannot evaluate.
-	for _, legacy := range []string{"1", "2"} {
-		if available[legacy] != nil {
-			t.Errorf("room version %s is advertised, but its rules are not implemented", legacy)
+	// Room version 12 has rules this server recognises but does not implement — its revised
+	// state resolution is not written — so it is refused rather than advertised. Advertising a
+	// version whose rules are missing would create rooms this server cannot evaluate.
+	for _, unimplemented := range []string{"12"} {
+		if available[unimplemented] != nil {
+			t.Errorf("room version %s is advertised, but its rules are not implemented", unimplemented)
 		}
 	}
 }

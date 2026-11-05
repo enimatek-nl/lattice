@@ -28,15 +28,9 @@ func newGraph() *memGraph {
 func (g *memGraph) add(event map[string]any) {
 	id := event["event_id"].(string)
 	g.events[id] = event
-	var ids []string
-	switch auth := event["auth_events"].(type) {
-	case []any:
-		for _, item := range auth {
-			ids = append(ids, item.(string))
-		}
-	case []string:
-		ids = auth
-	}
+	// Room versions 1 and 2 write each auth event as [event_id, {"sha256": hash}], so a graph that
+	// only understands bare IDs cannot walk the auth chain of an event from those rooms.
+	ids := events.ReferencedIDs(event, "auth_events")
 	g.auth[id] = ids
 }
 
@@ -272,14 +266,17 @@ func TestResolveSingleStateIsIdentity(t *testing.T) {
 	}
 }
 
-// TestResolveRefusesOtherAlgorithms checks that room versions with a different state
-// resolution algorithm are refused, not resolved with the wrong one.
+// TestResolveRefusesOtherAlgorithms checks that a room version whose state resolution this
+// server has not written is refused, not resolved with the wrong one. Room version 1 has its
+// own algorithm and is covered in stateresolvev1_test.go; the revision room version 12 uses is
+// not implemented, and applying version 2's algorithm to it would quietly give a different
+// answer to every other server in the room.
 func TestResolveRefusesOtherAlgorithms(t *testing.T) {
 	t.Parallel()
 	base := forkBase()
 	graph := graphWith(base...)
 	states := []state.State{stateOf(base...), stateOf(base...)}
-	for _, version := range []string{"1", "12"} {
+	for _, version := range []string{"12"} {
 		_, err := state.Resolve(roomversion.MustGet(version), graph, states, eventauth.Opts{})
 		if !errors.Is(err, state.ErrAlgorithmUnsupported) {
 			t.Errorf("room version %s resolution = %v, want ErrAlgorithmUnsupported", version, err)

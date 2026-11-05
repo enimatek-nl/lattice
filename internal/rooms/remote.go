@@ -124,7 +124,7 @@ func (s *Service) AcceptRemoteEvent(ctx context.Context, pdu []byte, verify Veri
 	// The auth events the sender cited have to be present here, both to authorise this
 	// event and to authorise whatever comes after it. Fetching missing ones is the
 	// event-auth chain work of T-4007.
-	authIDs := anyStrings(event["auth_events"])
+	authIDs := events.ReferencedIDs(event, "auth_events")
 	authEvents, err := s.events.ByIDs(ctx, authIDs)
 	if err != nil {
 		return "", fmt.Errorf("rooms: cannot read the auth events of a remote event: %w", err)
@@ -139,7 +139,7 @@ func (s *Service) AcceptRemoteEvent(ctx context.Context, pdu []byte, verify Veri
 		// perfectly good. It is therefore not recorded as a refusal.
 		return "", fmt.Errorf("the auth events it cites are not stored here, so it cannot be authorised")
 	}
-	prevIDs := anyStrings(event["prev_events"])
+	prevIDs := events.ReferencedIDs(event, "prev_events")
 	if len(prevIDs) > 0 {
 		prevEvents, err := s.events.ByIDs(ctx, prevIDs)
 		if err != nil {
