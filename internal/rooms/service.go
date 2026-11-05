@@ -125,8 +125,12 @@ type Service struct {
 	// until federation is wired up, and a room service without one works exactly as
 	// before: local rooms stay local.
 	relayer Relayer
-	name    string
-	log     *slog.Logger
+	// remoteJoin carries a local user into a room this server does not hold. It is nil
+	// until federation is wired up, and a room service without one refuses such a join
+	// rather than pretending the room does not exist.
+	remoteJoin RemoteJoin
+	name       string
+	log        *slog.Logger
 	// now is replaced in tests. A homeserver's timestamps must come from the server,
 	// but a test has to control them to make ordering assertions.
 	now func() time.Time

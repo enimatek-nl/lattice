@@ -47,7 +47,7 @@ func (d *Deps) serviceError(w http.ResponseWriter, err error) {
 	// A membership change that needs another homeserver is a missing feature, not a
 	// permission problem and not a bad request, so it answers 501 wherever it happens:
 	// on a membership endpoint, or as part of creating a room with an invite list.
-	if errors.Is(err, rooms.ErrRemoteTarget) {
+	if errors.Is(err, rooms.ErrRemoteTarget) || errors.Is(err, rooms.ErrRemoteJoinUnavailable) {
 		d.Log.Warn("an operation was refused because it needs federation", slog.String("error", err.Error()))
 		failure, _ := matrixerr.As(err)
 		matrixerr.Write(w, http.StatusNotImplemented, failure)

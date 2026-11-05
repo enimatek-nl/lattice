@@ -50,6 +50,10 @@ type App struct {
 	Sender *federation.Sender
 	// Keyring holds the signing keys of other homeservers.
 	Keyring *federation.Keyring
+	// Joiner carries this server's users into rooms it does not hold. It is nil when
+	// federation is disabled, and a join of a remote room is then refused plainly rather than
+	// attempted against nothing.
+	Joiner *federation.Joiner
 
 	Started time.Time
 
@@ -122,6 +126,7 @@ func NewWithOptions(ctx context.Context, cfg *config.Config, log *slog.Logger, o
 		Log:              log,
 		DB:               db,
 		Keys:             signingKeys,
+		Rooms:            roomService,
 		Tokens:           tokens,
 		UIA:              uia,
 		Users:            userService,
@@ -210,6 +215,20 @@ func NewWithOptions(ctx context.Context, cfg *config.Config, log *slog.Logger, o
 		// Every event this server accepts is offered to the other servers in the room.
 		// Queuing is not delivery: an unreachable remote cannot make a local send fail.
 		roomService.SetRelayer(a.Sender)
+		// A local user joining a room held elsewhere is carried by this handshake: ask a
+		// server that holds the room for the shape of the join, sign it here, hand it back.
+		// The room service decides when it is needed; this is the part that reaches out.
+		joiner := &federation.Joiner{
+			Client:    client,
+			Keyring:   a.Keyring,
+			Keys:      signingKeys,
+			LocalKeys: signingKeys,
+			Name:      cfg.ServerName,
+			Ingest:    roomService,
+			Log:       log,
+		}
+		a.Joiner = joiner
+		roomService.SetRemoteJoin(joiner)
 		federationDeps.Keyring = a.Keyring
 		federationDeps.Federation = db.Federation
 		federationDeps.Rooms = roomService
