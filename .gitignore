@@ -1,2 +1,15 @@
+# Editor / agent state
 .pi
+
+# Build and test output
 bin/
+coverage.out
+coverage.html
+*.test
+
+# Local runtime state (the server's data directory, scratch configs)
+data/
+*.db
+*.db-wal
+*.db-shm
+/local/
