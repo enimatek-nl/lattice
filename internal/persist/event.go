@@ -222,6 +222,11 @@ type EventRepo interface {
 	// cites as a predecessor. New events attach here.
 	ForwardExtremities(ctx context.Context, roomID string) ([]string, error)
 
+	// MarkSoftFailed records whether an event passes authorisation against the room's
+	// current state. A soft-failed event is stored and takes part in state resolution,
+	// but is not shown to clients and is not cited by new events.
+	MarkSoftFailed(ctx context.Context, eventID string, softFailed bool) error
+
 	// NextStreamOrdering returns a fresh global ordering number. Callers must hold a
 	// transaction, so concurrent senders cannot take the same number.
 	NextStreamOrdering(ctx context.Context) (int64, error)
@@ -321,6 +326,15 @@ func (r *eventRepo) ForwardExtremities(ctx context.Context, roomID string) ([]st
 		Order("stream_ordering DESC").
 		Pluck("event_id", &ids).Error
 	return ids, err
+}
+
+// MarkSoftFailed implements [EventRepo].
+func (r *eventRepo) MarkSoftFailed(ctx context.Context, eventID string, softFailed bool) error {
+	if eventID == "" {
+		return nil
+	}
+	return r.db.WithContext(ctx).Model(&Event{}).Where("event_id = ?", eventID).
+		Update("soft_failed", softFailed).Error
 }
 
 // NextStreamOrdering implements [EventRepo].

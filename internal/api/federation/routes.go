@@ -9,10 +9,12 @@ import (
 	"time"
 
 	"github.com/enimatek/lattice/internal/config"
+	"github.com/enimatek/lattice/internal/federation"
 	"github.com/enimatek/lattice/internal/httpserver"
 	"github.com/enimatek/lattice/internal/httpx"
 	"github.com/enimatek/lattice/internal/keys"
 	"github.com/enimatek/lattice/internal/matrixerr"
+	"github.com/enimatek/lattice/internal/persist"
 )
 
 // Deps are the services the Server-Server API needs.
@@ -21,10 +23,22 @@ type Deps struct {
 	Log     *slog.Logger
 	Keys    *keys.Service
 	Version string
+	// Keyring resolves the signing keys of other homeservers, and is used to
+	// authenticate every incoming request as well as the events inside them.
+	Keyring *federation.Keyring
+	// Federation stores what has been received and what is still owed.
+	Federation persist.FederationRepo
+	// Rooms accepts events that arrived over federation.
+	Rooms PDUAcceptor
+	// DB reads events for the federation read endpoints.
+	DB *persist.Database
 }
 
 // Register installs the Server-Server and key API routes.
 func Register(r *httpserver.Router, d *Deps) {
+	// A transaction is authenticated before a single byte of it is processed.
+	r.Handle("PUT", "/_matrix/federation/v1/send/{txnId}", d.requireCredential(d.handleSendTransaction))
+	r.Handle("GET", "/_matrix/federation/v1/event/{eventId}", d.requireCredential(d.handleGetEvent))
 	r.Handle("GET", "/_matrix/federation/v1/version", d.handleVersion)
 	r.Handle("GET", "/_matrix/key/v2/server", d.handleServerKeys)
 	r.Handle("POST", "/_matrix/key/v2/query", d.handleKeyQuery)

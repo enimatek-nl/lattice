@@ -15,13 +15,17 @@ type Code string
 
 // Standard error codes from the v1.19 specification.
 const (
-	CodeUnknown               Code = "M_UNKNOWN"
-	CodeUnrecognized          Code = "M_UNRECOGNIZED"
-	CodeNotFound              Code = "M_NOT_FOUND"
-	CodeUnknownToken          Code = "M_UNKNOWN_TOKEN"
-	CodeMissingToken          Code = "M_MISSING_TOKEN"
-	CodeBadJSON               Code = "M_BAD_JSON"
-	CodeNotJSON               Code = "M_NOT_JSON"
+	CodeUnknown      Code = "M_UNKNOWN"
+	CodeUnrecognized Code = "M_UNRECOGNIZED"
+	CodeNotFound     Code = "M_NOT_FOUND"
+	CodeUnknownToken Code = "M_UNKNOWN_TOKEN"
+	CodeMissingToken Code = "M_MISSING_TOKEN"
+	CodeBadJSON      Code = "M_BAD_JSON"
+	CodeNotJSON      Code = "M_NOT_JSON"
+	// CodeBadRequest reports a request the server could not handle as asked. The
+	// Client-Server API lists it; the Server-Server API has no such list, and a
+	// transaction missing its origin needs a code that is not M_UNKNOWN.
+	CodeBadRequest            Code = "M_BAD_REQUEST"
 	CodeForbidden             Code = "M_FORBIDDEN"
 	CodeUnauthorized          Code = "M_UNAUTHORIZED"
 	CodeUserInUse             Code = "M_USER_IN_USE"

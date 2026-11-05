@@ -31,6 +31,8 @@ Test paths are relative to the repository root.
 | REQ-HTTP-004 | CS §Versioning | Method-prefixed routing on `http.NewServeMux` | MUST | implemented | `internal/httpserver/router.go` |
 | REQ-HTTP-005 | AGENTS §9 | Bound request bodies, request timeouts, panic recovery, security headers | MUST | implemented | `tests/integration/http_test.go` |
 | REQ-HTTP-006 | — | Access tokens, passwords and key material never appear in logs | MUST NOT | implemented | `tests/unit/logging_test.go`, `tests/integration/lifecycle_test.go` |
+| REQ-HTTP-007 | CS §API Standards | Every endpoint answers with a JSON object; `GET /rooms/{roomID}/state` therefore answers `{"state": […]}` rather than a bare array | MUST | implemented+tested (a bare array was returned until the federation work made it visible) | `tests/integration/membership_test.go`, `tests/integration/aliases_test.go` |
+
 
 ## 3. Authentication and accounts
 
@@ -72,10 +74,20 @@ Test paths are relative to the repository root.
 | --- | --- | --- | --- | --- | --- |
 | REQ-KEY-001 | SS §Server Signing Keys | Generate and persist an ed25519 signing key; key id `ed25519:<identifier>` | MUST | implemented | `tests/unit/storage_test.go` |
 | REQ-KEY-002 | SS §Server Signing Keys | `GET /_matrix/key/v2/server` returns a self-signed key document with `valid_until_ts` | MUST | implemented | `tests/integration/http_test.go` verifies the signature independently |
-| REQ-KEY-003 | SS §Server Signing Keys | `POST /_matrix/key/v2/query` answers for this server; honours `minimum_valid_until_ts` | MUST | partial | answered for self only; remote key notarisation/caching is M4 |
-| REQ-KEY-004 | SS §Request authentication | `X-Matrix` signing of outbound/inbound federation requests | MUST | not implemented | M4 |
+| REQ-KEY-003 | SS §Server Signing Keys | `POST /_matrix/key/v2/query` answers for this server; honours `minimum_valid_until_ts` | MUST | partial | answered for self only; the *notary* half (asking another server about a stranger's keys) is implemented in the keyring and tested, the answering half for other servers' keys is not |
+| REQ-KEY-004 | SS §Request authentication | `X-Matrix` signing of outbound/inbound federation requests | MUST | implemented+tested | `tests/unit/fedauth_test.go`, `tests/integration/federation_test.go`: signature, wrong destination, tampered body, unknown key ID, no credential |
 | REQ-KEY-005 | SS §Transport | Federation listener serves HTTPS with TLS ≥ 1.2; CA-signed certificate supported | MUST | implemented | `tests/integration/lifecycle_test.go`, `tests/unit/tlsgen_test.go` |
-| REQ-FED-001 | SS §PDUs/EDUs, joins, backfill, `/send/:txn` | Full federation exchange | MUST | not implemented | M4; tracked in `.agent-work/PLAN.md` |
+| REQ-KEY-006 | SS §Server Signing Keys | A remote server's key document is trusted only when that server signed a key it publishes; the trust window is clamped; retired keys stay usable until their own `expired_ts`; expiry is enforced per room version | MUST | implemented+tested | `tests/unit/federationkeys_test.go` |
+| REQ-KEY-007 | SS §Server Signing Keys | A certificate obtained by dialing a discovered address is verified against the *name*, not the address | MUST | implemented | `internal/federation/client.go` (`clientFor`); exercised end to end in `tests/integration/federation_test.go` |
+| REQ-FED-001 | SS §PDUs/EDUs, joins, backfill, `/send/:txn` | Full federation exchange | MUST | partial | transactions, PDU ingest checks, event read, and the outbound queue are implemented and tested two-servers-in-one-process; the join/leave/invite protocols, `/state_ids`, `/backfill` and missing-event fetch are not |
+| REQ-FED-002 | SS §Server name resolution | `.well-known/matrix/server` delegation, SRV records, IP literals and explicit ports, certificate name rules, cached answers | MUST | implemented+tested | `tests/unit/federationdiscovery_test.go` |
+| REQ-FED-003 | SS §Server name resolution (security) | Refuse to dial addresses that discovery was not entitled to produce (loopback, link-local metadata, private ranges) unless configured | MUST | implemented+tested | `tests/unit/federationdiscovery_test.go`, `tests/unit/config_test.go`. Known limit: the check happens at resolution, not at dial (DNS rebinding) |
+| REQ-FED-004 | SS §PDUs | A received PDU is stored only if it is valid in its room version, its ID is the hash its content makes, its content hash matches, its origin signed it, and its cited auth events authorise it | MUST | implemented+tested | `tests/integration/federation_test.go`, `tests/unit/eventsignature_test.go` |
+| REQ-FED-005 | SS §PDUs | An event authorised by its own branch but refused by the room's current state is stored and soft-failed, not rejected | MUST | implemented | `internal/rooms/remote.go`; soft-failed events are excluded from relay and forward extremities. No two-server assertion yet that a client never sees one |
+| REQ-FED-006 | SS §Transactions | A transaction is processed once; a replay gets the same answer; each PDU is answered by ID with its own outcome; the PDU/EDU caps are enforced | MUST | implemented+tested | `tests/integration/federation_test.go` |
+| REQ-FED-007 | SS §EDUs | EDUs are received and acknowledged | MUST | partial | received, counted against the cap, acknowledged and logged; none of them do anything yet (T-4008) |
+| REQ-FED-008 | Architecture requirement in AGENTS.md §8 | One unreachable homeserver must not block unrelated local operations | MUST | implemented+tested | delivery is queued and retried with a bounded schedule; a local send does not wait for a remote. `tests/integration/federation_test.go` (`TestFederationSenderQueue`) |
+| REQ-FED-009 | SS §Access and permission rules for state | Federation reads are limited to servers the room's own state says are present | MUST | implemented+tested | `tests/integration/federation_test.go` (`TestFederationEventAccess`) |
 
 ## 6. Rooms, events and state (M2 in progress)
 

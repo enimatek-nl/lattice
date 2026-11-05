@@ -5,6 +5,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -109,6 +110,33 @@ type LogConfig struct {
 	Format string `json:"format"`
 }
 
+// FederationConfig is how this server behaves towards other homeservers.
+type FederationConfig struct {
+	// Enabled turns federation off entirely. A private deployment that will never talk
+	// to another server has no reason to keep a federation listener answering, and
+	// turning it off is smaller than explaining to a scanner why it is open.
+	Enabled bool `json:"enabled"`
+	// NotaryServers are asked for other servers' keys when a server's own answer does
+	// not arrive. They are a fallback, not a replacement: the keys returned are still
+	// checked against the signature of the server they are about.
+	NotaryServers []string `json:"notary_servers"`
+	// IPAllow, when not empty, restricts which addresses this server will dial when it
+	// goes looking for another homeserver. IPDeny adds refusals on top. The two exist
+	// because server discovery follows things a stranger can say — a delegation
+	// document, an SRV record, a DNS answer — and without a policy that is a way to make
+	// this server connect anywhere the owner of a name wants, including inside this
+	// network.
+	IPAllow []string `json:"ip_allow"`
+	IPDeny  []string `json:"ip_deny"`
+	// Timeout bounds one request to a remote homeserver.
+	Timeout Duration `json:"timeout"`
+	// QueueMaxAge and QueueMaxAttempts bound how long an undeliverable event stays
+	// queued. Beyond that the item is marked dropped and logged: an event that will
+	// never be delivered must be a visible failure, not a queue that grows.
+	QueueMaxAge      Duration `json:"queue_max_age"`
+	QueueMaxAttempts int      `json:"queue_max_attempts"`
+}
+
 // Config is the full server configuration.
 type Config struct {
 	ServerName   string             `json:"server_name"`
@@ -119,6 +147,7 @@ type Config struct {
 	HTTP         HTTPConfig         `json:"http"`
 	Registration RegistrationConfig `json:"registration"`
 	WellKnown    WellKnownConfig    `json:"well_known"`
+	Federation   FederationConfig   `json:"federation"`
 	Log          LogConfig          `json:"log"`
 }
 
@@ -128,6 +157,12 @@ func Default() *Config {
 	c := &Config{
 		ServerName: "localhost",
 		DataDir:    "data",
+		Federation: FederationConfig{
+			Enabled:          true,
+			Timeout:          Duration(30 * time.Second),
+			QueueMaxAge:      Duration(24 * time.Hour),
+			QueueMaxAttempts: 30,
+		},
 		HTTP: HTTPConfig{
 			ClientAddr:             "127.0.0.1:8008",
 			FederationAddr:         "127.0.0.1:8448",
@@ -198,6 +233,10 @@ func (c *Config) ApplyEnv() {
 	setStr(&c.TLS.CAKeyFile, "LATTICE_TLS_CA_KEY_FILE")
 	setInt(&c.HTTP.MaxBodyBytes, "LATTICE_MAX_BODY_BYTES")
 	setInt(&c.HTTP.FederationMaxBodyBytes, "LATTICE_FEDERATION_MAX_BODY_BYTES")
+	setBool(&c.Federation.Enabled, "LATTICE_FEDERATION_ENABLED")
+	setList(&c.Federation.IPAllow, "LATTICE_FEDERATION_IP_ALLOW")
+	setList(&c.Federation.IPDeny, "LATTICE_FEDERATION_IP_DENY")
+	setList(&c.Federation.NotaryServers, "LATTICE_FEDERATION_NOTARIES")
 	setSmallInt(&c.Registration.MinPasswordLength, "LATTICE_MIN_PASSWORD_LENGTH")
 	setSmallInt(&c.Registration.BcryptCost, "LATTICE_BCRYPT_COST")
 }
@@ -205,6 +244,20 @@ func (c *Config) ApplyEnv() {
 func setStr(target *string, key string) {
 	if v, ok := os.LookupEnv(key); ok && v != "" {
 		*target = v
+	}
+}
+
+// setList reads a comma-separated list. An empty entry is skipped, because
+// "a,,b" from a shell is a spacing mistake, not a request for an empty rule.
+func setList(target *[]string, key string) {
+	if v, ok := os.LookupEnv(key); ok && v != "" {
+		var entries []string
+		for _, part := range strings.Split(v, ",") {
+			if trimmed := strings.TrimSpace(part); trimmed != "" {
+				entries = append(entries, trimmed)
+			}
+		}
+		*target = entries
 	}
 }
 
@@ -262,6 +315,16 @@ func (c *Config) Validate() error {
 	}
 	if c.HTTP.FederationAddr == "" {
 		return fmt.Errorf("config: http.federation_addr must not be empty")
+	}
+	for _, entry := range append(append([]string{}, c.Federation.IPAllow...), c.Federation.IPDeny...) {
+		if _, _, err := net.ParseCIDR(entry); err != nil && net.ParseIP(entry) == nil {
+			return fmt.Errorf("config: federation.ip_allow and ip_deny take addresses or CIDR blocks, not %q", entry)
+		}
+	}
+	for _, notary := range c.Federation.NotaryServers {
+		if err := matrixid.ServerNameValid(notary); err != nil {
+			return fmt.Errorf("config: federation.notary_servers contains %q: %w", notary, err)
+		}
 	}
 	if c.Registration.BcryptCost < 4 || c.Registration.BcryptCost > 15 {
 		return fmt.Errorf("config: registration.bcrypt_cost must be between 4 and 15")

@@ -14,6 +14,11 @@ import (
 // The events are returned exactly as stored. Re-emitting them with fields added or
 // removed would produce objects whose hashes and signatures do not match their event
 // IDs, and a client that checked them would conclude the server forged them.
+//
+// They are returned inside an object under "state", not as a bare array: the
+// specification requires every endpoint to answer with a JSON object, and Synapse and
+// the clients written against it read response["state"]. An array here is a protocol
+// violation that a client reports as an empty room rather than as a bug.
 func (d *Deps) handleRoomStateRead(w http.ResponseWriter, r *http.Request) {
 	state, err := d.Rooms.CurrentState(r.Context(), r.PathValue("roomID"), auth.UserID(r))
 	if err != nil {
@@ -23,7 +28,7 @@ func (d *Deps) handleRoomStateRead(w http.ResponseWriter, r *http.Request) {
 	if state == nil {
 		state = []map[string]any{}
 	}
-	httpx.WriteJSON(w, http.StatusOK, state)
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"state": state})
 }
 
 // handleRoomStateSingle implements GET /_matrix/client/v3/rooms/{roomID}/state/{eventType}[/{stateKey}].

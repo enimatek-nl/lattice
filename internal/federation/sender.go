@@ -1,0 +1,394 @@
+package federation
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"sort"
+	"time"
+
+	"github.com/enimatek/lattice/internal/matrixid"
+	"github.com/enimatek/lattice/internal/persist"
+)
+
+// Sender is the outbound half of federation: the queue of things this server still
+// owes other homeservers, and the worker that pays it off.
+//
+// The queue is in the database and the retries are bounded and staggered per
+// destination, for the reasons the project's rules insist on: a remote server that is
+// down must not stop local rooms from working, a restart must not lose what has not
+// been sent, and a destination that never answers must not be retried forever in
+// silence.
+type Sender struct {
+	repo   persist.FederationRepo
+	events persist.EventRepo
+	state  persist.StateRepo
+	client *Client
+	log    *slog.Logger
+	ours   string
+
+	// Now is the clock; MaxAge and MaxAttempts bound how long an item may stay owing;
+	// Batch caps how many items one worker takes at a time.
+	Now         func() time.Time
+	MaxAge      time.Duration
+	MaxAttempts int
+	Batch       int
+	// Idle is how long the worker waits when there is nothing to send.
+	Idle time.Duration
+}
+
+// NewSender returns a sender with the retry limits this project uses.
+func NewSender(repo persist.FederationRepo, events persist.EventRepo, state persist.StateRepo, client *Client, serverName string, log *slog.Logger) *Sender {
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
+	return &Sender{
+		repo:        repo,
+		events:      events,
+		state:       state,
+		client:      client,
+		log:         log,
+		ours:        serverName,
+		Now:         time.Now,
+		MaxAge:      24 * time.Hour,
+		MaxAttempts: 30,
+		Batch:       maxPDUsPerTransaction,
+		Idle:        2 * time.Second,
+	}
+}
+
+// Relay queues one event for every other server that has a joined member in the room.
+//
+// "Which servers" is answered now, from the room's current membership, because that is
+// the set the specification's delivery model is about: every server with somebody in
+// the room should hear about it. A server that joins later is told by the join
+// protocol, not by a resend.
+func (s *Sender) Relay(ctx context.Context, roomID, eventID string) error {
+	stored, err := s.events.ByID(ctx, eventID)
+	if err != nil {
+		return fmt.Errorf("federation: cannot read the event to relay: %w", err)
+	}
+	if stored.SoftFailed {
+		// A soft-failed event is stored and resolved but not relayed: the whole point
+		// is that this server does not pass on an event that its own current state
+		// says should not have been sent.
+		return nil
+	}
+	members, err := s.state.CurrentMembers(ctx, roomID)
+	if err != nil {
+		return fmt.Errorf("federation: cannot read the room's members to relay an event: %w", err)
+	}
+	destinations := serverNames(members, s.ours)
+	if len(destinations) == 0 {
+		return nil
+	}
+	now := s.now()
+	for _, destination := range destinations {
+		already, err := s.queuedFor(ctx, destination, eventID)
+		if err != nil {
+			return err
+		}
+		if already {
+			// The same event queued twice for the same server would be the same event
+			// delivered twice, which for a state event is harmless and for an EDU-free
+			// PDU is a second copy of a message.
+			continue
+		}
+		if err := s.repo.Queue(ctx, &persist.FederationQueueItem{
+			Destination:   destination,
+			Kind:          persist.QueueKindPDU,
+			Payload:       string(stored.JSON),
+			EventID:       eventID,
+			NextAttemptAt: now,
+		}); err != nil {
+			return fmt.Errorf("federation: cannot queue the event for %s: %w", destination, err)
+		}
+	}
+	return nil
+}
+
+// QueuePDU offers one event to one destination. It is separate from Relay because a
+// server sometimes knows a particular remote should have a particular event — after a
+// join, when catching up on history — and because a test of the handover must be able
+// to ask for it without inventing a room membership.
+func (s *Sender) QueuePDU(ctx context.Context, destination, eventID string, pdu []byte) error {
+	if destination == "" || len(pdu) == 0 {
+		return nil
+	}
+	return s.repo.Queue(ctx, &persist.FederationQueueItem{
+		Destination:   destination,
+		Kind:          persist.QueueKindPDU,
+		Payload:       string(pdu),
+		EventID:       eventID,
+		NextAttemptAt: s.now(),
+	})
+}
+
+// queuedFor reports whether an event is already waiting for a destination.
+func (s *Sender) queuedFor(ctx context.Context, destination, eventID string) (bool, error) {
+	count, err := s.repo.QueueCount(ctx, destination, eventID)
+	if err != nil {
+		return false, fmt.Errorf("federation: cannot ask whether %s already owes %s: %w", s.ours, destination, err)
+	}
+	return count > 0, nil
+}
+
+// EnqueueEDU queues an ephemeral unit for one destination. EDUs are not stored: a
+// presence update that arrives an hour late is not late, it is wrong.
+func (s *Sender) EnqueueEDU(ctx context.Context, destination, eduType string, content map[string]any) error {
+	payload, err := json.Marshal(EDU{Type: eduType, Content: content})
+	if err != nil {
+		return fmt.Errorf("federation: cannot encode the %s unit: %w", eduType, err)
+	}
+	return s.repo.Queue(ctx, &persist.FederationQueueItem{
+		Destination:   destination,
+		Kind:          persist.QueueKindEDU,
+		Payload:       string(payload),
+		NextAttemptAt: s.now(),
+	})
+}
+
+// FlushOnce takes what is due, sends it grouped by destination, and puts back what a
+// remote refused. It returns how many items were delivered.
+func (s *Sender) FlushOnce(ctx context.Context) (int, error) {
+	now := s.now()
+	items, err := s.repo.ClaimQueueItems(ctx, now, s.batch())
+	if err != nil {
+		return 0, fmt.Errorf("federation: cannot claim the queued work: %w", err)
+	}
+	if len(items) == 0 {
+		return 0, nil
+	}
+	sent := 0
+	for _, destination := range destinationsOf(items) {
+		batch := itemsFor(items, destination)
+		// The oldest half of the batch goes first; the rest stays claimed until its
+		// hold expires rather than being held in memory, which keeps a crash from
+		// losing track of it.
+		if len(batch) > maxPDUsPerTransaction {
+			batch = batch[:maxPDUsPerTransaction]
+		}
+		count, err := s.sendBatch(ctx, destination, batch, now)
+		if err != nil {
+			s.log.Warn("federation: a transaction could not be delivered",
+				"destination", destination, "items", len(batch), "error", err)
+			continue
+		}
+		sent += count
+	}
+	return sent, nil
+}
+
+// sendBatch delivers one transaction's worth of items to one destination.
+func (s *Sender) sendBatch(ctx context.Context, destination string, items []*persist.FederationQueueItem, now time.Time) (int, error) {
+	var pdus []json.RawMessage
+	var edus []EDU
+	pduItems := make([]*persist.FederationQueueItem, 0, len(items))
+	eduItems := make([]*persist.FederationQueueItem, 0, len(items))
+	for _, item := range items {
+		switch item.Kind {
+		case persist.QueueKindEDU:
+			var edu EDU
+			if err := json.Unmarshal([]byte(item.Payload), &edu); err != nil {
+				s.dropItems(ctx, []*persist.FederationQueueItem{item}, "the queued unit is not readable")
+				continue
+			}
+			edus = append(edus, edu)
+			eduItems = append(eduItems, item)
+		default:
+			pdus = append(pdus, json.RawMessage(item.Payload))
+			pduItems = append(pduItems, item)
+		}
+	}
+	if len(pdus) == 0 && len(edus) == 0 {
+		return 0, nil
+	}
+	results, err := s.client.SendTransaction(ctx, destination, s.transactionID(now, items), pdus, edus)
+	if err != nil {
+		s.retryItems(ctx, items, now, err)
+		return 0, err
+	}
+	failed := map[string]string{}
+	for _, result := range results {
+		if result.Error != "" {
+			failed[result.EventID] = result.Error
+		}
+	}
+	var done []*persist.FederationQueueItem
+	var rejected []*persist.FederationQueueItem
+	for _, item := range pduItems {
+		if problem, ok := failed[item.EventID]; ok {
+			// The remote server refused this event. That is an answer, not a network
+			// fault: retrying it will get the same answer, and pretending otherwise
+			// would keep this room's history different on the two servers forever.
+			s.log.Warn("federation: a remote server refused an event",
+				"destination", destination, "event_id", item.EventID, "reason", problem)
+			rejected = append(rejected, item)
+			continue
+		}
+		done = append(done, item)
+	}
+	done = append(done, eduItems...)
+	if err := s.repo.QueueDone(ctx, idsOf(done)); err != nil {
+		return 0, fmt.Errorf("federation: cannot clear the delivered items: %w", err)
+	}
+	s.dropItems(ctx, rejected, "the destination refused the event")
+	return len(done), nil
+}
+
+// Run works until the context ends. One worker per process is enough for the volumes
+// this project targets; the claim query is written so that more than one would not
+// double-send.
+func (s *Sender) Run(ctx context.Context) error {
+	idle := s.Idle
+	if idle <= 0 {
+		idle = 2 * time.Second
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+		}
+		sent, err := s.FlushOnce(ctx)
+		if err != nil {
+			s.log.Warn("federation: the sender hit a problem", "error", err)
+		}
+		if sent == 0 {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(idle):
+			}
+			continue
+		}
+	}
+}
+
+// retryItems pushes items back with a delay that grows with the number of attempts.
+func (s *Sender) retryItems(ctx context.Context, items []*persist.FederationQueueItem, now time.Time, cause error) {
+	var keep []*persist.FederationQueueItem
+	var given []*persist.FederationQueueItem
+	for _, item := range items {
+		if now.Sub(item.CreatedAt) > s.MaxAge || item.Attempts >= s.MaxAttempts {
+			given = append(given, item)
+			continue
+		}
+		keep = append(keep, item)
+	}
+	for _, item := range keep {
+		if err := s.repo.QueueRetry(ctx, item.ID, now.Add(backoff(item.Attempts)), cause.Error()); err != nil {
+			s.log.Warn("federation: cannot reschedule a queued item", "id", item.ID, "error", err)
+		}
+	}
+	if len(given) > 0 {
+		s.log.Error("federation: giving up on queued items",
+			"count", len(given), "max_age", s.MaxAge.String(), "max_attempts", s.MaxAttempts,
+			"error", cause.Error())
+		s.dropItems(ctx, given, "gave up after retries")
+	}
+}
+
+// dropItems marks items as no longer owing, keeping the row so the failure is visible
+// to whoever looks.
+func (s *Sender) dropItems(ctx context.Context, items []*persist.FederationQueueItem, reason string) {
+	if len(items) == 0 {
+		return
+	}
+	if err := s.repo.QueueDrop(ctx, idsOf(items), reason); err != nil {
+		s.log.Warn("federation: cannot mark queued items as dropped", "error", err)
+	}
+}
+
+// backoff is exponential with a ceiling: a server that is down gets asked again soon at
+// first and slowly later, and never asked a hundred times a second.
+func backoff(attempts int) time.Duration {
+	if attempts < 0 {
+		attempts = 0
+	}
+	if attempts > 12 {
+		attempts = 12
+	}
+	delay := time.Second << attempts
+	if delay > time.Hour {
+		delay = time.Hour
+	}
+	return delay
+}
+
+// transactionID makes an ID unique to this sender and this batch.
+func (s *Sender) transactionID(now time.Time, items []*persist.FederationQueueItem) string {
+	lowest := uint64(0)
+	for _, item := range items {
+		if lowest == 0 || item.ID < lowest {
+			lowest = item.ID
+		}
+	}
+	return fmt.Sprintf("lat-%d-%d", now.UnixNano(), lowest)
+}
+
+func (s *Sender) batch() int {
+	if s.Batch > 0 {
+		if s.Batch > maxPDUsPerTransaction {
+			return maxPDUsPerTransaction
+		}
+		return s.Batch
+	}
+	return maxPDUsPerTransaction
+}
+
+func (s *Sender) now() time.Time {
+	if s.Now != nil {
+		return s.Now().UTC()
+	}
+	return time.Now().UTC()
+}
+
+// serverNames turns user IDs into the distinct servers that must be told, dropping
+// this one.
+func serverNames(userIDs []string, ours string) []string {
+	seen := map[string]bool{}
+	var names []string
+	for _, userID := range userIDs {
+		domain, err := matrixid.UserDomain(userID)
+		if err != nil || domain == "" || domain == ours || seen[domain] {
+			continue
+		}
+		seen[domain] = true
+		names = append(names, domain)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func destinationsOf(items []*persist.FederationQueueItem) []string {
+	seen := map[string]bool{}
+	var names []string
+	for _, item := range items {
+		if seen[item.Destination] {
+			continue
+		}
+		seen[item.Destination] = true
+		names = append(names, item.Destination)
+	}
+	return names
+}
+
+func itemsFor(items []*persist.FederationQueueItem, destination string) []*persist.FederationQueueItem {
+	var chosen []*persist.FederationQueueItem
+	for _, item := range items {
+		if item.Destination == destination {
+			chosen = append(chosen, item)
+		}
+	}
+	return chosen
+}
+
+func idsOf(items []*persist.FederationQueueItem) []uint64 {
+	ids := make([]uint64, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item.ID)
+	}
+	return ids
+}

@@ -11,11 +11,12 @@ import (
 	"time"
 
 	"github.com/enimatek/lattice/internal/api/client"
-	"github.com/enimatek/lattice/internal/api/federation"
+	federationapi "github.com/enimatek/lattice/internal/api/federation"
 	"github.com/enimatek/lattice/internal/api/media"
 	"github.com/enimatek/lattice/internal/auth"
 	"github.com/enimatek/lattice/internal/config"
 	"github.com/enimatek/lattice/internal/e2ekeys"
+	"github.com/enimatek/lattice/internal/federation"
 	"github.com/enimatek/lattice/internal/httpserver"
 	"github.com/enimatek/lattice/internal/keys"
 	"github.com/enimatek/lattice/internal/persist"
@@ -25,6 +26,7 @@ import (
 	"github.com/enimatek/lattice/internal/sync"
 	"github.com/enimatek/lattice/internal/tlsgen"
 	"github.com/enimatek/lattice/internal/users"
+	"golang.org/x/sync/errgroup"
 )
 
 // Version is the server version reported by /versions, /version and /healthz.
@@ -43,6 +45,11 @@ type App struct {
 	PushRules *pushrules.Service
 	Presence  *presence.Service
 	Server    *httpserver.Server
+	// Sender is the federation outbound worker: the queue of events still owed to other
+	// homeservers. It is nil when federation is disabled.
+	Sender *federation.Sender
+	// Keyring holds the signing keys of other homeservers.
+	Keyring *federation.Keyring
 
 	Started time.Time
 
@@ -50,8 +57,29 @@ type App struct {
 	federationRouter *httpserver.Router
 }
 
+// Options are the parts of assembly a test replaces. They are deliberately narrow: a
+// test may supply its own way of reaching another homeserver, but not its own signing,
+// key checking or event handling — those are the things under test.
+type Options struct {
+	// FederationResolver and FederationTransport replace how this server dials other
+	// homeservers. An in-process test of two homeservers has no DNS and no TLS
+	// listener, but the request it signs, the credential it sends and the credential it
+	// checks are exactly what a deployed server would send.
+	FederationResolver  federation.Resolver
+	FederationTransport http.RoundTripper
+	// FederationTargets maps a server name to the address to dial, which is how a test
+	// points one homeserver at another without a DNS server.
+	FederationTargets map[string]federation.Target
+}
+
 // New builds the application without binding any socket.
 func New(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, error) {
+	return NewWithOptions(ctx, cfg, log, Options{})
+}
+
+// NewWithOptions builds the application with the test hooks in opts. opts is zero for a
+// normal start.
+func NewWithOptions(ctx context.Context, cfg *config.Config, log *slog.Logger, opts Options) (*App, error) {
 	if log == nil {
 		return nil, fmt.Errorf("app: a logger is required")
 	}
@@ -136,12 +164,58 @@ func New(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, error
 	// Method negotiation must be consistent across listeners: a federation path
 	// probed on the client port answers 405, not 404.
 	defer a.clientRouter.MirrorFrom(a.federationRouter)
-	federation.Register(a.federationRouter, &federation.Deps{
+	federationDeps := &federationapi.Deps{
 		Cfg:     cfg,
 		Log:     log,
 		Keys:    signingKeys,
 		Version: Version,
-	})
+	}
+	if cfg.Federation.Enabled {
+		policy, err := federation.NewIPpolicy(cfg.Federation.IPAllow, cfg.Federation.IPDeny)
+		if err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+		if len(cfg.Federation.IPDeny) == 0 && len(cfg.Federation.IPAllow) == 0 {
+			policy, err = federation.DefaultIPpolicy()
+			if err != nil {
+				_ = db.Close()
+				return nil, err
+			}
+		}
+		timeout := cfg.Federation.Timeout.Get()
+		if timeout <= 0 {
+			timeout = 30 * time.Second
+		}
+		// One client for the whole federation stack: discovery, key fetching and
+		// transactions all go through the same dialer, so the timeouts and connection
+		// reuse are the same for all of them.
+		dialer := &http.Client{Timeout: timeout, Transport: opts.FederationTransport}
+		var resolver federation.Resolver = federation.NewDiscovery(dialer, policy)
+		if opts.FederationResolver != nil {
+			resolver = opts.FederationResolver
+		} else if len(opts.FederationTargets) > 0 {
+			resolver = &federation.StaticResolver{Targets: opts.FederationTargets, Fallback: resolver}
+		}
+		a.Keyring = federation.NewKeyring(db.Federation, resolver, dialer, cfg.ServerName,
+			cfg.Federation.NotaryServers, log)
+		client := federation.NewClient(resolver, dialer, cfg.ServerName, signingKeys, log)
+		a.Sender = federation.NewSender(db.Federation, db.Events, db.State, client, cfg.ServerName, log)
+		if maxAge := cfg.Federation.QueueMaxAge.Get(); maxAge > 0 {
+			a.Sender.MaxAge = maxAge
+		}
+		if attempts := cfg.Federation.QueueMaxAttempts; attempts > 0 {
+			a.Sender.MaxAttempts = attempts
+		}
+		// Every event this server accepts is offered to the other servers in the room.
+		// Queuing is not delivery: an unreachable remote cannot make a local send fail.
+		roomService.SetRelayer(a.Sender)
+		federationDeps.Keyring = a.Keyring
+		federationDeps.Federation = db.Federation
+		federationDeps.Rooms = roomService
+		federationDeps.DB = db
+	}
+	federationapi.Register(a.federationRouter, federationDeps)
 
 	a.Server = httpserver.New(httpserver.Config{
 		ClientAddr:        cfg.HTTP.ClientAddr,
@@ -208,8 +282,21 @@ func (a *App) Prepare() error {
 	return a.Server.Listen()
 }
 
-// Serve serves on the bound listeners until ctx is cancelled.
-func (a *App) Serve(ctx context.Context) error { return a.Server.Serve(ctx) }
+// Serve serves on the bound listeners until ctx is cancelled, and works the federation
+// queue in the meantime.
+//
+// The worker shares the context so that shutting down stops retrying: a goroutine that
+// outlives the listeners keeps opening connections to servers that will never answer,
+// and a process that has decided to stop does not get to keep talking.
+func (a *App) Serve(ctx context.Context) error {
+	if a.Sender == nil {
+		return a.Server.Serve(ctx)
+	}
+	group, groupCtx := errgroup.WithContext(ctx)
+	group.Go(func() error { return a.Server.Serve(groupCtx) })
+	group.Go(func() error { return a.Sender.Run(groupCtx) })
+	return group.Wait()
+}
 
 // Run prepares the server and serves until ctx is cancelled.
 func (a *App) Run(ctx context.Context) error {

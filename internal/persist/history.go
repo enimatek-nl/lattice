@@ -21,7 +21,7 @@ func (r *eventRepo) EventsWindow(ctx context.Context, roomID string, from int64,
 	}
 	var rows []*Event
 	err := r.db.WithContext(ctx).
-		Where("room_id = ? AND stream_ordering "+op+" ? AND outlier = ?", roomID, from, false).
+		Where("room_id = ? AND stream_ordering "+op+" ? AND outlier = ? AND soft_failed = ?", roomID, from, false, false).
 		Order(order).Limit(limit).Find(&rows).Error
 	if err != nil {
 		return nil, err
