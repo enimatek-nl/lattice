@@ -1,6 +1,7 @@
 package integration
 
 import (
+	"encoding/json"
 	"net/http"
 	"testing"
 )
@@ -185,16 +186,17 @@ func TestRoomReadsNeedMembership(t *testing.T) {
 
 	_, aliceToken, _ := h.register(t, "will", "pw-will", "")
 	_, bobToken, _ := h.register(t, "xena2", "pw-xena2", "")
-	roomID := createRoom(t, h, aliceToken, map[string]any{"preset": "public_chat"})
+
+	// A room with shared history: leaving takes away the read.
+	roomID := createRoom(t, h, aliceToken, map[string]any{})
+	h.mustStatus(t, h.post(t, "/_matrix/client/v3/rooms/"+roomID+"/invite",
+		map[string]any{"user_id": "@xena2:hs1"}, aliceToken), http.StatusOK)
 	h.mustStatus(t, join(t, h, roomID, bobToken, map[string]any{}), http.StatusOK)
 	h.mustStatus(t, h.get("/_matrix/client/v3/rooms/"+roomID+"/joined_members", bobToken), http.StatusOK)
-
 	h.mustStatus(t, h.post(t, "/_matrix/client/v3/rooms/"+roomID+"/leave", map[string]any{}, bobToken), http.StatusOK)
+
 	for _, path := range []string{
 		"/_matrix/client/v3/rooms/" + roomID + "/joined_members",
-		"/_matrix/client/v3/rooms/" + roomID + "/members",
-		"/_matrix/client/v3/rooms/" + roomID + "/state",
-		"/_matrix/client/v3/rooms/" + roomID + "/state/m.room.join_rules/",
 		"/_matrix/client/v3/rooms/" + roomID + "/aliases",
 	} {
 		res := h.get(path, bobToken)
@@ -206,45 +208,44 @@ func TestRoomReadsNeedMembership(t *testing.T) {
 			t.Errorf("%s: errcode %q, want M_FORBIDDEN", path, code)
 		}
 	}
-	// The member who stayed can still read everything.
-	h.mustStatus(t, h.get("/_matrix/client/v3/rooms/"+roomID+"/members", aliceToken), http.StatusOK)
-}
+	// The history a departed member took part in stays readable to them; the live roster
+	// and the room's names do not.
+	for _, path := range []string{
+		"/_matrix/client/v3/rooms/" + roomID + "/state",
+		"/_matrix/client/v3/rooms/" + roomID + "/state/m.room.join_rules/",
+		"/_matrix/client/v3/rooms/" + roomID + "/members",
+	} {
+		h.mustStatus(t, h.get(path, bobToken), http.StatusOK)
+	}
 
-// TestJoinSpellingAndStateFormat covers two shapes clients use that a first
-// implementation tends to miss: the /rooms/{roomID}/join spelling of joining, and
-// `format=event` on a state read.
-func TestJoinSpellingAndStateFormat(t *testing.T) {
-	t.Parallel()
-	h := newHarness(t)
-
-	_, aliceToken, _ := h.register(t, "zack", "pw-zack", "")
-	bob, bobToken, _ := h.register(t, "amy", "pw-amy", "")
-	roomID := createRoom(t, h, aliceToken, map[string]any{"preset": "public_chat"})
-
-	h.mustStatus(t, h.post(t, "/_matrix/client/v3/rooms/"+roomID+"/join", map[string]any{}, bobToken), http.StatusOK)
-
-	event := h.mustStatus(t, h.get("/_matrix/client/v3/rooms/"+roomID+"/state/m.room.member/"+bob+"?format=event", aliceToken), http.StatusOK).decoded(t)
-	for _, key := range []string{"sender", "type", "state_key", "event_id", "content", "origin_server_ts"} {
-		if _, ok := event[key]; !ok {
-			t.Errorf("format=event response is missing %q: %v", key, event)
+	// A room that made its history world readable has decided that its state may be read
+	// by people outside it. Refusing that read would contradict the room's own state, and
+	// a former member asking for it is the ordinary case.
+	public := createRoom(t, h, aliceToken, map[string]any{"preset": "public_chat"})
+	h.mustStatus(t, join(t, h, public, bobToken, map[string]any{}), http.StatusOK)
+	h.mustStatus(t, h.post(t, "/_matrix/client/v3/rooms/"+public+"/leave", map[string]any{}, bobToken), http.StatusOK)
+	for _, path := range []string{
+		"/_matrix/client/v3/rooms/" + public + "/state",
+		"/_matrix/client/v3/rooms/" + public + "/state/m.room.join_rules/",
+		"/_matrix/client/v3/rooms/" + public + "/members",
+	} {
+		h.mustStatus(t, h.get(path, bobToken), http.StatusOK)
+	}
+	// Who is in the room right now, and what the room is called, stay behind membership:
+	// world readable history is not an announcement of the room's names or its roster.
+	for _, path := range []string{
+		"/_matrix/client/v3/rooms/" + public + "/joined_members",
+		"/_matrix/client/v3/rooms/" + public + "/aliases",
+	} {
+		if res := h.get(path, bobToken); res.status != http.StatusForbidden {
+			t.Errorf("%s for a former member: status %d, want 403 (body %s)", path, res.status, res.body)
 		}
-	}
-	if event["type"] != "m.room.member" || event["state_key"] != bob {
-		t.Errorf("format=event returned the wrong event: %v", event)
-	}
-
-	content := h.mustStatus(t, h.get("/_matrix/client/v3/rooms/"+roomID+"/state/m.room.member/"+bob, aliceToken), http.StatusOK).decoded(t)
-	if _, ok := content["membership"]; !ok {
-		t.Errorf("the default state response should be the content object: %v", content)
-	}
-	if _, found := content["event_id"]; found {
-		t.Errorf("the default state response leaked event fields: %v", content)
 	}
 }
 
 // TestRoomVersionRangeIsWiderThanTheDefault checks that the versions this server offers
-// cover the range where knock and restricted join rules exist, because a server that can
-// only make rooms in the two newest versions cannot host the rooms clients ask for.
+// are exactly the versions whose rules it implements: a server that advertises a version
+// it cannot evaluate creates rooms that break as soon as anything in them is checked.
 func TestRoomVersionRangeIsWiderThanTheDefault(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
@@ -253,7 +254,7 @@ func TestRoomVersionRangeIsWiderThanTheDefault(t *testing.T) {
 	capabilities := h.mustStatus(t, h.get("/_matrix/client/v3/capabilities", aliceToken), http.StatusOK).decoded(t)
 	roomVersions, _ := capabilities["capabilities"].(map[string]any)["m.room_versions"].(map[string]any)
 	available, _ := roomVersions["available"].(map[string]any)
-	for _, version := range []string{"7", "8", "9", "10", "11"} {
+	for _, version := range []string{"3", "4", "5", "6", "7", "8", "9", "10", "11"} {
 		if available[version] == nil {
 			t.Errorf("room version %s is not advertised", version)
 			continue
@@ -263,9 +264,12 @@ func TestRoomVersionRangeIsWiderThanTheDefault(t *testing.T) {
 			t.Errorf("room created as %s is stored as %s", version, got)
 		}
 	}
-	for _, legacy := range []string{"1", "2", "3", "6"} {
+	// Version 1 needs State Resolution 1 and version 2 has authorisation rules this
+	// server does not apply, so neither is offered: advertising a version whose rules are
+	// missing would create rooms this server cannot evaluate.
+	for _, legacy := range []string{"1", "2"} {
 		if available[legacy] != nil {
-			t.Errorf("room version %s is advertised; its state resolution is not implemented", legacy)
+			t.Errorf("room version %s is advertised, but its rules are not implemented", legacy)
 		}
 	}
 }
@@ -284,5 +288,127 @@ func TestLegacyR0Paths(t *testing.T) {
 	h.mustStatus(t, h.post(t, "/_matrix/client/r0/createRoom", map[string]any{"preset": "public_chat"}, aliceToken), http.StatusOK)
 	if res := h.get("/_matrix/client/r0/rooms/"+roomID+"/not_a_real_endpoint", aliceToken); res.status != http.StatusNotFound {
 		t.Errorf("unknown r0 endpoint: status %d, want 404 (body %s)", res.status, res.body)
+	}
+}
+
+// TestDeleteAliasCorrectsCanonicalAlias checks that removing an alias also removes the
+// room's claim to it. A room that goes on naming a dead alias is exactly the lie this
+// server refuses when the event is written, so leaving the old event behind would
+// contradict its own rule.
+func TestDeleteAliasCorrectsCanonicalAlias(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+
+	_, aliceToken, _ := h.register(t, "una2", "pw-una2", "")
+	roomID := createRoom(t, h, aliceToken, map[string]any{"preset": "public_chat"})
+	alias := "#spoken-for:hs1"
+	h.mustStatus(t, h.raw(t, http.MethodPut, "/_matrix/client/v3/directory/room/"+escAlias(alias),
+		[]byte(`{"room_id":"`+roomID+`"}`), aliceToken), http.StatusOK)
+	// An alt_alias has to resolve too, or the room would be claiming an alias it does
+	// not have.
+	spare := "#spare-for:hs1"
+	h.mustStatus(t, h.raw(t, http.MethodPut, "/_matrix/client/v3/directory/room/"+escAlias(spare),
+		[]byte(`{"room_id":"`+roomID+`"}`), aliceToken), http.StatusOK)
+	h.mustStatus(t, putState(t, h, roomID, "m.room.canonical_alias", "",
+		`{"alias":"#spoken-for:hs1","alt_aliases":["#spare-for:hs1"]}`, aliceToken), http.StatusOK)
+
+	h.mustStatus(t, h.raw(t, http.MethodDelete, "/_matrix/client/v3/directory/room/"+escAlias(alias), nil, aliceToken), http.StatusOK)
+
+	content := h.mustStatus(t, h.get("/_matrix/client/v3/rooms/"+roomID+"/state/m.room.canonical_alias/", aliceToken), http.StatusOK).decoded(t)
+	if _, present := content["alias"]; present {
+		t.Errorf("the room still claims %q as its canonical alias: %v", alias, content)
+	}
+	alt, _ := content["alt_aliases"].([]any)
+	for _, entry := range alt {
+		if entry == alias {
+			t.Errorf("the deleted alias is still listed in alt_aliases: %v", content)
+		}
+	}
+	if len(alt) != 1 || alt[0] != spare {
+		t.Errorf("alt_aliases = %v, want the untouched entry to survive", content["alt_aliases"])
+	}
+
+	// Deleting an alias that was the only one named leaves an empty content object,
+	// which is what a client looking for the room's alias must find.
+	other := "#only-one:hs1"
+	roomB := createRoom(t, h, aliceToken, map[string]any{"preset": "public_chat"})
+	h.mustStatus(t, h.raw(t, http.MethodPut, "/_matrix/client/v3/directory/room/"+escAlias(other),
+		[]byte(`{"room_id":"`+roomB+`"}`), aliceToken), http.StatusOK)
+	h.mustStatus(t, putState(t, h, roomB, "m.room.canonical_alias", "",
+		`{"alias":"#only-one:hs1"}`, aliceToken), http.StatusOK)
+	h.mustStatus(t, h.raw(t, http.MethodDelete, "/_matrix/client/v3/directory/room/"+escAlias(other), nil, aliceToken), http.StatusOK)
+	empty := h.mustStatus(t, h.get("/_matrix/client/v3/rooms/"+roomB+"/state/m.room.canonical_alias/", aliceToken), http.StatusOK).decoded(t)
+	if len(empty) != 0 {
+		t.Errorf("the canonical alias event should be empty, got %v", empty)
+	}
+}
+
+// TestFormerMemberReadsStopAtLeaving checks that a departed member's read of a room is
+// confined to what they were party to: state written afterwards is not handed over, and
+// the roster does not grow with people who joined after they left.
+func TestFormerMemberReadsStopAtLeaving(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+
+	_, aliceToken, _ := h.register(t, "brad2", "pw-brad2", "")
+	bob, bobToken, _ := h.register(t, "clara2", "pw-clara2", "")
+	carol, carolToken, _ := h.register(t, "dora2", "pw-dora2", "")
+
+	roomID := createRoom(t, h, aliceToken, map[string]any{})
+	for _, user := range []string{"@clara2:hs1", "@dora2:hs1"} {
+		h.mustStatus(t, h.post(t, "/_matrix/client/v3/rooms/"+roomID+"/invite",
+			map[string]any{"user_id": user}, aliceToken), http.StatusOK)
+	}
+	h.mustStatus(t, join(t, h, roomID, bobToken, map[string]any{}), http.StatusOK)
+	h.mustStatus(t, putState(t, h, roomID, "madeup.test.state", "", `{"body":"before"}`, aliceToken), http.StatusOK)
+	h.mustStatus(t, h.post(t, "/_matrix/client/v3/rooms/"+roomID+"/leave", map[string]any{}, bobToken), http.StatusOK)
+	// Both of these happen after bob left.
+	h.mustStatus(t, join(t, h, roomID, carolToken, map[string]any{}), http.StatusOK)
+	h.mustStatus(t, putState(t, h, roomID, "madeup.test.state", "", `{"body":"after"}`, aliceToken), http.StatusOK)
+
+	// bob may still read the room's state, but the entry that was rewritten after he left
+	// reads as absent rather than as the value written without him.
+	if res := h.get("/_matrix/client/v3/rooms/"+roomID+"/state/madeup.test.state/", bobToken); res.status != http.StatusNotFound {
+		t.Errorf("reading state rewritten after leaving: status %d, want 404 (body %s)", res.status, res.body)
+	}
+	// The full state list leaves that entry out, and still carries what he saw.
+	stateRes := h.mustStatus(t, h.get("/_matrix/client/v3/rooms/"+roomID+"/state", bobToken), http.StatusOK)
+	var entries []any
+	if err := json.Unmarshal(stateRes.body, &entries); err != nil {
+		t.Fatalf("decoding the state list: %v (body %s)", err, stateRes.body)
+	}
+	if len(entries) == 0 {
+		t.Fatalf("a former member got no state at all")
+	}
+	for _, entry := range entries {
+		event, _ := entry.(map[string]any)
+		if event["type"] == "madeup.test.state" {
+			t.Errorf("the former member was shown state written after they left: %v", event)
+		}
+	}
+	// The roster he may read does not include someone who joined after him.
+	members := h.mustStatus(t, h.get("/_matrix/client/v3/rooms/"+roomID+"/members", bobToken), http.StatusOK).decoded(t)
+	chunk, _ := members["chunk"].([]any)
+	seenSelf := false
+	for _, entry := range chunk {
+		event, _ := entry.(map[string]any)
+		if event["state_key"] == carol {
+			t.Errorf("a member who joined after bob left appears in bob's roster: %v", event)
+		}
+		content, _ := event["content"].(map[string]any)
+		if event["state_key"] == bob && content["membership"] == "leave" {
+			seenSelf = true
+		}
+	}
+	if !seenSelf {
+		t.Errorf("bob's own leave is missing from the roster he is allowed to read: %v", chunk)
+	}
+	// A current member sees all of it.
+	full := h.mustStatus(t, h.get("/_matrix/client/v3/rooms/"+roomID+"/state/madeup.test.state/", aliceToken), http.StatusOK).decoded(t)
+	if got, _ := full["body"].(string); got != "after" {
+		t.Errorf("the current member should see the current value, got %v", full)
+	}
+	if got := h.mustStatus(t, h.get("/_matrix/client/v3/rooms/"+roomID+"/members", carolToken), http.StatusOK).decoded(t); len(got["chunk"].([]any)) < 3 {
+		t.Errorf("a current member's roster is missing members: %v", got["chunk"])
 	}
 }

@@ -190,6 +190,14 @@ type EventRepo interface {
 	ReferencedBy(ctx context.Context, eventID, kind string) ([]string, error)
 	References(ctx context.Context, eventID, kind string) ([]string, error)
 
+	// EventsAfter, CountAfter, LatestEvents and MaxStreamOrdering answer client
+	// synchronisation questions in stream order; see sync.go for why stream order is the
+	// right ordering for that question and not for anything about the event graph.
+	EventsAfter(ctx context.Context, roomID string, after int64, limit int) ([]*Event, error)
+	CountAfter(ctx context.Context, roomID string, after int64) (int64, error)
+	LatestEvents(ctx context.Context, roomID string, limit int) ([]*Event, error)
+	MaxStreamOrdering(ctx context.Context) (int64, error)
+
 	// ForwardExtremities returns the event IDs in a room that no other stored event
 	// cites as a predecessor. New events attach here.
 	ForwardExtremities(ctx context.Context, roomID string) ([]string, error)
@@ -341,6 +349,10 @@ type StateRepo interface {
 	// ByType returns the current state entries of one event type in a room, which is
 	// how a member list is read: membership is state, one entry per user.
 	ByType(ctx context.Context, roomID, eventType string) ([]*RoomState, error)
+
+	// MembershipEventsFor returns the same entries as MembershipsOf with their events
+	// loaded, so a caller can read both the membership and when it changed.
+	MembershipEventsFor(ctx context.Context, userID string) ([]*Event, error)
 
 	// MembershipsOf returns the current m.room.member state entries that name a user,
 	// across every room. It backs "which rooms is this user in" without scanning all

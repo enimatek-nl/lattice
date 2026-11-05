@@ -27,6 +27,15 @@ func WriteJSON(w http.ResponseWriter, status int, v any) {
 	}
 }
 
+// WriteRawJSON writes bytes that are already JSON. It exists for endpoints that must
+// answer with exactly what was stored or received — a sync filter, for example — where
+// re-encoding through Go maps would answer with something merely equivalent.
+func WriteRawJSON(w http.ResponseWriter, status int, body []byte) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
+}
+
 // DecodeJSON reads a JSON request body into target, applying the size limit and
 // mapping failures to the specification's error codes:
 //

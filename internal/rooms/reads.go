@@ -23,8 +23,21 @@ func (s *Service) CurrentState(ctx context.Context, roomID, requester string) ([
 	if err != nil {
 		return nil, err
 	}
+	asOf, err := s.readHorizon(ctx, roomID, requester)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
+		if asOf > 0 {
+			stored, err := s.events.ByID(ctx, row.EventID)
+			if err != nil {
+				return nil, err
+			}
+			if stored.StreamOrdering > asOf {
+				continue
+			}
+		}
 		event, err := s.eventJSON(ctx, row.EventID)
 		if err != nil {
 			return nil, err
@@ -48,6 +61,21 @@ func (s *Service) CurrentStateEvent(ctx context.Context, roomID, eventType, stat
 		}
 		return nil, false, err
 	}
+	asOf, err := s.readHorizon(ctx, roomID, requester)
+	if err != nil {
+		return nil, false, err
+	}
+	if asOf > 0 {
+		stored, err := s.events.ByID(ctx, row.EventID)
+		if err != nil {
+			return nil, false, err
+		}
+		if stored.StreamOrdering > asOf {
+			// The room has state under this key, but not state this requester is
+			// entitled to: it was written after they left.
+			return nil, false, nil
+		}
+	}
 	event, err := s.eventJSON(ctx, row.EventID)
 	if err != nil {
 		return nil, false, err
@@ -68,6 +96,42 @@ func (s *Service) JoinedMembers(ctx context.Context, roomID, requester string) (
 	return s.Members(ctx, roomID, requester, MemberFilter{Include: eventauth.MembershipJoin})
 }
 
+// topicContent builds an m.room.topic content object from a plain topic. The
+// specification duplicates the plain text into the structured `m.topic` field so that a
+// client can render a topic without guessing whether it is formatted. Only the shorthand
+// parameter does this: a client that sends its own m.room.topic event in initial_state
+// keeps exactly the content it wrote, because rewriting a client's own event would be a
+// server editing what the client signed.
+func topicContent(topic string) map[string]any {
+	return map[string]any{
+		"topic": topic,
+		"m.topic": map[string]any{
+			"m.text": []any{map[string]any{
+				"body":     topic,
+				"mimetype": "text/plain",
+			}},
+		},
+	}
+}
+
+// deduplicateState keeps one entry per state key, with the last one written winning, so
+// that creating a room does not write the same key twice and leave the earlier version
+// as a pointless step in the room's history.
+func deduplicateState(list []StateContent) []StateContent {
+	positions := make(map[string]int, len(list))
+	out := make([]StateContent, 0, len(list))
+	for _, entry := range list {
+		key := entry.Type + "\x00" + entry.StateKey
+		if at, seen := positions[key]; seen {
+			out[at] = entry
+			continue
+		}
+		positions[key] = len(out)
+		out = append(out, entry)
+	}
+	return out
+}
+
 // MemberFilter narrows a member list. Include keeps one membership, Exclude drops
 // one; the Client-Server API needs both because `not_membership` excludes while a
 // "who is here" view selects.
@@ -85,8 +149,23 @@ func (s *Service) Members(ctx context.Context, roomID, requester string, filter 
 	if err != nil {
 		return nil, err
 	}
+	asOf, err := s.readHorizon(ctx, roomID, requester)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
+		if asOf > 0 {
+			stored, err := s.events.ByID(ctx, row.EventID)
+			if err != nil {
+				return nil, err
+			}
+			// A member who joined after the requester left is not part of the roster the
+			// requester ever saw.
+			if stored.StreamOrdering > asOf {
+				continue
+			}
+		}
 		event, err := s.eventJSON(ctx, row.EventID)
 		if err != nil {
 			return nil, err
@@ -134,20 +213,70 @@ func (s *Service) JoinedRooms(ctx context.Context, userID string) ([]string, err
 type membershipRequirement int
 
 const (
-	// membershipAny accepts anyone with a current membership: joined, invited or
-	// knocking. A banned user is not in the room for this purpose.
+	// membershipAny accepts anyone with a stake in the room: a current member, a former
+	// member reading the history they were part of, or any user when the room made its
+	// history world readable.
 	membershipAny membershipRequirement = iota
-	// membershipJoined accepts only a joined member, which is what a "who is here"
-	// view needs.
+	// membershipJoined accepts only a joined member, which is what a "who is here right
+	// now" view needs.
 	membershipJoined
+	// membershipStrict accepts only a current member, with no history-visibility
+	// exception. A room's names say that it exists and what it is called; making its
+	// history world readable is a decision about its history, not an announcement of its
+	// names.
+	membershipStrict
 )
+
+// readHorizon returns the stream position a requester's view of a room stops at, or zero
+// when their view is current.
+//
+// A former member's entitlement ends when their membership does. This server keeps only
+// the room's current state, not a snapshot per event, so it cannot reconstruct the value
+// a key had at that moment. What it can do is withhold every entry that changed
+// afterwards, which is the part a former member has no claim to. That is a partial
+// answer — a key that was replaced after the leave reads as absent rather than as its old
+// value — and it is recorded as such; the alternative, answering with the current value,
+// would hand over state written after the requester left.
+func (s *Service) readHorizon(ctx context.Context, roomID, requester string) (int64, error) {
+	membership, err := s.MembershipOf(ctx, roomID, requester)
+	if err != nil {
+		return 0, err
+	}
+	switch membership {
+	case eventauth.MembershipLeave, eventauth.MembershipBan:
+		row, err := s.state.Get(ctx, roomID, eventauth.TypeMember, requester)
+		if err != nil {
+			if notFound(err) {
+				return 0, nil
+			}
+			return 0, err
+		}
+		event, err := s.events.ByID(ctx, row.EventID)
+		if err != nil {
+			if notFound(err) {
+				return 0, nil
+			}
+			return 0, err
+		}
+		return event.StreamOrdering, nil
+	default:
+		return 0, nil
+	}
+}
 
 // requireMembership refuses a room read for someone with no standing in the room.
 //
-// A room's state and member list say who is talking and what was said. Letting any
-// authenticated account read any room would turn a homeserver into a public transcript
-// of private rooms, which is why the room's membership, not the account's existence, is
-// the gate.
+// A room's state and member list say who is talking and what was said, so the gate is the
+// room's membership rather than the mere existence of an account. Three cases follow from
+// that and from what the specification's history visibility means:
+//
+//   - a current member (joined, invited or knocking) may read: an invited user cannot
+//     accept an invitation without seeing what they are accepting;
+//   - a former member may read the state and member list of a room they left or were
+//     banned from — the history they took part in stays theirs, and this is the behaviour
+//     Complement pins as SPEC-216 — but not the live roster;
+//   - someone who was never in the room may read only what the room itself opened up by
+//     setting `history_visibility: world_readable`.
 func (s *Service) requireMembership(ctx context.Context, roomID, requester string, requirement membershipRequirement) error {
 	if _, err := s.requireRoom(ctx, roomID); err != nil {
 		return err
@@ -160,8 +289,20 @@ func (s *Service) requireMembership(ctx context.Context, roomID, requester strin
 	case eventauth.MembershipJoin:
 		return nil
 	case eventauth.MembershipInvite, eventauth.MembershipKnock:
+		if requirement != membershipJoined {
+			return nil
+		}
+	case eventauth.MembershipLeave, eventauth.MembershipBan:
 		if requirement == membershipAny {
 			return nil
+		}
+	default:
+		// No membership at all: only a room that opened its history may be read.
+		if requirement == membershipAny {
+			visibility, err := s.historyVisibility(ctx, roomID)
+			if err == nil && visibility == "world_readable" {
+				return nil
+			}
 		}
 	}
 	return matrixerr.New(matrixerr.CodeForbidden,

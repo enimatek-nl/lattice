@@ -1,8 +1,6 @@
 package client
 
 import (
-	"errors"
-	"log/slog"
 	"net/http"
 	"net/url"
 
@@ -32,8 +30,8 @@ type membershipBody struct {
 
 // handleJoin implements POST /_matrix/client/v3/join/{roomIDOrAlias}.
 func (d *Deps) handleJoin(w http.ResponseWriter, r *http.Request) {
-	var body membershipBody
-	if !httpx.DecodeJSONOrError(w, r, d.maxBody(), &body) {
+	extra, ok := d.jsonBody(w, r)
+	if !ok {
 		return
 	}
 	// The specification offers two spellings of the same action: POST /join/{roomID}
@@ -54,10 +52,11 @@ func (d *Deps) handleJoin(w http.ResponseWriter, r *http.Request) {
 		Sender:     auth.UserID(r),
 		DeviceID:   auth.DeviceID(r),
 		Membership: eventauth.MembershipJoin,
-		Reason:     body.Reason,
+		Reason:     reasonOf(extra),
+		Extra:      extra,
 	})
 	if err != nil {
-		d.membershipError(w, err)
+		d.serviceError(w, err)
 		return
 	}
 	_ = eventID
@@ -79,7 +78,7 @@ func (d *Deps) handleLeave(w http.ResponseWriter, r *http.Request) {
 		Membership: eventauth.MembershipLeave,
 		Reason:     body.Reason,
 	}); err != nil {
-		d.membershipError(w, err)
+		d.serviceError(w, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{})
@@ -91,8 +90,8 @@ func (d *Deps) handleLeave(w http.ResponseWriter, r *http.Request) {
 // version — so the decision is left to the authorisation rules rather than duplicated
 // here as a version check.
 func (d *Deps) handleKnock(w http.ResponseWriter, r *http.Request) {
-	var body membershipBody
-	if !httpx.DecodeJSONOrError(w, r, d.maxBody(), &body) {
+	extra, ok := d.jsonBody(w, r)
+	if !ok {
 		return
 	}
 	userID := auth.UserID(r)
@@ -102,9 +101,10 @@ func (d *Deps) handleKnock(w http.ResponseWriter, r *http.Request) {
 		Sender:     userID,
 		DeviceID:   auth.DeviceID(r),
 		Membership: eventauth.MembershipKnock,
-		Reason:     body.Reason,
+		Reason:     reasonOf(extra),
+		Extra:      extra,
 	}); err != nil {
-		d.membershipError(w, err)
+		d.serviceError(w, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{})
@@ -143,7 +143,7 @@ func (d *Deps) handleInvite(w http.ResponseWriter, r *http.Request) {
 		Membership: eventauth.MembershipInvite,
 		Reason:     body.Reason,
 	}); err != nil {
-		d.membershipError(w, err)
+		d.serviceError(w, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{})
@@ -186,7 +186,7 @@ func (d *Deps) changeMembershipOfOther(w http.ResponseWriter, r *http.Request, m
 		Membership: membership,
 		Reason:     body.Reason,
 	}); err != nil {
-		d.membershipError(w, err)
+		d.serviceError(w, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{})
@@ -239,22 +239,28 @@ func (d *Deps) handleJoinedRooms(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"joined_rooms": roomIDs})
 }
 
-// membershipError answers a failed membership change. A change this server cannot make
-// because it needs federation is reported as not implemented, not as forbidden.
-func (d *Deps) membershipError(w http.ResponseWriter, err error) {
-	if errors.Is(err, rooms.ErrRemoteTarget) {
-		d.Log.Warn("a membership change was refused because it needs federation",
-			slog.String("error", err.Error()))
-		matrixerr.Write(w, http.StatusNotImplemented, matrixerr.New(matrixerr.CodeUnknown,
-			"Changing the membership of a user on another homeserver requires federation, which this server does not implement yet."))
-		return
-	}
-	d.serviceError(w, err)
-}
-
 // pathValue unescapes a path wildcard. A room ID contains no reserved characters in
 // practice, but a state key can contain anything, and a handler that reads the raw
 // value would treat an escaped slash as two segments.
+// jsonBody decodes a request body that is an arbitrary JSON object, because the join and
+// knock endpoints copy their extra keys into the member event.
+func (d *Deps) jsonBody(w http.ResponseWriter, r *http.Request) (map[string]any, bool) {
+	var body map[string]any
+	if !httpx.DecodeJSONOrError(w, r, d.maxBody(), &body) {
+		return nil, false
+	}
+	if body == nil {
+		body = map[string]any{}
+	}
+	return body, true
+}
+
+// reasonOf reads the documented `reason` key out of a membership body.
+func reasonOf(body map[string]any) string {
+	reason, _ := body["reason"].(string)
+	return reason
+}
+
 func pathValue(r *http.Request, name string) string {
 	value := r.PathValue(name)
 	if decoded, err := url.PathUnescape(value); err == nil {

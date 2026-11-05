@@ -35,6 +35,7 @@ type Database struct {
 	Events      EventRepo
 	State       StateRepo
 	Aliases     RoomAliasRepo
+	Filters     FilterRepo
 }
 
 // Open opens (creating if needed) the SQLite database at path.
@@ -76,6 +77,7 @@ func Open(path string, log *slog.Logger) (*Database, error) {
 	d.Events = NewEventRepo(gdb)
 	d.State = NewStateRepo(gdb)
 	d.Aliases = NewRoomAliasRepo(gdb)
+	d.Filters = NewFilterRepo(gdb)
 	return d, nil
 }
 
@@ -99,7 +101,7 @@ func applyPragmas(gdb *gorm.DB) error {
 // matter for Matrix lookups and are not derived from struct tags.
 func (d *Database) migrate(log *slog.Logger) error {
 	if err := d.db.AutoMigrate(&User{}, &Device{}, &AccessToken{}, &SigningKey{},
-		&Room{}, &Event{}, &EventEdge{}, &RoomState{}, &EventAuthContext{}, &EventTxn{}, &RoomAlias{}); err != nil {
+		&Room{}, &Event{}, &EventEdge{}, &RoomState{}, &EventAuthContext{}, &EventTxn{}, &RoomAlias{}, &Filter{}); err != nil {
 		return fmt.Errorf("persist: migration failed: %w", err)
 	}
 	statements := []string{

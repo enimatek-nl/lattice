@@ -19,6 +19,7 @@ import (
 	"github.com/enimatek/lattice/internal/keys"
 	"github.com/enimatek/lattice/internal/persist"
 	"github.com/enimatek/lattice/internal/rooms"
+	"github.com/enimatek/lattice/internal/sync"
 	"github.com/enimatek/lattice/internal/tlsgen"
 	"github.com/enimatek/lattice/internal/users"
 )
@@ -91,6 +92,7 @@ func New(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, error
 		UIA:     uia,
 		Keys:    signingKeys,
 		Rooms:   roomService,
+		Sync:    sync.NewService(db, log),
 		DB:      db,
 		Version: Version,
 		Started: a.Started,
