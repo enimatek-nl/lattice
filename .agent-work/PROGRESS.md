@@ -430,3 +430,49 @@ corrected `TestPick` for the widened version range.
 Still single-server only: any membership change or alias resolution that needs another
 homeserver is refused with 501. No `/sync`, so no client-observable room flow end to end.
 The on-receipt rejection outcome is still not persisted (F-011).
+
+---
+
+## 2026-11-05 — T-3001a/T-3001b/T-3001c, T-2007 to T-2011, room versions (M2/M3)
+
+Scope: `internal/sync` (`/sync`, filters, device data, read markers), room versions end to
+end, aliases, room reads and history visibility, report and joined_rooms.
+
+What is now true:
+
+* A client can create a room in any version in the advertised range and use it. Complement
+  accepts v3, v4, v6, v8, v9, v10, v11 and rejects v42 with `M_UNSUPPORTED_ROOM_VERSION`.
+* `/sync` works incrementally with stored and inline filters, `since` position tokens,
+  `limited`/`prev_batch`, unread counts, ephemeral and account data, and the `leave`
+  section. Complement `TestSyncFilter`, `TestSyncSendersFilter`, `TestSyncLeaveSection`,
+  `TestGappedSyncLeaveSection`, `TestOlderLeftRoomsNotInLeaveSection`,
+  `TestArchivedRoomsHistory`, `TestLeaveEventVisibility`, `TestCumulativeJoinLeaveJoinSync`
+  pass.
+* What a room the user is out of may show is decided by the room, not by the request: the
+  timeline stops at the membership event that took them out, and state is shown only where
+  `m.room.history_visibility` permits it.
+* Room reads split into three rules (current member / former member up to their leaving /
+  outsider where the room is world readable), and `/joined_members` and `/aliases` stay
+  behind membership even in a world readable room.
+* A deleted alias corrects the room's `m.room.canonical_alias` event.
+
+Complement (filter: sync, filters, room state/alias/membership/reporting, devices,
+registration, login, versions, media config, room summary, left rooms):
+**6 failing top level tests**, down from 15 at the start of this round.
+
+| Failing | Cause |
+| --- | --- |
+| `TestRoomCreate` | v2 and v6 rooms cannot be created locally (v1-spelled invite, signed remote join) |
+| `TestRoomState` | `GET /publicRooms` is not implemented (T-3003) |
+| `TestRoomSummaryAllowedRoomIDs` | room summary `allowed_room_ids` needs the invite/ban state the summary does not carry |
+| `TestSync` | `TestSyncTimelineGap` needs two homeservers (T-4005) |
+| `TestSyncOmitsStateChangeOnFilteredEvents` | needs a federated join and lazy-loaded member state |
+| `TestPushRuleCacheHealth` | push rules are read-only; `PUT`/`DELETE` missing (T-3005) |
+
+`TestLeftRoomFixture` now fails only on `GET /rooms/{roomId}/messages` (T-3002); its state
+and member reads pass.
+
+Local evidence: `make verify` `-race` ok — 156 integration, 169 unit tests; `go vet` and
+`golangci-lint run ./...` 0 issues. No Complement assertion was changed.
+
+Health during the run: no HTTP 500, no panics.

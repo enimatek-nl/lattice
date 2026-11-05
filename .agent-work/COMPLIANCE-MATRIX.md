@@ -72,6 +72,15 @@ Every failure is a *missing feature*, not a wrong answer, except two worth namin
 Rooms, membership, events, state, sync, E2EE key management and federation therefore remain the
 long tail; their Complement coverage is the measuring stick for M2–M5.
 
+## Latest filtered run (2026-11-05, M2/M3 work)
+
+Filter: sync and sync filters, room state/alias/membership/reporting, devices, logout,
+registration, login, versions, media config, room summary, left/archived rooms.
+**6 failing top level tests** (`TestRoomCreate`, `TestRoomState`,
+`TestRoomSummaryAllowedRoomIDs`, `TestSync`, `TestSyncOmitsStateChangeOnFilteredEvents`,
+`TestPushRuleCacheHealth`); 15 at the start of the round. Causes and the follow-up task IDs
+are in `.agent-work/PROGRESS.md`. No Complement assertion was modified.
+
 ## Progress tracking rule
 
 Each milestone records: the Complement filter run, the pass count, and the newly failing/passing
