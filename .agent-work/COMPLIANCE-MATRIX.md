@@ -72,7 +72,23 @@ Every failure is a *missing feature*, not a wrong answer, except two worth namin
 Rooms, membership, events, state, sync, E2EE key management and federation therefore remain the
 long tail; their Complement coverage is the measuring stick for M2–M5.
 
-## Latest filtered run (2026-11-05, room upgrade)
+## Latest filtered run (2026-11-05, device and one-time keys)
+
+Filters: `TestUploadKey`, `TestKeyClaimOrdering`, `TestUploadKeyIdempotency`,
+`TestUploadKeyIdempotencyOverlap`, `TestDeviceListUpdates`, `TestDeviceListUpdates`,
+`TestPushRuleRoomUpgrade`, `TestPresence`.
+
+Passing: all four key-upload/claim tests, `TestPresence`, and — of the ten subtests of
+`TestDeviceListUpdates` — the five that need one homeserver: a local user joining, a local
+user leaving, a user rejoining, joining a room with a local user, and leaving one.
+
+Still failing, all of them for the same reason: the subtests that put one of the two users on
+a second homeserver. They stop at `POST /join/{roomID}?server_name=hs2` with `M_NOT_FOUND`,
+because this server cannot join a room it has never heard of. `TestPushRuleRoomUpgrade`'s two
+remaining subtests and the remaining `TestSync` failure are the same missing capability. That
+is T-4005 (federation), and it is now the largest single cause of failures in this suite.
+
+## Earlier run (2026-11-05, room upgrade)
 
 Filter: `TestPushRuleRoomUpgrade`. The two subtests that need no federation now pass —
 `upgrading a room carries over existing push rules for local users` and the manual variant of

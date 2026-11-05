@@ -15,6 +15,7 @@ import (
 	"github.com/enimatek/lattice/internal/api/media"
 	"github.com/enimatek/lattice/internal/auth"
 	"github.com/enimatek/lattice/internal/config"
+	"github.com/enimatek/lattice/internal/e2ekeys"
 	"github.com/enimatek/lattice/internal/httpserver"
 	"github.com/enimatek/lattice/internal/keys"
 	"github.com/enimatek/lattice/internal/persist"
@@ -70,6 +71,7 @@ func New(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, error
 	userService := users.New(db, tokens, cfg.Registration, cfg.ServerName, log)
 	presenceService := presence.New(db, cfg.ServerName, log)
 	pushRules := pushrules.NewService(db, log)
+	deviceKeys := e2ekeys.New(db, log)
 	roomService, err := rooms.New(db, signingKeys, presenceService, pushRules, cfg.ServerName, log)
 	if err != nil {
 		_ = db.Close()
@@ -124,6 +126,7 @@ func New(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, error
 		Rooms:     roomService,
 		PushRules: pushRules,
 		Presence:  presenceService,
+		E2EKeys:   deviceKeys,
 		Sync:      sync.NewService(db, log),
 		DB:        db,
 		Version:   Version,

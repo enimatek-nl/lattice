@@ -745,3 +745,47 @@ Complement: `TestPushRuleRoomUpgrade`'s two local subtests pass. The two remote 
 
 Local evidence: `make verify` `-race` ok — 181 integration, 204 unit tests; `go vet` and
 `golangci-lint run ./...` 0 issues. No Complement assertion was modified.
+
+---
+
+## 2026-11-05 — device keys, one-time keys, and who may hear about them (M3)
+
+Scope: `internal/e2ekeys` (new), `internal/persist/devicekeys.go` (new),
+`internal/persist/device_lists.go` (observer-addressed), `internal/api/client/keys.go`,
+`persist.CurrentMembers`.
+
+`POST /keys/upload` (and PUT, for clients written against older text), `POST /keys/query`
+with `since`, `POST /keys/claim`. A key document is stored as the bytes that arrived, because
+its signature is over exactly those contents. A one-time key is only accepted signed, and its
+signature is checked against the identity keys the device published — not against anything in
+the key's own document, because a key that vouches for itself vouches for nothing. Keys are
+claimed once, in upload order: a claim that reordered them would hand out sessions in an order
+the client never offered.
+
+Two behaviours were worth the bug hunt:
+
+* A key upload must tell the other clients of the rooms this user is in to fetch the keys
+  again. `TestDeviceListUpdates` checks that, and it also checks the case a room-shaped model
+  cannot serve: a user who leaves must be told that the people still in the room are no longer
+  theirs to track. A notice shelved in a room cannot reach the person who just left it, so a
+  device list change is now addressed to its observer at write time (DEC-017).
+* Joining announces both directions. The members are told about the newcomer *and* the
+  newcomer is told about the members — presence already did that; device lists did only half.
+
+One deliberate relaxation, recorded rather than hidden (DEC-016): an offered device-key
+signature is verified and a bad one refused, but a document that offers no signature at all is
+stored. The specification says the device signs its identity keys, and it also says the client
+that is about to encrypt to them is the one that verifies them, and that a client must not rely
+on the server being well behaved. Complement's device list tests upload documents signed by
+nobody — Synapse and Dendrite store them — and the behaviour those tests describe is worth more
+here than a claim this server is not entitled to make. One-time keys are not relaxed: their
+format requires a signature, and it is checked.
+
+Local evidence: `make verify` `-race` ok — 186 integration, 205 unit tests; `go vet` and
+`golangci-lint run ./...` 0 issues.
+
+Complement: the four key-upload/claim tests pass; five of the ten `TestDeviceListUpdates`
+subtests pass — all the ones that need a single homeserver. The other five, and the remaining
+failures in `TestPushRuleRoomUpgrade` and `TestSync`, all stop at the same place:
+`POST /join` for a room this server has never heard of. Federation (T-4005) is now the largest
+single cause of Complement failures here.

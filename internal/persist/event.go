@@ -2,6 +2,7 @@ package persist
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -365,6 +366,14 @@ type StateRepo interface {
 	Get(ctx context.Context, roomID, eventType, stateKey string) (*RoomState, error)
 	All(ctx context.Context, roomID string) ([]*RoomState, error)
 
+	// CurrentMembers returns the state keys of the users whose current membership event
+	// in a room says "join". The membership lives in the event, because that is where
+	// Matrix puts it, so this reads the state entries and their events together and asks
+	// each one what it says about its user. The answer is worth the read: "who is in this
+	// room" is the question behind presence, device lists, and who may be notified about
+	// what.
+	CurrentMembers(ctx context.Context, roomID string) ([]string, error)
+
 	// ByType returns the current state entries of one event type in a room, which is
 	// how a member list is read: membership is state, one entry per user.
 	ByType(ctx context.Context, roomID, eventType string) ([]*RoomState, error)
@@ -446,6 +455,46 @@ func (s *stateRepo) ByType(ctx context.Context, roomID, eventType string) ([]*Ro
 		return nil, err
 	}
 	return states, nil
+}
+
+// CurrentMembers implements [StateRepo].
+func (s *stateRepo) CurrentMembers(ctx context.Context, roomID string) ([]string, error) {
+	var rows []struct {
+		StateKey string
+		JSON     []byte
+	}
+	err := s.db.WithContext(ctx).Table("room_state AS rs").
+		Select("rs.state_key AS state_key, e.json AS json").
+		Where("rs.room_id = ? AND rs.type = ?", roomID, "m.room.member").
+		Joins("JOIN events AS e ON e.event_id = rs.event_id").
+		Order("rs.state_key ASC").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	members := make([]string, 0, len(rows))
+	for _, entry := range rows {
+		if entry.StateKey == "" || !saysJoined(entry.JSON) {
+			continue
+		}
+		members = append(members, entry.StateKey)
+	}
+	return members, nil
+}
+
+// saysJoined reports whether a stored m.room.member event says its user is in the room. A
+// room keeps a member event for a user who left, was invited or was banned; only "join" is
+// someone who is there.
+func saysJoined(raw []byte) bool {
+	var event struct {
+		Content struct {
+			Membership string `json:"membership"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(raw, &event); err != nil {
+		return false
+	}
+	return event.Content.Membership == "join"
 }
 
 // MembershipsOf implements [StateRepo].

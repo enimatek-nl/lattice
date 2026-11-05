@@ -173,9 +173,18 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
 - [x] T-3008 `device_lists` in `/sync`: `changed` on a join, `left` on a leave or ban,
       recorded with the room it happened in — Complement
       `TestSync/parallel/Device_list_tracking` (including the retry case)
-- [ ] T-3008b the keys themselves: `PUT /keys/upload`, `POST /keys/query`,
-      `POST /keys/claim`, `GET /keys/changes`. Without them the lists this server sends
-      tell a client to re-fetch keys it has nowhere to fetch
+- [x] T-3008b the keys themselves: `POST`/`PUT /keys/upload`, `POST /keys/query` (with
+      `since`), `POST /keys/claim` (once only, in upload order) — Complement `TestUploadKey`,
+      `TestKeyClaimOrdering`, `TestUploadKeyIdempotency`, `TestUploadKeyIdempotencyOverlap`
+      and the local subtests of `TestDeviceListUpdates`
+- [ ] T-3008d `GET /keys/changes?from=&to=`, which answers the same question a
+      `device_lists` section answers, for a window a client names
+- [ ] T-3008e cross-signing and key backup: `POST /keys/device_signing/upload`,
+      `POST /keys/signatures/upload`, `/room_keys/*`. Without them a user cannot verify a
+      device or recover their history on a new one
+- [ ] T-3008f fallback keys (MSC3288): refused today with a reason. Accepting them means
+      storing a key that outlives the session it started, which needs a decision about how
+      long the server keeps what cannot be single-use
 - [ ] T-3008c device list changes triggered by a key upload, a new device or a
       cross-signing update, once those exist; only membership triggers one today
 - [ ] T-3001 (leftover numbering, same work as T-3001a-d and T-4005 above): what still

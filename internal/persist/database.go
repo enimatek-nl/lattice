@@ -39,6 +39,7 @@ type Database struct {
 	AccountData AccountDataRepo
 	Presence    PresenceRepo
 	DeviceLists DeviceListRepo
+	DeviceKeys  DeviceKeysRepo
 }
 
 // Open opens (creating if needed) the SQLite database at path.
@@ -84,6 +85,7 @@ func Open(path string, log *slog.Logger) (*Database, error) {
 	d.AccountData = NewAccountDataRepo(gdb)
 	d.Presence = NewPresenceRepo(gdb)
 	d.DeviceLists = NewDeviceListRepo(gdb)
+	d.DeviceKeys = NewDeviceKeysRepo(gdb)
 	return d, nil
 }
 
@@ -107,7 +109,7 @@ func applyPragmas(gdb *gorm.DB) error {
 // matter for Matrix lookups and are not derived from struct tags.
 func (d *Database) migrate(log *slog.Logger) error {
 	if err := d.db.AutoMigrate(&User{}, &Device{}, &AccessToken{}, &SigningKey{},
-		&Room{}, &Event{}, &EventEdge{}, &RoomState{}, &EventAuthContext{}, &EventTxn{}, &RoomAlias{}, &Filter{}, &AccountData{}, &Presence{}, &DeviceListChange{}); err != nil {
+		&Room{}, &Event{}, &EventEdge{}, &RoomState{}, &EventAuthContext{}, &EventTxn{}, &RoomAlias{}, &Filter{}, &AccountData{}, &Presence{}, &DeviceListChange{}, &DeviceKeyDoc{}, &OneTimeKey{}); err != nil {
 		return fmt.Errorf("persist: migration failed: %w", err)
 	}
 	statements := []string{
@@ -128,9 +130,12 @@ func (d *Database) migrate(log *slog.Logger) error {
 		"CREATE UNIQUE INDEX IF NOT EXISTS idx_presence_user ON presence(user_id)",
 		"CREATE INDEX IF NOT EXISTS idx_presence_stream ON presence(stream_ordering)",
 
-		// Device list changes are read by room and position: the room decides who may
-		// hear about the change, the position decides who has heard already.
-		"CREATE INDEX IF NOT EXISTS idx_device_list_changes_room_stream ON device_list_changes(room_id, stream_ordering)",
+		// A sync reads one observer's unread changes, oldest first.
+		"CREATE INDEX IF NOT EXISTS idx_device_list_changes_observer_stream ON device_list_changes(observer_id, stream_ordering)",
+
+		// Claiming a one-time key asks for the oldest unclaimed key of one device, which
+		// is what this index serves.
+		"CREATE INDEX IF NOT EXISTS idx_one_time_keys_device_claimed ON one_time_keys(user_id, device_id, claimed)",
 
 		// Room and event lookups. An event ID is globally unique, which is what
 		// turns a repeated event into ErrConflict instead of a second row.

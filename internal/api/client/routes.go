@@ -10,6 +10,7 @@ import (
 	"github.com/enimatek/lattice/internal/auth"
 
 	"github.com/enimatek/lattice/internal/config"
+	"github.com/enimatek/lattice/internal/e2ekeys"
 	"github.com/enimatek/lattice/internal/httpserver"
 	"github.com/enimatek/lattice/internal/keys"
 	"github.com/enimatek/lattice/internal/matrixerr"
@@ -32,6 +33,7 @@ type Deps struct {
 	Rooms     *rooms.Service
 	PushRules *pushrules.Service
 	Presence  *presence.Service
+	E2EKeys   *e2ekeys.Service
 	Sync      *sync.Service
 	DB        *persist.Database
 	Version   string
@@ -187,6 +189,13 @@ func Register(r *httpserver.Router, d *Deps, requireAuth func(http.Handler) http
 
 	// Presence. The user ID in the path is a single segment: a colon inside a path
 	// segment needs no escaping, so the mux pattern expresses it directly.
+	// Device and one-time keys. `/keys/upload` answers to PUT as well as POST: the
+	// specification says POST, and clients written against older text send PUT.
+	r.Handle("POST", "/_matrix/client/v3/keys/upload", authed(d.handleKeysUpload))
+	r.Handle("PUT", "/_matrix/client/v3/keys/upload", authed(d.handleKeysUpload))
+	r.Handle("POST", "/_matrix/client/v3/keys/query", authed(d.handleKeysQuery))
+	r.Handle("POST", "/_matrix/client/v3/keys/claim", authed(d.handleKeysClaim))
+
 	r.Handle("GET", "/_matrix/client/v3/presence/{userID}/status", authed(d.handlePresenceGet))
 	r.Handle("PUT", "/_matrix/client/v3/presence/{userID}/status", authed(d.handlePresencePut))
 

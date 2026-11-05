@@ -15,7 +15,7 @@ func TestDeviceListsTrackMembership(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
 
-	_, aliceToken, _ := h.register(t, "devlistalice", "pw-devlistalice", "")
+	aliceID, aliceToken, _ := h.register(t, "devlistalice", "pw-devlistalice", "")
 	charlie, charlieToken, _ := h.register(t, "devlistcharlie", "pw-devlistcharlie", "")
 	_, bobToken, _ := h.register(t, "devlistbob", "pw-devlistbob", "")
 
@@ -42,6 +42,10 @@ func TestDeviceListsTrackMembership(t *testing.T) {
 		t.Errorf("charlie was told about their own device list: %v", mine["device_lists"])
 	}
 
+	// The leaver's own token, taken before the leave, so that his side of the notice can be
+	// checked: he must be told that the people still in that room are no longer his to
+	// track. A record shelved in the room could not reach him, because he has left it.
+	_, charlieBeforeLeave := syncNow(t, h, charlieToken, "")
 	// Leaving is a user whose keys are no longer worth keeping.
 	h.mustStatus(t, h.put(t, "/_matrix/client/v3/rooms/"+roomID+"/send/m.room.message/devlisttxn1",
 		map[string]any{"msgtype": "m.text", "body": "was here"}, charlieToken), http.StatusOK)
@@ -56,6 +60,10 @@ func TestDeviceListsTrackMembership(t *testing.T) {
 	repeat, _ := syncNow(t, h, aliceToken, "&since="+next)
 	if !inDeviceListSection(t, repeat, "left", charlie) {
 		t.Errorf("asking again from the same token lost the leave: %v", repeat["device_lists"])
+	}
+
+	if mine, _ := syncNow(t, h, charlieToken, "&since="+charlieBeforeLeave); !inDeviceListSection(t, mine, "left", aliceID) {
+		t.Errorf("charlie was not told that alice is no longer his to track: %v", mine["device_lists"])
 	}
 
 	// A user who shares no room with charlie is not told about him.
