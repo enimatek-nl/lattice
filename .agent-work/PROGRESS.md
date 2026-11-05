@@ -293,3 +293,64 @@ before federation work builds on it, alongside REQ-STATE-007.
 
 Still endpoint-inert: `createRoom` (T-2003), the send endpoint (T-2006), membership (T-2007),
 state reads (T-2008), redaction application (T-2009), upgrades (T-2010).
+
+---
+
+# Iteration 6 — M2 room creation and event sending (T-2003, T-2006)
+
+Timestamp: 2026-11-05 (UTC)
+
+## Built
+
+`internal/rooms` (service), `internal/api/client/rooms.go` (transport), and the wiring in
+`internal/app`. One service owns the orchestration: room version selection → initial state
+construction → auth event selection → authorisation → sealing (hash, event ID, signature) →
+persistence of the event, its prev/auth edges, its state row and its auth context, all
+inside one transaction.
+
+Endpoints now reachable:
+- `POST /_matrix/client/v3/createRoom` — presets, `room_version` negotiation,
+  `creation_content` restrictions (the client cannot pick creator, version or predecessor),
+  `initial_state`, `power_level_content_override` merged one level deep so an override
+  cannot erase the creator, name/topic/avatar shorthand.
+- `PUT /_matrix/client/v3/rooms/{roomID}/send/{eventType}/{txnID}` — per-device transaction
+  idempotency, server-computed `depth`/`prev_events`/`auth_events`, authorisation before
+  signing.
+- `PUT /_matrix/client/v3/rooms/{roomID}/state/{eventType}[/{stateKey}]` — including the
+  empty state key.
+- `/capabilities` now reads `roomversion.Default()`/`Available()`, closing the recorded
+  deviation that the server advertised versions it could not create.
+
+## Findings worth recording
+
+1. **`M_NOT_JSON` versus `M_BAD_JSON`.** `httpx` answered `M_BAD_JSON` for a truncated
+   body because Go reports truncation as `io.ErrUnexpectedEOF`, not `*json.SyntaxError`.
+   The specification separates the two and clients act on them differently.
+2. **Empty state key routing.** Go's mux treats `.../state/{eventType}/` as a subtree
+   pattern, so it also matches `.../state/a/b/c`. The handler counts the remaining segments
+   and refuses the deeper path rather than reading it as an empty state key.
+3. **`m.` event types are lowercase.** A client-supplied `m.Room.Message` would create
+   state and power-level entries that no specification event matches.
+4. **Signature key ID is `ed25519:v1`**, not `v1` — a test asserted the wrong form, not the
+   server.
+5. **The end-to-end check that matters** (`TestCreatedEventIsVerifiable`): read the stored
+   event back, recompute its event ID from what is stored, confirm this server's signature,
+   and run the authorisation rules against the stored state and auth context. This is what
+   distinguishes "the code ran" from "the event we produced is one the protocol accepts".
+
+## Evidence
+
+`go test -count=1 ./tests/...`: integration ok, unit ok. `make verify` (`-race`): ok.
+`golangci-lint run ./...`: 0 issues. New tests: `tests/integration/rooms_test.go` (creation,
+sending, idempotency, refusal of non-members, refusal of `m.room.member` via `/send`,
+version negotiation against the advertised set, error codes, state send with and without
+power, stored-event verifiability) and `tests/unit/roomslogic_test.go` (event type grammar,
+power-level override merge).
+
+## Honest status
+
+No room on this server can have a second member yet: join/invite/knock/leave are unimplemented
+and `/send` refuses membership events by design, so multi-user Complement room tests still
+cannot pass (F-012). The rejection outcome of on-receipt checks is not stored, so
+`Snapshot.Rejected` reports false for stored events (F-011) — harmless while every event is
+locally authored, must be fixed before federation ingest.

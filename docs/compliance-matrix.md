@@ -29,7 +29,11 @@ Specification: Matrix v1.19 (`docs/specification-version.md`).
 | Media | `GET /v3/config` (upload size) | implemented | yes | **verified** (`TestMediaConfig`) |
 | Media | upload / download / thumbnail / async | not implemented | stub answers 501 | `TestMediaConfig` passes; upload tests fail with 501 (recorded, not hidden) |
 | Filters | `POST /filter` validation | not implemented | no | `TestFilter` "passes" only because it asserts 4xx and we answer 404 — **incidental, not compliance** |
-| Rooms, events, state, members, redaction, txn ids | all | not implemented | — | fails with 404 `M_UNRECOGNIZED` (M2) |
+| Rooms | `POST /v3/createRoom`: presets, `room_version` negotiation (`M_UNSUPPORTED_ROOM_VERSION`), `creation_content` limits, initial state, name/topic/avatar shorthand | implemented | yes | not verified (Complement room tests also need membership endpoints) |
+| Events | `PUT /v3/rooms/{roomID}/send/{eventType}/{txnID}`: authorisation, hashing, signing, storage, per-device transaction idempotency | implemented | yes | not verified |
+| Events | `PUT /send/m.room.member/...` refused with 400 `M_UNRECOGNIZED` (membership has its own endpoints) | implemented | yes | not verified |
+| State | `PUT /v3/rooms/{roomID}/state/{eventType}[/{stateKey}]`, including the empty state key and rejection of deeper paths | implemented | yes | not verified |
+| Rooms | join / invite / knock / leave, `GET /state`, `/state_ids`, `/members`, `/messages`, `/context`, `/event`, redaction, aliases, directory, upgrades | not implemented | — | fails with 404 `M_UNRECOGNIZED` (M2 tasks T-2007 to T-2010) |
 | Sync / messages / filters | all | not implemented | — | fails with 404 (M3) |
 | E2EE device keys, to-device, key backup | all | not implemented | — | fails with 404 (M5) |
 | Account: deactivate, change password, 3PIDs | all | not implemented | — | fails with 404 |
@@ -64,7 +68,7 @@ Specification: Matrix v1.19 (`docs/specification-version.md`).
 | --- | --- | --- |
 | Room version registry v1-v12 (state res, event ID format, auth rule set, redaction profile, join rules, integer power levels, creator placement, redacts placement, domain-free room IDs) | implemented | `tests/unit/roomversion_test.go` |
 | Room version grammar validation | implemented | `tests/unit/roomversion_test.go` |
-| Only supported versions offered/advertised (`roomversion.Supported`/`Available`) | implemented (registry); the `/capabilities` handler does not use it yet | see deviation 2 below |
+| Only supported versions offered/advertised (`roomversion.Supported`/`Available`) | implemented and now wired into `/capabilities`, so the advertised set and the set rooms can be created in are one table | `tests/integration/rooms_test.go` |
 | Redaction algorithm, per room version | implemented | `tests/unit/redaction_test.go` |
 | Content hash, reference hash, event ID derivation | implemented | `tests/unit/redaction_test.go`, `tests/unit/eventseal_test.go` |
 | Hashing + signing an outgoing event (signature over the redacted form) | implemented | `tests/unit/eventseal_test.go` |
@@ -77,7 +81,7 @@ Specification: Matrix v1.19 (`docs/specification-version.md`).
 | State resolution for room versions 1 and 12 | not implemented (refused with `ErrAlgorithmUnsupported`) | `tests/unit/stateresolve_test.go` |
 | State resolution cross-checked against another implementation | not done yet | follow-up task T-2005a |
 | Event graph storage (events, prev/auth edges, per-event auth context) and the forward-extremities query | implemented | `tests/unit/eventstore_test.go` |
-| Transaction ID store for `/send/{type}/{txn}` idempotency (unique per device) | implemented (storage only; the endpoint does not exist yet) | `tests/unit/eventstore_test.go` |
+| Transaction ID store for `/send/{type}/{txn}` idempotency (unique per device) | implemented and exercised through the endpoint | `tests/unit/eventstore_test.go`, `tests/integration/rooms_test.go` |
 | `depth` validation against `prev_events` | not implemented | M2 |
 | Redaction application rules (power level or same domain) | not implemented; the redacted form has a column to live in | M2 |
 
@@ -101,7 +105,7 @@ Full inventory, commands and the per-test list: `.agent-work/COMPLIANCE-MATRIX.m
 1. `GET /versions` advertises v1.1…v1.19 while most endpoints are missing. Clients are not misled
    about individual endpoints (they answer `M_UNRECOGNIZED`), but the range overstates coverage; a
    narrowing decision is tracked as an open item.
-2. `capabilities.m.room_versions` advertises `11` as default and v1-v11 as available, while no room can be created yet. The registry now exposes the honest set (`Supported`/`Available` return v10 and v11 only); wiring `/capabilities` to it happens together with `createRoom`, because advertising versions without the endpoints that use them would be equally misleading.
+2. ~~`capabilities.m.room_versions` advertises a version while no room can be created yet.~~ **Resolved:** `/capabilities` now reads `roomversion.Default()` and `roomversion.Available()`, and a test creates a room in every advertised version, so the advertisement cannot outrun the implementation. Original note: the registry exposes the honest set (`Supported`/`Available` return v10 and v11 only); wiring `/capabilities` to it happens together with `createRoom`, because advertising versions without the endpoints that use them would be equally misleading.
 3. `TestFilter` passing is incidental; the filter endpoint is not implemented.
 4. `TestLogout`/`TestDeviceManagement` subtests fail only because the assertion vehicle (`/sync`)
    does not exist; the logout/device behaviour itself is covered by this project's integration tests.

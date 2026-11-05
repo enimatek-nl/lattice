@@ -123,7 +123,27 @@ the parts that must be byte-exact before any room is created.
    implementation gives the creator 2^53−1 in that situation and tests that a
    non-creator is still refused. Falsifiable: a peer that grants 99 instead would refuse
    a first event that sets a level above 99.
-5. **`m.room.aliases` special case.** The specification removes it in room version 6 and
+5. **`M_NOT_JSON` versus `M_BAD_JSON`.** A body that stops in the middle of a JSON
+   value is not valid JSON and must be `M_NOT_JSON`; `M_BAD_JSON` is reserved for JSON
+   that parsed but had the wrong shape. Go's decoder reports truncation as
+   `io.ErrUnexpectedEOF`, which is not a `*json.SyntaxError`, so a naive check answered
+   `M_BAD_JSON` for `{`. Tested in `TestRoomSendErrors`.
+6. **Room preset contents.** The specification names `private_chat`, `public_chat` and
+   `trusted_private_chat` but leaves their contents to the implementation. This server's
+   presets: public → `join_rule: public` with `history_visibility: world_readable`;
+   private → `invite` with `shared`; trusted → `invite` with `invite` power level 0. All
+   three give the creator 100 and `state_default` 50. Falsifiable: a Complement preset
+   test that expects different history visibility or invite levels.
+7. **Empty state key routing.** `/state/{eventType}/` is the empty state key. Go's mux
+   treats a pattern ending in `/` after a wildcard as a subtree, so that pattern also
+   matches `/state/a/b/c`; the handler counts the remaining segments and refuses the
+   longer paths with `M_INVALID_PARAM` instead of quietly treating them as an empty key.
+8. **`m.` event types are lowercase.** Client-supplied event types are validated: an
+   `m.`-prefixed type may hold only lowercase letters, digits and underscores per
+   component. Accepting `m.Room.Message` would create state and power-level entries no
+   specification event ever matches. Custom types must be dotted, so two servers cannot
+   invent the same name.
+9. **`m.room.aliases` special case.** The specification removes it in room version 6 and
    Synapse gates it by version; gomatrixserverlib applies it to every room version. This
    implementation follows the specification, so an aliases event in a version 6+ room needs
    the sender to be joined and to hold the state power level. A peer applying the historic

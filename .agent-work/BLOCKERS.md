@@ -94,3 +94,26 @@ up to 5.
 Risk: in a version 6+ room this server rejects `m.room.aliases` events a peer accepts, so the
 alias list can differ between servers (a missing alias, not a forked room).
 Action: revisit if Complement or an interop test shows alias disagreement.
+
+## F-011 — the on-receipt rejection outcome is not stored (open, blocks federation correctness)
+
+`eventauth.Snapshot` asks whether an event was rejected when it arrived, because the
+authorisation rules and both state-resolution iterative checks must not use a rejected
+event as an auth event. The event table has no such column, so
+`internal/rooms.dbSnapshot.Rejected` always reports false.
+
+Why it does not bite yet: every event in a room this server created passed the checks
+before it was written, so there is nothing to report. It bites the moment federated
+events are accepted, where a peer can send an event that failed here.
+
+Action: add the column and write the outcome during ingest (T-2006a), before
+`internal/federation` starts accepting PDUs.
+
+## F-012 — no membership endpoints, so rooms are single-member (open, M2)
+
+Join, invite, knock and leave are not implemented, and `/send` deliberately refuses
+`m.room.member`. Consequence, stated plainly: no room on this server can currently have a
+second member, so the multi-user behaviour that Complement's room tests exercise cannot
+pass yet, even though creation and sending work.
+
+Action: T-2007.

@@ -38,6 +38,13 @@ const (
 	CodeTooLarge              Code = "M_TOO_LARGE"
 	CodeInvalidToken          Code = "M_INVALID_TOKEN"
 	CodeInvalidSTS            Code = "M_INVALID_STK" //nolint:gocritic // Matrix code name
+
+	// Room and event errors from the Client-Server API.
+	CodeUnsupportedRoomVersion    Code = "M_UNSUPPORTED_ROOM_VERSION"
+	CodeIncompatibleRoomVersion   Code = "M_INCOMPATIBLE_ROOM_VERSION"
+	CodeBadState                  Code = "M_BAD_STATE"
+	CodeCannotLeaveServerNotice   Code = "M_CANNOT_LEAVE_SERVER_NOTICE_ROOM"
+	CodeResourceLimitExceededRoom Code = "M_RESOURCE_LIMIT_EXCEEDED"
 )
 
 // Error is a Matrix error: an errcode, a human readable message and optional
@@ -109,6 +116,59 @@ func Write(w http.ResponseWriter, status int, e *Error) {
 		// The status line is already sent; nothing useful can be done here.
 		return
 	}
+}
+
+// statusByCode maps the error codes whose HTTP status the specification fixes. The
+// table exists because a handler that guesses gets these wrong in ways clients act
+// on: a client retries on 429, logs out on 401 and stops on 403.
+var statusByCode = map[Code]int{
+	CodeNotFound:                http.StatusNotFound,
+	CodeUnknownToken:            http.StatusUnauthorized,
+	CodeMissingToken:            http.StatusUnauthorized,
+	CodeBadJSON:                 http.StatusBadRequest,
+	CodeNotJSON:                 http.StatusBadRequest,
+	CodeForbidden:               http.StatusForbidden,
+	CodeUnauthorized:            http.StatusUnauthorized,
+	CodeUserInUse:               http.StatusConflict,
+	CodeInvalidUsername:         http.StatusBadRequest,
+	CodeWeakPassword:            http.StatusBadRequest,
+	CodeUserDeactivated:         http.StatusForbidden,
+	CodeNoAuth:                  http.StatusForbidden,
+	CodeMissingParams:           http.StatusBadRequest,
+	CodeInvalidParam:            http.StatusBadRequest,
+	CodeNotYetRegistered:        http.StatusForbidden,
+	CodeGuestAccessForbidden:    http.StatusForbidden,
+	CodeLimitExceeded:           http.StatusTooManyRequests,
+	CodeResourceLimitExceeded:   http.StatusServiceUnavailable,
+	CodeTooLarge:                http.StatusRequestEntityTooLarge,
+	CodeUnrecognized:            http.StatusBadRequest,
+	CodeUnsupportedRoomVersion:  http.StatusBadRequest,
+	CodeIncompatibleRoomVersion: http.StatusBadRequest,
+	CodeBadState:                http.StatusBadRequest,
+}
+
+// Status returns the HTTP status the specification associates with an error code. An
+// unlisted code means the caller must choose, so 400 is returned: an unspecified
+// Matrix error is the caller's problem, not the client's.
+func Status(e *Error) int {
+	if e == nil {
+		return http.StatusInternalServerError
+	}
+	if status, ok := statusByCode[e.Code]; ok {
+		return status
+	}
+	return http.StatusBadRequest
+}
+
+// WriteServiceError writes a service-layer error with the status the protocol
+// prescribes. Anything that is not a Matrix error is an internal fault and becomes a
+// 500 M_UNKNOWN with no detail, so internal messages do not reach clients.
+func WriteServiceError(w http.ResponseWriter, err error) {
+	if e, ok := As(err); ok {
+		Write(w, Status(e), e)
+		return
+	}
+	Write(w, http.StatusInternalServerError, New(CodeUnknown, "The server encountered an internal error."))
 }
 
 // WriteError maps err to a Matrix error and writes it with status.

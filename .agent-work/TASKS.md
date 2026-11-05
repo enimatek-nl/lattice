@@ -71,7 +71,10 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
       `stream_ordering`), `event_edges` (prev/auth), `room_state`,
       `event_auth_context`, `event_txn`; forward-extremities query; dedup via unique
       event id; per-device transaction ids — `tests/unit/eventstore_test.go`
-- [ ] T-2003 `POST /createRoom` + wire `/capabilities` to `roomversion.Available()`
+- [x] T-2003 `POST /createRoom` (presets, `room_version` negotiation, `creation_content`
+      limits, initial state, name/topic/avatar shorthand, alias request refused) plus
+      `/capabilities` now sourced from `roomversion.Default()`/`Available()` —
+      `internal/rooms`, `tests/integration/rooms_test.go`
 - [x] T-2004 `internal/eventauth`: authorisation rules 1-10 for room versions 3-11 (v1/v2
       refused), auth-events selection and its validation, version-gated knock/restricted/
       knock_restricted, v10+ integer power-level validation, the historic `m.room.aliases`
@@ -84,8 +87,13 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
       `tests/unit/stateresolve_test.go`
 - [ ] T-2005a Cross-check state resolution against gomatrixserverlib's resolver with shared
       fixtures (same fork, same expected winner) before any federation work relies on it
-- [ ] T-2006 `PUT /rooms/{roomId}/send/{eventType}/{txn}` with per-device transaction
-      deduplication, depth/prev_events validation, signing, persistence
+- [x] T-2006 `PUT /rooms/{roomId}/send/{eventType}/{txn}` with per-device transaction
+      deduplication, server-computed depth/prev_events/auth_events, authorisation before
+      signing, sealing and persistence; plus `PUT /rooms/{roomId}/state/{type}[/{key}]`
+      (empty state key supported, deeper paths refused) —
+      `tests/integration/rooms_test.go` incl. `TestCreatedEventIsVerifiable`
+- [ ] T-2006a Persist the outcome of the on-receipt checks so `Snapshot.Rejected` is real;
+      until then an event that failed on receipt could be used as an auth event
 - [ ] T-2007 membership events: join/leave/invite/ban/kick (local), member state reads,
       `knock` gated on room version >= 7
 - [ ] T-2008 `GET /rooms/{roomId}/state` and `/{type}/{state_key}`

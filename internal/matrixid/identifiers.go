@@ -369,6 +369,84 @@ func utf16Surrogate(r rune) bool {
 	return r >= 0xD800 && r <= 0xDFFF
 }
 
+// EventTypeValid checks an event type against the naming rules: a name starting with
+// "m." is reserved for the specification and must be lowercase dotted; any other
+// event type is a dotted name ending in the kind, normally with a domain at the front
+// so that a third party can name it without a clash.
+//
+// The shape is enforced rather than ignored because event types are keys in state, in
+// power levels and in push rules: a type with a stray space or an empty component
+// becomes a key nothing else can address.
+func EventTypeValid(id string) error {
+	if id == "" {
+		return fmt.Errorf("matrixid: an event type must not be empty")
+	}
+	if len(id) > 255 {
+		return fmt.Errorf("matrixid: event type %q is too long", id)
+	}
+	if strings.HasPrefix(id, "m.") {
+		rest := id[len("m."):]
+		if rest == "" {
+			return fmt.Errorf("matrixid: event type %q has no name", id)
+		}
+		for _, component := range strings.Split(rest, ".") {
+			if !isReservedEventTypeComponent(component) {
+				return fmt.Errorf("matrixid: event type %q must be lowercase, alphanumeric or underscore", id)
+			}
+		}
+		return nil
+	}
+	components := strings.Split(id, ".")
+	if len(components) < 2 {
+		return fmt.Errorf("matrixid: event type %q must be dotted so that it cannot clash with another server's", id)
+	}
+	for _, component := range components {
+		if !isEventTypeComponent(component) {
+			return fmt.Errorf("matrixid: event type %q has an unusable component", id)
+		}
+	}
+	return nil
+}
+
+// isReservedEventTypeComponent accepts the characters a component of an "m." event
+// type may hold. The prefix is reserved by the specification and its names are
+// lowercase: accepting "m.Room.Message" would create a state key that the
+// specification's own types do not match, and a client could set power levels for a
+// type that never arrives.
+func isReservedEventTypeComponent(component string) bool {
+	if component == "" {
+		return false
+	}
+	for _, r := range component {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// isEventTypeComponent accepts the characters an event type component may hold:
+// letters, digits, underscore and hyphen, starting with a letter or digit.
+func isEventTypeComponent(component string) bool {
+	if component == "" {
+		return false
+	}
+	for i, r := range component {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '_' || r == '-':
+			if i == 0 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // DeviceIDValid applies the local device ID policy: the character set Synapse
 // uses ([A-Za-z0-9._=/-]) with a length of 1..100 bytes.
 func DeviceIDValid(deviceID string) error {

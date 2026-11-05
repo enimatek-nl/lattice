@@ -68,8 +68,11 @@ func DecodeJSON(r *http.Request, maxBytes int64, target any) error {
 		switch {
 		case errors.As(err, &maxErr):
 			return matrixerr.New(matrixerr.CodeTooLarge, "Request body is too large.")
-		case errors.Is(err, io.EOF):
-			return matrixerr.New(matrixerr.CodeNotJSON, "Request body is empty.")
+		case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+			// A body that stops in the middle of a JSON value is not valid JSON, which
+			// is M_NOT_JSON; M_BAD_JSON is reserved for JSON that parsed but had the
+			// wrong shape, and clients treat the two differently.
+			return matrixerr.New(matrixerr.CodeNotJSON, "Request body is empty or truncated.")
 		default:
 			var typeErr *json.UnmarshalTypeError
 			if errors.As(err, &typeErr) {
