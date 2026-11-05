@@ -283,7 +283,6 @@ func (s *Service) build(ctx context.Context, userID string, since Token, filter 
 	// device list changes the room is the only way to answer, because the member list of
 	// a room no longer contains the user who left.
 	var fellowMembers []string
-	var myRooms []string
 	for _, membership := range memberships {
 		membershipValue := membershipValueOf(membership)
 		// A room the user is out of is only reported up to the point where they left:
@@ -305,7 +304,6 @@ func (s *Service) build(ctx context.Context, userID string, since Token, filter 
 				return nil, false, err
 			}
 			fellowMembers = append(fellowMembers, members...)
-			myRooms = append(myRooms, membership.RoomID)
 			// A joined room is interesting when something happened in it. If nothing
 			// did, reporting it again would make a client re-read a room it already has
 			// and would make "unchanged rooms are omitted" untrue.
@@ -393,7 +391,7 @@ func (s *Service) build(ctx context.Context, userID string, since Token, filter 
 	}
 	result.Presence = Events{Events: presenceEvents}
 
-	if lists := s.deviceListsFor(ctx, myRooms, userID, int64(since), int64(position)); lists != nil {
+	if lists := s.deviceListsFor(ctx, userID, int64(since), int64(position)); lists != nil {
 		result.DeviceLists = lists
 	}
 
@@ -467,9 +465,12 @@ func (s *Service) memberCounts(ctx context.Context, roomID string) (joined, invi
 	return joined, invited, members, nil
 }
 
-// deviceListsFor reads whose device lists changed in the user's rooms since their token.
-func (s *Service) deviceListsFor(ctx context.Context, myRooms []string, userID string, since, until int64) *DeviceLists {
-	rows, err := s.devLists.ListInRooms(ctx, myRooms, since, until)
+// deviceListsFor reads the device list changes addressed to this user since their token.
+//
+// The rows are addressed rather than shelved in rooms, and that is the point: a change a user
+// needs to hear about because they left a room cannot be left in that room.
+func (s *Service) deviceListsFor(ctx context.Context, userID string, since, until int64) *DeviceLists {
+	rows, err := s.devLists.ListFor(ctx, userID, since, until)
 	if err != nil {
 		// A sync is not worth failing over a bookkeeping table, and the client will ask
 		// again. The gap is logged rather than hidden.

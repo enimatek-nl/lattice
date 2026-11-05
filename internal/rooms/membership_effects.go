@@ -69,44 +69,88 @@ func (s *Service) applySideEffects(ctx context.Context, eventID string) {
 	switch content["membership"] {
 	case eventauth.MembershipJoin:
 		s.announceArrival(ctx, roomID, stateKey)
-		s.recordDeviceListChange(ctx, roomID, stateKey, persist.DeviceListChanged)
 	case eventauth.MembershipLeave, eventauth.MembershipBan:
-		s.recordDeviceListChange(ctx, roomID, stateKey, persist.DeviceListLeft)
+		s.announceDeparture(ctx, roomID, stateKey)
 	}
 }
 
-// announceArrival gives the joiner and the room's other local members a new presence
-// position.
-func (s *Service) announceArrival(ctx context.Context, roomID, joiner string) {
-	if s.presence == nil {
-		return
-	}
-	members, err := s.db.State.ByType(ctx, roomID, eventauth.TypeMember)
+// announceDeparture tells a room that a member is gone, and tells the member that the room
+// is gone from their view.
+//
+// The second half is the one a room-shaped model misses. Somebody who leaves must be told
+// that the people still in that room are no longer theirs to track — otherwise their client
+// keeps fetching keys for a stranger — and they are no longer in the room to read a notice
+// left there. So the change is written for each observer separately.
+func (s *Service) announceDeparture(ctx context.Context, roomID, gone string) {
+	members, err := s.db.State.CurrentMembers(ctx, roomID)
 	if err != nil {
-		s.log.Warn("rooms: cannot read the members of a room to announce presence",
+		s.log.Warn("rooms: cannot read the members of a room to announce a departure",
 			"room_id", roomID, "error", err)
 		return
 	}
-	for _, entry := range members {
-		if entry.StateKey == "" || entry.StateKey == joiner {
+	for _, member := range members {
+		if member == gone {
 			continue
 		}
-		if err := s.presence.Announce(ctx, entry.StateKey); err != nil {
-			s.log.Warn("rooms: cannot announce a member's presence",
-				"room_id", roomID, "user_id", entry.StateKey, "error", err)
-		}
-	}
-	if err := s.presence.Announce(ctx, joiner); err != nil {
-		s.log.Warn("rooms: cannot announce a joiner's presence",
-			"room_id", roomID, "user_id", joiner, "error", err)
+		s.recordDeviceListChange(ctx, roomID, member, gone, persist.DeviceListLeft)
+		s.recordDeviceListChange(ctx, roomID, gone, member, persist.DeviceListLeft)
 	}
 }
 
-// recordDeviceListChange notes that a user's device list should be re-read, or that it is no
-// longer worth keeping.
-func (s *Service) recordDeviceListChange(ctx context.Context, roomID, userID, kind string) {
-	if _, err := s.db.DeviceLists.Record(ctx, roomID, userID, kind); err != nil {
+// announceArrival tells a room about a newcomer, and the newcomer about the room.
+//
+// Both directions matter, and it is easy to do only one. The members are told that somebody
+// new arrived; the joiner is told about the people already there, whose presence they can
+// now see and whose keys they should now fetch. A server that announces only the joiner
+// leaves the newcomer knowing nobody is there.
+func (s *Service) announceArrival(ctx context.Context, roomID, joiner string) {
+	members, err := s.db.State.CurrentMembers(ctx, roomID)
+	if err != nil {
+		s.log.Warn("rooms: cannot read the members of a room to announce an arrival",
+			"room_id", roomID, "error", err)
+		return
+	}
+	for _, member := range members {
+		if member == joiner {
+			continue
+		}
+		// The member's presence and keys are the joiner's to know about...
+		s.announceUser(ctx, roomID, member)
+		// ...and the joiner's are the members'.
+		s.recordDeviceListChange(ctx, roomID, member, joiner, persist.DeviceListChanged)
+	}
+	s.announceUser(ctx, roomID, joiner)
+}
+
+// announceUser gives one user a presence position, and tells the room that this user's keys
+// are worth re-reading.
+func (s *Service) announceUser(ctx context.Context, roomID, userID string) {
+	if s.presence != nil {
+		if err := s.presence.Announce(ctx, userID); err != nil {
+			s.log.Warn("rooms: cannot announce a user's presence",
+				"room_id", roomID, "user_id", userID, "error", err)
+		}
+	}
+	members, err := s.db.State.CurrentMembers(ctx, roomID)
+	if err != nil {
+		s.log.Warn("rooms: cannot read the members of a room to announce a device list change",
+			"room_id", roomID, "error", err)
+		return
+	}
+	for _, member := range members {
+		s.recordDeviceListChange(ctx, roomID, member, userID, persist.DeviceListChanged)
+	}
+}
+
+// recordDeviceListChange notes, for one observer, that another user's device list should be
+// re-read or is no longer worth keeping.
+func (s *Service) recordDeviceListChange(ctx context.Context, roomID, observerID, userID, kind string) {
+	if observerID == userID {
+		// A user's own changes are not reported back to them.
+		return
+	}
+	if _, err := s.db.DeviceLists.Record(ctx, roomID, observerID, userID, kind); err != nil {
 		s.log.Warn("rooms: cannot record a device list change",
-			"room_id", roomID, "user_id", userID, "kind", kind, "error", err)
+			"room_id", roomID, "observer_id", observerID, "user_id", userID, "kind", kind, "error", err)
 	}
 }
