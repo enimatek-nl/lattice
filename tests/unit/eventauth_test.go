@@ -182,6 +182,29 @@ func TestAuthRulesMemberEvents(t *testing.T) {
 			},
 		},
 		{
+			// A server checking an event against the auth events its sender cited cannot
+			// resolve prev_events, because prev_events are not auth events. Rule 4.3.1 only
+			// ever allows, so an unresolvable prev_event has to fall through to the ordinary
+			// join rules: refusing here refused every remote join but the creator's own.
+			name: "a join whose single prev_event is not held here", version: "11",
+			event: func(rules roomversion.Rules, state *eventauth.MemoryState) map[string]any {
+				event := authorise(rules, mkEvent("m.room.member", "$new:example.org", "@carol:example.org",
+					map[string]any{"membership": "join"}, stateKey("@carol:example.org")), state)
+				event["prev_events"] = []any{"$somewhereelse:example.org"}
+				return event
+			},
+		},
+		{
+			name: "an unresolvable prev_event does not excuse the join rule", version: "11", join: "invite",
+			event: func(rules roomversion.Rules, state *eventauth.MemoryState) map[string]any {
+				event := authorise(rules, mkEvent("m.room.member", "$new:example.org", "@carol:example.org",
+					map[string]any{"membership": "join"}, stateKey("@carol:example.org")), state)
+				event["prev_events"] = []any{"$somewhereelse:example.org"}
+				return event
+			},
+			wantErr: "4.3.4",
+		},
+		{
 			name: "a member event with no membership", version: "11",
 			event: func(rules roomversion.Rules, state *eventauth.MemoryState) map[string]any {
 				return authorise(rules, mkEvent("m.room.member", "$new:example.org", "@carol:example.org",

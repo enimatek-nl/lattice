@@ -273,10 +273,25 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
 - [ ] T-4008 EDUs are received, acknowledged and logged, and nothing else happens to them:
       presence, typing, receipts and device-list units over federation are their own work,
       and the outbound `EnqueueEDU` path has no caller yet
-- [ ] T-4009 the join/leave/invite protocols over federation (`/make_join`, `/send_join`,
-      `/state_ids`, `/backfill`, `/make_leave`, `/send_leave`, `/invite`, `/event_auth`),
-      without which no remote user can be in a room here, which is what makes most of the
-      two-server Complement tests unreachable
+- [x] T-4009a the resident half of the join handshake: `/make_join` (v1 and v3) hands over an
+      unsigned template with the room's version and refuses a user the room does not permit;
+      `/send_join` v2 checks the signed event against what its URL claims, accepts it, signs it
+      as well, and answers with the pre-join state and its auth chain; `/state_ids` and
+      `/event_auth` answer servers the room has a seat for —
+      `tests/integration/federationjoins_test.go`. Found on the way: auth rule 4.3.1 refused a
+      join whose single `prev_event` could not be resolved, and `prev_events` are never among
+      the auth events a receiver is handed, so every remote join but the creator's own was
+      refused (`tests/unit/eventauth_test.go`)
+- [ ] T-4009b the joining half: `make_join` → sign → `send_join` driven by this server when one
+      of its users joins a room held elsewhere, wired to `POST /join/{roomID}` (which answers
+      501 today through `rooms.ErrRemoteTarget`). It needs the snapshot half of T-4007 first:
+      the state and extremities a resident hands over arrive as a bundle, and our ingest refuses
+      an event whose predecessors are not stored here — so a handed-over room has to be
+      accepted as a snapshot (outliers where the predecessors are missing), not as an
+      incremental delivery
+- [ ] T-4009c the rest of the handshake family: `/make_leave`, `/send_leave`, `/invite` (v1/v2),
+      `/make_knock`, `/send_knock`, `/event_auth` as a *client* of another server, and applying
+      `m.room.server_acl` to the join, state, auth and per-PDU paths (REQ-FED-012)
 - [x] T-4010 `Sender.Cleanup` and the worker's hourly pass: answered transactions past their
       replay window, key documents past their trust window and queue rows given up on for a
       month are forgotten, while everything still current survives —

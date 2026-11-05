@@ -213,6 +213,7 @@ func NewWithOptions(ctx context.Context, cfg *config.Config, log *slog.Logger, o
 		federationDeps.Keyring = a.Keyring
 		federationDeps.Federation = db.Federation
 		federationDeps.Rooms = roomService
+		federationDeps.Joins = roomService
 		federationDeps.DB = db
 	}
 	federationapi.Register(a.federationRouter, federationDeps)

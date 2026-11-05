@@ -1110,3 +1110,48 @@ bites: with the skip removed, `/messages` returns 500 instead of a page.
 `make verify` and `golangci-lint` clean. Complement filtered run unchanged: `TestRedact` and
 the sync tests pass as before, so the added `unsigned` copy and the withheld redactions did not
 disturb what other implementations expect on the wire.
+
+## 2026-11-05 — a remote user joins: the resident half of the handshake (T-4009a)
+
+Federation had transactions, ingest checks, an event read and an outbound queue, but no way for
+a user on another server to become a member of a room held here. This closes the resident
+server's half of that: `/make_join` (v1 and v3), `/send_join` v2, `/state_ids` and `/event_auth`.
+
+The shape of the handshake is the point of it. The resident server answers `make_join` with an
+*unsigned* template carrying what the joiner cannot invent — the room's version, where the
+history ends, which state authorises a join, the depth — and refuses there if its copy of the
+room does not permit the user. The joiner fills in `origin`, `origin_server_ts` and `event_id`
+and signs; only then does the resident accept. It checks the signed event against what the URL
+claims (same room, same user, membership `join`, and an event ID it recomputes rather than
+trusts), stores it, signs it with its own key, and answers with the state *before* the join plus
+the auth chain that lets the joining server check the room instead of believing it.
+
+Two decisions worth their weight: the resident signs the event it accepted, because it is the
+one attesting that this join entered the room and every other server in the room should see that
+attestation; and the state handed back is the pre-join state, because answering with the
+post-join state asks the joining server to authorise its own join against a room that already
+contains it. Federation answers with stored bytes, not the client view — the redaction servicer
+is for clients, and a peer checks the content hash the origin recorded.
+
+The first remote join ever attempted here exposed a bug in the auth rules. Rule 4.3.1 ("if the
+only previous event is an `m.room.create` and the state key is its sender, allow") is an
+allowing clause; our code refused when the single `prev_event` could not be resolved. Since
+`prev_events` are never among the `auth_events` a receiver is handed, a server checking an
+event against its cited auth events can almost never resolve them — so every remote join except
+the creator's own was being refused. Fixed, with cases in the auth-rule table so it cannot
+quietly come back.
+
+Evidence: `tests/integration/federationjoins_test.go` — the handshake end to end (bea joins
+alice's room; hs1 lists her as present; the room bundle is handed to hs2, which accepts it and
+then shows her the room), plus refusals: invitation-only room and a ban answered 403 before any
+signing, an unknown room 404, an unsigned ask 401, a tampered join refused and the user *not*
+listed afterwards, a leave offered as a join refused. `TestStateAndAuthChainAreAnswered
+ToServersInTheRoom` checks the reads answer 403 to an outsider and 200 afterwards, and that an
+event's auth chain does not contain the event itself.
+
+Left open honestly: `m.room.server_acl` is not enforced anywhere, and the federation handlers
+call a check that allows everything and says so in its comment (T-4009c, REQ-FED-012); the
+joining half (T-4009b) needs the snapshot ingest of T-4007, because a handed-over room arrives
+as a bundle and this server's ingest refuses an event whose predecessors it does not hold.
+
+`make verify` clean, `golangci-lint` clean, Complement filtered run unchanged.
