@@ -2,6 +2,7 @@
 package client
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/enimatek/lattice/internal/matrixerr"
 	"github.com/enimatek/lattice/internal/persist"
 	"github.com/enimatek/lattice/internal/rooms"
+	"github.com/enimatek/lattice/internal/sync"
 	"github.com/enimatek/lattice/internal/users"
 )
 
@@ -26,6 +28,7 @@ type Deps struct {
 	UIA     *auth.UIAService
 	Keys    *keys.Service
 	Rooms   *rooms.Service
+	Sync    *sync.Service
 	DB      *persist.Database
 	Version string
 	Started time.Time
@@ -35,6 +38,15 @@ type Deps struct {
 // and logs anything that is not a protocol error, so a storage fault is visible in the
 // log but not in the response.
 func (d *Deps) serviceError(w http.ResponseWriter, err error) {
+	// A membership change that needs another homeserver is a missing feature, not a
+	// permission problem and not a bad request, so it answers 501 wherever it happens:
+	// on a membership endpoint, or as part of creating a room with an invite list.
+	if errors.Is(err, rooms.ErrRemoteTarget) {
+		d.Log.Warn("an operation was refused because it needs federation", slog.String("error", err.Error()))
+		failure, _ := matrixerr.As(err)
+		matrixerr.Write(w, http.StatusNotImplemented, failure)
+		return
+	}
 	if _, isProtocol := matrixerr.As(err); !isProtocol {
 		d.Log.Error("a room operation failed", slog.String("error", err.Error()))
 	}
@@ -122,6 +134,11 @@ func Register(r *httpserver.Router, d *Deps, requireAuth func(http.Handler) http
 	versioned("GET", "/rooms/{roomID}/members", d.handleMembers)
 	versioned("GET", "/rooms/{roomID}/joined_members", d.handleJoinedMembers)
 	versioned("GET", "/joined_rooms", d.handleJoinedRooms)
+
+	// Synchronisation and the filters that shape it.
+	versioned("GET", "/sync", d.handleSync)
+	versioned("POST", "/user/{userID}/filter", d.handleFilterCreate)
+	versioned("GET", "/user/{userID}/filter/{filterID}", d.handleFilterGet)
 
 	// Room aliases.
 	versioned("PUT", "/directory/room/{roomAlias}", d.handleAliasPut)

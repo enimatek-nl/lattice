@@ -61,9 +61,11 @@ type CreateRequest struct {
 	// RoomAliasName is the local part of an alias to create for the room, on this
 	// server's name.
 	RoomAliasName string
-	Name          string
-	Topic         string
-	AvatarURL     string
+	// Invite lists users to invite as the room is created. Local users only.
+	Invite    []string
+	Name      string
+	Topic     string
+	AvatarURL string
 }
 
 // StateContent is one requested state event.
@@ -180,23 +182,45 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (string, error)
 	createContent["room_version"] = rules.ID
 
 	initial := presetState(req.Preset, req.Creator)
-	// name, topic and avatar in the createRoom body are shorthand for state events.
-	if req.Name != "" {
-		initial = append(initial, StateContent{Type: "m.room.name", Content: map[string]any{"name": req.Name}})
-	}
-	if req.Topic != "" {
-		initial = append(initial, StateContent{Type: "m.room.topic", Content: map[string]any{"topic": req.Topic}})
-	}
-	if req.AvatarURL != "" {
-		initial = append(initial, StateContent{Type: "m.room.avatar", Content: map[string]any{"url": req.AvatarURL}})
-	}
 	if len(req.PowerLevelOverride) > 0 {
 		initial = append(initial, StateContent{
 			Type:    eventauth.TypePowerLevels,
 			Content: MergePowerLevels(presetPowerLevels(req.Creator), req.PowerLevelOverride),
 		})
 	}
+	// The order is the specification's: the preset builds the defaults, `initial_state`
+	// overrides them, and the shorthand `name` / `topic` / `avatar_url` parameters
+	// override that again. A server that appends the shorthand first lets a client's
+	// own state event win over the topic it explicitly asked for.
 	initial = append(initial, req.InitialState...)
+	if req.Name != "" {
+		initial = append(initial, StateContent{Type: "m.room.name", Content: map[string]any{"name": req.Name}})
+	}
+	if req.Topic != "" {
+		initial = append(initial, StateContent{Type: "m.room.topic", Content: topicContent(req.Topic)})
+	}
+	if req.AvatarURL != "" {
+		initial = append(initial, StateContent{Type: "m.room.avatar", Content: map[string]any{"url": req.AvatarURL}})
+	}
+	initial = deduplicateState(initial)
+
+	// The invitation list is part of creating the room: a room created "with Bob in it"
+	// that Bob was never invited to is a different room from the one the client asked
+	// for. Remote users are refused before anything is written.
+	for _, invited := range req.Invite {
+		if err := matrixid.UserValid(invited); err != nil {
+			return "", matrixerr.Newf(matrixerr.CodeInvalidParam, "%q is not a valid user ID.", invited)
+		}
+		domain, err := matrixid.UserDomain(invited)
+		if err != nil || !matrixid.IsLocal(domain, s.name) {
+			return "", ErrRemoteTarget
+		}
+		initial = append(initial, StateContent{
+			Type:     eventauth.TypeMember,
+			StateKey: invited,
+			Content:  map[string]any{"membership": eventauth.MembershipInvite},
+		})
+	}
 
 	// A requested alias is created with the room, in the same transaction: a room
 	// that existed without the alias its creator asked for would be a room nobody can
@@ -385,7 +409,7 @@ func (s *Service) send(ctx context.Context, req SendRequest) (string, error) {
 
 	// A room may only advertise aliases this server can resolve, so the alias claims
 	// in m.room.canonical_alias are checked before the event is signed.
-	if req.IsState && req.EventType == "m.room.canonical_alias" {
+	if req.IsState && req.EventType == canonicalAliasEventType {
 		if err := s.checkCanonicalAlias(ctx, req.RoomID, valueOrEmpty(req.Content)); err != nil {
 			return "", err
 		}

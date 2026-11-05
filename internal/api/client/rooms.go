@@ -29,6 +29,7 @@ type createRoomBody struct {
 	InitialState              []initialStateIn `json:"initial_state"`
 	PowerLevelContentOverride map[string]any   `json:"power_level_content_override"`
 	RoomAliasName             *string          `json:"room_alias_name"`
+	Invite                    []string         `json:"invite"`
 }
 
 type initialStateIn struct {
@@ -62,6 +63,7 @@ func (d *Deps) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
 	if body.RoomAliasName != nil {
 		request.RoomAliasName = *body.RoomAliasName
 	}
+	request.Invite = body.Invite
 	for _, entry := range body.InitialState {
 		if err := matrixid.EventTypeValid(entry.Type); err != nil {
 			matrixerr.Write(w, http.StatusBadRequest, matrixerr.Newf(matrixerr.CodeInvalidParam,

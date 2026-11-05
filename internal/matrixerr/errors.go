@@ -131,11 +131,14 @@ func Write(w http.ResponseWriter, status int, e *Error) {
 // table exists because a handler that guesses gets these wrong in ways clients act
 // on: a client retries on 429, logs out on 401 and stops on 403.
 var statusByCode = map[Code]int{
-	CodeNotFound:                http.StatusNotFound,
-	CodeUnknownToken:            http.StatusUnauthorized,
-	CodeMissingToken:            http.StatusUnauthorized,
-	CodeBadJSON:                 http.StatusBadRequest,
-	CodeNotJSON:                 http.StatusBadRequest,
+	CodeNotFound:     http.StatusNotFound,
+	CodeUnknownToken: http.StatusUnauthorized,
+	CodeMissingToken: http.StatusUnauthorized,
+	CodeBadJSON:      http.StatusBadRequest,
+	CodeNotJSON:      http.StatusBadRequest,
+	// A sync token this server did not issue is an authentication-style failure: the
+	// Client-Server specification answers it with 401 and M_INVALID_TOKEN.
+	CodeInvalidToken:            http.StatusUnauthorized,
 	CodeForbidden:               http.StatusForbidden,
 	CodeUnauthorized:            http.StatusUnauthorized,
 	CodeUserInUse:               http.StatusConflict,

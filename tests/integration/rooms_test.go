@@ -352,3 +352,124 @@ func (s *testSnapshot) Event(id string) (map[string]any, bool) {
 }
 
 func (s *testSnapshot) Rejected(string) bool { return false }
+
+// TestCreateRoomShorthandOverridesInitialState pins the order the Client-Server API
+// prescribes: preset defaults, then initial_state, then the shorthand name/topic/avatar
+// parameters. A server that appends the shorthand first silently ignores the room name
+// the client asked for.
+func TestCreateRoomShorthandOverridesInitialState(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+
+	_, aliceToken, _ := h.register(t, "mon", "pw-mon", "")
+	roomID := createRoom(t, h, aliceToken, map[string]any{
+		"preset": "public_chat",
+		"topic":  "Test Room",
+		"initial_state": []map[string]any{
+			{"type": "m.room.topic", "state_key": "", "content": map[string]any{"topic": "Shenanigans"}},
+		},
+	})
+
+	topic := h.mustStatus(t, h.get("/_matrix/client/v3/rooms/"+roomID+"/state/m.room.topic/", aliceToken), http.StatusOK).decoded(t)
+	if got, _ := topic["topic"].(string); got != "Test Room" {
+		t.Errorf("topic = %q, want the shorthand value the client asked for", got)
+	}
+	// The specification duplicates the plain text into the structured field so a client
+	// can render a topic without guessing whether it is formatted.
+	rich, ok := topic["m.topic"].(map[string]any)
+	if !ok {
+		t.Fatalf("m.room.topic has no structured m.topic field: %v", topic)
+	}
+	entries, ok := rich["m.text"].([]any)
+	if !ok || len(entries) != 1 {
+		t.Fatalf("m.topic.m.text is not a one-entry array: %v", rich)
+	}
+	entry, _ := entries[0].(map[string]any)
+	if got, _ := entry["body"].(string); got != "Test Room" {
+		t.Errorf("m.topic.m.text[0].body = %q, want Test Room", got)
+	}
+	if mimetype, present := entry["mimetype"]; present && mimetype != "text/plain" {
+		t.Errorf("mimetype = %v, want text/plain when set", mimetype)
+	}
+
+	// A client that sends its own m.room.topic event, with no shorthand, keeps exactly
+	// the content it wrote: the server does not rewrite a client's event.
+	other := createRoom(t, h, aliceToken, map[string]any{
+		"preset":        "public_chat",
+		"initial_state": []map[string]any{{"type": "m.room.topic", "content": map[string]any{"topic": "Only this"}}},
+	})
+	plain := h.mustStatus(t, h.get("/_matrix/client/v3/rooms/"+other+"/state/m.room.topic/", aliceToken), http.StatusOK).decoded(t)
+	if _, present := plain["m.topic"]; present {
+		t.Errorf("the server added m.topic to a client's own state event: %v", plain)
+	}
+}
+
+// TestCreateRoomInviteList checks that a room created with an invite list really invites
+// those users, in the same transaction that created the room.
+func TestCreateRoomInviteList(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+
+	_, aliceToken, _ := h.register(t, "nina", "pw-nina", "")
+	bob, bobToken, _ := h.register(t, "oleg", "pw-oleg", "")
+
+	roomID := createRoom(t, h, aliceToken, map[string]any{"invite": []string{bob}})
+	members := h.mustStatus(t, h.get("/_matrix/client/v3/rooms/"+roomID+"/members", aliceToken), http.StatusOK).decoded(t)
+	chunk, _ := members["chunk"].([]any)
+	if len(chunk) != 2 {
+		t.Fatalf("members = %v, want two entries", members["chunk"])
+	}
+	var invited string
+	for _, entry := range chunk {
+		event, _ := entry.(map[string]any)
+		content, _ := event["content"].(map[string]any)
+		if content["membership"] == "invite" {
+			invited, _ = event["state_key"].(string)
+		}
+	}
+	if invited != bob {
+		t.Errorf("invited %q, want %s", invited, bob)
+	}
+
+	// The invitation reaches the invited user's sync, which is the only way a client
+	// finds out it was invited at all.
+	body := h.mustStatus(t, h.get("/_matrix/client/v3/sync?timeout=0", bobToken), http.StatusOK).decoded(t)
+	if roomSection(t, body, "invite", roomID) == nil {
+		t.Errorf("the invitation is not in bob's sync: %v", body["rooms"])
+	}
+
+	// Inviting a user on another server is refused outright: creating the room and
+	// quietly dropping the invitation would leave a room that is not the one the client
+	// asked for.
+	remote := h.post(t, "/_matrix/client/v3/createRoom",
+		map[string]any{"invite": []string{"@someone:elsewhere.example"}}, aliceToken)
+	if remote.status != http.StatusNotImplemented {
+		t.Errorf("creating a room with a remote invite: status %d, want 501 (body %s)", remote.status, remote.body)
+	}
+}
+
+// TestJoinCopiesExtraKeys checks that a client's extra join keys land in the member event,
+// which is how a client attaches its own information to the fact that it joined.
+func TestJoinCopiesExtraKeys(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+
+	_, aliceToken, _ := h.register(t, "pam", "pw-pam", "")
+	bob, bobToken, _ := h.register(t, "rita2", "pw-rita2", "")
+	roomID := createRoom(t, h, aliceToken, map[string]any{"preset": "public_chat"})
+
+	res := h.post(t, "/_matrix/client/v3/join/"+roomID, map[string]any{"foo": "bar", "reason": "why not"}, bobToken)
+	h.mustStatus(t, res, http.StatusOK)
+
+	event := h.mustStatus(t, h.get("/_matrix/client/v3/rooms/"+roomID+"/state/m.room.member/"+bob+"?format=event", aliceToken), http.StatusOK).decoded(t)
+	content, _ := event["content"].(map[string]any)
+	if content["membership"] != "join" {
+		t.Errorf("membership = %v, want join", content["membership"])
+	}
+	if content["foo"] != "bar" {
+		t.Errorf("the extra key was not copied into the member event: %v", content)
+	}
+	if content["reason"] != "why not" {
+		t.Errorf("reason = %v, want the reason the client gave", content["reason"])
+	}
+}

@@ -134,14 +134,20 @@ func TestPick(t *testing.T) {
 	if err != nil || usedDefault || chosen.ID != "10" {
 		t.Errorf("Pick(\"10\") = %+v, %v, %v", chosen, usedDefault, err)
 	}
+	for _, offered := range []string{"3", "4", "5", "6", "7", "8", "9", "10", "11"} {
+		if chosen, usedDefault, err := roomversion.Pick(offered); err != nil || usedDefault || chosen.ID != offered {
+			t.Errorf("Pick(%q) = %+v, %v, %v; this version is offered", offered, chosen, usedDefault, err)
+		}
+	}
 	if chosen, usedDefault, err := roomversion.Pick("7"); err != nil || usedDefault || chosen.ID != "7" {
 		t.Errorf("Pick(\"7\") = %+v, %v, %v; version 7 is offered because its rules are implemented", chosen, usedDefault, err)
 	}
-	// Version 6 exists in the registry, so its events can be authorised, but this
-	// server will not create a room in it: substituting a newer version silently would
-	// give the client a room with different semantics than it asked for.
-	if _, _, err := roomversion.Pick("6"); err == nil {
-		t.Errorf("Pick(\"6\") should refuse a registered but unoffered version instead of substituting one")
+	// Version 2 is in the registry, so its events can be read, but this server will not
+	// create a room in it: its authorisation rules differ from version 3's, and
+	// substituting a newer version silently would give the client a room with different
+	// semantics than it asked for.
+	if _, _, err := roomversion.Pick("2"); err == nil {
+		t.Errorf("Pick(\"2\") should refuse a registered but unoffered version instead of substituting one")
 	}
 	if _, _, err := roomversion.Pick("Not A Version"); err == nil {
 		t.Errorf("Pick should reject a malformed version")

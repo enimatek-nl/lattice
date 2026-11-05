@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"gorm.io/gorm"
 
@@ -13,6 +14,32 @@ import (
 	"github.com/enimatek/lattice/internal/persist"
 	"github.com/enimatek/lattice/internal/roomversion"
 )
+
+// historyVisibility reads the room's m.room.history_visibility setting. A room with no
+// such event is treated as `shared`, which is what the room version rules assume.
+func (s *Service) historyVisibility(ctx context.Context, roomID string) (string, error) {
+	entry, err := s.state.Get(ctx, roomID, "m.room.history_visibility", "")
+	if err != nil {
+		if notFound(err) {
+			return "shared", nil
+		}
+		return "", err
+	}
+	event, err := s.eventJSON(ctx, entry.EventID)
+	if err != nil {
+		return "", err
+	}
+	content, _ := event["content"].(map[string]any)
+	visibility, _ := content["history_visibility"].(string)
+	if visibility == "" {
+		return "shared", nil
+	}
+	return visibility, nil
+}
+
+// canonicalAliasEventType is the state event naming a room's canonical and alternative
+// aliases.
+const canonicalAliasEventType = "m.room.canonical_alias"
 
 // CreateAlias points a local alias at a room.
 //
@@ -79,7 +106,7 @@ func (s *Service) ResolveAlias(ctx context.Context, alias string) (string, error
 // RoomAliases lists a room's aliases. Only someone with a current membership may look,
 // because the alias list says a room exists and a stranger has no claim to know that.
 func (s *Service) RoomAliases(ctx context.Context, roomID, requester string) ([]string, error) {
-	if err := s.requireMembership(ctx, roomID, requester, membershipAny); err != nil {
+	if err := s.requireMembership(ctx, roomID, requester, membershipStrict); err != nil {
 		return nil, err
 	}
 	rows, err := s.alias.ByRoom(ctx, roomID)
@@ -96,7 +123,7 @@ func (s *Service) RoomAliases(ctx context.Context, roomID, requester string) ([]
 // DeleteAlias removes an alias mapping. The alias's creator may always remove the one
 // they made; anyone else needs the room's kick power level, which is the level the
 // Client-Server API treats as "may change this room's public-facing state".
-func (s *Service) DeleteAlias(ctx context.Context, alias, requester string) error {
+func (s *Service) DeleteAlias(ctx context.Context, alias, requester, deviceID string) error {
 	row, err := s.alias.ByAlias(ctx, alias)
 	if err != nil {
 		if notFound(err) {
@@ -105,10 +132,7 @@ func (s *Service) DeleteAlias(ctx context.Context, alias, requester string) erro
 		return err
 	}
 	if row.Creator == requester {
-		if err := s.alias.Delete(ctx, alias); err != nil {
-			if notFound(err) {
-				return matrixerr.Newf(matrixerr.CodeNotFound, "This server knows no alias %q.", alias)
-			}
+		if err := s.deleteOne(ctx, row, requester, deviceID); err != nil {
 			return err
 		}
 		return nil
@@ -121,13 +145,91 @@ func (s *Service) DeleteAlias(ctx context.Context, alias, requester string) erro
 		return matrixerr.New(matrixerr.CodeForbidden,
 			"Only the alias creator, or someone with the room's kick power level, can delete this alias.")
 	}
-	if err := s.alias.Delete(ctx, alias); err != nil {
+	return s.deleteOne(ctx, row, requester, deviceID)
+}
+
+// deleteOne removes one alias mapping and, if the room advertised that alias as its
+// canonical or alternative alias, writes a corrected m.room.canonical_alias event.
+//
+// A room that goes on naming an alias that no longer resolves is lying to every client
+// that follows it, and this server refuses exactly that when the event is written
+// (checkCanonicalAlias). Leaving the old event behind after a deletion would contradict
+// our own rule. The correction needs the room's state power; if the requester does not
+// have it, the alias still goes — the mapping is this server's to remove — and the
+// uncorrected event is logged rather than silently rewritten by someone with power.
+func (s *Service) deleteOne(ctx context.Context, row *persist.RoomAlias, requester, deviceID string) error {
+	if err := s.alias.Delete(ctx, row.Alias); err != nil {
 		if notFound(err) {
-			return matrixerr.Newf(matrixerr.CodeNotFound, "This server knows no alias %q.", alias)
+			return matrixerr.Newf(matrixerr.CodeNotFound, "This server knows no alias %q.", row.Alias)
 		}
 		return err
 	}
+	s.dropFromCanonical(ctx, row.RoomID, row.Alias, requester, deviceID)
 	return nil
+}
+
+func (s *Service) dropFromCanonical(ctx context.Context, roomID, alias, requester, deviceID string) {
+	entry, err := s.state.Get(ctx, roomID, canonicalAliasEventType, "")
+	if err != nil {
+		if !notFound(err) {
+			s.log.Warn("cannot read the canonical alias of a room whose alias was deleted",
+				slog.String("room_id", roomID), slog.String("error", err.Error()))
+		}
+		return
+	}
+	event, err := s.eventJSON(ctx, entry.EventID)
+	if err != nil {
+		s.log.Warn("the canonical alias event of a room cannot be read",
+			slog.String("room_id", roomID), slog.String("error", err.Error()))
+		return
+	}
+	content, _ := event["content"].(map[string]any)
+	if len(content) == 0 {
+		return
+	}
+
+	changed := false
+	next := make(map[string]any, len(content))
+	for key, value := range content {
+		next[key] = value
+	}
+	if named, _ := next["alias"].(string); named == alias {
+		delete(next, "alias")
+		changed = true
+	}
+	if listed, ok := next["alt_aliases"].([]any); ok {
+		kept := make([]any, 0, len(listed))
+		for _, entry := range listed {
+			if named, _ := entry.(string); named == alias {
+				changed = true
+				continue
+			}
+			kept = append(kept, entry)
+		}
+		if changed {
+			if len(kept) == 0 {
+				delete(next, "alt_aliases")
+			} else {
+				next["alt_aliases"] = kept
+			}
+		}
+	}
+	if !changed {
+		return
+	}
+
+	if _, err := s.send(ctx, SendRequest{
+		RoomID:    roomID,
+		Sender:    requester,
+		DeviceID:  deviceID,
+		EventType: canonicalAliasEventType,
+		StateKey:  "",
+		IsState:   true,
+		Content:   next,
+	}); err != nil {
+		s.log.Warn("the alias was deleted but the room's canonical alias could not be corrected",
+			slog.String("room_id", roomID), slog.String("alias", alias), slog.String("error", err.Error()))
+	}
 }
 
 // powerLevels reads the room's current power levels, falling back to the defaults when

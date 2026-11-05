@@ -48,7 +48,7 @@ func (d *Deps) handleAliasGet(w http.ResponseWriter, r *http.Request) {
 
 // handleAliasDelete implements DELETE /_matrix/client/v3/directory/room/{roomAlias}.
 func (d *Deps) handleAliasDelete(w http.ResponseWriter, r *http.Request) {
-	if err := d.Rooms.DeleteAlias(r.Context(), pathValue(r, "roomAlias"), auth.UserID(r)); err != nil {
+	if err := d.Rooms.DeleteAlias(r.Context(), pathValue(r, "roomAlias"), auth.UserID(r), auth.DeviceID(r)); err != nil {
 		d.serviceError(w, err)
 		return
 	}

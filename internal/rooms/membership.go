@@ -15,7 +15,7 @@ import (
 // It is a distinct error so the endpoint can answer 501 rather than 403: saying "you
 // are not allowed" would report a permission problem where there is a missing feature,
 // and an administrator reading it would look in the wrong place.
-var ErrRemoteTarget = matrixerr.New(matrixerr.CodeUnrecognized,
+var ErrRemoteTarget = matrixerr.New(matrixerr.CodeUnknown,
 	"Changing the membership of a user on another homeserver requires federation, which this server does not implement yet.")
 
 // MembershipChange asks for an m.room.member state event.
@@ -34,6 +34,12 @@ type MembershipChange struct {
 	DeviceID   string
 	Membership string
 	Reason     string
+	// Extra carries the additional keys a client put in a join or knock body. The
+	// Client-Server API copies them into the member event's content, which is how a
+	// client can attach its own information to the fact that it joined. `membership` and
+	// `reason` are set by the server afterwards, so a body cannot forge a membership.
+	// Join and knock only: the other membership endpoints define a fixed body.
+	Extra map[string]any
 }
 
 // SetMembership writes an m.room.member event and returns its event ID.
@@ -80,7 +86,11 @@ func (s *Service) SetMembership(ctx context.Context, change MembershipChange) (s
 		}
 	}
 
-	content := map[string]any{"membership": change.Membership}
+	content := make(map[string]any, len(change.Extra)+2)
+	for key, value := range change.Extra {
+		content[key] = value
+	}
+	content["membership"] = change.Membership
 	if change.Reason != "" {
 		content["reason"] = change.Reason
 	}
