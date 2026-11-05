@@ -293,11 +293,18 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
       room's state on hs2, speaks in it, and is heard on hs1; a join nobody answers invents no
       room; a forged event in a bundle is refused and remembered. Found on the way: `App.Rooms`
       was never assigned, so the assembled app exposed no room service at all
-- [ ] T-4009b1 lift the outlier flag by fetching what a handed-over room cites: the missing-event
-      fetch (`/event`) and `/backfill` would fill the predecessors a join cites, at which point
-      the handed-over timeline can appear in `/sync` and `/messages`. Until then a user who joins
-      a room with history in it sees the state and their own membership but not that history
-      (REQ-FED-014)
+- [x] T-4009b1 fetch what a handed-over room cites and lift the outlier flag: the holes are named
+      from the room's own events (`persist.MissingPredecessors`), asked of a server that was in the
+      room first, newest-first, walked back event by event until they meet what this server holds,
+      ingested as one bundle ordered parents-first so this server's own ordering follows causality
+      and not arrival, and re-linked by `rooms.ResolveOutliers`. Bounded by a per-call event budget
+      and pass count; a bounded fetch leaves the rest named and askable, which
+      `TestBackfillBudgetLeavesAGapAskable` pins (DEC-030). A joined room's history is now readable,
+      and a message sent after the join cites the join, which cites the room's last message, so the
+      branch is connected rather than forked
+- [ ] T-4009b2 the other triggers and the answering side: a bounded backfill pass in the federation
+      worker for rooms with gaps, filling on demand when a client pages a timeline that stops at a
+      gap, and answering `GET /backfill` ourselves (REQ-FED-001). Only a join triggers a fetch today
 - [ ] T-4009c the rest of the handshake family: `/make_leave`, `/send_leave`, `/invite` (v1/v2),
       `/make_knock`, `/send_knock`, `/event_auth` as a *client* of another server, and applying
       `m.room.server_acl` to the join, state, auth and per-PDU paths (REQ-FED-012)

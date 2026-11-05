@@ -1203,3 +1203,48 @@ cites, which is what will make joined history visible), T-4009c (`/make_leave`, 
 
 `make verify` clean, `golangci-lint` clean, Complement filtered run unchanged (TestRoomCreate,
 TestSync and TestSyncTimelineGap were failing before this and still are).
+
+## 2026-11-05 — a joined room's history is fetched, and an outlier stops being one (T-4009b1)
+
+A room joined from elsewhere arrived with a hole under it by construction: the join cites the room's
+forward extremities, and the state a resident server hands over does not include them. The events
+that fill it are real, so they were stored — and kept from clients until they could be placed. This
+is the pass that asks for them.
+
+The holes are named from this room's own events, not from a guess about the room: an edge that this
+server's events cite and no stored event answers (`persist.MissingPredecessors`, newest-first,
+bounded). A server that was in the room before this one is asked for each, over `GET /event`, and
+each answer names the events before it — so the walk goes backwards until it reaches history this
+server already holds, which is where it stops rather than a hard limit. What comes back is ingested
+as one bundle, ordered parents first: this server gives an event a position in its own ordering when
+it stores it, and a chain fetched newest-first would otherwise be read oldest-first by a client
+asking for the newest events — a client would be told that the sixth message came before the first.
+Then `rooms.ResolveOutliers` clears the flag from every event whose predecessors are now held,
+walking to a fixed point because a chain is usually linked from one end.
+
+Two things were pinned deliberately. The fetch is bounded by an event budget and a pass count, and a
+bounded fetch leaves the remainder *named and askable*: nothing is refused for want of budget, and
+the next pass finishes the job. And a predecessor that is stored but soft-failed still counts as
+held — soft-failure is a judgement about a conflict in the room's state, not about whether the event
+sits in the history, and holding a perfectly good successor unlinked for it would claim something
+about the graph this server has not established.
+
+Evidence: `tests/integration/joinremote_test.go`. `TestBackfillMakesAJoinedRoomsHistoryReadable`
+joins a room with a run of six messages on the other server and then reads all six, in the order the
+run happened, on both servers; no event in the room is left unlinked; the join cites the room's last
+message, and a message sent afterwards cites the join — so the branch continues the room's history
+instead of starting a fork that someone has to merge later. `TestBackfillBudgetLeavesAGapAskable`
+joins with a budget of two events: it gets the end of the history, does not show what it never
+fetched, still has an outlier and a named gap, and a second pass with room in the budget makes the
+whole run readable with nothing left unlinked. `tests/unit/eventstore_test.go`
+(`TestOutliersAndMissingPredecessors`) checks the queries: a hole is named once whatever cites it,
+newest-first, bounded, and a hole in another room is not this room's — that last one caught a
+query that had no room scope at all, because edges carry no room of their own.
+
+Left open and recorded: T-4009b2 (only a join triggers a fetch today — no worker pass, no fill when
+a client pages into a gap, and we do not answer `GET /backfill` ourselves) and T-4009c (leave,
+invite, knock, server ACLs).
+
+`make verify` clean (`-race`), `golangci-lint` clean. Complement was re-run for the previous commit
+and its filtered set is unchanged; this change touches no Client-Server API surface, only what a
+joined room holds behind it.

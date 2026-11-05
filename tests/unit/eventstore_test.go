@@ -374,3 +374,84 @@ func deref(s *string) string {
 	}
 	return "'" + *s + "'"
 }
+
+// TestOutliersAndMissingPredecessors checks what a server knows about the holes in a room it holds
+// only partly — which is the normal shape of a room that was joined rather than created here.
+func TestOutliersAndMissingPredecessors(t *testing.T) {
+	t.Parallel()
+	db := openEventStore(t)
+	ctx := context.Background()
+	room := "!joined:example.org"
+
+	storeEvent(t, db, "$root:example.org", room, "m.room.create", strPtr(""), 1)
+	storeEvent(t, db, "$mine:example.org", room, "m.room.message", nil, 3)
+	if err := db.Events.Link(ctx, "$mine:example.org", "$unfetched:example.org", persist.EdgePrev); err != nil {
+		t.Fatalf("link: %v", err)
+	}
+	if err := db.Events.Link(ctx, "$mine:example.org", "$root:example.org", persist.EdgePrev); err != nil {
+		t.Fatalf("link: %v", err)
+	}
+	if err := db.Events.MarkOutlier(ctx, "$mine:example.org", true); err != nil {
+		t.Fatalf("marking an outlier: %v", err)
+	}
+
+	// A hole is named once, whatever cites it, and an event that is held here is not a hole even
+	// when several events point at it.
+	gaps, err := db.Events.MissingPredecessors(ctx, room, 10)
+	if err != nil {
+		t.Fatalf("missing predecessors: %v", err)
+	}
+	if len(gaps) != 1 || gaps[0] != "$unfetched:example.org" {
+		t.Fatalf("gaps = %v, wanting only the event this room cites and does not hold", gaps)
+	}
+	outliers, err := db.Events.Outliers(ctx, room)
+	if err != nil {
+		t.Fatalf("outliers: %v", err)
+	}
+	if len(outliers) != 1 || outliers[0] != "$mine:example.org" {
+		t.Fatalf("outliers = %v, wanting the event stored without its predecessors", outliers)
+	}
+
+	// The holes are the frontier of what this server has, newest first: a fetcher starting there
+	// asks for the end of a history a remote server is most likely to still hold.
+	storeEvent(t, db, "$newer:example.org", room, "m.room.message", nil, 4)
+	if err := db.Events.Link(ctx, "$newer:example.org", "$older-missing:example.org", persist.EdgePrev); err != nil {
+		t.Fatalf("link: %v", err)
+	}
+	gaps, err = db.Events.MissingPredecessors(ctx, room, 10)
+	if err != nil {
+		t.Fatalf("missing predecessors: %v", err)
+	}
+	if len(gaps) != 2 || gaps[0] != "$older-missing:example.org" {
+		t.Errorf("gaps = %v, wanting the newest hole first", gaps)
+	}
+
+	// The bound is a bound. A room with a long history does not become an open-ended ask.
+	gaps, err = db.Events.MissingPredecessors(ctx, room, 1)
+	if err != nil {
+		t.Fatalf("missing predecessors: %v", err)
+	}
+	if len(gaps) != 1 {
+		t.Errorf("a bounded ask returned %d gaps, wanting 1", len(gaps))
+	}
+
+	// A gap in another room is not a gap in this one. Edges carry no room of their own, so the
+	// room of the citing event is what scopes the question.
+	other := "!elsewhere:example.org"
+	storeEvent(t, db, "$theirs:example.org", other, "m.room.message", nil, 1)
+	if err := db.Events.Link(ctx, "$theirs:example.org", "$their-gap:example.org", persist.EdgePrev); err != nil {
+		t.Fatalf("link: %v", err)
+	}
+	gaps, err = db.Events.MissingPredecessors(ctx, room, 10)
+	if err != nil {
+		t.Fatalf("missing predecessors: %v", err)
+	}
+	for _, id := range gaps {
+		if id == "$their-gap:example.org" {
+			t.Errorf("a gap in another room was offered as this room's: %v", gaps)
+		}
+	}
+	if _, err := db.Events.Outliers(ctx, other); err != nil {
+		t.Fatalf("outliers of the other room: %v", err)
+	}
+}
