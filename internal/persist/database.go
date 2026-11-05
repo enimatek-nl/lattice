@@ -34,6 +34,9 @@ type Database struct {
 	Rooms       RoomRepo
 	Events      EventRepo
 	State       StateRepo
+	// StateGroups holds the state each event was sent against. Current state is a
+	// convenience; the per-event snapshots are what a fork is resolved from.
+	StateGroups StateGroupRepo
 	Aliases     RoomAliasRepo
 	Filters     FilterRepo
 	AccountData AccountDataRepo
@@ -81,6 +84,7 @@ func Open(path string, log *slog.Logger) (*Database, error) {
 	d.Rooms = NewRoomRepo(gdb)
 	d.Events = NewEventRepo(gdb)
 	d.State = NewStateRepo(gdb)
+	d.StateGroups = NewStateGroupRepo(gdb)
 	d.Aliases = NewRoomAliasRepo(gdb)
 	d.Filters = NewFilterRepo(gdb)
 	d.AccountData = NewAccountDataRepo(gdb)
@@ -113,7 +117,8 @@ func (d *Database) migrate(log *slog.Logger) error {
 	if err := d.db.AutoMigrate(&User{}, &Device{}, &AccessToken{}, &SigningKey{},
 		&Room{}, &Event{}, &EventEdge{}, &RoomState{}, &EventAuthContext{}, &EventTxn{}, &RoomAlias{}, &Filter{}, &AccountData{}, &Presence{}, &DeviceListChange{}, &DeviceKeyDoc{}, &OneTimeKey{},
 		&ServerSigningKey{}, &ServerKeyDocument{}, &FederationTransaction{}, &FederationQueueItem{},
-		&EventRejection{}, &Redaction{}); err != nil {
+		&EventRejection{}, &Redaction{},
+		&StateGroup{}, &StateGroupEntry{}, &EventStateGroup{}); err != nil {
 		return fmt.Errorf("persist: migration failed: %w", err)
 	}
 	statements := []string{

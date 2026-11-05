@@ -104,6 +104,7 @@ type Service struct {
 	rooms  persist.RoomRepo
 	events persist.EventRepo
 	state  persist.StateRepo
+	groups persist.StateGroupRepo
 	alias  persist.RoomAliasRepo
 	signer events.Signer
 	// presence announces a user's arrival to the members of a room they join. It is a
@@ -182,6 +183,7 @@ func New(db *persist.Database, signer events.Signer, presence PresenceNotifier, 
 		rooms:    db.Rooms,
 		events:   db.Events,
 		state:    db.State,
+		groups:   db.StateGroups,
 		alias:    db.Aliases,
 		signer:   signer,
 		presence: presence,
@@ -200,6 +202,7 @@ func (s *Service) WithTx(tx *gorm.DB) *Service {
 		rooms:    s.rooms.WithTx(tx),
 		events:   s.events.WithTx(tx),
 		state:    s.state.WithTx(tx),
+		groups:   s.groups.WithTx(tx),
 		alias:    s.alias.WithTx(tx),
 		signer:   s.signer,
 		presence: s.presence,
@@ -651,6 +654,12 @@ func (s *Service) persistEvent(ctx context.Context, event map[string]any, stream
 		if err := s.refreshDirectoryText(ctx, roomID, eventType, content); err != nil {
 			return fmt.Errorf("rooms: cannot update the room's directory entry: %w", err)
 		}
+	}
+	// What state this event was sent against is recorded as well as what state the room
+	// is in now. Current state answers "where is this room"; the per-event snapshot answers
+	// "what did each branch think", and a fork can only be settled from the second.
+	if err := s.recordStateAt(ctx, event, row); err != nil {
+		return err
 	}
 	// A redaction and the destruction it causes are stored together, and an event that
 	// arrives late gets the chance to settle a redaction that has been waiting for it.

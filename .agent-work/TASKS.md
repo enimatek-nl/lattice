@@ -172,6 +172,12 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
 - [ ] T-3001d depth-ordered history paging: order by depth then stream position and widen
       the token to carry both, so a room whose events arrive out of depth order pages the
       way the reference server pages it (Complement `TestLeftRoomFixture`)
+- [x] T-3004a per-event state snapshots: `state_groups` / `state_group_entries` /
+      `event_state_groups`, identified by a hash of their entries so a linear room stores one
+      snapshot per state change and a fork shows up as two groups with a common ancestor —
+      `internal/persist/stategroups.go`, `internal/rooms/stateat.go`,
+      `tests/unit/state_groups_test.go`, `tests/integration/stategroups_test.go`.
+      A merge of disagreeing snapshots is still recorded provisionally; resolving it is T-2017
 - [ ] T-3004 per-event state snapshots, so a read can be answered as of a past position:
       a former member's old state value, `state_at_event`, and the state a joining user is
       given

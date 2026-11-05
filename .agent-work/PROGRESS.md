@@ -1005,3 +1005,36 @@ v10 top-level `redacts`, and the out-of-order handover over federation).
 `TestJson|TestPowerLevels|TestRedact|TestEventAuth|TestRoomMessages…|TestSync` green except
 `TestRoomCreate` (v2 refused by design), `TestSync/parallel` (needs the federation join
 handshake and MSC4222 `state_after`) and `TestSyncTimelineGap` (depth paging).
+
+## 2026-11-05 — the state each event was sent against (T-3004a)
+
+`internal/state.Resolve` implements State Resolution 2 and is never called, because the
+question it answers — what state was each branch carrying — is not one this server can be
+asked. `room_state` holds one row per state key: *where the room is now*. A fork needs *what
+each branch thought*, and that had never been recorded.
+
+So: snapshots. A `state_groups` row is an identity for one exact set of (type, state_key) →
+event ID entries; `state_group_entries` holds them; `event_state_groups` points each event at
+the one it was sent against. The identity is a hash of the entries, so two branches that
+happen to agree share a snapshot without anybody having to notice, and a linear room grows by
+one snapshot per **state change** rather than per message — which the integration test counts
+rather than asserts.
+
+Two things the storage got wrong on the first try, both caught by existing tests: a snapshot
+was unique on its hash alone, so two rooms' empty snapshots collided and one room inherited
+the other's state (room creation fell over with a 500); and "this event's snapshot is
+unknown" must not be answered as "the room had no state", which would authorise nonsense
+against an empty room.
+
+What is *not* done: when an event joins branches that disagree about the state, this server
+records the snapshot of the most recently persisted predecessor and logs that it is
+provisional. That is a known wrong answer in one narrow place — the shape of the fork is now
+recorded, so the answer can be resolved instead of guessed, which is T-2017.
+
+Evidence: `tests/unit/state_groups_test.go` (order-independent identity, one entry changed is
+a different snapshot, per-room uniqueness, empty snapshot stays empty, unrecorded events are
+missing rather than empty, re-attach moves the pointer) and
+`tests/integration/stategroups_test.go` (the create event's snapshot holds only itself; three
+messages share one snapshot; the topic event's snapshot has exactly one more entry and the
+following message shares it; snapshots and current state agree; fewer snapshots than events).
+`make verify` and `golangci-lint run ./...` clean.
