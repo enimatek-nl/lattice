@@ -590,3 +590,36 @@ Local evidence: `make verify` `-race` ok — 174 integration, 175 unit tests; `g
 Honest gap: the rules are stored, edited and delivered, but nothing acts on them yet —
 there is no pusher, no push gateway call, no `GET /notifications`, and the unread and
 highlight counts in `/sync` are still zero. That is task T-3005a, not a footnote.
+
+---
+
+## 2026-11-05 — the rule evaluator (M3, not yet applied)
+
+Scope: `internal/pushrules/evaluate.go`.
+
+`Ruleset.Evaluate(event, context)` decides what one event means for one user: the most
+important matching rule wins, the master rule is consulted before everything else, and the
+actions of that one rule are the answer.
+
+The conditions are implemented as the specification defines them, including the two that
+are easy to get wrong: `event_match` on `content.body` matches a *substring bounded by
+words* rather than the whole value, and a dot inside a property name is escaped
+(`content.m\.mentions.room`), so a path split without caring about the backslash reaches
+the wrong object. A condition kind this server does not know never matches — the rule is
+kept, and it is silent, which is what the specification asks for.
+
+An event the user sent themselves never notifies, whatever the rules say.
+
+One expectation of mine was wrong while writing the tests: between the kinds, the
+specification orders room rules *above* sender rules. A sender rule feels more specific to
+a person reading it, and the test said so; the specification does not, and the code follows
+the specification.
+
+What is NOT done: nothing calls this yet. `/sync` still reports zero unread and highlight
+counts, and there is no pusher, push gateway request or `GET /notifications`. The missing
+piece for the counts is not the evaluation — it is a read marker to make "unread" mean
+something (T-3005a).
+
+Local evidence: `make verify` `-race` ok — 174 integration, 199 unit tests; `go vet` and
+`golangci-lint run ./...` 0 issues. No Complement test changed, because none of this is
+reachable from the API yet.

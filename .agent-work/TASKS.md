@@ -139,10 +139,17 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
 - [x] T-3005 push rules: the ruleset and its defaults, the whole read/write API under
       `/pushrules`, and delivery to the client through `account_data` in `/sync` —
       Complement `TestPushRuleCacheHealth`, `TestPushSync`
+- [x] T-3005i rule evaluation: `pushrules.Evaluate` — kind priority order, the master rule
+      first, every condition kind in the specification including the word-boundary and
+      escaped-dot cases, unrecognised conditions never matching, and the user's own events
+      never notifying. Unit-tested; not wired into anything yet
 - [ ] T-3005a make the rules mean something: evaluate them when an event is persisted so
       `unread_notifications` and `highlight_count` in `/sync` are real, then pushers, the
       push gateway POST and `GET /notifications`. Until this lands the counts a client is
-      told are zero, which is recorded rather than asserted
+      told are zero, which is recorded rather than asserted. The evaluator exists
+      (T-3005i); what is missing is the read marker that makes "unread" mean something,
+      then the per-event lookup each condition needs (display name, member count, power
+      levels) and the storage of the outcome
 - [ ] T-3008 `device_lists` in `/sync`: whose device lists changed. Complement
       `TestSync/parallel/Device_list_tracking` asks for it; it depends on device keys
 - [ ] T-3001 (leftover numbering, same work as T-3001a-d and T-4005 above): what still
