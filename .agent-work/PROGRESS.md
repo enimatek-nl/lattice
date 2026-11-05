@@ -1248,3 +1248,48 @@ invite, knock, server ACLs).
 `make verify` clean (`-race`), `golangci-lint` clean. Complement was re-run for the previous commit
 and its filtered set is unchanged; this change touches no Client-Server API surface, only what a
 joined room holds behind it.
+
+## 2026-11-05 — a room can exclude a homeserver, and it is worth something at every door (T-4011, REQ-FED-012)
+
+`m.room.server_acl` had been left as a call site that allowed everything and said so. This is the
+rule behind that call site, read once into `internal/serveracl` and applied where a room is
+described to a server, where a server pushes an event, and where this server decides whom to tell.
+
+The decision is made in one place because it is asked in several: `/make_join` (v1 and v3),
+`/state_ids`, `/event_auth` and `/event` answer an excluded server with 403 `M_FORBIDDEN`; each PDU
+of a transaction is refused per event while the transaction itself is still answered; the room
+service refuses an event whose origin the room has excluded and records the refusal; and the relay
+does not queue a room's events for a server the room threw out. The room's state is what says so —
+read at the moment of the request, so an exclusion takes effect and lifts again with the state that
+made it.
+
+Two things the specification settles and two it does not. Globs are `*` and `?` over the server name
+without its port, case-insensitive, and `deny` is consulted before `allow` and wins: an `allow`
+entry cannot rescue a name that `deny` covers. An ACL with no allow list excludes every server,
+which is the specification's own consequence and is also what a redacted ACL event leaves behind.
+What the specification does not settle is a field of the wrong shape, and this server declines to
+apply such an ACL rather than reading a mangled `allow` list as an absent one — every field is
+optional, so a typo in one field would otherwise cut a room off from federation entirely. That is
+fail-open by choice, stated in the requirement (DEC-031) and pinned by a test that keeps a room
+working through a garbled ACL.
+
+A protocol fault turned up on the way and is fixed: events this server creates did not name their
+`origin` server. `SendEvent` and `newStateEvent` both set `origin_server_ts` and neither set
+`origin`, and the omission survived at home because signature verification here keys off the
+sender's server name rather than the origin field. A PDU without an origin cannot be traced to
+whoever made it — it is what a peer checks a signature against, what a room's server exclusion is
+matched against, and what some rooms' auth rules read — so both constructors name it now, and
+`TestLocallyWrittenEventsNameTheirOriginServer` checks a message and a create event for it
+(REQ-EVT-008, DEC-032). Two redaction tests had to be told that the unredacted form they
+reconstruct carries `origin` too, since the newer room versions hide that field in the redacted form.
+
+The ACL tests also found a gap worth recording rather than papering over: while a room excludes a
+server its messages are withheld, and once the exclusion is lifted the next message is refused by
+the excluded server because it descends from events it was never told about. The room is reachable
+again; the hole in the middle of its history is not filled. That is T-4009b3 — asking for the
+predecessors an incoming event cites, which is the specification's `/get_missing_events`, on
+machinery `federation.Backfiller` already provides.
+
+`make verify` clean (`-race`), `golangci-lint` clean. Complement: the filtered `csapi` set was run
+at the previous commit and this change touches no Client-Server API surface; the server-ACL tests
+are federation-path tests and Complement has no `federation_*` run against this server yet.

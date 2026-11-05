@@ -69,7 +69,7 @@ func (d *Deps) handleMakeJoin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	origin, _ := r.Context().Value(originContextKey{}).(string)
-	if !d.allowedByRoomACL(r, roomID, origin) {
+	if d.refusedByRoomACL(w, r, roomID, origin) {
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
@@ -102,7 +102,7 @@ func (d *Deps) handleSendJoin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	origin, _ := r.Context().Value(originContextKey{}).(string)
-	if !d.allowedByRoomACL(r, roomID, origin) {
+	if d.refusedByRoomACL(w, r, roomID, origin) {
 		return
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, d.federationBodyLimit()))
@@ -272,7 +272,7 @@ func (d *Deps) handleStateIDs(w http.ResponseWriter, r *http.Request) {
 			"This server does not know you to be in the room whose state you are asking for."))
 		return
 	}
-	if !d.allowedByRoomACL(r, roomID, origin) {
+	if d.refusedByRoomACL(w, r, roomID, origin) {
 		return
 	}
 	stored, err := d.DB.Events.ByID(r.Context(), eventID)
@@ -330,7 +330,7 @@ func (d *Deps) handleEventAuth(w http.ResponseWriter, r *http.Request) {
 			"This server does not know you to be in the room that event belongs to."))
 		return
 	}
-	if !d.allowedByRoomACL(r, roomID, origin) {
+	if d.refusedByRoomACL(w, r, roomID, origin) {
 		return
 	}
 	stored, err := d.DB.Events.ByID(r.Context(), eventID)
@@ -357,16 +357,34 @@ func (d *Deps) handleEventAuth(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"auth_chain": chain})
 }
 
-// allowedByRoomACL refuses a request from a homeserver this room has excluded.
+// refusedByRoomACL answers a request with 403 M_FORBIDDEN when the room has excluded the server
+// that made it, and says whether it did.
 //
-// The specification names the join, state and auth endpoints as places a room's server ACL has
-// to be applied: a room can decide it will not deal with a particular server, and that decision
-// is only worth anything if it is enforced before the server is handed the room's shape.
+// The specification names the join, state and auth endpoints as places a room's server ACL has to
+// be applied, and prescribes the answer: a room can decide it will not deal with a particular
+// server, and that decision is worth nothing if the server is first handed the room's shape and
+// then told.
 //
-// This server does not enforce server ACLs yet, so this says nothing and admits it: the check
-// is here so that the endpoints know where the rule belongs, and the task is recorded rather
-// than the omission hidden.
-func (d *Deps) allowedByRoomACL(r *http.Request, roomID, origin string) bool {
+// A room service that cannot answer is not answered for: the request goes through and the failure
+// is logged. A room's exclusion is a decision recorded in its state; refusing every request because
+// this server could not read a table would be trading one outage for another.
+func (d *Deps) refusedByRoomACL(w http.ResponseWriter, r *http.Request, roomID, origin string) bool {
+	if d.ACLs == nil || roomID == "" || origin == "" {
+		return false
+	}
+	denied, err := d.ACLs.DeniesServer(r.Context(), roomID, origin)
+	if err != nil {
+		d.Log.Warn("federation: a room's server ACL could not be read, so the request is not refused on it",
+			"room_id", roomID, "origin", origin, "error", err)
+		return false
+	}
+	if !denied {
+		return false
+	}
+	d.Log.Info("federation: a server the room excludes was refused",
+		"room_id", roomID, "origin", origin)
+	matrixerr.Write(w, http.StatusForbidden, matrixerr.New(matrixerr.CodeForbidden,
+		"The requesting server is excluded from this room by the room's access control."))
 	return true
 }
 

@@ -184,6 +184,11 @@ func (d *Deps) acceptPDU(r *http.Request, raw []byte) (eventID, problem string) 
 	if int64(len(raw)) > d.federationBodyLimit() {
 		return envelope.EventID, "the event is too large"
 	}
+	if origin, _ := r.Context().Value(originContextKey{}).(string); d.roomExcludes(r, envelope.RoomID, origin) {
+		// A transaction is answered per event, not as a whole: a room that excludes this server
+		// refuses this event, and whatever else the transaction carries is still processed.
+		return envelope.EventID, "the room excludes the server that sent this event"
+	}
 	id, err := d.Rooms.AcceptRemoteEvent(r.Context(), raw, func(event map[string]any, rules roomversion.Rules) error {
 		return events.Verify(rules, event, d.Keyring.LookupForRoom(r.Context(), rules))
 	})
@@ -268,6 +273,11 @@ func (d *Deps) handleGetEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	origin, _ := r.Context().Value(originContextKey{}).(string)
+	if d.roomExcludes(r, stored.RoomID, origin) {
+		matrixerr.Write(w, http.StatusForbidden, matrixerr.New(matrixerr.CodeForbidden,
+			"The requesting server is excluded from this room by the room's access control."))
+		return
+	}
 	if !d.serverIsInRoom(r, stored.RoomID, origin) {
 		matrixerr.Write(w, http.StatusForbidden, matrixerr.New(matrixerr.CodeForbidden,
 			"This server does not know you to be in the room that event belongs to."))
@@ -278,6 +288,26 @@ func (d *Deps) handleGetEvent(w http.ResponseWriter, r *http.Request) {
 		"origin_server_ts": time.Now().UnixMilli(),
 		"pdus":             []json.RawMessage{json.RawMessage(stored.JSON)},
 	})
+}
+
+// roomExcludes asks whether a room has thrown out the server making a request. A read endpoint
+// that is not on the specification's protected list is still asked, because the reason a room
+// excludes a server is that it does not want that server holding the room's events.
+func (d *Deps) roomExcludes(r *http.Request, roomID, origin string) bool {
+	if d.ACLs == nil || roomID == "" || origin == "" {
+		return false
+	}
+	denied, err := d.ACLs.DeniesServer(r.Context(), roomID, origin)
+	if err != nil {
+		d.Log.Warn("federation: a room's server ACL could not be read, so the request is not refused on it",
+			"room_id", roomID, "origin", origin, "error", err)
+		return false
+	}
+	if denied {
+		d.Log.Info("federation: a server the room excludes was refused",
+			"room_id", roomID, "origin", origin, "path", r.URL.Path)
+	}
+	return denied
 }
 
 // serverIsInRoom reports whether the requesting homeserver has a joined user in the room.

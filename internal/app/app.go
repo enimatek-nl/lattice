@@ -209,6 +209,10 @@ func NewWithOptions(ctx context.Context, cfg *config.Config, log *slog.Logger, o
 			cfg.Federation.NotaryServers, log)
 		client := federation.NewClient(resolver, dialer, cfg.ServerName, signingKeys, log)
 		a.Sender = federation.NewSender(db.Federation, db.Events, db.State, client, cfg.ServerName, log)
+		// A room's exclusion of servers is read from room state, so both the endpoints that answer
+		// a server and the relay that decides which servers to tell read it from the room service.
+		a.Sender.ACLs = roomService
+		federationDeps.ACLs = roomService
 		if maxAge := cfg.Federation.QueueMaxAge.Get(); maxAge > 0 {
 			a.Sender.MaxAge = maxAge
 		}

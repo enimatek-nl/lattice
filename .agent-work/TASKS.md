@@ -305,6 +305,22 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
 - [ ] T-4009b2 the other triggers and the answering side: a bounded backfill pass in the federation
       worker for rooms with gaps, filling on demand when a client pages a timeline that stops at a
       gap, and answering `GET /backfill` ourselves (REQ-FED-001). Only a join triggers a fetch today
+- [ ] T-4009b3 asking for the predecessors an incoming event cites when this server does not hold
+      them. Evidence from the server-ACL test: a room excludes a server, messages are withheld
+      during the exclusion, the exclusion is lifted, and the next message is refused by this server
+      because it descends from events this server was never told about ("its predecessors are not
+      stored here"). The room is reachable again; the hole in the middle of it is what is missing.
+      The specification's answer is `GET /get_missing_events`, and the machinery already exists in
+      `federation.Backfiller` (REQ-FED-001, REQ-FED-016)
+- [x] T-4011 `m.room.server_acl` is enforced (REQ-FED-012, DEC-031): the join template (v1 and v3),
+      `/state_ids`, `/event_auth`, `/event`, and each PDU of a transaction answer an excluded server
+      with 403 `M_FORBIDDEN`; a room's events are not relayed to it; events from an excluded server
+      are refused where they are accepted, and the refusal is recorded. A malformed ACL is not
+      applied, and a test says so rather than leaving the choice to be rediscovered
+- [ ] T-4012 apply the room's server ACL on the endpoints this server does not answer yet —
+      `/make_leave`, `/send_leave`, `/backfill`, `/get_missing_events` — as each of them is built
+      (REQ-FED-012). A check that is written once in the room service and called by each endpoint is
+      what keeps the last of them from being forgotten
 - [ ] T-4009c the rest of the handshake family: `/make_leave`, `/send_leave`, `/invite` (v1/v2),
       `/make_knock`, `/send_knock`, `/event_auth` as a *client* of another server, and applying
       `m.room.server_acl` to the join, state, auth and per-PDU paths (REQ-FED-012)
