@@ -270,6 +270,20 @@ func IsKnown(id string) bool {
 	return ok
 }
 
+// IsOffered reports whether this server creates rooms in this version. A version can be
+// known — its rules are registered, so its events can be read and a request for it can be
+// answered honestly — and still not be offered, because part of what that version requires
+// is not implemented. Keeping the two questions apart is what lets the server recognise a
+// version without pretending to run it.
+func IsOffered(id string) bool {
+	for _, offered := range supported {
+		if offered == id {
+			return true
+		}
+	}
+	return false
+}
+
 // Default returns the version used for new rooms.
 func Default() Rules { return registry[defaultVersion] }
 
