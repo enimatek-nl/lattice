@@ -64,6 +64,29 @@ type HistoryPage struct {
 //   - When to stop saying there is more. `end` is present only while further events are
 //     reachable, and a requester whose horizon cut off everything ahead of them has
 //     nothing reachable.
+//
+// Event returns one stored event to a requester entitled to read the room's history. A
+// redacted event comes back in its redacted form, with the redaction that did it under
+// `unsigned.redacted_because`.
+func (s *Service) Event(ctx context.Context, roomID, eventID, requester string) (map[string]any, error) {
+	if err := s.requireHistoryAccess(ctx, roomID, requester); err != nil {
+		return nil, err
+	}
+	row, err := s.events.ByID(ctx, eventID)
+	if err != nil {
+		if notFound(err) {
+			return nil, matrixerr.Newf(matrixerr.CodeNotFound, "Event %q is not known to this server.", eventID)
+		}
+		return nil, fmt.Errorf("rooms: cannot read the event: %w", err)
+	}
+	// An event in another room is not this room's to hand over, and the answer is the
+	// same as for an event that does not exist.
+	if row.RoomID != roomID {
+		return nil, matrixerr.Newf(matrixerr.CodeNotFound, "Event %q is not known to this server.", eventID)
+	}
+	return s.serveEvent(ctx, row)
+}
+
 func (s *Service) History(ctx context.Context, roomID, requester string, req HistoryRequest) (HistoryPage, error) {
 	if err := s.requireHistoryAccess(ctx, roomID, requester); err != nil {
 		return HistoryPage{}, err

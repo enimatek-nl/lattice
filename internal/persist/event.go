@@ -48,17 +48,23 @@ type Event struct {
 	// StateKey is NULL for a non-state event and the empty string for a state
 	// event whose state key is empty (m.room.create, m.room.join_rules, ...).
 	// Collapsing those two would make an unstate event look like a state event.
-	StateKey         *string `gorm:"column:state_key;size:255"`
-	Sender           string  `gorm:"column:sender;size:255;not null"`
-	Depth            int64   `gorm:"column:depth;not null;default:0"`
-	OriginServerTS   int64   `gorm:"column:origin_server_ts;not null;default:0"`
-	ReceivedTS       int64   `gorm:"column:received_ts;not null;default:0"`
-	JSON             []byte  `gorm:"column:json;not null"`
-	Redacted         bool    `gorm:"column:redacted;not null;default:false"`
-	RedactedJSON     []byte  `gorm:"column:redacted_json"`
-	Outlier          bool    `gorm:"column:outlier;not null;default:false"`
-	SoftFailed       bool    `gorm:"column:soft_failed;not null;default:false"`
-	StreamOrdering   int64   `gorm:"column:stream_ordering;not null;default:0"`
+	StateKey       *string `gorm:"column:state_key;size:255"`
+	Sender         string  `gorm:"column:sender;size:255;not null"`
+	Depth          int64   `gorm:"column:depth;not null;default:0"`
+	OriginServerTS int64   `gorm:"column:origin_server_ts;not null;default:0"`
+	ReceivedTS     int64   `gorm:"column:received_ts;not null;default:0"`
+	JSON           []byte  `gorm:"column:json;not null"`
+	// Redacted says a permitted redaction was applied to this event. RedactedJSON holds
+	// the redacted form, and it — not JSON — is what goes to clients and to other
+	// homeservers. The original bytes stay in JSON: a redaction does not change the event's
+	// identity, and the reference hash recorded in `hashes` is what lets a peer check the
+	// redacted form against the hash taken before redaction. Keeping the received bytes is
+	// what makes that check possible without trusting this server's word.
+	Redacted         bool   `gorm:"column:redacted;not null;default:false"`
+	RedactedJSON     []byte `gorm:"column:redacted_json"`
+	Outlier          bool   `gorm:"column:outlier;not null;default:false"`
+	SoftFailed       bool   `gorm:"column:soft_failed;not null;default:false"`
+	StreamOrdering   int64  `gorm:"column:stream_ordering;not null;default:0"`
 	ReceivedAtServer time.Time
 }
 
@@ -245,7 +251,35 @@ type EventRepo interface {
 	// server never refused is absent from the result, which is the difference between
 	// "never seen" and "seen and refused".
 	Rejections(ctx context.Context, eventIDs []string) (map[string]string, error)
+
+	// RecordRedaction links a redaction event to the event it names. The link is kept
+	// whether or not the target is stored yet: the specification says a server that sees a
+	// redaction before its partner simply waits for the partner and re-checks then.
+	RecordRedaction(ctx context.Context, redaction *Redaction) error
+	// RedactionsTargeting returns the redactions naming an event, applied or not.
+	RedactionsTargeting(ctx context.Context, targetID string) ([]Redaction, error)
+	// RedactionLinks returns the link for each given redaction event ID, which is how a
+	// read path tells an applied redaction from one still waiting for its partner.
+	RedactionLinks(ctx context.Context, redactionIDs []string) (map[string]Redaction, error)
+	// MarkRedactionApplied records that a redaction was applied.
+	MarkRedactionApplied(ctx context.Context, redactionID string) error
+	// MarkRedacted stores the redacted form of an event alongside the bytes it was
+	// received as.
+	MarkRedacted(ctx context.Context, eventID string, redactedJSON []byte) error
 }
+
+// Redaction is a pending or settled request: this redaction event asks for that event.
+type Redaction struct {
+	ID          uint64    `gorm:"primaryKey;autoIncrement"`
+	RedactionID string    `gorm:"column:redaction_id;size:255;not null;uniqueIndex"`
+	TargetID    string    `gorm:"column:target_id;size:255;not null;index"`
+	RoomID      string    `gorm:"column:room_id;size:255;not null;index"`
+	Applied     bool      `gorm:"column:applied;not null;default:false"`
+	AppliedAt   time.Time `gorm:"column:applied_at"`
+}
+
+// TableName fixes the table name.
+func (Redaction) TableName() string { return "redactions" }
 
 // EventRejection is a refusal this server stands by.
 //
@@ -432,6 +466,69 @@ func (r *eventRepo) Rejections(ctx context.Context, eventIDs []string) (map[stri
 		rejections[row.EventID] = row.Reason
 	}
 	return rejections, nil
+}
+
+// Serving returns the bytes this server puts on the wire for the event. A redacted event
+// is served as its redacted form; the stored original stays for signature and hash checks.
+func (e *Event) Serving() []byte {
+	if e.Redacted && len(e.RedactedJSON) > 0 {
+		return e.RedactedJSON
+	}
+	return e.JSON
+}
+
+// RecordRedaction implements [EventRepo]. Re-recording the same redaction keeps the
+// existing row, including whether it has already been applied.
+func (r *eventRepo) RecordRedaction(ctx context.Context, redaction *Redaction) error {
+	if redaction == nil || redaction.RedactionID == "" || redaction.TargetID == "" {
+		return nil
+	}
+	if err := r.db.WithContext(ctx).Create(redaction).Error; err != nil {
+		if asConflict(err) != nil {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+// RedactionsTargeting implements [EventRepo], oldest link first.
+func (r *eventRepo) RedactionsTargeting(ctx context.Context, targetID string) ([]Redaction, error) {
+	var rows []Redaction
+	if err := r.db.WithContext(ctx).Where("target_id = ?", targetID).Order("id").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+// RedactionLinks implements [EventRepo].
+func (r *eventRepo) RedactionLinks(ctx context.Context, redactionIDs []string) (map[string]Redaction, error) {
+	links := map[string]Redaction{}
+	if len(redactionIDs) == 0 {
+		return links, nil
+	}
+	var rows []Redaction
+	if err := r.db.WithContext(ctx).Where("redaction_id IN ?", redactionIDs).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		links[row.RedactionID] = row
+	}
+	return links, nil
+}
+
+// MarkRedactionApplied implements [EventRepo].
+func (r *eventRepo) MarkRedactionApplied(ctx context.Context, redactionID string) error {
+	return r.db.WithContext(ctx).Model(&Redaction{}).
+		Where("redaction_id = ?", redactionID).
+		Updates(map[string]any{"applied": true, "applied_at": time.Now().UTC()}).Error
+}
+
+// MarkRedacted implements [EventRepo].
+func (r *eventRepo) MarkRedacted(ctx context.Context, eventID string, redactedJSON []byte) error {
+	return r.db.WithContext(ctx).Model(&Event{}).
+		Where("event_id = ?", eventID).
+		Updates(map[string]any{"redacted": true, "redacted_json": redactedJSON}).Error
 }
 
 // StateRepo persists current room state.

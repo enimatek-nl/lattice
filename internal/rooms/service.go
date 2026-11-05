@@ -91,6 +91,11 @@ type SendRequest struct {
 	StateKey string
 	IsState  bool
 	Content  map[string]any
+	// Extra are top-level fields this server adds to the event before it is authorised
+	// and signed. Only things that cannot live in `content` belong here: a redaction in a
+	// room version before 11 names its target at the top level, and where that field goes
+	// is decided by the room version, not by the client.
+	Extra map[string]any
 }
 
 // Service creates rooms and appends events to them.
@@ -514,6 +519,9 @@ func (s *Service) send(ctx context.Context, req SendRequest) (string, error) {
 	if req.IsState {
 		event["state_key"] = req.StateKey
 	}
+	for field, value := range req.Extra {
+		event[field] = value
+	}
 	event["auth_events"] = toAnySlice(eventauth.SelectEventIDs(rules, event, snapshot))
 
 	// A room may only advertise aliases this server can resolve, so the alias claims
@@ -643,6 +651,14 @@ func (s *Service) persistEvent(ctx context.Context, event map[string]any, stream
 		if err := s.refreshDirectoryText(ctx, roomID, eventType, content); err != nil {
 			return fmt.Errorf("rooms: cannot update the room's directory entry: %w", err)
 		}
+	}
+	// A redaction and the destruction it causes are stored together, and an event that
+	// arrives late gets the chance to settle a redaction that has been waiting for it.
+	if err := s.noteRedaction(ctx, event); err != nil {
+		return err
+	}
+	if err := s.applyWaitingRedactions(ctx, eventID); err != nil {
+		return err
 	}
 	return nil
 }

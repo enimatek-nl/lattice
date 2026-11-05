@@ -33,7 +33,7 @@ Specification: Matrix v1.19 (`docs/specification-version.md`).
 | Events | `PUT /v3/rooms/{roomID}/send/{eventType}/{txnID}`: authorisation, hashing, signing, storage, per-device transaction idempotency | implemented | yes | not verified |
 | Events | `PUT /send/m.room.member/...` refused with 400 `M_UNRECOGNIZED` (membership has its own endpoints) | implemented | yes | not verified |
 | State | `PUT /v3/rooms/{roomID}/state/{eventType}[/{stateKey}]`, including the empty state key and rejection of deeper paths | implemented | yes | not verified |
-| Rooms | join / invite / knock / leave, `GET /state`, `/state_ids`, `/members`, `/messages`, `/context`, `/event`, redaction, aliases, directory, upgrades | not implemented | — | fails with 404 `M_UNRECOGNIZED` (M2 tasks T-2007 to T-2010) |
+| Rooms | join / invite / knock / leave, `GET /state`, `/members`, `/messages`, `/event/{eventID}`, redaction (`PUT /redact/{eventID}/{txn}`), aliases, directory, upgrades | implemented | `tests/integration/redaction_test.go`, `tests/integration/history_test.go`, Complement `TestRedact`/`TestPowerLevels` | still missing: `GET /rooms/{roomID}/context/{eventID}` (T-2015), `GET /rooms/{roomID}/event_auth/{eventID}` (T-2016), `GET /_matrix/federation/v1/state_ids` |
 | Sync / messages / filters | all | not implemented | — | fails with 404 (M3) |
 | E2EE device keys, to-device, key backup | all | not implemented | — | fails with 404 (M5) |
 | Account: deactivate, change password, 3PIDs | all | not implemented | — | fails with 404 |
@@ -93,7 +93,18 @@ Specification: Matrix v1.19 (`docs/specification-version.md`).
 | Event graph storage (events, prev/auth edges, per-event auth context) and the forward-extremities query | implemented | `tests/unit/eventstore_test.go` |
 | Transaction ID store for `/send/{type}/{txn}` idempotency (unique per device) | implemented and exercised through the endpoint | `tests/unit/eventstore_test.go`, `tests/integration/rooms_test.go` |
 | `depth` validation against `prev_events` | not implemented | M2 |
-| Redaction application rules (power level or same domain) | not implemented; the redacted form has a column to live in | M2 |
+| Redaction application rules: redact level, or the sender's domain matching the domain of the event's sender; a redaction whose partner has not arrived is kept and re-checked when it does | implemented+tested | `tests/unit/redaction_rules_test.go`, `tests/integration/redaction_test.go` (`TestRedactionArrivingBeforeItsTargetIsAppliedWhenTheTargetTurnsUp`) |
+| Redaction on the wire: a homeserver forwards the unredacted event plus the redaction, and each receiver strips its own copy; the content hash is therefore checked unconditionally | implemented+tested | `internal/events/verify.go`, `tests/integration/redaction_test.go`, cross-checked against gomatrixserverlib's unconditional content-hash check |
+| `unsigned.redacted_because` on a redacted event served to a client, and `redacts` placed for the client's room version | implemented (client-server reads: `/event`, `/messages`, `/context`, state) — **not yet** in `/sync`, which serves the redacted form but not the `unsigned` copy | `tests/integration/redaction_test.go`, `tests/unit/redaction_rules_test.go` |
+
+### Evidence run after the redaction work (2026-11-05)
+
+| Item | Value |
+| --- | --- |
+| Suites run | `./tests/csapi` with `RUN='TestJson\|TestPowerLevels\|TestRedact\|TestEventAuth\|TestRoomMessagesLazyLoading\|TestFetchMessagesFromNonExistentRoom\|TestArchivedRoomsHistory\|TestRoomCreate\|TestRoomMembers\|TestRoomState\|TestCannotKick\|TestNotPresentUserCannotBanOthers\|TestSync'` |
+| Passed | `TestRedact` (first time: redaction is applied and read back through `GET /event`), `TestPowerLevels` (was failing only because `/event/{eventID}` was missing), `TestJson`, `TestRoomState`, `TestRoomMembers`, `TestRoomMessagesLazyLoading`, `TestRoomMessagesLazyLoadingLocalUser`, `TestArchivedRoomsHistory`, `TestFetchMessagesFromNonExistentRoom`, `TestCannotKickLeftUser`, `TestCannotKickNonPresentUser`, `TestNotPresentUserCannotBanOthers`, `TestSyncFilter`, `TestSyncLeaveSection` |
+| Failed and why | `TestRoomCreate`: room version 2 refused (v1/v2 deliberately unimplemented). `TestSync/parallel/sync_should_succeed_even_if_the_sync_token_points_to_a_redaction_of_an_unknown_event`: the test builds the redaction on a federation peer, which needs the join/`/state_ids` handshake this server does not answer yet. `TestSync/parallel` state-section subtests: MSC4222 `state_after` and sync filters (T-3001f). `TestSyncTimelineGap`: history pages by stream position, not depth (T-3001d) |
+| Not changed by this work | the `redacted_because` copy is not attached in `/sync` (only on `/event`, `/messages`, `/context` and state reads), and a redaction this server may not apply is still shown to clients rather than withheld — both recorded as open tasks |
 
 ### M2 evidence run (2026-11-05, same checkout and image)
 
@@ -108,7 +119,7 @@ Run with `RUN='TestJson|TestPowerLevels|TestRedact|TestEventAuth|TestRoomMessage
 | Failed | `TestJumpToDateEndpoint` | `/messages` pages by stream position, not depth, and `/timestamp` does not exist (T-3001d) |
 | Failed | `TestEventAuth` | needs federation `/make_join` (T-4009) |
 
-Client endpoints the M2 scope named and this server still does not have: `GET /rooms/{roomID}/event/{eventID}`, `GET /rooms/{roomID}/context/{eventID}`, `POST /rooms/{roomID}/redact/{eventID}/{txn}`, `GET /rooms/{roomID}/event_auth/{eventID}`, `GET /rooms/{roomID}/timestamp`, and (federation-side) `GET /rooms/{roomID}/state_ids`.
+Client endpoints the M2 scope named and this server still does not have (`GET /rooms/{roomID}/event/{eventID}` and `PUT /rooms/{roomID}/redact/{eventID}/{txnID}` landed since — both Complement's `TestRedact` and `TestPowerLevels` now pass): `GET /rooms/{roomID}/event/{eventID}`, `GET /rooms/{roomID}/context/{eventID}`, `POST /rooms/{roomID}/redact/{eventID}/{txn}`, `GET /rooms/{roomID}/event_auth/{eventID}`, `GET /rooms/{roomID}/timestamp`, and (federation-side) `GET /rooms/{roomID}/state_ids`.
 
 ### Targeted run after the first federation work (2026-11-05)
 

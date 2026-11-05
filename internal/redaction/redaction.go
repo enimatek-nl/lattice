@@ -15,6 +15,59 @@ import (
 	"github.com/enimatek/lattice/internal/roomversion"
 )
 
+// TargetOf returns the event a redaction event asks for.
+//
+// Where that ID lives depends on the room version: versions up to 10 carry a top-level
+// `redacts`, and version 11 moved it to `content.redacts`. In version 11 and later the
+// top-level key is ignored rather than tried as a fallback. That is not pedantry — an
+// event carrying both keys with different targets is a claim about which event is to be
+// destroyed, and letting the sender decide after the fact would mean a single signed
+// event could be offered to two servers with two different results.
+func TargetOf(rules roomversion.Rules, event map[string]any) (string, bool) {
+	if rules.RedactsInContent {
+		if content, ok := event["content"].(map[string]any); ok {
+			if id, ok := content["redacts"].(string); ok && id != "" {
+				return id, true
+			}
+		}
+		return "", false
+	}
+	if id, ok := event["redacts"].(string); ok && id != "" {
+		return id, true
+	}
+	return "", false
+}
+
+// ForClient adjusts the `redacts` field of a redaction event for the client reading it,
+// in the direction the room version does not already cover: a version 11 client is shown a
+// top-level `redacts` as well, for clients written against older versions; an older room
+// version is shown `content.redacts` as well. The stored event is never changed — an
+// added field would alter the reference hash, and with it the event's identity.
+func ForClient(rules roomversion.Rules, event map[string]any) {
+	eventType, _ := event["type"].(string)
+	if eventType != "m.room.redaction" {
+		return
+	}
+	content, _ := event["content"].(map[string]any)
+	if content == nil {
+		content = map[string]any{}
+		event["content"] = content
+	}
+	if rules.RedactsInContent {
+		if id, ok := content["redacts"].(string); ok && id != "" {
+			if _, present := event["redacts"].(string); !present {
+				event["redacts"] = id
+			}
+			return
+		}
+	}
+	if id, ok := event["redacts"].(string); ok && id != "" {
+		if _, present := content["redacts"].(string); !present {
+			content["redacts"] = id
+		}
+	}
+}
+
 // Apply returns a redacted copy of event using the rules of the given room
 // version. The input is never modified: callers need the unredacted form to
 // verify content hashes and signatures afterwards.

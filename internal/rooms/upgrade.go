@@ -188,7 +188,7 @@ func (s *Service) replacementCreateContent(ctx context.Context, roomID, creator,
 	if err != nil {
 		return nil, fmt.Errorf("rooms: cannot read the create event of the room being upgraded: %w", err)
 	}
-	body, err := events.Parse(stored.JSON)
+	body, err := events.Parse(stored.Serving())
 	if err != nil {
 		return nil, err
 	}
@@ -238,7 +238,7 @@ func (s *Service) copyableState(ctx context.Context, roomID string) ([]StateCont
 					"room_id", roomID, "type", eventType, "state_key", entry.StateKey, "error", err)
 				continue
 			}
-			body, err := events.Parse(stored.JSON)
+			body, err := events.Parse(stored.Serving())
 			if err != nil {
 				s.log.Warn("rooms: cannot parse a state event to copy across an upgrade",
 					"room_id", roomID, "type", eventType, "error", err)

@@ -416,7 +416,7 @@ func (s *Service) stateVisibleToOutsider(ctx context.Context, roomID string) (bo
 		if err != nil {
 			return false, err
 		}
-		body, err := events.Parse(stored.JSON)
+		body, err := events.Parse(stored.Serving())
 		if err != nil {
 			return false, err
 		}

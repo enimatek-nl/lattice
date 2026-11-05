@@ -7,8 +7,25 @@ import (
 	"github.com/enimatek/lattice/internal/auth"
 	"github.com/enimatek/lattice/internal/httpx"
 	"github.com/enimatek/lattice/internal/matrixerr"
+	"github.com/enimatek/lattice/internal/matrixid"
 	"github.com/enimatek/lattice/internal/rooms"
 )
+
+// handleRoomEvent implements GET /_matrix/client/v3/rooms/{roomID}/event/{eventID}.
+func (d *Deps) handleRoomEvent(w http.ResponseWriter, r *http.Request) {
+	eventID := pathValue(r, "eventID")
+	if err := matrixid.EventIDValid(eventID); err != nil {
+		matrixerr.Write(w, http.StatusBadRequest, matrixerr.Newf(matrixerr.CodeInvalidParam,
+			"%q is not a valid event ID.", eventID))
+		return
+	}
+	event, err := d.Rooms.Event(r.Context(), pathValue(r, "roomID"), eventID, auth.UserID(r))
+	if err != nil {
+		d.serviceError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, event)
+}
 
 // handleRoomMessages implements GET /_matrix/client/v3/rooms/{roomID}/messages.
 //

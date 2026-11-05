@@ -16,6 +16,7 @@ package eventauth
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/enimatek/lattice/internal/matrixid"
 	"strconv"
 
 	"github.com/enimatek/lattice/internal/roomversion"
@@ -238,4 +239,37 @@ func stringOf(event map[string]any, key string) (string, bool) {
 	}
 	s, ok := event[key].(string)
 	return s, ok
+}
+
+// MayRedact reports whether a redaction sent by redactionSender may be applied to an
+// event sent by targetSender.
+//
+// Two conditions, either sufficient, as the pinned specification states them: the
+// sender's power level is at least the room's redact level, or the sender's domain matches
+// the domain of the event's original sender. The second is what lets a homeserver clean up
+// its own users' messages without granting anybody power over another server's events.
+//
+// Note what this is not: the ability to *send* a redaction is decided by the authorisation
+// rules, which do not consider the redact level at all. This decides whether the redaction
+// is applied once it has arrived, which is why an event can be accepted by the rules and
+// still never destroy anything.
+func (p *PowerLevels) MayRedact(redactionSender, targetSender string) bool {
+	if p.User(redactionSender) >= p.Redact {
+		return true
+	}
+	return sameDomain(redactionSender, targetSender)
+}
+
+// sameDomain compares the server part of two user IDs. An unparseable ID has no domain to
+// match, so it does not match anything.
+func sameDomain(left, right string) bool {
+	leftDomain, err := matrixid.UserDomain(left)
+	if err != nil {
+		return false
+	}
+	rightDomain, err := matrixid.UserDomain(right)
+	if err != nil {
+		return false
+	}
+	return leftDomain == rightDomain
 }
