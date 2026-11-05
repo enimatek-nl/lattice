@@ -85,6 +85,14 @@ func Verify(rules roomversion.Rules, event map[string]any, lookup KeyLookup) err
 // would remove — the body of a message, for instance — part of the event's identity.
 // Skipping it would let a homeserver change a message's text and still present it as the
 // same, signed, correctly identified event.
+//
+// This check is unconditional, and that is a decision rather than an oversight. The
+// specification applies the redaction strip "upon receipt of a redaction event" — each
+// server strips the events in its own database — so the form that crosses the wire is the
+// unredacted one, together with the redaction event itself. A server that forwarded an
+// already-stripped form would be refusing to say what was destroyed and by whom, and this
+// server would be right to refuse it. gomatrixserverlib checks the content hash the same
+// way, with no exception for redacted events.
 func verifyContentHash(rules roomversion.Rules, event map[string]any) error {
 	hashes, ok := event["hashes"].(map[string]any)
 	if !ok || len(hashes) == 0 {

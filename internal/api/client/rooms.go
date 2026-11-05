@@ -146,6 +146,64 @@ func (d *Deps) handleRoomSend(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"event_id": eventID})
 }
 
+// handleRedact implements PUT /_matrix/client/v3/rooms/{roomID}/redact/{eventID}/{txnID}.
+//
+// The client names the event to redact in the path and may give a `reason`; where the
+// target field goes in the resulting event is this server's decision, because the room
+// version decides it.
+func (d *Deps) handleRedact(w http.ResponseWriter, r *http.Request) {
+	roomID := pathValue(r, "roomID")
+	targetID := pathValue(r, "eventID")
+	txnID := r.PathValue("txnID")
+
+	if err := matrixid.RoomIDValid(roomID); err != nil {
+		matrixerr.Write(w, http.StatusBadRequest, matrixerr.Newf(matrixerr.CodeInvalidParam,
+			"%q is not a valid room ID.", roomID))
+		return
+	}
+	if err := matrixid.EventIDValid(targetID); err != nil {
+		matrixerr.Write(w, http.StatusBadRequest, matrixerr.Newf(matrixerr.CodeInvalidParam,
+			"%q is not a valid event ID.", targetID))
+		return
+	}
+	if txnID == "" {
+		matrixerr.Write(w, http.StatusBadRequest, matrixerr.New(matrixerr.CodeMissingParams,
+			"A transaction ID is required so that a retry can be recognised."))
+		return
+	}
+
+	var body map[string]any
+	if r.Body != nil && r.ContentLength != 0 {
+		if !httpx.DecodeJSONOrError(w, r, d.maxBody(), &body) {
+			return
+		}
+	}
+	reason := ""
+	if raw, ok := body["reason"]; ok {
+		text, ok := raw.(string)
+		if !ok {
+			matrixerr.Write(w, http.StatusBadRequest, matrixerr.New(matrixerr.CodeBadJSON,
+				"The reason for a redaction must be a string."))
+			return
+		}
+		reason = text
+	}
+
+	eventID, err := d.Rooms.Redact(r.Context(), rooms.RedactRequest{
+		RoomID:   roomID,
+		Sender:   auth.UserID(r),
+		DeviceID: auth.DeviceID(r),
+		TxnID:    txnID,
+		TargetID: targetID,
+		Reason:   reason,
+	})
+	if err != nil {
+		d.serviceError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"event_id": eventID})
+}
+
 // statePathRemainder counts the path segments after the event type in a
 // /rooms/{roomID}/state/{eventType}/... path. It returns 0 for an empty state key and
 // 1 for a present one; anything larger means the client sent a path this endpoint does

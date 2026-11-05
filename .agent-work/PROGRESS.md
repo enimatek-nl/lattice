@@ -952,3 +952,56 @@ sequenced after T-3004 rather than worked around. The compliance matrix now says
 loud instead of listing SR2 as implemented.
 
 `make verify` (fmt, vet, `-race`) and `golangci-lint run ./...` clean.
+
+## 2026-11-05 — redaction: each server destroys its own copy (T-2009, T-2014, T-2016a)
+
+Three endpoints and one rule, and the rule turned out to be the interesting part.
+
+The authorisation rules deliberately say nothing about the redact level — they decide only
+whether an event may be sent. Whether a redaction *destroys anything* is decided later, by
+each server that receives one, on two conditions either of which is enough: the sender's
+power level reaches the room's redact level, or the sender's domain matches the domain of
+the sender of the event being redacted. The second is what lets a homeserver tidy up its own
+users' messages without anybody gaining power over another server's events. So an event can
+pass every auth rule and still never remove a byte, and `PUT /redact` now refuses a
+redaction this server would never apply instead of filing one that does nothing forever.
+
+The halves of a redaction can arrive in either order, so the link is kept on receipt and
+re-checked by persistence from both directions: a redaction whose target is absent waits, and
+the event that finally arrives settles it. The test hands a redaction to a second homeserver
+before its target, then the target, and checks the second server ends up with a redacted copy
+it applied itself.
+
+Found on the way, and it changed the design (DEC-023): the specification strips the event
+"upon receipt of a redaction event" — the receiver strips its own copy. So federation carries
+the **unredacted** event plus the redaction, and the content hash is checked unconditionally;
+`events.redacted_json` is a *view* for clients (`Event.Serving()`), never a replacement for
+what was received. The first attempt did the opposite — forwarded redacted forms and skipped
+the content-hash check for them — and `TestEventSignatureSurvivesEveryRoomVersion` failed for
+every room version, which is that test doing exactly its job: a stripped copy of an event must
+not pass as the event it redacts. gomatrixserverlib checks the content hash with no redaction
+exception either.
+
+Judged against the room's *current* power levels at the moment of application (DEC-022),
+because the power levels a redaction was authorised against are not stored per event; T-3004
+would let that question be asked properly. Recorded, not hidden.
+
+`GET /rooms/{roomID}/event/{eventID}` came with it: an event in another room answers as not
+found, the same as an event that does not exist, so the endpoint does not report which room
+holds which ID. Complement's `TestRedact` passes, and `TestPowerLevels` passes too — it had
+been failing only because its `SendEventSynced` helper reads events back through `/event`.
+
+Still open, recorded as tasks: `/sync` serves the redacted form but not the
+`unsigned.redacted_because` copy (T-2009b), and a redaction this server may not apply is still
+listed in timelines instead of being withheld, which the specification says it should not be
+(T-2009a).
+
+Evidence: `tests/unit/redaction_rules_test.go` (target field per version, `ForClient`
+placement, the redact-level and domain rule against configured and default power levels) and
+`tests/integration/redaction_test.go` (emptied event with `redacted_because`, idempotent
+retry, `/messages` and `/sync` agreement, unknown target and cross-room reads answered 404,
+v10 top-level `redacts`, and the out-of-order handover over federation).
+`make verify` (fmt, vet, `-race`) and `golangci-lint run ./...` clean; Complement filtered run
+`TestJson|TestPowerLevels|TestRedact|TestEventAuth|TestRoomMessages…|TestSync` green except
+`TestRoomCreate` (v2 refused by design), `TestSync/parallel` (needs the federation join
+handshake and MSC4222 `state_after`) and `TestSyncTimelineGap` (depth paging).

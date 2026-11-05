@@ -41,7 +41,7 @@ func (s *Service) applySideEffects(ctx context.Context, eventID string) {
 			"event_id", eventID, "error", err)
 		return
 	}
-	body, err := events.Parse(stored.JSON)
+	body, err := events.Parse(stored.Serving())
 	if err != nil {
 		s.log.Warn("rooms: cannot parse a persisted event to announce its side effects",
 			"event_id", eventID, "error", err)

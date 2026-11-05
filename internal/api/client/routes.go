@@ -152,6 +152,8 @@ func Register(r *httpserver.Router, d *Deps, requireAuth func(http.Handler) http
 	versioned("GET", "/rooms/{roomID}/members", d.handleMembers)
 	versioned("GET", "/rooms/{roomID}/joined_members", d.handleJoinedMembers)
 	versioned("GET", "/rooms/{roomID}/messages", d.handleRoomMessages)
+	versioned("GET", "/rooms/{roomID}/event/{eventID}", d.handleRoomEvent)
+	versioned("PUT", "/rooms/{roomID}/redact/{eventID}/{txnID}", d.handleRedact)
 
 	// The room directory: which rooms this server advertises, and who may change that.
 	versioned("GET", "/publicRooms", d.handlePublicRooms)

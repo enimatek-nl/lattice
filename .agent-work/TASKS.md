@@ -114,8 +114,19 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
       join by alias, canonical-alias validation (`M_BAD_ALIAS`), Unicode aliases —
       Complement `TestRoomAlias` verified
 - [x] T-2008 see above (client-side state reads done; `/state_ids` is federation, M4)
-- [ ] T-2009 `m.room.redaction` application: power level or same server name rule, redacted
-      form stored, hashes/signatures stay valid — Complement `TestRedact/Event_content_is_redacted`
+- [x] T-2009 `m.room.redaction` application: the redact-level or same-domain rule
+      (`PowerLevels.MayRedact`), the redacted form stored beside the received bytes so the
+      content hash stays checkable, and the link kept when the partner has not arrived yet so
+      either half can arrive first — `internal/rooms/redaction.go`,
+      `tests/unit/redaction_rules_test.go`, `tests/integration/redaction_test.go`;
+      Complement `TestRedact/Event_content_is_redacted` now passes
+- [ ] T-2009a withhold from clients a redaction this server has not applied (the
+      specification's `should`: "they should not be sent to clients until both the redaction
+      event and the event the redaction affects have been received, and can be validated").
+      The links exist (`redactions.applied`); the read paths do not consult them yet
+- [ ] T-2009b attach `unsigned.redacted_because`, and place `redacts` for the client's room
+      version, in `/sync` as well: `/event`, `/messages`, `/context` and state reads do both,
+      `/sync` serves the redacted form only
 - [x] T-2010 room upgrade path: `POST /rooms/{roomId}/upgrade` and a client-supplied
       `predecessor` in `creation_content`, with the transferable state carried, the aliases
       moved, the tombstone sent, and each local user's room rules carried across —
@@ -275,15 +286,21 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
       dependency is T-3004 — the resolver needs the state each forward extremity was
       carrying, and there is no per-event state yet — so this is sequenced after it, not
       worked around
-- [ ] T-2014 `GET /rooms/{roomID}/event/{eventID}`: read one event by ID, with the same
-      membership rule the other room reads use. Complement's `SendEventSynced` helper uses it,
-      so it is the reason `TestPowerLevels` fails even though the power-level steps themselves
-      answered correctly — a missing endpoint hides unrelated coverage
+- [x] T-2014 `GET /rooms/{roomID}/event/{eventID}`: one event by ID through the same history
+      access rule as `/messages`; an event that lives in another room is answered as not
+      found, so the endpoint does not report which room holds an ID. Complement's
+      `SendEventSynced` uses it, which is why `TestPowerLevels` now passes as well —
+      `tests/integration/redaction_test.go`
 - [ ] T-2015 `GET /rooms/{roomID}/context/{eventID}` (`event`, `events_before`, `events_after`,
       `state`), which `GET /event` and `/messages` already have the parts of
-- [ ] T-2016 redaction as a client action: `POST /rooms/{roomID}/redact/{eventID}/{txn}` next
-      to the application rule (T-2009), and `GET /rooms/{roomID}/event_auth/{eventID}` plus
-      `GET /rooms/{roomID}/timestamp`
+- [x] T-2016a redaction as a client action: `PUT /rooms/{roomID}/redact/{eventID}/{txnID}`
+      (the verb the specification and Complement use), which places the target field where the
+      room version puts it — top level up to v10, in `content` from v11 — and refuses a
+      redaction this server would never apply rather than storing one that destroys nothing:
+      `tests/integration/redaction_test.go`, Complement `TestRedact`
+- [ ] T-2016b `GET /rooms/{roomID}/event_auth/{eventID}` and
+      `GET /rooms/{roomID}/timestamp`: still absent; `/timestamp` also wants depth-based
+      paging (T-3001d)
 - [ ] T-4013 room versions 1 and 2 for creating rooms: their authorisation rules and state
       resolution v1 are refused by design, so a client that asks for version 2 is answered
       `M_UNSUPPORTED_ROOM_VERSION`. Complement's `TestRoomCreate/creates_a_room_with_the_given_version`
