@@ -104,7 +104,7 @@ the parts that must be byte-exact before any room is created.
 | REQ-AUTH-020 | Room Versions §Authorisation rules | Room-version-specific event authorisation as a subsystem separate from handlers | MUST | not implemented | M2 (`internal/eventauth`) |
 | REQ-AUTH-021 | SS §Auth events selection | `auth_events` must match the selection algorithm; duplicates, foreign-room events and rejected auth events invalidate the event | MUST | not implemented | M2 |
 | REQ-AUTH-022 | Room Versions §Authorisation rule 9 (v10+) | Integer-only power-level content validation | MUST | not implemented | M2 |
-| REQ-TXN-001 | CS §Idempotency | Transaction IDs on `PUT /send/{type}/{txn}` are per-device and replay yields the same event | MUST | not implemented | M2 |
+| REQ-TXN-001 | CS §Idempotency | Transaction IDs on `PUT /send/{type}/{txn}` are per-device and replay yields the same event | MUST | partial — the storage layer enforces per-device uniqueness and returns the prior event; no endpoint yet | `tests/unit/eventstore_test.go` (endpoint coverage pending, M2) |
 | REQ-ROOM-001 | CS §Rooms | `POST /createRoom` with version negotiation, initial state, presets | MUST | not implemented | M2 |
 | REQ-ROOM-002 | Room Versions §room IDs | v12's domain-free room IDs and privileged creators | MUST | represented in the registry, not implemented | M6 |
 

@@ -143,3 +143,50 @@ with T-2000/T-2001/T-2011/T-2012 checked off. `.agent-work/BLOCKERS.md` gained F
 M2 is not endpoint-reachable: no `createRoom`, no authorisation rules, no state resolution,
 no event storage. `/capabilities` still advertises a room version the server cannot create;
 the registry now knows the honest set and the handler gets wired together with `createRoom`.
+
+---
+
+# Iteration 3 — M2 event storage (T-2002)
+
+Timestamp: 2026-11-05 (UTC)
+
+## Built (`internal/persist/event.go`, wiring in `database.go`)
+
+| Table | Purpose / notable choice |
+| --- | --- |
+| `rooms` | room id, **room version**, creator, latest stream. The version is stored per room because every rule (auth, redaction, event ID format, state resolution) is read from it. |
+| `events` | canonical JSON stored verbatim (`json`) plus lookup columns; `state_key` is NULL for non-state events and `""` for state events with an empty key (`m.room.create`); `redacted`/`redacted_json`; `outlier`/`soft_failed`; global `stream_ordering`. |
+| `event_edges` | `prev` and `auth` references as rows — history is a graph walk. **No foreign key on `reference_id`**: a server legitimately holds events whose predecessors it has not fetched yet, and a constraint would reject valid Matrix state. |
+| `room_state` | current state keyed by (room, type, state_key), separate from history. |
+| `event_auth_context` | the state that authorised each event, so re-authorisation and federation never recompute the past. |
+| `event_txn` | (device, txn) → event id, unique per device: the basis of `/send/{type}/{txn}` idempotency. |
+
+Indexes: unique event id (dedup), (room, stream_ordering) for history and read
+positions, (room, type, state_key), sender, edge reverse lookup for forward
+extremities, unique room-state key, unique auth-context pair, unique (device, txn).
+
+`ForwardExtremities` excludes soft-failed and outlier events, so new events never
+attach to a branch this server has already declined.
+
+## Evidence
+
+`go test -count=1 ./tests/...` → integration ok, unit ok. `make verify` (`-race`) → ok.
+`golangci-lint run ./...` → 0 issues.
+
+`tests/unit/eventstore_test.go` covers: NULL-vs-empty state key preserved, event JSON
+stored unchanged, duplicate event id → `ErrConflict`, forward extremities move as the
+graph grows and ignore soft-failed events, links to missing events are allowed and
+idempotent, batch reads tolerate gaps, stream ordering monotone and not burned by a
+rolled-back transaction, room state is an upsert map including the empty state key, auth
+context is replaced not accumulated, transaction ids are per device.
+
+## Docs
+
+`TASKS.md` T-2002 checked; `docs/compliance-matrix.md` and `docs/requirements.md`
+REQ-TXN-001 updated to reflect storage-only status.
+
+## Honest status
+
+No endpoint can create or send an event yet. Still open in M2: authorisation rules
+(T-2004), state resolution (T-2005), `createRoom` (T-2003), `send`/txn endpoint (T-2006),
+membership (T-2007), state reads (T-2008), redaction application (T-2009), upgrades (T-2010).

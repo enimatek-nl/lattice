@@ -66,9 +66,11 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
 - [x] T-2012 `internal/events`: content hash, reference hash, event ID derivation per room
       version, `Seal` (hash then sign the redacted form), transport-key stripping; goldens
       compared with gomatrixserverlib for v3/v10/v11 — `tests/unit/eventseal_test.go`
-- [ ] T-2002 PDU storage: `events` (canonical JSON + indexed columns + hashes/signatures),
-      `event_edges` (prev/auth), `event_state_snapshot`, `room_state`, `event_txn`,
-      `latest_event`; forward extremities query
+- [x] T-2002 Event storage: `rooms`, `events` (canonical JSON verbatim + indexed
+      columns, NULL vs empty `state_key`, redacted/outlier/soft_failed, global
+      `stream_ordering`), `event_edges` (prev/auth), `room_state`,
+      `event_auth_context`, `event_txn`; forward-extremities query; dedup via unique
+      event id; per-device transaction ids — `tests/unit/eventstore_test.go`
 - [ ] T-2003 `POST /createRoom` + wire `/capabilities` to `roomversion.Available()`
 - [ ] T-2004 `internal/eventauth`: per-version authorisation rules and the auth-events
       selection algorithm (with the v10+ integer power-level rule)
