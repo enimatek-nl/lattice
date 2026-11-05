@@ -120,13 +120,16 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
       either half can arrive first — `internal/rooms/redaction.go`,
       `tests/unit/redaction_rules_test.go`, `tests/integration/redaction_test.go`;
       Complement `TestRedact/Event_content_is_redacted` now passes
-- [ ] T-2009a withhold from clients a redaction this server has not applied (the
+- [x] T-2009a withhold from clients a redaction this server has not applied (the
       specification's `should`: "they should not be sent to clients until both the redaction
       event and the event the redaction affects have been received, and can be validated").
-      The links exist (`redactions.applied`); the read paths do not consult them yet
-- [ ] T-2009b attach `unsigned.redacted_because`, and place `redacts` for the client's room
-      version, in `/sync` as well: `/event`, `/messages`, `/context` and state reads do both,
-      `/sync` serves the redacted form only
+      The links existed; now the read paths consult them. An unapplied redaction is left out
+      of `/messages` pages and the sync timeline, and `/event` answers it as not found
+- [x] T-2009b attach `unsigned.redacted_because`, and place `redacts` for the client's room
+      version, in `/sync` as well. Both halves landed in one place — `redaction.Servicer` —
+      because the drift was the bug: `/messages` explained an emptied event and `/sync` did
+      not. Any new read path goes through the servicer, including `/context` when T-2015
+      builds it
 - [x] T-2010 room upgrade path: `POST /rooms/{roomId}/upgrade` and a client-supplied
       `predecessor` in `creation_content`, with the transferable state carried, the aliases
       moved, the tombstone sent, and each local user's room rules carried across —

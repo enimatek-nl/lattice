@@ -1077,3 +1077,36 @@ Opened rather than hidden: T-3004b (rooms that predate snapshots have no groups,
 server leaves their current state alone instead of inventing one — DEC-025) and T-3004c
 (`reconcileCurrentState` runs on every persist while a room is forked — correct, unmeasured;
 DEC-024 records why materialising at persist was chosen over resolving at read).
+
+## 2026-11-05 — one answer to "what may this client see" (T-2009a, T-2009b)
+
+The redaction work had a gap I had noted and left: `/sync` served an emptied event with no
+explanation, while `/messages` attached `unsigned.redacted_because` and said who did it. Same
+room, same event, two answers — and a redaction that had not been applied yet was still
+listing itself in timelines, which the specification asks servers not to do until both halves
+are in hand.
+
+Both are the same decision, so they now live in one place: `redaction.Servicer` turns a stored
+row into what a client may see — the emptied view, `redacts` where the room version puts it,
+the copy under `unsigned`, and whether the event should be shown at all. `/event`, `/messages`,
+state reads and `/sync` go through it. `internal/events` already depends on `internal/redaction`
+(an event's ID is computed over its redacted form), so the servicer decodes with `matrixjson`
+rather than importing the event parser back — the dependency direction is not a detail here.
+
+A withheld redaction is kept, not deleted; only the view changes. `/event` answers it as
+not-found rather than with a distinct code, because "I hold this redaction but not what it
+destroys" tells the client more than the rule asks for, and a client that gets a 404 simply
+asks again later, which is the behaviour we want.
+
+Evidence: `tests/unit/serve_test.go` (the emptied form plus its reason; withholding until the
+partner arrives; a chunk that skips the withheld event and keeps the rest; `redacts` placement
+per room version). `tests/integration/redaction_test.go`: `TestSyncExplainsWhyAnEventItAlready
+SawWentEmpty`, and `TestARedactionIsNotShownToAClientUntilItsTargetArrives` — hs2 is handed the
+room and a redaction but not the message, its own user joins, and then `/messages`, `/event`
+and `/sync` all decline to show the redaction while the page around them still answers; when
+the message arrives, both halves show and the target comes back empty. I checked that test
+bites: with the skip removed, `/messages` returns 500 instead of a page.
+
+`make verify` and `golangci-lint` clean. Complement filtered run unchanged: `TestRedact` and
+the sync tests pass as before, so the added `unsigned` copy and the withheld redactions did not
+disturb what other implementations expect on the wire.

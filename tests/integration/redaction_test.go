@@ -293,3 +293,237 @@ func chunkEvent(chunk any, eventID string) map[string]any {
 	}
 	return nil
 }
+
+// TestSyncExplainsWhyAnEventItAlreadySawWentEmpty covers the half of redaction a client
+// cannot reconstruct on its own. `/messages` was already attaching the redaction under
+// `unsigned.redacted_because`; `/sync` served the emptied event with no explanation, so a
+// client watching a room saw content vanish with no record of what removed it — and the two
+// read paths disagreed about the same event.
+func TestSyncExplainsWhyAnEventItAlreadySawWentEmpty(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+
+	_, alice, _ := h.register(t, "redact4", "pw-redact4", "")
+	roomID := createRoom(t, h, alice, map[string]any{"preset": "public_chat"})
+	sent := h.mustStatus(t, send(t, h, roomID, "m.room.message", "txn-seev",
+		`{"msgtype":"m.text","body":"there and then gone"}`, alice), http.StatusOK).decoded(t)
+	eventID, _ := sent["event_id"].(string)
+	answer := h.mustStatus(t, h.put(t,
+		"/_matrix/client/v3/rooms/"+roomID+"/redact/"+eventID+"/txn-redact4",
+		map[string]any{"reason": "explain yourself"}, alice), http.StatusOK).decoded(t)
+	redactionID, _ := answer["event_id"].(string)
+
+	body, _ := syncNow(t, h, alice, "")
+	room := roomSection(t, body, "join", roomID)
+	if room == nil {
+		t.Fatalf("the room is missing from the sync: %v", body["rooms"])
+	}
+	list, _ := room["timeline"].(map[string]any)
+	events, _ := list["events"].([]any)
+
+	var seen bool
+	for _, entry := range events {
+		event, _ := entry.(map[string]any)
+		if event["event_id"] != eventID {
+			continue
+		}
+		seen = true
+		if content, ok := event["content"].(map[string]any); !ok || len(content) != 0 {
+			t.Errorf("the timeline serves the event with content still on it: %v", event["content"])
+		}
+		unsigned, _ := event["unsigned"].(map[string]any)
+		because, ok := unsigned["redacted_because"].(map[string]any)
+		if !ok {
+			t.Fatalf("the sync timeline does not say what redacted the event: %v", event)
+		}
+		if because["event_id"] != redactionID {
+			t.Errorf("redacted_because names %v, want %s", because["event_id"], redactionID)
+		}
+	}
+	if !seen {
+		t.Fatalf("the redacted event is not in the sync timeline: %v", events)
+	}
+
+	// The redaction itself is showable — both halves are in hand — and a v11 client looks
+	// for the target in the content.
+	var redactionSeen bool
+	for _, entry := range events {
+		event, _ := entry.(map[string]any)
+		if event["event_id"] != redactionID {
+			continue
+		}
+		redactionSeen = true
+		content, _ := event["content"].(map[string]any)
+		if content["redacts"] != eventID {
+			t.Errorf("the redaction does not name its target where a v11 client looks: %v", event)
+		}
+	}
+	if !redactionSeen {
+		t.Errorf("the redaction is missing from the sync timeline: %v", events)
+	}
+}
+
+// TestARedactionIsNotShownToAClientUntilItsTargetArrives is the specification's should: a
+// redaction should not be sent to a client until both the redaction and the event it affects
+// have been received and can be validated.
+//
+// The rule protects the client's picture of the room, not the server's data. A client shown
+// a redaction for an event it has never seen learns that something was destroyed with no way
+// to see the destruction — and if it later receives the target from elsewhere, it has to
+// invent the ordering of a change it was told about out of order.
+func TestARedactionIsNotShownToAClientUntilItsTargetArrives(t *testing.T) {
+	t.Parallel()
+	hs1, hs2 := federationPair(t)
+
+	token := hs1.registerUser(t, "redact5", "pw-redact5")
+	_, created := hs1.clientDo(t, http.MethodPost, "/_matrix/client/v3/createRoom",
+		map[string]any{"preset": "public_chat"}, token)
+	roomID, _ := created["room_id"].(string)
+	_, sent := hs1.clientDo(t, http.MethodPut,
+		"/_matrix/client/v3/rooms/"+roomID+"/send/m.room.message/txn-late",
+		map[string]any{"msgtype": "m.text", "body": "arrives after its redaction"}, token)
+	targetID, _ := sent["event_id"].(string)
+	_, redacted := hs1.clientDo(t, http.MethodPut,
+		"/_matrix/client/v3/rooms/"+roomID+"/redact/"+targetID+"/txn-redact5",
+		map[string]any{"reason": "out of order again"}, token)
+	redactionID, _ := redacted["event_id"].(string)
+
+	snapshot := hs1.roomSnapshot(t, roomID, token)
+	rules := roomversion.MustGet(snapshotRoomVersion(t, snapshot))
+	state := byDepth(dedupe(snapshot.State))
+	var target map[string]any
+	for _, event := range byDepth(dedupe(snapshot.State, snapshot.Messages)) {
+		if stringAny(event, "event_id") == targetID {
+			target = event
+		}
+	}
+	if target == nil {
+		t.Fatalf("%s's history is missing the message", hs1.name)
+	}
+	// What hs1 serves its own client is the redacted view; what it hands a peer is the event
+	// as signed plus the redaction, because each server applies the strip to its own copy.
+	// The content hash was taken over the unredacted form, so putting the content back is
+	// what makes the handover checkable — and note the event ID does not change, which is
+	// exactly why a redaction does not rename an event.
+	target["content"] = map[string]any{"msgtype": "m.text", "body": "arrives after its redaction"}
+
+	// hs2 gets the room and the redaction, but not the message the redaction names. It cites
+	// a state event hs2 holds rather than its target: a redaction need not descend from the
+	// event it destroys, which is what lets the two halves arrive in either order.
+	first := state[len(state)-1]
+	var pending map[string]any
+	for _, event := range byDepth(dedupe(snapshot.Messages)) {
+		if stringAny(event, "event_id") == redactionID {
+			pending = cloneEvent(t, event)
+		}
+	}
+	if pending == nil {
+		t.Fatalf("%s's history is missing the redaction", hs1.name)
+	}
+	pending["prev_events"] = []any{stringAny(first, "event_id")}
+	delete(pending, "event_id")
+	if err := events.Seal(hs1.name, rules, pending, hs1.app.Keys); err != nil {
+		t.Fatalf("resealing the redaction: %v", err)
+	}
+	pendingID, err := events.EventID(rules, pending)
+	if err != nil {
+		t.Fatalf("the early redaction's ID: %v", err)
+	}
+	pending["event_id"] = pendingID
+
+	if _, answer := hs1.sendTransaction(t, hs2, "room-without-target", byDepth(dedupe(snapshot.State))); anyRefusal(t, answer) {
+		t.Fatalf("%s refused the room's beginning: %v", hs2.name, answer.PDUs)
+	}
+	if _, answer := hs1.sendTransaction(t, hs2, "redaction-without-target", []map[string]any{pending}); anyRefusal(t, answer) {
+		t.Fatalf("%s refused a valid redaction: %v", hs2.name, answer.PDUs)
+	}
+
+	// A local user joins the room hs2 was told about, and asks what is in it.
+	bea := hs2.registerUser(t, "bea", "pw-bea")
+	if status, answer := hs2.clientDo(t, http.MethodPost, "/_matrix/client/v3/join/"+roomID, map[string]any{}, bea); status != http.StatusOK {
+		t.Fatalf("%s would not let its own user join a room it holds: %v", hs2.name, answer)
+	}
+
+	// The redaction is held by this server, and no client-facing path shows it — while the
+	// page around it still answers, because withholding one event is not a reason to fail a
+	// timeline read.
+	status, page := hs2.clientDo(t, http.MethodGet, "/_matrix/client/v3/rooms/"+roomID+"/messages?limit=50", nil, bea)
+	if status != http.StatusOK {
+		t.Fatalf("%s refused the history of a room its own user is in: %v", hs2.name, page)
+	}
+	chunk := chunkList(t, page["chunk"])
+	if len(chunk) < 5 {
+		t.Fatalf("%s's history page is short of the state it was handed: %v", hs2.name, chunk)
+	}
+	for _, entry := range chunk {
+		if stringAny(entry, "type") == "m.room.redaction" {
+			t.Errorf("%s shows a redaction whose target it has never seen: %v", hs2.name, entry)
+		}
+	}
+	if status, answer := hs2.clientDo(t, http.MethodGet, "/_matrix/client/v3/rooms/"+roomID+"/event/"+pendingID, nil, bea); status != http.StatusNotFound {
+		t.Errorf("%s answered the unshowable redaction with %d (%v), want 404", hs2.name, status, answer)
+	}
+	if status, body := hs2.clientDo(t, http.MethodGet, "/_matrix/client/v3/sync?timeout=0", nil, bea); status != http.StatusOK {
+		t.Fatalf("%s refused a sync to its own user: %v", hs2.name, body)
+	} else if syncHasRedaction(t, body, roomID) {
+		t.Errorf("%s put an unshowable redaction in the sync timeline", hs2.name)
+	}
+
+	// The target turns up. The redaction is applied, and both halves become showable.
+	if _, answer := hs1.sendTransaction(t, hs2, "target-at-last", []map[string]any{target}); anyRefusal(t, answer) {
+		t.Fatalf("%s refused the late message: %v", hs2.name, answer.PDUs)
+	}
+	status, page = hs2.clientDo(t, http.MethodGet, "/_matrix/client/v3/rooms/"+roomID+"/messages?limit=50", nil, bea)
+	if status != http.StatusOK {
+		t.Fatalf("%s refused the history after both halves arrived: %v", hs2.name, page)
+	}
+	var sawRedaction, sawTarget bool
+	for _, entry := range chunkList(t, page["chunk"]) {
+		switch stringAny(entry, "event_id") {
+		case pendingID:
+			sawRedaction = true
+		case targetID:
+			sawTarget = true
+			if content, ok := entry["content"].(map[string]any); ok && len(content) != 0 {
+				t.Errorf("%s kept the content the redaction removes: %v", hs2.name, content)
+			}
+		}
+	}
+	if !sawRedaction || !sawTarget {
+		t.Errorf("%s's history after both halves arrive: redaction shown %v, target shown %v",
+			hs2.name, sawRedaction, sawTarget)
+	}
+	if status, answer := hs2.clientDo(t, http.MethodGet, "/_matrix/client/v3/rooms/"+roomID+"/event/"+pendingID, nil, bea); status != http.StatusOK {
+		t.Errorf("%s still refuses the redaction after both halves arrived: %d %v", hs2.name, status, answer)
+	}
+}
+
+// syncHasRedaction reports whether a sync response's timeline for a room carries a redaction.
+func syncHasRedaction(t *testing.T, body map[string]any, roomID string) bool {
+	t.Helper()
+	rooms, _ := body["rooms"].(map[string]any)
+	joined, _ := rooms["join"].(map[string]any)
+	room, _ := joined[roomID].(map[string]any)
+	timeline, _ := room["timeline"].(map[string]any)
+	list, _ := timeline["events"].([]any)
+	for _, entry := range list {
+		event, _ := entry.(map[string]any)
+		if stringAny(event, "type") == "m.room.redaction" {
+			return true
+		}
+	}
+	return false
+}
+
+// chunkList decodes a `/messages` chunk into events.
+func chunkList(t *testing.T, chunk any) []map[string]any {
+	t.Helper()
+	raw, _ := chunk.([]any)
+	out := make([]map[string]any, 0, len(raw))
+	for _, entry := range raw {
+		if event, ok := entry.(map[string]any); ok {
+			out = append(out, event)
+		}
+	}
+	return out
+}
