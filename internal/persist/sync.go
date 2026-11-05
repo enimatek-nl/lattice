@@ -12,11 +12,16 @@ import "context"
 // between rooms, and this is exactly why — a state resolution would be wrong, but a
 // "what did this server persist while you were away" scan is precisely what it is for.
 
-// EventsAfter returns the non-outlier events in a room with a stream position greater
-// than after, oldest first, at most limit (all of them when limit <= 0).
+// EventsAfter returns the events in a room with a stream position greater than after,
+// oldest first, at most limit (all of them when limit <= 0).
+//
+// Outliers and soft-failed events are left out because both are invisible to clients by
+// definition: an outlier has no resolved place in the history, and a soft-failed event
+// is one this server's current state says should not have been sent — the specification
+// says it is stored and resolved but not relayed.
 func (r *eventRepo) EventsAfter(ctx context.Context, roomID string, after int64, limit int) ([]*Event, error) {
 	q := r.db.WithContext(ctx).
-		Where("room_id = ? AND stream_ordering > ? AND outlier = ?", roomID, after, false).
+		Where("room_id = ? AND stream_ordering > ? AND outlier = ? AND soft_failed = ?", roomID, after, false, false).
 		Order("stream_ordering ASC")
 	if limit > 0 {
 		q = q.Limit(limit)
@@ -28,13 +33,13 @@ func (r *eventRepo) EventsAfter(ctx context.Context, roomID string, after int64,
 	return rows, nil
 }
 
-// CountAfter counts the non-outlier events in a room after a stream position. Sync uses
-// it to decide whether the window it is returning is complete, which is what the
-// timeline's `limited` flag tells the client.
+// CountAfter counts the events a client would be shown after a stream position. It
+// excludes exactly what EventsAfter excludes, because a `limited` flag computed over a
+// different set than the one being returned would be a wrong flag.
 func (r *eventRepo) CountAfter(ctx context.Context, roomID string, after int64) (int64, error) {
 	var count int64
 	err := r.db.WithContext(ctx).Model(&Event{}).
-		Where("room_id = ? AND stream_ordering > ? AND outlier = ?", roomID, after, false).
+		Where("room_id = ? AND stream_ordering > ? AND outlier = ? AND soft_failed = ?", roomID, after, false, false).
 		Count(&count).Error
 	if err != nil {
 		return 0, err
@@ -43,15 +48,16 @@ func (r *eventRepo) CountAfter(ctx context.Context, roomID string, after int64) 
 }
 
 // LatestEvents returns the newest events in a room, oldest first in the slice, which is
-// the shape a client timeline wants. Outliers are excluded: an event whose position in
-// the history is not yet resolved has no place in a timeline.
+// the shape a client timeline wants. Outliers and soft-failed events are excluded: an
+// event whose place in the history is unresolved, or which this server has decided not
+// to relay, has no place in a timeline.
 func (r *eventRepo) LatestEvents(ctx context.Context, roomID string, limit int) ([]*Event, error) {
 	if limit <= 0 {
 		limit = 1
 	}
 	var rows []*Event
 	if err := r.db.WithContext(ctx).
-		Where("room_id = ? AND outlier = ?", roomID, false).
+		Where("room_id = ? AND outlier = ? AND soft_failed = ?", roomID, false, false).
 		Order("stream_ordering DESC").Limit(limit).Find(&rows).Error; err != nil {
 		return nil, err
 	}

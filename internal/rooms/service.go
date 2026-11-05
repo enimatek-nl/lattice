@@ -109,8 +109,12 @@ type Service struct {
 	// rules about the old room can be carried over. Implemented by
 	// [*pushrules.Service].
 	upgrades UpgradeNotifier
-	name     string
-	log      *slog.Logger
+	// relayer hands a persisted event to the other homeservers in the room. It is nil
+	// until federation is wired up, and a room service without one works exactly as
+	// before: local rooms stay local.
+	relayer Relayer
+	name    string
+	log     *slog.Logger
 	// now is replaced in tests. A homeserver's timestamps must come from the server,
 	// but a test has to control them to make ordering assertions.
 	now func() time.Time
@@ -139,6 +143,21 @@ type PresenceNotifier interface {
 type UpgradeNotifier interface {
 	RoomUpgraded(ctx context.Context, oldRoomID, newRoomID string) error
 }
+
+// Relayer is what the room service uses to say that an event exists and the other
+// servers in the room should be told. Implemented by [*federation.Sender].
+//
+// It is called after the write committed, like the other notifiers: a queue entry for an
+// event that was never persisted would make this server promise to send something it does
+// not have. Queuing is not delivery — the sender retries on its own schedule, so one
+// unreachable remote cannot make a local send fail.
+type Relayer interface {
+	Relay(ctx context.Context, roomID, eventID string) error
+}
+
+// SetRelayer connects the federation sender. Without it this server keeps rooms to
+// itself, which is the honest state of a server with federation not yet wired in.
+func (s *Service) SetRelayer(relayer Relayer) { s.relayer = relayer }
 
 func New(db *persist.Database, signer events.Signer, presence PresenceNotifier, upgrades UpgradeNotifier, serverName string, log *slog.Logger) (*Service, error) {
 	if db == nil {
@@ -180,6 +199,7 @@ func (s *Service) WithTx(tx *gorm.DB) *Service {
 		signer:   s.signer,
 		presence: s.presence,
 		upgrades: s.upgrades,
+		relayer:  s.relayer,
 		name:     s.name,
 		log:      s.log,
 		now:      s.now,

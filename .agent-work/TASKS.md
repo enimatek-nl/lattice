@@ -191,3 +191,68 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
       fails at a `/sync` step is presence, `device_lists`, MSC4222 `state_after`, and the
       two-server cases that need federation
 - [x] T-3002 the sync-dependent assertions in `TestLogout` and `TestDeviceManagement` pass
+
+## M4 — federation foundation (started)
+
+- [x] T-4001 `internal/federation/auth.go`: the X-Matrix credential — build and check.
+      `origin`/`key`/`mac`, the MAC over method+uri+body signed as signing JSON, the
+      destination check, the body limit before any parsing, and the rule that a signature
+      by a key the sender does not publish is no signature at all —
+      `tests/unit/fedauth_test.go`
+- [x] T-4002 `internal/federation/target.go`: server name → address. `.well-known/matrix/server`
+      delegation, `_matrix._tcp` and `_matrix-federation._tcp` SRV records, IP literals and
+      explicit-port names skipping delegation, the certificate name staying the name that
+      was asked for (except for an IP delegate), caching with a TTL, and a broken delegation
+      treated as no delegation rather than as permission —
+      `tests/unit/federationdiscovery_test.go`
+- [x] T-4003 `internal/federation/ippolicy.go`: which addresses this server will dial.
+      Deny-by-default over loopback, the unspecified address, link-local (instance metadata),
+      CGNAT, multicast and the private ranges; a configured allow list narrows further and a
+      deny entry still wins inside it; a rule that cannot be parsed stops startup —
+      `tests/unit/federationdiscovery_test.go`, `tests/unit/config_test.go`
+- [x] T-4004 `internal/federation/keyring.go`: other servers' signing keys. Fetch direct,
+      then notaries; a document is believed only when the server it names signed a key it
+      publishes; the trust window is clamped to a week whatever the document claims; retired
+      keys are usable until their own `expired_ts`; expiry is enforced only for the room
+      versions that enforce it; a cached answer is reused instead of refetched —
+      `tests/unit/federationkeys_test.go`
+- [x] T-4005 `internal/federation/client.go` + `sender.go`: the outbound half. Signed
+      transactions, an on-disk queue with per-destination batching and a claim that cannot
+      double-send, exponential retries bounded by age and attempts, a remote's per-PDU
+      refusal recorded as a refusal rather than retried forever, and a worker whose lifetime
+      is the process's — `tests/integration/federation_test.go`
+- [x] T-4006 `PUT /_matrix/federation/v1/send/{txnId}`: the inbound half. Authenticated
+      before a byte of the body is read, the body's `origin` required to agree with the
+      credential, the PDU and EDU caps enforced, transactions remembered and answered
+      identically when replayed, and each PDU answered by event ID with its own reason —
+      `tests/integration/federation_test.go` incl. the forged, tampered, wrong-destination,
+      unknown-key, origin-mismatch, oversize and replay cases
+- [x] T-4007a `rooms.Service.AcceptRemoteEvent`: the receiving checks in the specification's
+      order — event validity, event ID against the hash of its own content, the content hash
+      it carries, the origin server's signature, authorisation against the auth events the
+      sender cited; a room introduced by a remote `m.room.create` is adopted with the room
+      version that create event asked for — `tests/integration/federation_test.go`
+- [x] T-4007b `GET /_matrix/federation/v1/event/{eventId}`: hands an event to a server the
+      room's own state says is present, and to nobody else —
+      `tests/integration/federation_test.go`
+- [x] T-4007c soft-failure recorded on ingest: an event its own branch authorises but the
+      room's current state does not is stored, marked, kept out of what this server relays
+      and out of the forward extremities, and still answered to peers over `/event` —
+      `internal/rooms/remote.go`, `internal/persist/event.go`
+- [ ] T-4007 missing-event and backfill fetch: an event whose predecessors or auth events
+      this server does not have is refused today with the reason named, instead of the gap
+      being fetched from the sender. Until it exists a handover must arrive in causal order
+- [ ] T-4008 EDUs are received, acknowledged and logged, and nothing else happens to them:
+      presence, typing, receipts and device-list units over federation are their own work,
+      and the outbound `EnqueueEDU` path has no caller yet
+- [ ] T-4009 the join/leave/invite protocols over federation (`/make_join`, `/send_join`,
+      `/state_ids`, `/backfill`, `/make_leave`, `/send_leave`, `/invite`, `/event_auth`),
+      without which no remote user can be in a room here, which is what makes most of the
+      two-server Complement tests unreachable
+- [ ] T-4010 federation transaction and key-cache retention is written but never pruned by a
+      scheduled job; `DropExpiredTransactions`/`DropExpiredServerKeys` need a caller
+- [ ] T-4011 the address policy is applied when discovery resolves a name, not when the
+      socket is opened. A name whose answer changes between the two (DNS rebinding) is not
+      covered; the fix is a dialer that re-checks the address it is about to connect to
+- [ ] T-4012 `Sender.MaxAge`/`MaxAttempts` and the queue depth are configured but not exposed
+      to an operator: no admin endpoint and no metric reports a queue that will never drain

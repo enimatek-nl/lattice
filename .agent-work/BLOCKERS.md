@@ -132,3 +132,16 @@ another server, are refused with 501 and an explicit message. Consequence: Compl
 multi-server suites (knocking with a remote invite, restricted-room remote joins, all
 federation suites) cannot pass. The refusals are recorded rather than hidden, and 403 or
 200 would both be lies.
+
+## F-015 — federation reaches the point where a room has to exist on both sides (open, M4)
+
+The transport, the credential, the key trust chain, the transaction handling and the
+receiving checks work between two homeservers in one process (`TestFederationHandover`).
+They do not yet let a *user* on one server be in a room on another: `/make_join`,
+`/send_join`, `/state_ids`, `/backfill`, `/invite` and `/event_auth` are not implemented
+(T-4009), and an event whose predecessors or auth events are missing is refused rather
+than fetched (T-4007). Consequence: Complement's federation suites still fail here even
+though the parts they test first now exist, because Complement drives them through a join.
+
+Action: T-4009 (the join/leave/invite exchange), with T-4007 (missing-event fetch) needed
+for any handover that does not arrive in causal order.

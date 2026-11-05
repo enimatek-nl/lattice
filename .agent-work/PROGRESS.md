@@ -789,3 +789,79 @@ subtests pass — all the ones that need a single homeserver. The other five, an
 failures in `TestPushRuleRoomUpgrade` and `TestSync`, all stop at the same place:
 `POST /join` for a room this server has never heard of. Federation (T-4005) is now the largest
 single cause of Complement failures here.
+
+## 2026-11-05 — federation begins: two homeservers, one process (M4)
+
+Federation stopped being a placeholder. A homeserver can now authenticate another
+homeserver, decide what its keys are worth, accept its events after checking everything
+the specification says a receiver checks, answer for the ones it took, and keep trying to
+deliver the ones it owes — without any of that being able to block a local user.
+
+What was built:
+
+* `internal/federation`: the X-Matrix credential in both directions (`auth.go`); server
+  name to address, with `.well-known` delegation, both SRV service names, IP literals and
+  explicit ports, and answers cached under a TTL (`target.go`); the addresses this server
+  is willing to dial, denied by default for loopback, link-local — where the instance
+  metadata services live — CGNAT, multicast and the private ranges (`ippolicy.go`); other
+  servers' signing keys, fetched direct or through a notary, trusted only when that server
+  signed a key it publishes, with the trust window clamped to a week whatever the document
+  claims and retired keys honoured until their own `expired_ts` (`keyring.go`); the
+  outbound client and the queue that retries with a bounded schedule and remembers a
+  remote's refusal instead of retrying it forever (`client.go`, `sender.go`).
+* `PUT /_matrix/federation/v1/send/{txnId}`: authenticated before a byte of the body is
+  read, the body's `origin` required to agree with the credential, the PDU and EDU caps
+  enforced, a replayed transaction answered identically, and every PDU answered by its own
+  event ID with its own reason. `GET /_matrix/federation/v1/event/{eventId}` hands an event
+  to a server the room's own state says is present, and to nobody else.
+* `rooms.Service.AcceptRemoteEvent`: the receiving checks in the specification's order —
+  valid in its room version, its ID equal to the hash its content makes, its content hash
+  matching, its origin server's signature checking, its cited auth events authorising it —
+  and a room introduced by a remote `m.room.create` adopted at the room version that create
+  event asked for, not this server's default. An event its branch authorises but the room's
+  current state does not is stored and soft-failed (DEC-018): it is kept out of what this
+  server relays and out of the forward extremities, and still shown to peers over `/event`,
+  because the specification says a soft-failed event is part of the history.
+* Federation configuration: `federation.enabled`, `notary_servers`, `ip_allow`, `ip_deny`,
+  `timeout`, `queue_max_age`, `queue_max_attempts`, with the environment overrides
+  (`LATTICE_FEDERATION_ENABLED`, `..._IP_ALLOW`, `..._IP_DENY`, `..._NOTARIES`), and
+  malformed CIDRs stopping startup rather than vanishing into an open door.
+
+Four defects the work exposed, each fixed with a test that used to pass:
+
+* `GET /rooms/{roomID}/state` answered with a bare JSON array. The specification requires
+  every endpoint to answer with a JSON object, and Synapse's clients read `response["state"]`
+  — an array there is an empty room to them. Two of this project's own tests had been written
+  around the wrong shape and asserted it (REQ-HTTP-007).
+* Event signature verification used a generic JSON signer. In the room versions whose event
+  IDs are hashes, the identifier is not part of the signed document, so keeping it makes every
+  honestly signed event look forged: this server would have refused real events from every
+  other server on the network, and had no test that could notice (DEC reference: the seal
+  tests predate any receiver).
+* Verification never checked the `hashes` an origin server records. In room versions 3 and up
+  the event ID is the hash of the *redacted* form, so the body of a message is not in it — the
+  content hash is the only thing that puts the body into the event's identity. Without that
+  check, a homeserver in the middle could rewrite a message's text and present the same,
+  correctly identified, correctly signed event (REQ-FED-010).
+* `federation_queue.dropped_at` was a plain `time.Time`, so every queued row carried the zero
+  date instead of NULL, and every "is this still owing?" query — including the claim that
+  feeds the sender — answered no. The queue silently emptied itself and undelivered events
+  were lost. Nullable columns in the storage layer are pointers now, where NULL is the answer.
+
+Local evidence: full suite green — `go vet ./...` clean, `tests/unit` and `tests/integration`
+pass (`go test -count=1 ./...`). New: `tests/unit/federationdiscovery_test.go`,
+`tests/unit/federationkeys_test.go`, `tests/unit/eventsignature_test.go` (all supported room
+versions), and `tests/integration/federation_test.go`, which runs two homeservers on real
+listeners with real TLS certificates from a test CA and real `X-Matrix` signatures, moves a
+room's beginning from one to the other, reads an event back and compares every field that a
+hash depends on, and then checks the refusals: no credential, an unknown key ID, a body changed
+after signing, a credential addressed to somebody else, an origin that disagrees with its
+credential, a forged event signature, an event in an unknown room, a transaction of 51 PDUs,
+and a replay.
+
+What this does *not* establish: Complement's federation suites still fail (F-015) — they drive
+federation through a join, and `/make_join`, `/send_join`, `/state_ids`, `/backfill` and
+`/invite` are not implemented (T-4009). An event whose predecessors are missing is refused with
+the reason named rather than fetched (T-4007). EDUs are acknowledged and logged, and nothing
+else happens to them (T-4008). The address policy is applied when discovery resolves a name,
+not when the socket opens, so DNS rebinding is not covered (T-4011).

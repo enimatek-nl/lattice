@@ -48,10 +48,19 @@ Specification: Matrix v1.19 (`docs/specification-version.md`).
 | --- | --- | --- | --- |
 | `GET /_matrix/federation/v1/version` | implemented | yes | **verified** (the 405 half of `TestUnknownEndpoints`) |
 | `GET /_matrix/key/v2/server` (signed document, verified against its own key) | implemented | yes | not directly exercised |
-| `POST /_matrix/key/v2/query` (answers for this server only) | partial — remote key notarisation and caching are M4 | yes | not directly exercised |
+| `POST /_matrix/key/v2/query` (answers for this server only) | partial — *asking* a notary is implemented and tested; answering about other servers is not | yes | not directly exercised |
+| Server discovery: `.well-known/matrix/server` delegation, `_matrix._tcp`/`_matrix-federation._tcp` SRV records, IP literals, explicit ports, certificate-name rules, caching, refusal of a broken delegation | implemented | yes (`tests/unit/federationdiscovery_test.go`) | not verified: Complement gives every container a fixed `SERVER_NAME` and no DNS |
+| Address policy for dialed addresses (loopback, link-local metadata, CGNAT, multicast, private ranges denied by default; configurable allow/deny) | implemented | yes (`tests/unit/federationdiscovery_test.go`, `tests/unit/config_test.go`) | n/a. Known limit: enforced at resolution, not at dial time |
+| Remote signing keys: fetch, self-signature requirement, one-week trust clamp, retired keys until `expired_ts`, expiry enforced per room version, notary fallback, cache reuse | implemented | yes (`tests/unit/federationkeys_test.go`) | not verified |
+| `X-Matrix` request authentication (in and out) | implemented | yes (`tests/unit/fedauth_test.go`, `tests/integration/federation_test.go`) | not verified: needs two homeservers in one Complement run |
+| `PUT /_matrix/federation/v1/send/{txnId}`: authentication, origin agreement, PDU/EDU caps, per-PDU answers, transaction replay answered identically | implemented | yes (`tests/integration/federation_test.go`) | not verified (needs two servers) |
+| PDU ingest checks in specification order: validity in room version, event ID = reference hash, content hash, origin signature, authorisation against cited auth events; remote `m.room.create` adopted with its own room version | implemented | yes (`tests/integration/federation_test.go`, `tests/unit/eventsignature_test.go`) | not verified |
+| Soft-failure: stored, marked, not relayed, not a forward extremity, still answered over `/event` | implemented, partially tested | the refusal path is asserted end to end; the "client never sees it" half is not | not verified |
+| `GET /_matrix/federation/v1/event/{eventId}` with the room-membership restriction | implemented | yes (`TestFederationEventAccess`) | not verified |
+| Outbound queue: per-destination batching, non-double-claiming, bounded retries, remote refusals recorded rather than retried, worker tied to process lifetime | implemented | yes (`TestFederationSenderQueue`) | not verified |
+| EDUs: received, capped, acknowledged, logged — and nothing else | partial | receipt path only | not verified |
+| Joins, leaves, invites, `/state_ids`, `/backfill`, `/missing_events`, `/make_*`/`send_*`, `/event_auth`, `/hooda`, third-party invites | not implemented | — | all `federation_*` Complement tests still fail |
 | TLS on the federation listener (TLS ≥ 1.2, CA-signed certificate support) | implemented | yes | every run uses it: containers start healthy and federation attempts reach the handshake |
-| `X-Matrix` request authentication, PDUs, EDUs, `/send/:txn`, joins, `/state_ids`, backfill, `/event`, `/missing_events`, `/transaction` idempotency | not implemented | — | all `federation_*` tests fail (M4) |
-| Server discovery (`.well-known` delegation, SRV records), key fetching | not implemented | — | M4 |
 
 ## Protocol primitives (appendices)
 

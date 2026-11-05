@@ -54,6 +54,16 @@ func (s *Service) applySideEffects(ctx context.Context, eventID string) {
 		return
 	}
 
+	// Every event this server accepts is offered to the other servers in the room. A
+	// soft-failed or outlier event is not: the first is one this server has decided not
+	// to relay, and the second has no resolved place in the history to relay it from.
+	if s.relayer != nil && !stored.SoftFailed && !stored.Outlier {
+		if err := s.relayer.Relay(ctx, roomID, eventID); err != nil {
+			s.log.Warn("rooms: cannot queue an event for the other servers in the room",
+				"room_id", roomID, "event_id", eventID, "error", err)
+		}
+	}
+
 	// A tombstone has an empty state key, so the member check below must not run first.
 	if eventType == tombstoneEventType {
 		if stateKey, _ := body["state_key"].(string); stateKey == "" {
