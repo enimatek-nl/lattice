@@ -39,6 +39,9 @@ type Deps struct {
 	// exclusion is room state, and the endpoints and the event-accepting path have to give the
 	// same answer to it.
 	ACLs RoomACLs
+	// Backfill asks another server for the events this room's events cite and this server does
+	// not hold. It is what makes a refusal for missing predecessors a step rather than an ending.
+	Backfill GapFiller
 }
 
 // Register installs the Server-Server and key API routes.

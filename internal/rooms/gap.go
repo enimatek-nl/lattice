@@ -8,6 +8,24 @@ import (
 	"github.com/enimatek/lattice/internal/persist"
 )
 
+// MissingPredecessorsError says that an event offered to this server cites predecessors this
+// server does not hold. It is deliberately not a refusal: the event may be perfectly good, and this
+// server's inability to place it is a fact about this server's copy of the room. A caller with a
+// server to ask — the one that just offered the event, usually — can go and get what is missing and
+// offer it again.
+type MissingPredecessorsError struct {
+	EventID string
+	RoomID  string
+	// Missing names the cited predecessors that are not held here.
+	Missing []string
+}
+
+// Error implements error, in the words a federation sender is answered with.
+func (e *MissingPredecessorsError) Error() string {
+	return fmt.Sprintf("its predecessors are not stored here: %d of the events it cites are missing",
+		len(e.Missing))
+}
+
 // MissingPredecessors names the holes in a room's history: events this room's own events cite as
 // predecessors, and which this server does not hold. They are not damage. A room that was joined
 // rather than created here has holes by construction — a join cites the room's forward
