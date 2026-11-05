@@ -91,3 +91,55 @@ rather than assumed.
 An earlier build in this session produced a container image and Complement blueprint images. Those
 artefacts were rebuilt from the repository (`deploy/complement/Dockerfile`) so the recorded results
 are reproducible from source; the earlier ad-hoc recipe is not used.
+
+---
+
+# Iteration 2 — M2 protocol primitives (T-2000, T-2001, T-2011, T-2012)
+
+Timestamp: 2026-11-05 (UTC)
+
+## Specification research
+
+Fetched from https://spec.matrix.org/v1.19/ : `rooms/README` and all eleven per-version
+pages, `rooms/redactions`, `rooms/authorization_rules`, `rooms/version_history`,
+`server_server_api/signing_events` (content hash, reference hash, signing over the redacted
+event), `appendices/canonical_json`, `client_server_api/capabilities`. Cross-checks: Synapse
+`synapse/events/__init__.py` (`_RedactionV2`) and gomatrixserverlib `eventversion.go`
+(version registry) and `eventcrypto.go` (`referenceOfEvent`), read from the local Go module
+cache.
+
+## Built
+
+| Package | Contents |
+| --- | --- |
+| `internal/roomversion` | v1-v12 registry (state resolution, event ID format, auth rule set id, redaction profile, join rules, integer power levels, key validity, canonical JSON strictness, aliases special casing, creator placement, redacts placement, domain-free room IDs, privileged creators); grammar validation; `Supported` = {10, 11}, default v11; `Available()` for capabilities |
+| `internal/redaction` | v1-v10 and v11/v12 strip lists, per-type content allow lists, v9 `join_authorised_via_users_server`, v6 aliases, v11 whole create content / `content.redacts` / `invite` / `third_party_invite.signed`, `IsRedacted` heuristic, non-mutating |
+| `internal/events` | `Parse` (numbers kept exact), `Canonical`, `ContentHash`, `ReferenceHash`, `EventID`, `Seal`, transport-key stripping |
+
+## Evidence
+
+- `go test -count=1 ./tests/...`: integration ok, unit ok.
+- `make verify` (vet + `-race`): ok. `golangci-lint run ./...`: 0 issues.
+- New tests: `tests/unit/roomversion_test.go`, `tests/unit/redaction_test.go`,
+  `tests/unit/eventseal_test.go`.
+- Cross-implementation goldens from gomatrixserverlib
+  v0.0.0-20260716140101-4fe595dc7f58 for identical input bytes: v3 and v10 give
+  `$1YYoe3Q9H0V7opN6VO8xuNAlY6Gyk4uxxW9qIEi3SxE`, v11 gives
+  `$F0qOSjkTdQqqMJmoiJAQY5guE-jgC6M0CMmPOzfWxOg`. The ID changes between v10 and v11
+  because room version 11 changed which keys survive redaction — that is exactly what the
+  test is there to catch.
+
+## Docs
+
+`docs/requirements.md` §6 replaced by 22 normative rows with status and tests, plus three
+documented interpretation decisions. `docs/compliance-matrix.md` gained an "M2 protocol
+primitives" section. `.agent-work/ARCHITECTURE.md` gained the M2 design (storage plan and
+five behaviour-changing decisions). `.agent-work/TASKS.md` M2 replanned into T-2002..T-2012
+with T-2000/T-2001/T-2011/T-2012 checked off. `.agent-work/BLOCKERS.md` gained F-006 (the
+`redacts` ambiguity) and F-007 (environment limits on code search).
+
+## Honest status
+
+M2 is not endpoint-reachable: no `createRoom`, no authorisation rules, no state resolution,
+no event storage. `/capabilities` still advertises a room version the server cannot create;
+the registry now knows the honest set and the handler gets wired together with `createRoom`.

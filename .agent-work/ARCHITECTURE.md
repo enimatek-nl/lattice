@@ -205,3 +205,56 @@ installs the CA into the trust store, renders config from env (`SERVER_NAME`,
 `LATTICE_REGISTRATION_SHARED_SECRET=complement`, open registration on) and execs the server.
 `scripts/complement.sh` builds the image with podman (`--format docker`, needed for HEALTHCHECK)
 and runs Complement with `DOCKER_HOST` + `COMPLEMENT_HOSTNAME_RUNNING_COMPLEMENT=host.containers.internal`.
+
+---
+
+# M2 design: rooms, events, state (settled while starting M2)
+
+## Why the primitives come before the endpoints
+
+An event ID is SHA-256 over the event's redacted canonical form, and the origin server's
+signature is taken over those same redacted bytes. Redaction rules, canonical JSON and the
+room version table are therefore load-bearing for identity: get one wrong and two servers
+derive different IDs for the same event and the room history forks permanently. M1 pinned
+canonical JSON; M2 pins redaction and hashing before any room exists to break.
+
+## Packages
+
+| Package | Responsibility |
+| --- | --- |
+| `internal/roomversion` | the version table; single source of truth for per-version behaviour |
+| `internal/redaction` | version-specific strip lists and content allow lists; pure, non-mutating |
+| `internal/events` | parse, canonical form, content hash, reference hash, event ID, `Seal` |
+| `internal/eventauth` (next) | rules 1-10 per version + auth-events selection |
+| `internal/state` (next) | current state per room, forward extremities, State Resolution 2 |
+| `internal/rooms` (next) | room service: create, membership, send; repositories only |
+
+## Storage plan for events (T-2002)
+
+Store the canonical JSON bytes plus indexed columns; never normalise an event into Go struct
+fields on disk, because the bytes are what peers hash.
+
+- `events(event_id PK, room_id, type, state_key, sender, depth, origin_server_ts,
+  received_ts, json, hashes, signatures, redacted, outlier, soft_failed)`
+- `event_edges(event_id, prev_event_id, kind)` with kind `prev` | `auth` — history is a walk
+  over these rows; forward extremities are events with no incoming `prev` edge
+- `event_state_snapshot(event_id, state_event_id)` — the state that authorised each event,
+  so federation and re-authorisation never recompute the past
+- `room_state(room_id, type, state_key, event_id)` — current state, separate from snapshots
+- `event_txn(device_id, txn_id, event_id)` — `/send/{type}/{txn}` idempotency
+- `latest_event(room_id, event_id, stream_ordering)` — the ordering sync needs in M3, added
+  now so M3 does not retrofit ordering
+
+## Decisions that change behaviour
+
+1. New rooms default to **v11**, offered set **{10, 11}**. v12 is registered but not offered
+   (domain-free room IDs, privileged creators, revised state resolution: separate work).
+   v1-v9 stay registered so their rooms and events are handled by their own rules.
+2. **Signatures cover the redacted form** (spec-mandated), so the event ID is derived after
+   sealing: `hashes` is part of what gets signed.
+3. **Transport keys are stripped before hashing/signing**: `event_id` (hash-ID versions),
+   `outlier`, `destinations`, `age_ts`, `unsigned` — as Synapse and gomatrixserverlib do.
+4. **`redacts` is dropped by redaction in v3-v10** (normative strip list; gomatrixserverlib
+   agrees). Falsifiable — see `BLOCKERS.md` F-006.
+5. **State Resolution 2 only, for v2-v11.** v1 and v2.1 stay unimplemented rather than
+   approximated, and the versions that need them are not offered.

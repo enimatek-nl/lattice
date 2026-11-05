@@ -34,3 +34,32 @@ deliberate decisions that must not be forgotten.
 - `COMPLEMENT_DIR` defaults to `../complement`; the local checkout is `~/complement` at
   `7b38a63c9db3337292bee5887fc8533be3a57b9f`.
 - `golangci-lint` is installed; `make lint` uses it and falls back to `go vet` if absent.
+
+## F-006 — `redacts` in room versions 3-10: specification ambiguity (open, low risk)
+
+The per-version PDU tables list a top-level `redacts` property, but the same pages'
+redaction strip list does not protect it, so the redacted form — hence the reference hash and
+event ID — drops it. gomatrixserverlib drops it (`unredactableEventFieldsV1` in
+`eventcrypto.go`). Synapse keeps redaction rules in Rust under `rust/src/redactions/`, which
+could not be read in this session.
+
+Decision: follow the normative strip list, matching gomatrixserverlib.
+Risk: a peer that preserves `redacts` derives a different event ID for v3-v10 redaction
+events.
+Action: the golden test in `tests/unit/redaction_test.go` plus Complement's redaction tests
+will expose it; revisit then.
+
+## F-007 — environment: no pip, raw-source fetches blocked
+
+`pip`/`pip3` are unavailable and `raw.githubusercontent.com` fetches were refused, so GitHub
+code search via the shell helper was not usable. Reading dependencies from the local Go
+module cache (`~/go/pkg/mod/...`) works well for Go implementations and is the recommended
+route next time. Not blocking.
+
+## F-008 — process note: M2 task list was stale after iteration 1
+
+`TASKS.md` still showed T-2000/T-2001 unchecked and PROGRESS/ARCHITECTURE had no M2 section
+while the code, requirements and compliance matrix were already committed. Corrected in this
+iteration. Cause: a docs update script aborted partway (anchor string mismatch) and the
+commit ran anyway. Countermeasure: commit docs updates separately from the script, and check
+`git show --stat` before moving on.

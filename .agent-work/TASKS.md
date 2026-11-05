@@ -52,19 +52,36 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
 
 ## M2 — rooms and events (next milestone)
 
-- [ ] T-2000 Read Room Versions + event authorization + event graph sections of v1.19 for v9/v10/v11; record requirement rows in `docs/requirements.md` before coding
-- [ ] T-2001 `internal/roomversion` registry: version rules table (event ID format, state resolution id, auth ruleset id, `room_version` in create event) + fixtures for v9/v10/v11
-- [ ] T-2002 `internal/events`: PDU as `map[string]any`-backed canonical document (never reshaped), `room_version`-aware event ID (`$hash` vs base64 of sha256 of raw), depth/prev_events/auth_events handling
-- [ ] T-2003 Storage: `rooms`, `events`, `event_edges`, `event_state_snapshot`, `state_groups`/shortnames, `forward_extremities`, `to_dev` deferred; migrations + indexes; transaction tests
-- [ ] T-2004 `internal/state`: state set storage + resolution v1 (v9/v10) and v2 (v11) with the spec's auth-rate and depth/ID tie-breaks; dedicated tests for conflicted state
-- [ ] T-2005 `internal/eventauth`: ruleset tables for v10/v11 + spec-derived fixtures (create/join/invite/member/power-levels/redaction); no authorisation logic in handlers
-- [ ] T-2006 `POST /createRoom`: room version negotiation against `capabilities`, initial state, presets, `m.room.create` with `creator`, `room_version` field
-- [ ] T-2007 `PUT /send/{type}/{txnId}`: auth chain check, signing with the server key, depth/prev_events selection from forward extremities, transaction idempotency per device
-- [ ] T-2008 Membership (local): invite/join/leave/kick/ban, `m.room.member` state, `GET /state`, `/state/{type}/{key}`, `/members`, `/context`, `/event_auth`
-- [ ] T-2009 Redaction (room-version aware allowed keys) + Complement `TestJson`/`TestRedaction` basics
-- [ ] T-2010 Complement: `TestRoomCreation Parameters`, `TestJoinRoomLocal`-style local subsets, `TestTyping`-adjacent state checks as they become reachable; record pass delta
-
-## M3+ (created later, listed for continuity)
+- [x] T-2000 Read Room Versions + event authorization + event graph sections of v1.19 for
+      v9/v10/v11; requirement rows recorded in `docs/requirements.md` §6 (22 rows) and the
+      interpretation decisions documented there and in `BLOCKERS.md`
+- [x] T-2001 `internal/roomversion`: v1-v12 registry (state resolution v1/v2/v2.1, event ID
+      format, authorisation rule set id, redaction profile, join-rule support, integer power
+      levels, key validity, canonical JSON strictness, `m.room.aliases` special casing,
+      `content.creator` vs sender, `content.redacts` vs top level, domain-free room IDs,
+      privileged creators) + grammar validation + `Supported`/`Available` —
+      `tests/unit/roomversion_test.go`
+- [x] T-2011 `internal/redaction`: version-specific strip lists and per-type content allow
+      lists — `tests/unit/redaction_test.go`
+- [x] T-2012 `internal/events`: content hash, reference hash, event ID derivation per room
+      version, `Seal` (hash then sign the redacted form), transport-key stripping; goldens
+      compared with gomatrixserverlib for v3/v10/v11 — `tests/unit/eventseal_test.go`
+- [ ] T-2002 PDU storage: `events` (canonical JSON + indexed columns + hashes/signatures),
+      `event_edges` (prev/auth), `event_state_snapshot`, `room_state`, `event_txn`,
+      `latest_event`; forward extremities query
+- [ ] T-2003 `POST /createRoom` + wire `/capabilities` to `roomversion.Available()`
+- [ ] T-2004 `internal/eventauth`: per-version authorisation rules and the auth-events
+      selection algorithm (with the v10+ integer power-level rule)
+- [ ] T-2005 `internal/state`: current state, forward extremities, State Resolution 2 for
+      v2-v11 (v1 and v2.1 left unimplemented until those versions are offered)
+- [ ] T-2006 `PUT /rooms/{roomId}/send/{eventType}/{txn}` with per-device transaction
+      deduplication, depth/prev_events validation, signing, persistence
+- [ ] T-2007 membership events: join/leave/invite/ban/kick (local), member state reads,
+      `knock` gated on room version >= 7
+- [ ] T-2008 `GET /rooms/{roomId}/state` and `/{type}/{state_key}`
+- [ ] T-2009 `m.room.redaction` application: power level or same server name rule, redacted
+      form stored, hashes/signatures stay valid
+- [ ] T-2010 room upgrade path (`m.room.create.predecessor`, `POST /rooms/{roomId}/upgrade`)
 
 - [ ] T-3001 `GET /sync` (timeline, state, invite rooms, device list changes), `/messages` pagination, `since`/`next_batch` tokens, filter storage
 - [ ] T-3002 Unblocks Complement `TestLogout` behavioural subtests and `TestDeviceManagement/DELETE…` (they assert through `/sync`)
