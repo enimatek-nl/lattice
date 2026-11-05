@@ -177,7 +177,7 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
       snapshot per state change and a fork shows up as two groups with a common ancestor —
       `internal/persist/stategroups.go`, `internal/rooms/stateat.go`,
       `tests/unit/state_groups_test.go`, `tests/integration/stategroups_test.go`.
-      A merge of disagreeing snapshots is still recorded provisionally; resolving it is T-2017
+      A merge of disagreeing snapshots is resolved by the algorithm (T-2017)
 - [ ] T-3004 per-event state snapshots, so a read can be answered as of a past position:
       a former member's old state value, `state_at_event`, and the state a joining user is
       given
@@ -284,14 +284,27 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
       `TestServerKeysVerifies` asserts the body is its own canonical form and that the
       signature checks over the bytes sent — Complement `TestInboundFederationKeys` passes
       (it failed while the endpoint re-encoded through Go's JSON encoder)
-- [ ] T-2017 make the room's current state the result of the state resolution algorithm
-      rather than of arrival order. `internal/state.Resolve` implements State Resolution 2
-      and is unit-tested, but nothing calls it: `rooms.persistEvent` answers a state key
-      with the last state event persisted for it. For one server that is usually the same
-      answer; for two it is not, and the specification forbids the substitution. The
-      dependency is T-3004 — the resolver needs the state each forward extremity was
-      carrying, and there is no per-event state yet — so this is sequenced after it, not
-      worked around
+- [x] T-2017 make the room's current state the result of the state resolution algorithm
+      rather than of arrival order. An event that joins branches, or a room left with more
+      than one forward extremity, is now resolved with the algorithm the room version names
+      and the answer written back as current state (`internal/rooms/resolve.go`,
+      `internal/rooms/stateat.go`). Found on the way: `state.eventTimestamp` could not read a
+      `json.Number`, so every decoded event looked like it happened at time 0 — the
+      mainline ordering silently dropped its timestamp comparison and settled forks by event
+      ID, which is not what a timestamp-ordering server would conclude.
+      `tests/integration/statresolution_test.go` hands the same fork to two homeservers in
+      opposite orders; `tests/unit/stateresolve_test.go` pins the ordering and its independence
+      of argument order
+- [ ] T-3004b state snapshots for rooms that predate T-3004a: their events have no group, so a
+      fork in such a room cannot be resolved from history — this server logs and leaves the
+      current state alone rather than rebuilding it from a guess. A backfill pass (or a
+      documented upgrade note) is what closes it; fresh rooms are unaffected
+- [ ] T-3004c measure what resolution costs on a forked room: `reconcileCurrentState` runs
+      over the forward extremities on every persist while a room is forked, which is correct
+      and unmeasured. Before any deployment with real forks this needs a benchmark and, if it
+      is too slow, the state-at-read-time design (Synapse's state groups plus a lazily
+      computed current state)
+
 - [x] T-2014 `GET /rooms/{roomID}/event/{eventID}`: one event by ID through the same history
       access rule as `/messages`; an event that lives in another room is answered as not
       found, so the endpoint does not report which room holds an ID. Complement's

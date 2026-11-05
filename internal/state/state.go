@@ -13,9 +13,11 @@
 package state
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 
 	"github.com/enimatek/lattice/internal/eventauth"
 	"github.com/enimatek/lattice/internal/roomversion"
@@ -139,6 +141,15 @@ func eventSender(event map[string]any) string {
 	return sender
 }
 
+// eventTimestamp reads an event's origin_server_ts.
+//
+// The types matter. An event decoded from JSON carries a json.Number there — canonical JSON
+// needs integers to survive re-encoding, so decoding to float64 is not an option — and
+// json.Number's method is Int64() (int64, error), not the single-value method an interface
+// assertion would match. Reading it as the wrong type returns zero, which silently removes
+// the timestamp comparison from the mainline ordering and lets the algorithm fall through
+// to comparing event IDs: a different server ordering by timestamp would then reach a
+// different answer, and the room splits.
 func eventTimestamp(event map[string]any) int64 {
 	switch ts := event["origin_server_ts"].(type) {
 	case int64:
@@ -147,10 +158,19 @@ func eventTimestamp(event map[string]any) int64 {
 		return int64(ts)
 	case float64:
 		return int64(ts)
-	default:
-		if n, ok := ts.(interface{ Int64() int64 }); ok {
-			return n.Int64()
+	case json.Number:
+		value, err := ts.Int64()
+		if err != nil {
+			return 0
 		}
+		return value
+	case string:
+		value, err := strconv.ParseInt(ts, 10, 64)
+		if err != nil {
+			return 0
+		}
+		return value
+	default:
 		return 0
 	}
 }

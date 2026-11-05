@@ -1038,3 +1038,42 @@ missing rather than empty, re-attach moves the pointer) and
 messages share one snapshot; the topic event's snapshot has exactly one more entry and the
 following message shares it; snapshots and current state agree; fewer snapshots than events).
 `make verify` and `golangci-lint run ./...` clean.
+
+## 2026-11-05 — the fork question, answered by an algorithm instead of an arrival order (T-2017)
+
+`internal/state.Resolve` had been sitting unused for weeks: it implements State Resolution 2
+and nothing called it, because `room_state` holds one row per state key — *where the room is
+now* — and the algorithm asks a different question, *what was each branch carrying*. T-3004a
+recorded the snapshots; this is the wiring.
+
+An event that joins branches, or a room left with more than one forward extremity, is now
+resolved over the extremities' snapshots and the answer written back as current state
+(`internal/rooms/resolve.go`). A room with one extremity and one predecessor still takes the
+cheap delta path.
+
+The confluence test found a bug in the algorithm itself, and it is the kind that never shows
+up on one server. Two homeservers were handed the same fork in opposite orders; they agreed —
+so the room looked fine — but running the resolver standalone on the same events disagreed
+with what the servers had decided. Cause: `state.eventTimestamp` asserted
+`interface{ Int64() int64 }`, and `json.Number`'s method is `Int64() (int64, error)`. So every
+event decoded from JSON looked like it happened at time 0, the mainline ordering's timestamp
+comparison silently did nothing, and forks settled by event ID.
+
+That is deterministic, which is why nothing had caught it: Lattice would agree with Lattice.
+Synapse orders by `origin_server_ts`, so Lattice and Synapse would resolve the same fork to
+different state — a room split, on a code path that passes its own tests. The regression test
+(`TestResolveOrdersJSONDecodedEventsByTheirTimestamp`) is written to fail against the old
+reading, and I checked that it does: without the fix the *older* event wins.
+
+Evidence: `tests/integration/statresolution_test.go` — same fork, opposite orders, two
+homeservers agree; the loser is still stored (resolution decides what the state *is*, it does
+not delete history); both extremities stay open; and the server's answer matches the algorithm
+run standalone. `tests/unit/stateresolve_test.go` — both argument orders, and the JSON case.
+`make verify` and `golangci-lint` clean. Complement filtered run unchanged from before this
+work: `TestRoomCreate` (v2 refused by design), `TestSync/parallel` (needs the join handshake
+and MSC4222 `state_after`), `TestSyncTimelineGap` (depth paging).
+
+Opened rather than hidden: T-3004b (rooms that predate snapshots have no groups, and this
+server leaves their current state alone instead of inventing one — DEC-025) and T-3004c
+(`reconcileCurrentState` runs on every persist while a room is forked — correct, unmeasured;
+DEC-024 records why materialising at persist was chosen over resolving at read).

@@ -1,10 +1,12 @@
 package unit
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 
 	"github.com/enimatek/lattice/internal/eventauth"
+	"github.com/enimatek/lattice/internal/events"
 	"github.com/enimatek/lattice/internal/roomversion"
 	"github.com/enimatek/lattice/internal/state"
 )
@@ -281,6 +283,124 @@ func TestResolveRefusesOtherAlgorithms(t *testing.T) {
 		_, err := state.Resolve(roomversion.MustGet(version), graph, states, eventauth.Opts{})
 		if !errors.Is(err, state.ErrAlgorithmUnsupported) {
 			t.Errorf("room version %s resolution = %v, want ErrAlgorithmUnsupported", version, err)
+		}
+	}
+}
+
+// TestResolveNameForkIgnoresTheOrderTheStatesAreGiven is confluence, which is the whole
+// point of state resolution: two homeservers that receive the same fork in different
+// orders must end up with the same room state. If the answer depended on which side is
+// listed first, the room would split along the order its servers happened to hear about
+// it in.
+func TestResolveNameForkIgnoresTheOrderTheStatesAreGiven(t *testing.T) {
+	t.Parallel()
+	rules := roomversion.MustGet("11")
+	base := forkBase()
+	auth := []string{"$create:example.org", "$alicejoin:example.org", "$pl0:example.org"}
+	older := stEvent("m.room.name", "$name_older:example.org", "@alice:example.org", "",
+		map[string]any{"name": "older"}, auth, 1_000)
+	newer := stEvent("m.room.name", "$name_newer:example.org", "@alice:example.org", "",
+		map[string]any{"name": "newer"}, auth, 2_000)
+
+	events := append(append([]map[string]any{}, base...), older, newer)
+	graph := graphWith(events...)
+	olderState := stateOf(append(append([]map[string]any{}, base...), older)...)
+	newerState := stateOf(append(append([]map[string]any{}, base...), newer)...)
+
+	nameOf := func(resolved state.State) string {
+		event, ok := resolved[eventauth.Key{Type: "m.room.name", StateKey: ""}]
+		if !ok {
+			return "<no name>"
+		}
+		id, _ := event["event_id"].(string)
+		return id
+	}
+
+	for _, attempt := range []struct {
+		label  string
+		states []state.State
+	}{
+		{"older first", []state.State{olderState, newerState}},
+		{"newer first", []state.State{newerState, olderState}},
+	} {
+		resolved, err := state.Resolve(rules, graph, attempt.states, eventauth.Opts{})
+		if err != nil {
+			t.Fatalf("resolving with %s: %v", attempt.label, err)
+		}
+		if got := nameOf(resolved); got != "$name_newer:example.org" {
+			t.Errorf("with %s the room is named by %s, want the event the mainline ordering puts last: %s",
+				attempt.label, got, "$name_newer:example.org")
+		}
+	}
+}
+
+// TestResolveOrdersJSONDecodedEventsByTheirTimestamp is a regression test for a silent
+// failure. The events a server resolves are decoded from JSON, where a number arrives as a
+// json.Number; reading it as a plain int64 or float64 yields zero for every event. A
+// resolution that cannot see timestamps drops the timestamp comparison from the mainline
+// ordering and falls through to event IDs — deterministic, so this server would agree with
+// itself, but a server that orders by timestamp (as the specification says) would reach a
+// different answer for the same fork, and the room splits.
+func TestResolveOrdersJSONDecodedEventsByTheirTimestamp(t *testing.T) {
+	t.Parallel()
+	rules := roomversion.MustGet("11")
+	base := forkBase()
+	auth := []string{"$create:example.org", "$alicejoin:example.org", "$pl0:example.org"}
+
+	fromJSON := func(eventID, name string, ts int64) map[string]any {
+		body := map[string]any{
+			"type":             "m.room.name",
+			"event_id":         eventID,
+			"room_id":          stateRoom,
+			"state_key":        "",
+			"sender":           "@alice:example.org",
+			"origin":           "example.org",
+			"origin_server_ts": ts,
+			"depth":            5,
+			"prev_events":      []string{"$alicejoin:example.org"},
+			"auth_events":      auth,
+			"content":          map[string]any{"name": name},
+		}
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("encoding %s: %v", eventID, err)
+		}
+		parsed, err := events.Parse(encoded)
+		if err != nil {
+			t.Fatalf("parsing %s: %v", eventID, err)
+		}
+		if _, ok := parsed["origin_server_ts"].(json.Number); !ok {
+			t.Fatalf("a decoded event carries its timestamp as %T, not json.Number — this test has stopped testing the thing it names",
+				parsed["origin_server_ts"])
+		}
+		return parsed
+	}
+	older := fromJSON("$name_older:example.org", "older", 1_000)
+	newer := fromJSON("$name_newer:example.org", "newer", 2_000)
+
+	events := append(append([]map[string]any{}, base...), older, newer)
+	graph := graphWith(events...)
+	olderState := stateOf(append(append([]map[string]any{}, base...), older)...)
+	newerState := stateOf(append(append([]map[string]any{}, base...), newer)...)
+
+	for _, attempt := range []struct {
+		label  string
+		states []state.State
+	}{
+		{"older first", []state.State{olderState, newerState}},
+		{"newer first", []state.State{newerState, olderState}},
+	} {
+		resolved, err := state.Resolve(rules, graph, attempt.states, eventauth.Opts{})
+		if err != nil {
+			t.Fatalf("resolving with %s: %v", attempt.label, err)
+		}
+		event, ok := resolved[eventauth.Key{Type: "m.room.name", StateKey: ""}]
+		if !ok {
+			t.Fatalf("with %s the resolved state has no name", attempt.label)
+		}
+		if got := event["event_id"]; got != "$name_newer:example.org" {
+			t.Errorf("with %s the room is named by %v; the mainline ordering compares origin_server_ts, and the newer event must win",
+				attempt.label, got)
 		}
 	}
 }
