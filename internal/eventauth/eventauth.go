@@ -1,0 +1,916 @@
+package eventauth
+
+import (
+	"errors"
+	"fmt"
+	"sort"
+	"strings"
+
+	"github.com/enimatek/lattice/internal/roomversion"
+)
+
+// Key identifies a piece of room state the way Matrix does: by event type and
+// state key.
+type Key struct {
+	Type     string
+	StateKey string
+}
+
+func (k Key) String() string { return k.Type + "/" + k.StateKey }
+
+// Snapshot is the room state an event is authorised against, plus the resolution
+// of event IDs. It is an interface so the same rules run over an in-memory state
+// (unit tests, iterative auth checks over a small auth chain) and over the
+// database, without the rules knowing which.
+type Snapshot interface {
+	// State returns the current state event for the key.
+	State(key Key) (map[string]any, bool)
+	// Event resolves an event ID to the event itself. Authorisation needs this for
+	// the auth-event checks and for the "only previous event is the create event"
+	// rule; a snapshot that cannot resolve an ID makes those checks fail rather
+	// than pass.
+	Event(id string) (map[string]any, bool)
+	// Rejected reports whether an event was rejected under the checks performed on
+	// receipt of a PDU. Rejected auth events must not authorise anything.
+	Rejected(id string) bool
+}
+
+// Opts carries the checks that authorisation needs but room state cannot answer.
+// Leaving one nil makes the matching rule reject rather than skip, because trusting
+// an unchecked signature is how a forged join or invitation gets into a room.
+type Opts struct {
+	// VerifyServerSignature reports whether the event carries a valid signature
+	// from the named homeserver. Used for content.join_authorised_via_users_server.
+	VerifyServerSignature func(event map[string]any, serverName string) error
+
+	// VerifyThirdPartyInvite reports whether the signed invite in the member event
+	// matches a public key published by the m.room.third_party_invite event.
+	VerifyThirdPartyInvite func(event, thirdPartyInvite map[string]any) error
+
+	// JoinedInRoom reports whether a user is a joined member of another room. The
+	// restricted join-rule allow list needs it. See MayJoinRestricted.
+	JoinedInRoom func(roomID, userID string) (bool, error)
+}
+
+// Failure says which rule rejected an event. The rule numbers are the ones in the
+// specification's per-version authorisation lists, so a failure can be checked
+// against the text without guessing.
+type Failure struct {
+	Rule   string
+	Reason string
+}
+
+func (f Failure) Error() string { return "auth rule " + f.Rule + ": " + f.Reason }
+
+// AsFailure unpacks a rule failure.
+func AsFailure(err error) (Failure, bool) {
+	var f Failure
+	if errors.As(err, &f) {
+		return f, true
+	}
+	return Failure{}, false
+}
+
+// ErrRulesetUnsupported is returned for a room version whose authorisation table
+// this server does not implement. It is an error rather than a silent fallback:
+// authorising version 1 rooms with the version 3 rules would invent state.
+var ErrRulesetUnsupported = errors.New("eventauth: authorisation rules for this room version are not implemented")
+
+// Membership values used by the rules.
+const (
+	MembershipJoin   = "join"
+	MembershipInvite = "invite"
+	MembershipLeave  = "leave"
+	MembershipBan    = "ban"
+	MembershipKnock  = "knock"
+)
+
+// Join rule values.
+const (
+	JoinRulePublic          = "public"
+	JoinRuleInvite          = "invite"
+	JoinRuleKnock           = "knock"
+	JoinRuleRestricted      = "restricted"
+	JoinRuleKnockRestricted = "knock_restricted"
+)
+
+// Event types the rules name directly.
+const (
+	TypeCreate           = "m.room.create"
+	TypeMember           = "m.room.member"
+	TypeJoinRules        = "m.room.join_rules"
+	TypePowerLevels      = "m.room.power_levels"
+	TypeThirdPartyInvite = "m.room.third_party_invite"
+)
+
+// JACSKey is the content key naming the user whose signature authorises a
+// restricted join.
+const JACSKey = "join_authorised_via_users_server"
+
+// Check applies the room version's authorisation rules to an event, given the room
+// state it is being authorised against. A nil return means the event is allowed.
+//
+// This is the contract federation depends on: two servers that disagree here derive
+// different accepted histories, so the rules are implemented in the order and with
+// the wording of the specification page named in each comment.
+func Check(rules roomversion.Rules, event map[string]any, state Snapshot, opts Opts) error {
+	switch rules.AuthRuleset {
+	case "v1":
+		return fmt.Errorf("%w: room version %s", ErrRulesetUnsupported, rules.ID)
+	case "v2", "v3", "v4", "v5", "v6":
+	default:
+		return fmt.Errorf("%w: ruleset %q", ErrRulesetUnsupported, rules.AuthRuleset)
+	}
+
+	eventType, _ := stringOf(event, "type")
+	roomID, _ := stringOf(event, "room_id")
+	sender, _ := stringOf(event, "sender")
+	if eventType == "" || roomID == "" || sender == "" {
+		return Failure{"0", "event is missing type, room_id or sender"}
+	}
+
+	// Rule 1 (v3-v11 page, rule 1): the create event stands on its own.
+	if eventType == TypeCreate {
+		return checkCreate(rules, event, roomID, sender)
+	}
+
+	// Rule 2: the auth events themselves.
+	if err := checkAuthEvents(rules, event, state); err != nil {
+		return err
+	}
+
+	// Rule 3: a room that opted out of federation accepts no foreign events.
+	if create, ok := state.State(Key{TypeCreate, ""}); ok {
+		if content := contentOf(create); content != nil {
+			if federate, ok := content["m.federate"].(bool); ok && !federate {
+				if serverName(sender) != serverName(stringOfOr(create["sender"], "")) {
+					return Failure{"3", "room declares m.federate false and the sender is on another server"}
+				}
+			}
+		}
+	}
+
+	// Rule 4: membership events have their own table.
+	if eventType == TypeMember {
+		return checkMember(rules, event, state, opts)
+	}
+
+	// The historic m.room.aliases rule (room versions up to 5): a server may
+	// publish its own aliases without being joined or having a power level, which
+	// is how an administrator keeps their server's alias list current. Room version
+	// 6 dropped this special case, so aliases become ordinary state events there.
+	// gomatrixserverlib still applies the special case to every room version, while
+	// Synapse gates it by version as the specification does; we follow the
+	// specification and Synapse.
+	if eventType == "m.room.aliases" && rules.SpecialCaseAliases {
+		stateKey, ok := stringOf(event, "state_key")
+		if !ok {
+			return Failure{"aliases.1", "an aliases event must be a state event"}
+		}
+		if stateKey != serverName(sender) {
+			return Failure{"aliases.2", "the aliases state key is not the sender's server name"}
+		}
+		return nil
+	}
+
+	// Rule 5: everything else requires the sender to be joined.
+	if Membership(state, sender) != MembershipJoin {
+		return Failure{"5", "sender is not joined to the room"}
+	}
+
+	pl, err := powerLevelsFor(rules, state)
+	if err != nil {
+		return err
+	}
+
+	// Rule 6: third-party invite events.
+	if eventType == TypeThirdPartyInvite {
+		if pl.User(sender) >= pl.Invite {
+			return nil
+		}
+		return Failure{"6", "sender power level is below the invite level"}
+	}
+
+	// Rule 7: the power level required for this event type.
+	_, isState := event["state_key"]
+	if pl.ForEvent(eventType, isState) > pl.User(sender) {
+		return Failure{"7", fmt.Sprintf("event type %s needs power level %d, sender has %d",
+			eventType, pl.ForEvent(eventType, isState), pl.User(sender))}
+	}
+
+	// Rule 8: a state key that names a user must name the sender.
+	if stateKey, ok := stringOf(event, "state_key"); ok && strings.HasPrefix(stateKey, "@") && stateKey != sender {
+		return Failure{"8", "state key names another user"}
+	}
+
+	// Rule 9: power level changes.
+	if eventType == TypePowerLevels {
+		return checkPowerLevels(rules, event, state, pl)
+	}
+
+	// Rule 10: allow.
+	return nil
+}
+
+// checkCreate implements rule 1 of the room version pages for versions 3 through
+// 11, and the privileged-creator adjustment of version 12.
+func checkCreate(rules roomversion.Rules, event map[string]any, roomID, sender string) error {
+	if prev := stringSlice(event["prev_events"]); len(prev) > 0 {
+		return Failure{"1.1", "a create event must have no prev_events"}
+	}
+	if serverName(roomID) != serverName(sender) {
+		return Failure{"1.2", "the room ID domain does not match the sender domain"}
+	}
+	content := contentOf(event)
+	if version, ok := stringOf(content, "room_version"); ok {
+		if !roomversion.IsKnown(version) {
+			return Failure{"1.3", "unrecognised room version " + version}
+		}
+	}
+	creator, hasCreator := stringOf(content, "creator")
+	switch {
+	case rules.CreatorInCreateContent && !hasCreator:
+		// Room versions 3 through 10 require the creator property.
+		return Failure{"1.4", "create event has no content.creator"}
+	case hasCreator && rules.PrivilegedCreators && creator != sender:
+		// Room version 12: a creator may be named, but only as the sender.
+		return Failure{"1.5", "content.creator does not match the sender"}
+	}
+	if stateKey, ok := stringOf(event, "state_key"); ok && stateKey != "" {
+		return Failure{"1.6", "a create event must have an empty state key"}
+	}
+	return nil
+}
+
+// checkAuthEvents implements rule 2.
+func checkAuthEvents(rules roomversion.Rules, event map[string]any, state Snapshot) error {
+	authIDs := stringSlice(event["auth_events"])
+	if len(authIDs) > 10 {
+		return Failure{"2.0", "more than ten auth events"}
+	}
+	roomID, _ := stringOf(event, "room_id")
+
+	seen := make(map[Key]bool, len(authIDs))
+	var got []Key
+	for _, id := range authIDs {
+		ev, ok := state.Event(id)
+		if !ok {
+			return Failure{"2.2", "auth event " + id + " cannot be resolved, so it cannot be checked"}
+		}
+		typ, _ := stringOf(ev, "type")
+		stateKey, _ := stringOf(ev, "state_key")
+		key := Key{typ, stateKey}
+		if seen[key] {
+			return Failure{"2.1", "duplicate auth event for " + key.String()}
+		}
+		seen[key] = true
+		if state.Rejected(id) {
+			return Failure{"2.3", "auth event " + id + " was rejected on receipt"}
+		}
+		if authRoom, _ := stringOf(ev, "room_id"); authRoom != roomID {
+			return Failure{"2.5", "auth event " + id + " belongs to another room"}
+		}
+		got = append(got, key)
+	}
+
+	want := SelectKeys(rules, event, state)
+	if !sameKeys(got, want) {
+		return Failure{"2.2", "auth events are " + keyList(got) + ", the selection algorithm gives " + keyList(want)}
+	}
+	if !seen[Key{TypeCreate, ""}] {
+		return Failure{"2.4", "no m.room.create event among the auth events"}
+	}
+	return nil
+}
+
+// SelectKeys returns the state keys the auth events selection algorithm picks for an
+// event. "if any" entries are only included when the state actually holds them,
+// which is what makes the comparison in rule 2.2 meaningful.
+func SelectKeys(rules roomversion.Rules, event map[string]any, state Snapshot) []Key {
+	// The create event is the root of the room: it is not authorised by other state.
+	if eventType, _ := stringOf(event, "type"); eventType == TypeCreate {
+		return nil
+	}
+
+	var keys []Key
+	listed := map[Key]bool{}
+	add := func(k Key) {
+		// The selection algorithm names both "the sender's member event" and "the
+		// target's member event", which are the same event when a user acts on their
+		// own membership. Listing it twice would make a correct event look like it
+		// carries duplicate auth events.
+		if listed[k] {
+			return
+		}
+		if _, ok := state.State(k); ok {
+			listed[k] = true
+			keys = append(keys, k)
+		}
+	}
+
+	add(Key{TypeCreate, ""})
+	add(Key{TypePowerLevels, ""})
+
+	sender, _ := stringOf(event, "sender")
+	add(Key{TypeMember, sender})
+
+	if eventType, _ := stringOf(event, "type"); eventType == TypeMember {
+		stateKey, _ := stringOf(event, "state_key")
+		add(Key{TypeMember, stateKey})
+		content := contentOf(event)
+		membership, _ := stringOf(content, "membership")
+		switch membership {
+		case MembershipJoin, MembershipInvite, MembershipKnock:
+			add(Key{TypeJoinRules, ""})
+		}
+		if membership == MembershipInvite {
+			if tpi, ok := content["third_party_invite"].(map[string]any); ok {
+				if signed, ok := tpi["signed"].(map[string]any); ok {
+					if token, ok := stringOf(signed, "token"); ok {
+						add(Key{TypeThirdPartyInvite, token})
+					}
+				}
+			}
+		}
+		if membership == MembershipJoin && rules.SupportsRestrictedJoin {
+			if authoriser, ok := stringOf(content, JACSKey); ok {
+				add(Key{TypeMember, authoriser})
+			}
+		}
+	}
+	return keys
+}
+
+// SelectEventIDs returns the event IDs the selection algorithm picks, which is what
+// an outgoing event should put in auth_events.
+func SelectEventIDs(rules roomversion.Rules, event map[string]any, state Snapshot) []string {
+	keys := SelectKeys(rules, event, state)
+	ids := make([]string, 0, len(keys))
+	for _, key := range keys {
+		ev, ok := state.State(key)
+		if !ok {
+			continue
+		}
+		if id, ok := stringOf(ev, "event_id"); ok {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// checkMember implements rule 4.
+func checkMember(rules roomversion.Rules, event map[string]any, state Snapshot, opts Opts) error {
+	stateKey, hasStateKey := stringOf(event, "state_key")
+	content := contentOf(event)
+	membership, hasMembership := stringOf(content, "membership")
+	sender, _ := stringOf(event, "sender")
+
+	// 4.1
+	if !hasStateKey || !hasMembership {
+		return Failure{"4.1", "member event is missing a state key or a membership"}
+	}
+
+	// 4.2: a restricted join carries the authorising user's signature.
+	authoriser, hasAuthoriser := stringOf(content, JACSKey)
+	if hasAuthoriser {
+		if !rules.SupportsRestrictedJoin {
+			return Failure{"4.2", "room version " + rules.ID + " does not support restricted joins"}
+		}
+		if opts.VerifyServerSignature == nil {
+			return Failure{"4.2", "no signature verifier available for join_authorised_via_users_server"}
+		}
+		if err := opts.VerifyServerSignature(event, serverName(authoriser)); err != nil {
+			return Failure{"4.2", "join_authorised_via_users_server is not validly signed: " + err.Error()}
+		}
+	}
+
+	pl, err := powerLevelsFor(rules, state)
+	if err != nil {
+		return err
+	}
+	joinRule := joinRuleOf(rules, state)
+	currentSender := Membership(state, sender)
+	currentTarget := Membership(state, stateKey)
+
+	switch membership {
+	case MembershipJoin:
+		// 4.3.1: the room creator's first join needs no invitation.
+		if prev := stringSlice(event["prev_events"]); len(prev) == 1 {
+			if create, ok := state.Event(prev[0]); ok {
+				if typ, _ := stringOf(create, "type"); typ == TypeCreate && stateKey == creatorOf(rules, create) {
+					return nil
+				}
+			} else {
+				return Failure{"4.3.1", "the single prev_event cannot be resolved, so the creator join cannot be confirmed"}
+			}
+		}
+		// 4.3.2
+		if sender != stateKey {
+			return Failure{"4.3.2", "a join event must be sent by the user it joins"}
+		}
+		// 4.3.3
+		if currentTarget == MembershipBan {
+			return Failure{"4.3.3", "the user is banned"}
+		}
+		// 4.3.4
+		switch joinRule {
+		case JoinRuleInvite, JoinRuleKnock:
+			if currentTarget == MembershipInvite || currentTarget == MembershipJoin {
+				return nil
+			}
+			return Failure{"4.3.4", "join rule " + joinRule + " requires an invitation"}
+		case JoinRuleRestricted, JoinRuleKnockRestricted:
+			if !ruleSupportsJoinRule(rules, joinRule) {
+				return Failure{"4.3.4", "room version " + rules.ID + " does not support join rule " + joinRule}
+			}
+			// 4.3.5.1
+			if currentTarget == MembershipJoin || currentTarget == MembershipInvite {
+				return nil
+			}
+			// 4.3.5.2
+			if !hasAuthoriser {
+				return Failure{"4.3.5.2", "a restricted join needs join_authorised_via_users_server"}
+			}
+			if Membership(state, authoriser) != MembershipJoin {
+				return Failure{"4.3.5.2", "the authorising user is not a joined member of this room"}
+			}
+			if pl.User(authoriser) < pl.Invite {
+				return Failure{"4.3.5.2", "the authorising user cannot invite"}
+			}
+			// 4.3.5.3
+			return nil
+		case JoinRulePublic:
+			// 4.3.6
+			return nil
+		default:
+			// 4.3.7
+			return Failure{"4.3.7", "join rule " + joinRule + " does not allow this join"}
+		}
+
+	case MembershipInvite:
+		// 4.4.1: third-party invites.
+		if thirdParty, ok := content["third_party_invite"].(map[string]any); ok {
+			if currentTarget == MembershipBan {
+				return Failure{"4.4.1.1", "the target user is banned"}
+			}
+			signed, ok := thirdParty["signed"].(map[string]any)
+			if !ok {
+				return Failure{"4.4.1.2", "third_party_invite has no signed property"}
+			}
+			mxid, hasMXID := stringOf(signed, "mxid")
+			token, hasToken := stringOf(signed, "token")
+			if !hasMXID || !hasToken {
+				return Failure{"4.4.1.3", "signed invite is missing mxid or token"}
+			}
+			if mxid != stateKey {
+				return Failure{"4.4.1.4", "signed invite names another user"}
+			}
+			invite, ok := state.State(Key{TypeThirdPartyInvite, token})
+			if !ok {
+				return Failure{"4.4.1.5", "no m.room.third_party_invite event with that token"}
+			}
+			if inviteSender, _ := stringOf(invite, "sender"); inviteSender != sender {
+				return Failure{"4.4.1.6", "sender does not match the third-party invite event sender"}
+			}
+			if opts.VerifyThirdPartyInvite == nil {
+				return Failure{"4.4.1.7", "no third-party invite verifier available"}
+			}
+			if err := opts.VerifyThirdPartyInvite(event, invite); err != nil {
+				return Failure{"4.4.1.7", "third-party invite signature does not verify: " + err.Error()}
+			}
+			return nil
+		}
+		// 4.4.2
+		if currentSender != MembershipJoin {
+			return Failure{"4.4.2", "the sender is not joined"}
+		}
+		// 4.4.3
+		if currentTarget == MembershipJoin || currentTarget == MembershipBan {
+			return Failure{"4.4.3", "the target user is already joined or banned"}
+		}
+		// 4.4.4
+		if pl.User(sender) >= pl.Invite {
+			return nil
+		}
+		return Failure{"4.4.5", "sender power level is below the invite level"}
+
+	case MembershipLeave:
+		// 4.5.1: leaving is allowed for a user who is invited, joined or knocking.
+		if sender == stateKey {
+			switch currentTarget {
+			case MembershipInvite, MembershipJoin, MembershipKnock:
+				return nil
+			default:
+				return Failure{"4.5.1", "the user is not in a state that can be left"}
+			}
+		}
+		// 4.5.2
+		if currentSender != MembershipJoin {
+			return Failure{"4.5.2", "the sender is not joined"}
+		}
+		// 4.5.3
+		if currentTarget == MembershipBan && pl.User(sender) < pl.Ban {
+			return Failure{"4.5.3", "kicking a banned user needs the ban level"}
+		}
+		// 4.5.4
+		if pl.User(sender) >= pl.Kick && pl.User(stateKey) < pl.User(sender) {
+			return nil
+		}
+		return Failure{"4.5.5", "sender cannot kick the target user"}
+
+	case MembershipBan:
+		// 4.6.1
+		if currentSender != MembershipJoin {
+			return Failure{"4.6.1", "the sender is not joined"}
+		}
+		// 4.6.2
+		if pl.User(sender) >= pl.Ban && pl.User(stateKey) < pl.User(sender) {
+			return nil
+		}
+		return Failure{"4.6.3", "sender cannot ban the target user"}
+
+	case MembershipKnock:
+		// 4.7.1: knocking exists only where the join rule allows it.
+		if joinRule != JoinRuleKnock && joinRule != JoinRuleKnockRestricted {
+			return Failure{"4.7.1", "join rule " + joinRule + " does not allow knocking"}
+		}
+		if joinRule == JoinRuleKnock && !rules.SupportsKnock {
+			return Failure{"4.7.1", "room version " + rules.ID + " has no knock join rule"}
+		}
+		if joinRule == JoinRuleKnockRestricted && !rules.SupportsKnockRestricted {
+			return Failure{"4.7.1", "room version " + rules.ID + " has no knock_restricted join rule"}
+		}
+		// 4.7.2
+		if sender != stateKey {
+			return Failure{"4.7.2", "a knock event must be sent by the user it names"}
+		}
+		// 4.7.3
+		switch currentTarget {
+		case MembershipBan, MembershipInvite, MembershipJoin:
+			return Failure{"4.7.4", "the user is already banned, invited or joined"}
+		default:
+			return nil
+		}
+
+	default:
+		// 4.8
+		return Failure{"4.8", "unknown membership " + membership}
+	}
+}
+
+// checkPowerLevels implements rule 9: power can only move sideways or downwards for
+// other people, and a level can only be handed out by someone who already holds it.
+func checkPowerLevels(rules roomversion.Rules, event map[string]any, state Snapshot, current *PowerLevels) error {
+	content := contentOf(event)
+	sender, _ := stringOf(event, "sender")
+	senderLevel := current.User(sender)
+
+	if rules.EnforceIntegerPowerLevels {
+		if _, err := LoadPowerLevels(rules, content); err != nil {
+			return Failure{"9.1", err.Error()}
+		}
+	}
+
+	// 9.4: the first power levels event in the room is unconditional.
+	if _, ok := state.State(Key{TypePowerLevels, ""}); !ok {
+		return nil
+	}
+
+	next, err := LoadPowerLevels(rules, content)
+	if err != nil {
+		return Failure{"9.1", err.Error()}
+	}
+
+	// 9.5: the seven scalar levels.
+	scalars := []struct {
+		key     string
+		current int
+		future  int
+	}{
+		{"users_default", current.UsersDefault, next.UsersDefault},
+		{"events_default", current.EventsDefault, next.EventsDefault},
+		{"state_default", current.StateDefault, next.StateDefault},
+		{"ban", current.Ban, next.Ban},
+		{"redact", current.Redact, next.Redact},
+		{"kick", current.Kick, next.Kick},
+		{"invite", current.Invite, next.Invite},
+	}
+	for _, s := range scalars {
+		_, hadIt := content[s.key]
+		if hadIt || s.current != s.future {
+			if s.current > senderLevel {
+				return Failure{"9.5.1", "current " + s.key + " is above the sender's power level"}
+			}
+			if s.future > senderLevel {
+				return Failure{"9.5.2", "new " + s.key + " is above the sender's power level"}
+			}
+		}
+	}
+
+	// 9.6 and 9.7: the events and notifications maps.
+	for _, m := range []struct {
+		name    string
+		current map[string]int
+		future  map[string]int
+	}{{"events", current.Events, next.Events}, {"notifications", current.Notifications, next.Notifications}} {
+		for eventType, old := range m.current {
+			newValue, stillThere := m.future[eventType]
+			if !stillThere || newValue != old {
+				// 9.6.1
+				if old > senderLevel {
+					return Failure{"9.6.1", "current " + m.name + " level for " + eventType + " is above the sender's"}
+				}
+			}
+		}
+		for eventType, newValue := range m.future {
+			if old, existed := m.current[eventType]; !existed || old != newValue {
+				// 9.7.1
+				if newValue > senderLevel {
+					return Failure{"9.7.1", "new " + m.name + " level for " + eventType + " is above the sender's"}
+				}
+			}
+		}
+	}
+
+	// 9.8: taking away or lowering someone else's level.
+	for userID, old := range current.Users {
+		newValue, stillThere := next.Users[userID]
+		if userID == sender {
+			continue
+		}
+		if !stillThere || newValue != old {
+			if old >= senderLevel {
+				return Failure{"9.8.1", "cannot change the level of a user who is not below the sender"}
+			}
+		}
+	}
+	// 9.9: granting or raising a level.
+	for userID, newValue := range next.Users {
+		old, existed := current.Users[userID]
+		if !existed || old != newValue {
+			if newValue > senderLevel {
+				return Failure{"9.9.1", "cannot grant a power level above the sender's own"}
+			}
+		}
+	}
+
+	// 9.10
+	return nil
+}
+
+// MayJoinRestricted applies the restricted join-rule allow list, which the
+// per-version authorisation rules deliberately do not evaluate. It belongs on the
+// path that decides whether this server may create and send a join of its own, not
+// inside Check: the auth rules are the federation contract, and rejecting an event
+// a peer's rules accept would split the room's history.
+func MayJoinRestricted(rules roomversion.Rules, event map[string]any, state Snapshot, opts Opts) error {
+	joinRule := joinRuleOf(rules, state)
+	if joinRule != JoinRuleRestricted && joinRule != JoinRuleKnockRestricted {
+		return nil
+	}
+	if !ruleSupportsJoinRule(rules, joinRule) {
+		return Failure{"allow", "room version " + rules.ID + " does not support join rule " + joinRule}
+	}
+	create, ok := state.State(Key{TypeJoinRules, ""})
+	if !ok {
+		return nil
+	}
+	content := contentOf(create)
+	allow, _ := content["allow"].([]any)
+	if len(allow) == 0 {
+		return Failure{"allow", "restricted join rule has no allow entries"}
+	}
+	roomID, _ := stringOf(event, "room_id")
+	stateKey, _ := stringOf(event, "state_key")
+	for _, entry := range allow {
+		item, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		kind, _ := stringOf(item, "type")
+		target, _ := stringOf(item, "room_id")
+		if kind != "m.room.member" || target == "" || target == roomID {
+			continue
+		}
+		if opts.JoinedInRoom == nil {
+			return Failure{"allow", "no membership lookup available for the allow list"}
+		}
+		joined, err := opts.JoinedInRoom(target, stateKey)
+		if err != nil {
+			return Failure{"allow", "allow list lookup failed: " + err.Error()}
+		}
+		if joined {
+			return nil
+		}
+	}
+	return Failure{"allow", "the user is not joined to any room in the allow list"}
+}
+
+// Membership returns a user's current membership in the snapshot. A missing member
+// event means the user is not in the room; the rules treat that as "leave" without
+// there being a leave event.
+func Membership(state Snapshot, userID string) string {
+	if userID == "" {
+		return ""
+	}
+	ev, ok := state.State(Key{TypeMember, userID})
+	if !ok {
+		return MembershipLeave
+	}
+	membership, ok := stringOf(contentOf(ev), "membership")
+	if !ok {
+		return MembershipLeave
+	}
+	return membership
+}
+
+// joinRuleOf returns the effective join rule. A missing or malformed
+// m.room.join_rules event means "invite", which is the safe reading: it refuses
+// joins rather than inventing an open room.
+func joinRuleOf(rules roomversion.Rules, state Snapshot) string {
+	ev, ok := state.State(Key{TypeJoinRules, ""})
+	if !ok {
+		return JoinRuleInvite
+	}
+	rule, ok := stringOf(contentOf(ev), "join_rule")
+	if !ok {
+		return JoinRuleInvite
+	}
+	switch rule {
+	case JoinRuleKnock:
+		if !rules.SupportsKnock {
+			return JoinRuleInvite
+		}
+	case JoinRuleRestricted:
+		if !rules.SupportsRestrictedJoin {
+			return JoinRuleInvite
+		}
+	case JoinRuleKnockRestricted:
+		if !rules.SupportsKnockRestricted {
+			return JoinRuleInvite
+		}
+	}
+	return rule
+}
+
+func ruleSupportsJoinRule(rules roomversion.Rules, rule string) bool {
+	switch rule {
+	case JoinRulePublic, JoinRuleInvite:
+		return true
+	case JoinRuleKnock:
+		return rules.SupportsKnock
+	case JoinRuleRestricted:
+		return rules.SupportsRestrictedJoin
+	case JoinRuleKnockRestricted:
+		return rules.SupportsKnockRestricted && rules.SupportsKnock
+	default:
+		return false
+	}
+}
+
+// MaxPowerLevel is the largest power level a room can express: the maximum value
+// representable exactly in JSON (2^53 - 1), which is also the ceiling the room
+// version rules put on depth.
+const MaxPowerLevel = 9007199254740991
+
+// powerLevelsFor loads the room's current power levels.
+//
+// A room with no m.room.power_levels event is not a room where nobody has power:
+// the creator is treated as holding MaxPowerLevel, otherwise the first power levels
+// event could never be sent (rule 7 asks for state_default, 50, and there is nothing
+// to grant it). Synapse and gomatrixserverlib both do this; gomatrixserverlib cites
+// Synapse's auth.py directly for it. The number matters: it decides whether a
+// creator can set levels above 100 in that first event.
+func powerLevelsFor(rules roomversion.Rules, state Snapshot) (*PowerLevels, error) {
+	ev, ok := state.State(Key{TypePowerLevels, ""})
+	if !ok {
+		pl := DefaultPowerLevels()
+		if create, ok := state.State(Key{TypeCreate, ""}); ok {
+			pl.Users[creatorOf(rules, create)] = MaxPowerLevel
+		}
+		return pl, nil
+	}
+	pl, err := LoadPowerLevels(rules, contentOf(ev))
+	if err != nil {
+		return pl, Failure{"state", "the room's m.room.power_levels event is not valid: " + err.Error()}
+	}
+	return pl, nil
+}
+
+// creatorOf identifies a room's creator for the room version: room versions up to
+// 10 name it in content.creator, later versions use the sender.
+func creatorOf(rules roomversion.Rules, create map[string]any) string {
+	if rules.CreatorInCreateContent {
+		if creator, ok := stringOf(contentOf(create), "creator"); ok {
+			return creator
+		}
+	}
+	return stringOfOr(create["sender"], "")
+}
+
+func serverName(id string) string {
+	if i := strings.LastIndex(id, ":"); i >= 0 {
+		return id[i+1:]
+	}
+	return ""
+}
+
+func stringOfOr(v any, fallback string) string {
+	s, ok := v.(string)
+	if !ok {
+		return fallback
+	}
+	return s
+}
+
+func stringSlice(v any) []string {
+	list, ok := v.([]any)
+	if !ok {
+		if typed, ok := v.([]string); ok {
+			return typed
+		}
+		return nil
+	}
+	out := make([]string, 0, len(list))
+	for _, item := range list {
+		if s, ok := item.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func sameKeys(a, b []Key) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	set := make(map[Key]bool, len(a))
+	for _, k := range a {
+		set[k] = true
+	}
+	for _, k := range b {
+		if !set[k] {
+			return false
+		}
+	}
+	return true
+}
+
+func keyList(keys []Key) string {
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, k.String())
+	}
+	return "[" + strings.Join(parts, " ") + "]"
+}
+
+// MemoryState is a Snapshot backed by maps, used by tests and by local operations
+// over a small, known set of events.
+type MemoryState struct {
+	byKey    map[Key]map[string]any
+	byID     map[string]map[string]any
+	rejected map[string]bool
+}
+
+// NewMemoryState indexes the given events.
+func NewMemoryState(events ...map[string]any) *MemoryState {
+	s := &MemoryState{
+		byKey:    map[Key]map[string]any{},
+		byID:     map[string]map[string]any{},
+		rejected: map[string]bool{},
+	}
+	for _, ev := range events {
+		s.Add(ev)
+	}
+	return s
+}
+
+// Add indexes one event by ID, and by state key when it has one.
+func (s *MemoryState) Add(event map[string]any) {
+	typ, _ := stringOf(event, "type")
+	if id, ok := stringOf(event, "event_id"); ok {
+		s.byID[id] = event
+	}
+	if stateKey, ok := stringOf(event, "state_key"); ok {
+		s.byKey[Key{typ, stateKey}] = event
+	}
+}
+
+// Reject marks an event as rejected on receipt, for rule 2.3.
+func (s *MemoryState) Reject(eventID string) { s.rejected[eventID] = true }
+
+// State implements [Snapshot].
+func (s *MemoryState) State(key Key) (map[string]any, bool) {
+	ev, ok := s.byKey[key]
+	return ev, ok
+}
+
+// Event implements [Snapshot].
+func (s *MemoryState) Event(eventID string) (map[string]any, bool) {
+	ev, ok := s.byID[eventID]
+	return ev, ok
+}
+
+// Rejected implements [Snapshot].
+func (s *MemoryState) Rejected(eventID string) bool { return s.rejected[eventID] }

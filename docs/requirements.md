@@ -101,14 +101,35 @@ the parts that must be byte-exact before any room is created.
 | REQ-EVT-006 | Room Versions §Event format | `auth_events` ≤ 10, `prev_events` ≤ 20, `depth` < 2^53−1 and equal to max(prev depths)+1 | MUST | not implemented | M2 event validation |
 | REQ-EVT-007 | Appendices §Canonical JSON | In v6+ non-integer numbers and out-of-range integers make an event invalid (`M_BAD_JSON` on CS endpoints, discard over federation) | MUST | partial — canonical encoding is enforced, the per-version rejection rule is not wired up | M2 |
 | REQ-STATE-001 | Room Versions §State resolution | State Resolution 1 for v1, State Resolution 2 for v2–v11, the revised algorithm for v12 | MUST | not implemented; the registry selects the algorithm | M2 |
-| REQ-AUTH-020 | Room Versions §Authorisation rules | Room-version-specific event authorisation as a subsystem separate from handlers | MUST | not implemented | M2 (`internal/eventauth`) |
-| REQ-AUTH-021 | SS §Auth events selection | `auth_events` must match the selection algorithm; duplicates, foreign-room events and rejected auth events invalidate the event | MUST | not implemented | M2 |
-| REQ-AUTH-022 | Room Versions §Authorisation rule 9 (v10+) | Integer-only power-level content validation | MUST | not implemented | M2 |
+| REQ-AUTH-020 | Room Versions §Authorisation rules | Room-version-specific event authorisation as a subsystem separate from handlers (rules 1-10, room versions 3-11; room version 1 refused rather than approximated) | MUST | implemented | `tests/unit/eventauth_test.go` |
+| REQ-AUTH-021 | SS §Auth events selection | `auth_events` must match the selection algorithm; duplicates, foreign-room events and rejected auth events invalidate the event | MUST | implemented | `tests/unit/eventauth_test.go` (`TestSelectAuthEvents`, rule 2 cases) |
+| REQ-AUTH-023 | Rooms §Restricted rooms | A restricted join is only legitimate when the user is joined to a room named in `join_rules.allow` | MUST | partial — enforced for joins this server creates (`eventauth.MayJoinRestricted`), deliberately not inside `Check`, because the per-version auth rules do not evaluate the allow list and rejecting an event a peer's rules accept would split the room's history | `tests/unit/eventauth_test.go` (`TestMayJoinRestricted`) |
+| REQ-AUTH-024 | Room Versions §Authorisation rules (aliases) | The historic `m.room.aliases` exemption applies only where the room version still has it | MUST | implemented (versions up to 5; ordinary state rules from version 6) | `tests/unit/eventauth_test.go` (`TestAuthRulesAliases`) |
+| REQ-AUTH-025 | Room Versions §Authorisation rules | Knock, `restricted` and `knock_restricted` are unknown to room versions that predate them | MUST | implemented | `tests/unit/eventauth_test.go` (`TestAuthRulesKnockGating`, `TestAuthRulesRestrictedJoins`) |
+| REQ-AUTH-022 | Room Versions §Authorisation rule 9 (v10+) | Integer-only power-level content validation | MUST | implemented (room version 9 and earlier keep their lenient behaviour, which the tests pin as a decision) | `tests/unit/eventauth_test.go` |
 | REQ-TXN-001 | CS §Idempotency | Transaction IDs on `PUT /send/{type}/{txn}` are per-device and replay yields the same event | MUST | partial — the storage layer enforces per-device uniqueness and returns the prior event; no endpoint yet | `tests/unit/eventstore_test.go` (endpoint coverage pending, M2) |
 | REQ-ROOM-001 | CS §Rooms | `POST /createRoom` with version negotiation, initial state, presets | MUST | not implemented | M2 |
 | REQ-ROOM-002 | Room Versions §room IDs | v12's domain-free room IDs and privileged creators | MUST | represented in the registry, not implemented | M6 |
 
 ### Interpretation decisions where the specification and implementations need reconciling
+
+4. **Bootstrapping power levels (rule 7 versus rule 9.4).** Rule 9.4 allows the first
+   `m.room.power_levels` event unconditionally, but rule 7 already demands
+   `state_default` (50) for a state event, and with no power levels event in the room
+   every user sits at `users_default` (0) — so nobody could ever send it. Synapse and
+   gomatrixserverlib both resolve this by giving the room creator effectively unlimited
+   power while the room has no power levels event (gomatrixserverlib uses 2^53−1 in
+   `NewPowerLevelContentFromAuthEvents` and 99 in its privileged-creator path). This
+   implementation gives the creator 2^53−1 in that situation and tests that a
+   non-creator is still refused. Falsifiable: a peer that grants 99 instead would refuse
+   a first event that sets a level above 99.
+5. **`m.room.aliases` special case.** The specification removes it in room version 6 and
+   Synapse gates it by version; gomatrixserverlib applies it to every room version. This
+   implementation follows the specification, so an aliases event in a version 6+ room needs
+   the sender to be joined and to hold the state power level. A peer applying the historic
+   exemption would accept aliases events this server rejects — the kind of divergence that
+   shows up as a missing alias rather than a forked room, and it is recorded here so it is
+   not mistaken for a bug in the room-state code.
 
 1. **`redacts` in room versions 3–10.** The per-version PDU tables list a top-level
    `redacts` property for redaction events, but the same pages' redaction strip list does
