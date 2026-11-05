@@ -380,22 +380,32 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
 - [ ] T-4011 the address policy is applied when discovery resolves a name, not when the
       socket is opened. A name whose answer changes between the two (DNS rebinding) is not
       covered; the fix is a dialer that re-checks the address it is about to connect to
-- [ ] T-4018 room version 11 event IDs (pseudo-IDs, MSC4014): a `send_join` for a version 11 room
-      arrives with no `event_id` and this server refuses it ("it has no event_id"). In a pseudo-ID
-      room the ID is the hash of the event, so a server that holds the room and the event can compute
-      it rather than require the sender to have supplied it. This is what Complement's
-      `TestSyncTimelineGap` is blocked on now that its join handshake reaches the harness's second
-      homeserver. Blocking a test is not the reason: a peer that follows the version 11 rules is
-      entitled to be understood
+- [x] T-4018 an event offered over federation is named by the server that receives it, not by the
+      offer (DEC-036). Opened as "pseudo-IDs", and the diagnosis was wrong: the event format of every
+      room version from 3 on does not list `event_id` among the required properties, because the
+      identifier there is the reference hash — so a PDU without one is complete, and a PDU carrying a
+      label its content contradicts is the same event wearing a wrong label. `events.AssignEventID`
+      computes the name; the ingest paths use it for the duplicate check, the verdicts and the stored
+      copy; `Verify` no longer demands a field the room version does not require. Evidence:
+      `tests/unit/eventid_test.go` (every known room version, including 1 and 2 where the identifier
+      really is the sender's to supply) and `tests/integration/federation_test.go`
+      (`TestEventOfferedWithoutItsLabelIsNamedByItsContent`: an unlabelled event and a mislabelled
+      one, each stored under the ID its content makes and readable by it). Complement's
+      `TestSyncTimelineGap` passes now
 - [ ] T-4017 the three Complement `csapi` failures that remain in the filtered set:
       `TestRoomCreate/creates_a_room_with_the_given_version` (room versions 1 and 2 — T-4013),
       `TestSync/parallel/Device_list_tracking` (device-list EDUs over federation — T-4009c area) and
       `TestSyncTimelineGap`. The first two are understood and tracked. `TestSyncTimelineGap` was
       diagnosed on 2026-11-05 and is not a sync bug: the harness's second homeserver could not be
       reached for keys (the image's address policy, then the certificate name rule), and with the
-      handshake working it stops at T-4018. Two real defects came out of that diagnosis and are fixed
-      (DEC-034 name verification on the key endpoints, DEC-035 `/make_join` answering a speakable
-      but different `ver` in the room's own version)
+      handshake working it stopped at the event identifier (T-4018). It now passes repeatedly. Three
+      real defects came out of that diagnosis, all fixed: the key endpoints verified certificates
+      against the resolved address rather than the server's name (DEC-034); `/make_join` read one
+      `ver` out of an unordered list and compared it with the room's version, so this server refused a
+      perfectly capable asker at random (DEC-035, DEC-037); and a PDU with no `event_id` was refused
+      although the room version computes it (DEC-036). What still fails in that set is
+      `TestRoomCreate` (room versions 1 and 2 — T-4013) and
+      `TestSync/parallel/Device_list_tracking` (T-4009c)
 - [ ] T-4014 audit the remaining federation responses for the same mistake as T-4006a: any
       object that carries a signature must be written as the bytes that signature covers.
       `pdus` are already carried as raw stored bytes; the transaction answer and the error

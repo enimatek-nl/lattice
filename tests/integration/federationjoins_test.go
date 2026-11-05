@@ -460,3 +460,85 @@ func membershipOf(t *testing.T, answer map[string]any, userID string) bool {
 	_, ok := joined[userID]
 	return ok
 }
+
+// makeJoinAnswer is what a server says about a request for a join template: the template and the
+// room's version when it can help, an error code and the room's version when it cannot.
+type makeJoinAnswer struct {
+	Event       map[string]any `json:"event"`
+	RoomVersion string         `json:"room_version"`
+	ErrCode     string         `json:"errcode"`
+	Error       string         `json:"error"`
+}
+
+// TestMakeJoinReadsEveryVersionTheAskerLists is about the `ver` parameter, which the
+// specification describes as the room versions the *sending* server has support for — repeated
+// once per version, in no particular order. It is not the asker's guess about which version this
+// room is, so a server holding a version 11 room that compares the first parameter it happens to
+// see against 11 will refuse a perfectly capable asker, and will do so at random because the list
+// is unordered.
+func TestMakeJoinReadsEveryVersionTheAskerLists(t *testing.T) {
+	t.Parallel()
+	hs1, hs2 := federationPair(t)
+
+	alice := hs1.registerUser(t, "versionshost", "pw-versionshost")
+	status, created := hs1.clientDo(t, http.MethodPost, "/_matrix/client/v3/createRoom",
+		map[string]any{"preset": "public_chat", "name": "many versions"}, alice)
+	if status != http.StatusOK {
+		t.Fatalf("creating the room: %v", created)
+	}
+	roomID, _ := created["room_id"].(string)
+	carol := "@carol:" + hs2.name
+	hs2.registerUser(t, "carol-versions", "pw-carol-versions")
+
+	ask := func(query string) (int, makeJoinAnswer) {
+		t.Helper()
+		status, payload := hs2.signedRequest(t, hs1, http.MethodGet,
+			"/_matrix/federation/v1/make_join/"+roomID+"/"+carol+query, nil)
+		var answer makeJoinAnswer
+		if err := json.Unmarshal(payload, &answer); err != nil {
+			t.Fatalf("%s answered a join template with something unreadable: %s", hs1.name, payload)
+		}
+		return status, answer
+	}
+
+	status, answer := ask("?ver=3&ver=org.matrix.msc4014&ver=9&ver=11")
+	if status != http.StatusOK {
+		t.Fatalf("an asker listing the room's version was answered with %d (%s)", status, answer.Error)
+	}
+	holding := answer.RoomVersion
+	if holding == "" {
+		t.Fatalf("the template did not name the room's version: %+v", answer)
+	}
+	if kind, _ := answer.Event["type"].(string); kind != "m.room.member" {
+		t.Errorf("the template is a %v, not a join", answer.Event["type"])
+	}
+
+	// The same question, from a server that cannot speak this room's version. A template would
+	// not help: the join it goes on to sign would be one it cannot authorise. What it needs is the
+	// version itself, which is why the specification puts it in the error.
+	if holding == "3" || holding == "org.matrix.msc4014" {
+		t.Skipf("this server holds rooms in %s, so the excluded-version case needs another version", holding)
+	}
+	status, answer = ask("?ver=3&ver=org.matrix.msc4014")
+	if status != http.StatusBadRequest {
+		t.Errorf("an asker without the room's version was answered with %d (%s), wanting 400",
+			status, answer.Error)
+	}
+	if answer.ErrCode != "M_INCOMPATIBLE_ROOM_VERSION" {
+		t.Errorf("the refusal carried %q, not M_INCOMPATIBLE_ROOM_VERSION: %+v", answer.ErrCode, answer)
+	}
+	if answer.RoomVersion != holding {
+		t.Errorf("the refusal named the room's version %q, but the room is %s", answer.RoomVersion, holding)
+	}
+
+	// A server that names no versions has said nothing about what it can speak. The default the
+	// specification records for that is the version 1 event format, which is a legacy artifact;
+	// holding an asker to it would leave every room from version 3 on unjoinable by a server that
+	// simply asks, so silence is answered with the room's version and named in the response.
+	if status, answer = ask(""); status != http.StatusOK {
+		t.Errorf("an asker naming no versions was answered with %d (%s), wanting 200", status, answer.Error)
+	} else if answer.RoomVersion != holding {
+		t.Errorf("an asker naming no versions was told the room is %q, but it is %s",
+			answer.RoomVersion, holding)
+	}
+}

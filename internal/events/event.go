@@ -110,6 +110,38 @@ func EventID(rules roomversion.Rules, event map[string]any) (string, error) {
 	}
 }
 
+// AssignEventID works out what an event is called in its room version, records that name in
+// the event, and returns it.
+//
+// In room versions 3 and later the identifier is not something the sending server chose: it is
+// the reference hash of the event, which every receiver computes for itself. The event format of
+// those versions does not list an event_id among the required properties, so a PDU may arrive
+// with no such field and be perfectly well formed — a receiver that demands one is refusing
+// events for not carrying a fact it can work out on its own. Equally, an event_id that disagrees
+// with the hash is not a second event: it is a wrong label on an event whose name follows from
+// its content, so the hash wins and the label is replaced. Naming events by their content is what
+// lets two servers agree on which event is which without asking each other, which is the entire
+// point of a derived identifier.
+//
+// Room versions 1 and 2 are the opposite case. There the origin server picked the identifier, so a
+// missing event_id is a missing fact that no amount of hashing can reconstruct, and saying so is
+// the only honest answer.
+func AssignEventID(rules roomversion.Rules, event map[string]any) (string, error) {
+	if rules.EventIDs == roomversion.EventIDServerAssigned {
+		carried, _ := event["event_id"].(string)
+		if carried == "" {
+			return "", errors.New("events: room versions 1 and 2 require an explicit event_id")
+		}
+		return carried, nil
+	}
+	computed, err := EventID(rules, event)
+	if err != nil {
+		return "", err
+	}
+	event["event_id"] = computed
+	return computed, nil
+}
+
 // Seal adds the content hash and the origin server's signature to an event in
 // place, in the order the specification requires: hash first, because the hash is
 // part of what gets signed, then the signature over the redacted form.

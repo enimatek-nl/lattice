@@ -48,7 +48,6 @@ func (s *Service) AcceptRemoteEvent(ctx context.Context, pdu []byte, verify Veri
 	if err != nil {
 		return "", fmt.Errorf("that event could not be read: %w", err)
 	}
-	eventID, _ := event["event_id"].(string)
 	roomID, _ := event["room_id"].(string)
 	if roomID == "" {
 		return "", fmt.Errorf("the event carries no room_id, so its rules cannot be checked")
@@ -73,6 +72,24 @@ func (s *Service) AcceptRemoteEvent(ctx context.Context, pdu []byte, verify Veri
 	if !ok {
 		return "", fmt.Errorf("room %q uses room version %s, which this server cannot check events in",
 			roomID, room.RoomVersion)
+	}
+
+	// The name this event is filed under is decided here, from the event itself, rather than
+	// accepted from the offer: in the room versions whose identifiers are hashes, the identifier
+	// is the hash and a PDU need not — and often does not — carry one. What the sender wrote is
+	// kept only as a note for the log, since a sender that labels an event wrongly is worth
+	// noticing even when the event is fine.
+	carried, _ := event["event_id"].(string)
+	eventID, err := events.AssignEventID(rules, event)
+	if err != nil {
+		return "", fmt.Errorf("that event cannot be named in room version %s: %w", room.RoomVersion, err)
+	}
+	if carried != "" && carried != eventID {
+		s.log.Warn("rooms: an offered event was labelled with an ID its own content does not make; "+
+			"it is filed under the ID the room version computes",
+			slog.String("room_id", roomID),
+			slog.String("labelled_event_id", carried),
+			slog.String("computed_event_id", eventID))
 	}
 
 	existing, err := s.events.ByID(ctx, eventID)

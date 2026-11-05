@@ -1352,3 +1352,42 @@ The test still fails, and honestly so: the join now completes its first half and
 `send_join`, where the harness's version 11 room arrives with no `event_id` — pseudo-IDs (T-4018) are
 not implemented here. Recorded rather than papered over. The rest of the filtered Complement set is
 unchanged, and `make verify` is clean.
+
+## 2026-11-05 — three defects behind one Complement test, and it passes now (DEC-036, DEC-037)
+
+`TestSyncTimelineGap` went from failing to passing, and getting there meant finding three things
+that were genuinely wrong rather than making the harness happy.
+
+**The join handshake was being refused at random.** `/make_join`'s `ver` parameter is repeated once
+per room version and names the versions the *asking* server can speak. This server read the first one
+out of an unordered list and compared it with the room's version, so a peer listing `3`, `9`, `11`
+and a proposal version was answered or refused depending on which came first. The rule now is the one
+the specification describes: is the room's own version in the set? If it is, the template goes out in
+the room's version; if it is not, `M_INCOMPATIBLE_ROOM_VERSION` carries the room's version, because
+naming the version the asker cannot speak is the only useful thing a refusal can do. A server that
+names no versions is answered rather than refused on the documented `[1]` default — holding it to
+that legacy artifact would leave every room from version 3 on unjoinable by a server that simply
+asks. DEC-035, recorded earlier in this window, was wrong in detail and is marked superseded by
+DEC-037.
+
+**An event without an identifier was refused, although the room version computes one.** Every room
+version from 3 on defines the event ID as the reference hash and does not list `event_id` among the
+required properties of the event format. So a PDU arriving without one is complete, and the receiver
+names the event by hashing it — the duplicate check, the verdict and the stored copy all use that
+name. A PDU carrying a label its own content contradicts is the same event wearing a wrong label: it
+is filed under the hash, and the disagreement is logged rather than treated as a verdict. What is
+still refused, whatever the label says, is an event whose content hash or origin signature does not
+check. Room versions 1 and 2 are the opposite case and still require the sender's identifier, which
+is why the unit test covers them.
+
+**The room was left half-empty.** The combination of the two above is what a user sees: an event
+refused for a missing label is a message that never arrives, in a room this server was told about.
+
+Complement's filtered set now runs `TestSyncTimelineGap` green repeatedly; `TestRoomCreate` (room
+versions 1 and 2, refused by design — T-4013) and `TestSync/parallel/Device_list_tracking` (device
+lists over federation, T-4009c) are the remaining failures in that set. New tests:
+`tests/unit/eventid_test.go` (every known room version),
+`tests/integration/federation_test.go` (`TestEventOfferedWithoutItsLabelIsNamedByItsContent`) and
+`tests/integration/federationjoins_test.go`
+(`TestMakeJoinReadsEveryVersionTheAskerLists`) — the latter two were confirmed to fail against the
+code before the change. `make verify` clean under `-race`, `golangci-lint` clean.
