@@ -30,38 +30,43 @@ import (
 // re-fetched a moment later by a client that notices on its own, is a smaller fault than a
 // join that worked and reported failure.
 
-// announceMembership looks up a just-persisted event and applies the side effects of a
-// membership change.
-func (s *Service) announceMembership(ctx context.Context, eventID string) {
-	if s.presence == nil {
-		return
-	}
+// applySideEffects looks up a just-persisted event and applies what follows from it that
+// the event itself does not say.
+func (s *Service) applySideEffects(ctx context.Context, eventID string) {
 	stored, err := s.db.Events.ByID(ctx, eventID)
 	if err != nil {
 		// The event committed, so this is a read failure after the fact. Not worth
 		// failing the join over, and worth a line in the log.
-		s.log.Warn("rooms: cannot read a persisted event to announce a membership change",
+		s.log.Warn("rooms: cannot read a persisted event to announce its side effects",
 			"event_id", eventID, "error", err)
 		return
 	}
 	body, err := events.Parse(stored.JSON)
 	if err != nil {
-		s.log.Warn("rooms: cannot parse a persisted event to announce a membership change",
+		s.log.Warn("rooms: cannot parse a persisted event to announce its side effects",
 			"event_id", eventID, "error", err)
 		return
 	}
-	if body["type"] != eventauth.TypeMember {
-		return
-	}
+	eventType, _ := body["type"].(string)
 	content, _ := body["content"].(map[string]any)
-	membership, _ := content["membership"].(string)
-	stateKey, _ := body["state_key"].(string)
 	roomID, _ := body["room_id"].(string)
-	if stateKey == "" || roomID == "" {
+	if roomID == "" {
 		return
 	}
 
-	switch membership {
+	// A tombstone has an empty state key, so the member check below must not run first.
+	if eventType == tombstoneEventType {
+		if stateKey, _ := body["state_key"].(string); stateKey == "" {
+			s.announceUpgrade(ctx, roomID, content)
+		}
+		return
+	}
+
+	stateKey, _ := body["state_key"].(string)
+	if stateKey == "" {
+		return
+	}
+	switch content["membership"] {
 	case eventauth.MembershipJoin:
 		s.announceArrival(ctx, roomID, stateKey)
 		s.recordDeviceListChange(ctx, roomID, stateKey, persist.DeviceListChanged)

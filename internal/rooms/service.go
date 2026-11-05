@@ -105,6 +105,10 @@ type Service struct {
 	// separate service because presence is the user's, not the room's; the room service
 	// only tells it that somebody arrived.
 	presence PresenceNotifier
+	// upgrades is told that a room ended and which room replaced it, so that the users'
+	// rules about the old room can be carried over. Implemented by
+	// [*pushrules.Service].
+	upgrades UpgradeNotifier
 	name     string
 	log      *slog.Logger
 	// now is replaced in tests. A homeserver's timestamps must come from the server,
@@ -125,7 +129,18 @@ type PresenceNotifier interface {
 	Announce(ctx context.Context, userID string) error
 }
 
-func New(db *persist.Database, signer events.Signer, presence PresenceNotifier, serverName string, log *slog.Logger) (*Service, error) {
+// UpgradeNotifier is what the room service uses to say that a room has been replaced by
+// another one. It is called for a tombstone this server has just persisted, whichever way
+// the upgrade happened: the endpoint, or a client that built the new room by hand and then
+// closed the old one.
+//
+// Like the presence notifier, it is called only after the transaction that wrote the
+// tombstone committed.
+type UpgradeNotifier interface {
+	RoomUpgraded(ctx context.Context, oldRoomID, newRoomID string) error
+}
+
+func New(db *persist.Database, signer events.Signer, presence PresenceNotifier, upgrades UpgradeNotifier, serverName string, log *slog.Logger) (*Service, error) {
 	if db == nil {
 		return nil, errors.New("rooms: a database is required")
 	}
@@ -146,6 +161,7 @@ func New(db *persist.Database, signer events.Signer, presence PresenceNotifier, 
 		alias:    db.Aliases,
 		signer:   signer,
 		presence: presence,
+		upgrades: upgrades,
 		name:     serverName,
 		log:      log,
 		now:      func() time.Time { return time.Now().UTC() },
@@ -163,6 +179,7 @@ func (s *Service) WithTx(tx *gorm.DB) *Service {
 		alias:    s.alias.WithTx(tx),
 		signer:   s.signer,
 		presence: s.presence,
+		upgrades: s.upgrades,
 		name:     s.name,
 		log:      s.log,
 		now:      s.now,
@@ -201,6 +218,18 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (string, error)
 	}
 	createContent["creator"] = req.Creator
 	createContent["room_version"] = rules.ID
+	// A predecessor is taken from `creation_content` but checked rather than copied: the
+	// specification requires both a room and an event in it, and a client that names only
+	// the room is not wrong, it is describing an upgrade it cannot finish by itself.
+	if raw, present := req.CreationContent["predecessor"]; present {
+		predecessor, err := s.validatePredecessor(ctx, raw)
+		if err != nil {
+			return "", err
+		}
+		if predecessor != nil {
+			createContent["predecessor"] = predecessor
+		}
+	}
 
 	initial := presetState(req.Preset, req.Creator)
 	if len(req.PowerLevelOverride) > 0 {
@@ -410,7 +439,7 @@ func (s *Service) Send(ctx context.Context, req SendRequest) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	s.announceMembership(ctx, eventID)
+	s.applySideEffects(ctx, eventID)
 	return eventID, nil
 }
 

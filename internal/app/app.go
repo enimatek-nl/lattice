@@ -69,13 +69,13 @@ func New(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, error
 	uia := auth.NewUIAService(5*time.Minute, 8192)
 	userService := users.New(db, tokens, cfg.Registration, cfg.ServerName, log)
 	presenceService := presence.New(db, cfg.ServerName, log)
-	roomService, err := rooms.New(db, signingKeys, presenceService, cfg.ServerName, log)
+	pushRules := pushrules.NewService(db, log)
+	roomService, err := rooms.New(db, signingKeys, presenceService, pushRules, cfg.ServerName, log)
 	if err != nil {
 		_ = db.Close()
 		return nil, err
 	}
 
-	pushRules := pushrules.NewService(db, log)
 	// What a user owns from the moment they exist: their push rules, and a presence
 	// entry so that the first question about them is answered with something this server
 	// knows rather than with a guess. Accounts that predate this code are covered by the

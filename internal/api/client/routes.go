@@ -124,6 +124,7 @@ func Register(r *httpserver.Router, d *Deps, requireAuth func(http.Handler) http
 	// Rooms and events.
 	versioned("POST", "/createRoom", d.handleCreateRoom)
 	versioned("PUT", "/rooms/{roomID}/send/{eventType}/{txnID}", d.handleRoomSend)
+	versioned("POST", "/rooms/{roomID}/upgrade", d.handleRoomUpgrade)
 	versioned("PUT", "/rooms/{roomID}/state/{eventType}", d.handleRoomState)
 	versioned("PUT", "/rooms/{roomID}/state/{eventType}/{stateKey}", d.handleRoomState)
 	// The empty state key is addressed with a trailing slash, which Go's mux treats

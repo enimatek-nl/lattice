@@ -30,6 +30,11 @@ type RoomAliasRepo interface {
 	ByRoom(ctx context.Context, roomID string) ([]*RoomAlias, error)
 	// Delete removes a mapping. A missing mapping is ErrNotFound.
 	Delete(ctx context.Context, alias string) error
+
+	// MoveRoom re-points every alias on one room at another room, and reports how many
+	// it moved. A room upgrade moves the conversation and the names that point at it: an
+	// alias left behind resolves to a room its server says is finished.
+	MoveRoom(ctx context.Context, oldRoomID, newRoomID string) (int, error)
 }
 
 type roomAliasRepo struct{ db *gorm.DB }
@@ -60,6 +65,20 @@ func (r *roomAliasRepo) ByAlias(ctx context.Context, alias string) (*RoomAlias, 
 		return nil, err
 	}
 	return &row, nil
+}
+
+// MoveRoom implements [RoomAliasRepo].
+func (r *roomAliasRepo) MoveRoom(ctx context.Context, oldRoomID, newRoomID string) (int, error) {
+	if oldRoomID == "" || newRoomID == "" || oldRoomID == newRoomID {
+		return 0, nil
+	}
+	result := r.db.WithContext(ctx).Model(&RoomAlias{}).
+		Where("room_id = ?", oldRoomID).
+		Update("room_id", newRoomID)
+	if result.Error != nil {
+		return 0, result.Error
+	}
+	return int(result.RowsAffected), nil
 }
 
 // ByRoom implements [RoomAliasRepo].

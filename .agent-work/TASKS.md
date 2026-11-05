@@ -108,7 +108,18 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
 - [x] T-2008 see above (client-side state reads done; `/state_ids` is federation, M4)
 - [ ] T-2009 `m.room.redaction` application: power level or same server name rule, redacted
       form stored, hashes/signatures stay valid
-- [ ] T-2010 room upgrade path (`m.room.create.predecessor`, `POST /rooms/{roomId}/upgrade`),
+- [x] T-2010 room upgrade path: `POST /rooms/{roomId}/upgrade` and a client-supplied
+      `predecessor` in `creation_content`, with the transferable state carried, the aliases
+      moved, the tombstone sent, and each local user's room rules carried across —
+      Complement `TestPushRuleRoomUpgrade`'s two local subtests
+- [ ] T-2010b decide what an upgraded room is allowed to do afterwards: it still accepts
+      events today, although its own state says it is not intended to be used any further.
+      Refusing them is a behaviour change with consequences for clients that have not seen
+      the tombstone, so it is a decision rather than a default
+- [ ] T-2010c upgrade awareness for rooms this server is not in: a tombstone arriving over
+      federation should carry the local users' rules too. The hook already fires for any
+      tombstone this server persists, so the work is the federation path (T-4005), not the
+      hook,
       including carrying the user's push rules over to the new room — Complement
       `TestPushRuleRoomUpgrade` has two local subtests that fail for nothing else: the
       endpoint does not exist. The other two subtests of that test need federation

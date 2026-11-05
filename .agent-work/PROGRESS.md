@@ -703,3 +703,45 @@ along with the whole `tests/msc4222` package).
 
 Local evidence: `make verify` `-race` ok — 178 integration, 204 unit tests; `go vet` and
 `golangci-lint run ./...` 0 issues. No Complement assertion was modified.
+
+---
+
+## 2026-11-05 — room upgrades (M3)
+
+Scope: `internal/rooms/upgrade.go` (new), `internal/persist/alias.go` (`MoveRoom`), the
+tombstone branch of `internal/rooms/membership_effects.go`, `pushrules.Service.RoomUpgraded`,
+`POST /rooms/{roomID}/upgrade`.
+
+Both ways an upgrade happens are supported, because clients do both: the endpoint, and a
+client that creates the new room with a `predecessor` in `creation_content` and then closes
+the old room by hand. What the server does:
+
+* The replacement's `m.room.create` carries `predecessor` with **both** fields the
+  specification requires. A client that names only the old room is not wrong — filling in the
+  event is the server's job, because it is the one that knows the room.
+* The `type` and `m.federate` of the old room's create event are copied. A space that
+  upgraded into a plain room would stop being a space, and nobody asked for that.
+* The nine state types the specification recommends are carried; membership is not, because
+  signing a join for a user on another server would be forging their arrival.
+* The aliases move. A name left on a room whose own state says it is finished leads clients
+  somewhere dead.
+* A tombstone anywhere — from the endpoint or from a client — carries each local user's
+  room-scoped push rules across. That behaviour is not in the specification's upgrade
+  section, so it is recorded as an implementation convention rather than as a requirement.
+
+One bug found while testing it, in code written an hour earlier: `pushrules.load` reports
+whether the ruleset had to be *created*, and the new copy carried the case backwards — every
+user with real rules was skipped, and only a user with none was processed. The integration
+test caught it; the Complement test would have caught it too but only after a federation
+join that never gets that far today.
+
+Decisions recorded rather than defaulted: an upgraded room still accepts events (T-2010b —
+refusing them affects clients that have not seen the tombstone, so it is a decision, not a
+default), and `m.room.canonical_alias` is not copied even though the alias itself moves
+(the person upgrading did not choose the new room's name).
+
+Complement: `TestPushRuleRoomUpgrade`'s two local subtests pass. The two remote ones fail at
+`POST /join` for a room on another homeserver — T-4005.
+
+Local evidence: `make verify` `-race` ok — 181 integration, 204 unit tests; `go vet` and
+`golangci-lint run ./...` 0 issues. No Complement assertion was modified.

@@ -72,7 +72,16 @@ Every failure is a *missing feature*, not a wrong answer, except two worth namin
 Rooms, membership, events, state, sync, E2EE key management and federation therefore remain the
 long tail; their Complement coverage is the measuring stick for M2–M5.
 
-## Filtered run (2026-11-05, room upgrade and push rules)
+## Latest filtered run (2026-11-05, room upgrade)
+
+Filter: `TestPushRuleRoomUpgrade`. The two subtests that need no federation now pass —
+`upgrading a room carries over existing push rules for local users` and the manual variant of
+it. What is left failing is the pair that joins a room on a second homeserver
+(`joining a remote upgraded room ...`, `joining a remote manually upgraded room ...`), which
+fails at `POST /join/{roomID}?server_name=hs1` with `M_NOT_FOUND`: this server cannot join a
+room it has never heard of. That is T-4005 (federation), not the upgrade.
+
+## Earlier filtered run (2026-11-05, room upgrade and push rules)
 
 Filter: `TestPushRuleRoomUpgrade`. All four subtests fail, for two different reasons:
 

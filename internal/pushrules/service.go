@@ -121,6 +121,68 @@ func (s *Service) write(ctx context.Context, userID string, set Ruleset) error {
 	return nil
 }
 
+// RoomUpgraded copies each local user's rule about the old room onto the room that
+// replaced it.
+//
+// A room rule is about a conversation. A user who muted the old room said "not this one", and
+// an upgrade moves the conversation to a new identifier — so a rule that stays behind leaves
+// the user notified about what they asked not to be notified about, and un-muted about what
+// they muted.
+//
+// This behaviour is not written in the specification's upgrade section. Synapse and Dendrite
+// do it and Complement tests it, so it is implemented and recorded as an implementation
+// convention rather than presented as a specification requirement.
+//
+// Every local account is read, because a rule may name a room the user has since left. That
+// is a linear scan over accounts, which is acceptable for a rare operation at this scale and
+// would need an index if it did not.
+func (s *Service) RoomUpgraded(ctx context.Context, oldRoomID, newRoomID string) error {
+	if oldRoomID == "" || newRoomID == "" || oldRoomID == newRoomID {
+		return nil
+	}
+	ids, err := s.users.ListUserIDs(ctx)
+	if err != nil {
+		return fmt.Errorf("pushrules: cannot list the accounts: %w", err)
+	}
+	var carried []string
+	for _, userID := range ids {
+		set, created, err := s.load(ctx, userID)
+		if err != nil {
+			return err
+		}
+		if created {
+			// This user had no rules of their own, only the defaults this server just
+			// handed them. A default is never about a room, so there is nothing to carry.
+			continue
+		}
+		old, _, err := findRule(set.Room, oldRoomID)
+		if err != nil {
+			if errors.Is(err, persist.ErrNotFound) {
+				continue
+			}
+			return err
+		}
+		if _, _, err := findRule(set.Room, newRoomID); err == nil {
+			// The user already said something about the new room. Their own words win.
+			continue
+		} else if !errors.Is(err, persist.ErrNotFound) {
+			return err
+		}
+		moved := old
+		moved.RuleID = newRoomID
+		set.Room = append(set.Room, moved)
+		if err := s.write(ctx, userID, set); err != nil {
+			return err
+		}
+		carried = append(carried, userID)
+	}
+	if len(carried) > 0 {
+		s.log.Info("pushrules: carried room rules over an upgrade",
+			"old_room_id", oldRoomID, "new_room_id", newRoomID, "users", len(carried))
+	}
+	return nil
+}
+
 // checkScope rejects a scope this server has no rules for.
 func checkScope(scope string) error {
 	if scope != ScopeGlobal {
