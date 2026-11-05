@@ -56,6 +56,17 @@ durable outbound queue with backoff, PDU validation + outliers, `/make_join`/`/s
 `/state_ids`, `/backfill`, `/event`, `/missing_events`. Targets: `federation_*_test.go` (join,
 send, keys, get_missing_events, acl, redaction, sync, typing, presence, to_device).
 
+Done here: keys and discovery, `X-Matrix` in and out, the `/send/{txn}` receiver and its
+durable queue, PDU ingest checks in specification order, refusals recorded and cascading
+(T-2006a, DEC-021), outbound fan-out, Complement's federation credential fix (DEC-020).
+
+Not met, and named rather than glossed: two homeservers agreeing on one room's *state* after
+both changed it. `rooms.persistEvent` sets a state key to the last state event persisted for
+it — the last-write-wins this project must not substitute — while `internal/state.Resolve`
+implements State Resolution 2, is unit-tested, and is never called. The resolver needs the
+state each forward extremity was carrying, so T-2017 follows T-3004 (per-event state
+snapshots). Until T-2017 lands this milestone stays open even though events move.
+
 ## M5 — Extended functionality
 
 Media repository (upload/download/thumbnail/async), device keys (`/keys/upload|query|claim`,
