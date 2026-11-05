@@ -14,6 +14,7 @@ import (
 	"io"
 	"math"
 	"math/big"
+	"reflect"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -177,9 +178,46 @@ func encode(b *strings.Builder, value any) error {
 		}
 		b.WriteByte(']')
 	default:
-		return fmt.Errorf("matrixjson: unsupported value type %T", value)
+		return encodeReflect(b, value)
 	}
 	return nil
+}
+
+// encodeReflect handles the Go types that are plainly JSON containers but not the two
+// the decoder produces — a []map[string]any a caller built by hand, a []string, a
+// map[string][]string. It exists because an endpoint that signs what it is about to send
+// must be able to canonicalise what it built, and failing at encode time with a 500 is a
+// poor way to say "use []any".
+//
+// Structs are still refused. Which fields are part of the signed document is a decision,
+// not something `json:"..."` tags should decide by accident.
+func encodeReflect(b *strings.Builder, value any) error {
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Slice, reflect.Array:
+		b.WriteByte('[')
+		for i := 0; i < reflected.Len(); i++ {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			if err := encode(b, reflected.Index(i).Interface()); err != nil {
+				return err
+			}
+		}
+		b.WriteByte(']')
+		return nil
+	case reflect.Map:
+		if reflected.Type().Key().Kind() != reflect.String {
+			return fmt.Errorf("matrixjson: map keys must be strings, got %T", value)
+		}
+		object := make(map[string]any, reflected.Len())
+		for _, key := range reflected.MapKeys() {
+			object[key.String()] = reflected.MapIndex(key).Interface()
+		}
+		return encodeMap(b, object)
+	default:
+		return fmt.Errorf("matrixjson: unsupported value type %T", value)
+	}
 }
 
 func encodeMap(b *strings.Builder, m map[string]any) error {

@@ -1,6 +1,7 @@
 package integration
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
@@ -161,6 +162,44 @@ func TestServerKeysVerifies(t *testing.T) {
 	}
 	if !result.VerifiedAll([]string{"hs1"}) {
 		t.Errorf("the server key document does not verify with its own key: %+v", result)
+	}
+
+	// And it must verify over the bytes this server actually sent, not merely over an
+	// equivalent rendering of them. A peer that takes the body, removes "signatures" and
+	// checks what is left is doing the honest thing; an encoder that appends a newline,
+	// escapes a character the signing rules leave alone, or writes a number differently
+	// produces a document that fails that check with a perfectly good key.
+	if canonical, err := matrixjson.Canonical(doc); err != nil {
+		t.Fatalf("canonicalising the document: %v", err)
+	} else if !bytes.Equal(res.body, canonical) {
+		t.Errorf("the key document is not the canonical form its signature was made over:\n  sent:      %s\n  canonical: %s",
+			res.body, canonical)
+	}
+	decodedBody, err := matrixjson.Decode(res.body)
+	if err != nil {
+		t.Fatalf("decoding the body: %v", err)
+	}
+	withoutSignature, ok := decodedBody.(map[string]any)
+	if !ok {
+		t.Fatalf("the key document is not a JSON object: %s", res.body)
+	}
+	signatures, _ := withoutSignature["signatures"].(map[string]any)
+	byKey, _ := signatures["hs1"].(map[string]any)
+	rawSignature, _ := byKey[keyID].(string)
+	if rawSignature == "" {
+		t.Fatalf("no signature under %s in %s", keyID, res.body)
+	}
+	signature, err := matrixjson.DecodeUnpadded(rawSignature)
+	if err != nil {
+		t.Fatalf("the signature is not unpadded base64: %v", err)
+	}
+	delete(withoutSignature, "signatures")
+	signed, err := matrixjson.Canonical(withoutSignature)
+	if err != nil {
+		t.Fatalf("canonicalising the signed form: %v", err)
+	}
+	if !ed25519.Verify(ed25519.PublicKey(keyBytes), signed, signature) {
+		t.Errorf("the signature does not check over the document as sent")
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"github.com/enimatek/lattice/internal/httpx"
 	"github.com/enimatek/lattice/internal/matrixerr"
 	"github.com/enimatek/lattice/internal/matrixid"
+	"github.com/enimatek/lattice/internal/matrixjson"
 	"github.com/enimatek/lattice/internal/persist"
 	"github.com/enimatek/lattice/internal/rooms"
 	"github.com/enimatek/lattice/internal/roomversion"
@@ -296,4 +297,19 @@ func (d *Deps) serverIsInRoom(r *http.Request, roomID, origin string) bool {
 		}
 	}
 	return false
+}
+
+// encodeCanonical answers with a signed object in the form its signature was made over.
+//
+// A signed document is not "equivalent JSON": it is the exact bytes, in the exact order,
+// with the exact escapes the signer canonicalised. Re-encoding it on the way out — with
+// an encoder that appends a newline, escapes HTML, or renders a number another way —
+// hands the peer a document whose own signature does not check.
+func encodeCanonical(w http.ResponseWriter, status int, object any) error {
+	body, err := matrixjson.Canonical(object)
+	if err != nil {
+		return err
+	}
+	httpx.WriteRawJSON(w, status, body)
+	return nil
 }

@@ -373,13 +373,10 @@ func TestFormerMemberReadsStopAtLeaving(t *testing.T) {
 	}
 	// The full state list leaves that entry out, and still carries what he saw.
 	stateRes := h.mustStatus(t, h.get("/_matrix/client/v3/rooms/"+roomID+"/state", bobToken), http.StatusOK)
-	var envelope struct {
-		State []any `json:"state"`
-	}
-	if err := json.Unmarshal(stateRes.body, &envelope); err != nil {
+	var entries []any
+	if err := json.Unmarshal(stateRes.body, &entries); err != nil {
 		t.Fatalf("decoding the state list: %v (body %s)", err, stateRes.body)
 	}
-	entries := envelope.State
 	if len(entries) == 0 {
 		t.Fatalf("a former member got no state at all")
 	}

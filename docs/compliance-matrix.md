@@ -47,7 +47,7 @@ Specification: Matrix v1.19 (`docs/specification-version.md`).
 | Area | Status | Own tests | Complement |
 | --- | --- | --- | --- |
 | `GET /_matrix/federation/v1/version` | implemented | yes | **verified** (the 405 half of `TestUnknownEndpoints`) |
-| `GET /_matrix/key/v2/server` (signed document, verified against its own key) | implemented | yes | not directly exercised |
+| `GET /_matrix/key/v2/server` (signed document, served as the canonical bytes its signature covers) | implemented | yes (`TestServerKeysVerifies` checks the body is canonical and verifies the signature over it) | **verified** (`TestInboundFederationKeys`; it failed while the endpoint re-encoded the document) |
 | `POST /_matrix/key/v2/query` (answers for this server only) | partial — *asking* a notary is implemented and tested; answering about other servers is not | yes | not directly exercised |
 | Server discovery: `.well-known/matrix/server` delegation, `_matrix._tcp`/`_matrix-federation._tcp` SRV records, IP literals, explicit ports, certificate-name rules, caching, refusal of a broken delegation | implemented | yes (`tests/unit/federationdiscovery_test.go`) | not verified: Complement gives every container a fixed `SERVER_NAME` and no DNS |
 | Address policy for dialed addresses (loopback, link-local metadata, CGNAT, multicast, private ranges denied by default; configurable allow/deny) | implemented | yes (`tests/unit/federationdiscovery_test.go`, `tests/unit/config_test.go`) | n/a. Known limit: enforced at resolution, not at dial time |
@@ -93,6 +93,17 @@ Specification: Matrix v1.19 (`docs/specification-version.md`).
 | Transaction ID store for `/send/{type}/{txn}` idempotency (unique per device) | implemented and exercised through the endpoint | `tests/unit/eventstore_test.go`, `tests/integration/rooms_test.go` |
 | `depth` validation against `prev_events` | not implemented | M2 |
 | Redaction application rules (power level or same domain) | not implemented; the redacted form has a column to live in | M2 |
+
+### Targeted run after the first federation work (2026-11-05)
+
+| Field | Value |
+| --- | --- |
+| Suites run | `./tests`, `./tests/csapi`, `./tests/msc4222` with `RUN='TestRoomState\|TestRoomCreate\|TestRoomMembers\|TestSync\|TestRoomAlias\|TestRoomSummary\|TestVersionStructure\|TestUnknownEndpoints\|TestRegistration\|TestLogin'` (and a broader pass over `./tests/...` recorded separately) |
+| Passed | `TestRoomState` (now, and only after the response shape was corrected), `TestRoomAlias`, `TestRoomMembers`, `TestRoomSummaryAllowedRoomIDs`, `TestVersionStructure`, `TestUnknownEndpoints`, `TestRegistration`, `TestLogin`, and the M1 regression suites |
+| Failed and why | `TestRoomCreate/creates_a_room_with_the_given_version`: asked for room version **2**, which this server refuses with `M_UNSUPPORTED_ROOM_VERSION` — room versions 1 and 2 are deliberately not implemented (their authorisation rules and state resolution v1 are not written). `TestSyncTimelineGap`: history paging is by stream position, not depth (T-3001d). `TestSync/sync_should_succeed_even_if_the_sync_token_points_to_a_redaction_of_an_unknown_event`: redaction application (T-2009). `TestSync/parallel/*state_after*`: MSC4222 `state_after` is not implemented (T-3001f). `TestSyncOmitsStateChangeOnFilteredEvents`: a sync filter's state section is not applied (T-3001f) |
+| What the run caught that the local suite did not | `GET /rooms/{roomID}/state` had been changed in this window from a bare array to `{"state": […]}`, on a reading of the API-standards sentence that every endpoint answers with a JSON object. Complement's `TestRoomState` walks the top-level array, the endpoint's own schema says "Array of `ClientEvent`", and Synapse answers with an array. The change was reverted the same day; the local suite had been written around the wrong shape and could not see it |
+| Server faults observed | 0 panics, 0 HTTP 500 |
+| Complement assertions changed | none |
 
 ## Complement run record
 

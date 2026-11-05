@@ -73,6 +73,43 @@ func TestCanonicalJSONSpecExamples(t *testing.T) {
 
 // TestCanonicalJSONIdempotent checks that canonical output re-canonicalises to
 // itself, which is what signature verification depends on.
+// A signed response has to be canonicalised, and callers build objects with the Go types
+// they have, not the two the decoder produces. An encoder that refuses []string or
+// []map[string]any turns a signed response into a 500 at runtime.
+func TestCanonicalJSONAcceptsGoContainerTypes(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		value any
+		want  string
+	}{
+		{"strings", []string{"b", "a"}, `["b","a"]`},
+		{"hand built objects", []map[string]any{{"b": 1, "a": 2}}, `[{"a":2,"b":1}]`},
+		{"string keyed map", map[string]any{"z": "1", "a": []any{1, 2}}, `{"a":[1,2],"z":"1"}`},
+	}
+	for _, tc := range cases {
+		if tc.want == "" {
+			continue
+		}
+		got, err := matrixjson.Canonical(tc.value)
+		if err != nil {
+			t.Errorf("%s: %v", tc.name, err)
+			continue
+		}
+		if string(got) != tc.want {
+			t.Errorf("%s: got %s, want %s", tc.name, got, tc.want)
+		}
+	}
+
+	// A struct is still refused: which of its fields belong in a signed document is a
+	// decision, and `json:"..."` tags are not the place that decision is made.
+	if _, err := matrixjson.Canonical(struct {
+		A int `json:"a"`
+	}{A: 1}); err == nil {
+		t.Errorf("a struct was canonicalised; the signed form of a struct is not implied by its tags")
+	}
+}
+
 func TestCanonicalJSONIdempotent(t *testing.T) {
 	t.Parallel()
 	const input = `{"a":1,"b":[1,2,3],"c":{"d":"é"},"e":null}`
