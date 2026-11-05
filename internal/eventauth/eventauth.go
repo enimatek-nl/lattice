@@ -3,6 +3,7 @@ package eventauth
 import (
 	"errors"
 	"fmt"
+	"github.com/enimatek/lattice/internal/events"
 	"sort"
 	"strings"
 
@@ -115,9 +116,7 @@ const JACSKey = "join_authorised_via_users_server"
 // the wording of the specification page named in each comment.
 func Check(rules roomversion.Rules, event map[string]any, state Snapshot, opts Opts) error {
 	switch rules.AuthRuleset {
-	case "v1":
-		return fmt.Errorf("%w: room version %s", ErrRulesetUnsupported, rules.ID)
-	case "v2", "v3", "v4", "v5", "v6":
+	case "v1", "v2", "v3", "v4", "v5", "v6":
 	default:
 		return fmt.Errorf("%w: ruleset %q", ErrRulesetUnsupported, rules.AuthRuleset)
 	}
@@ -150,7 +149,11 @@ func Check(rules roomversion.Rules, event map[string]any, state Snapshot, opts O
 		}
 	}
 
-	// Rule 4: membership events have their own table.
+	// Rule 4: membership events have their own table. Room versions 1 and 2 use the
+	// same table for the membership values those versions have (join, invite, leave,
+	// ban): their page differs from the later one only in rules that concern knock,
+	// restricted joins and the third-party invite sub-clauses, and each of those is
+	// gated below by the room version's capability flags.
 	if eventType == TypeMember {
 		return checkMember(rules, event, state, opts)
 	}
@@ -215,7 +218,7 @@ func Check(rules roomversion.Rules, event map[string]any, state Snapshot, opts O
 // checkCreate implements rule 1 of the room version pages for versions 3 through
 // 11, and the privileged-creator adjustment of version 12.
 func checkCreate(rules roomversion.Rules, event map[string]any, roomID, sender string) error {
-	if prev := stringSlice(event["prev_events"]); len(prev) > 0 {
+	if prev := events.ReferencedIDs(event, "prev_events"); len(prev) > 0 {
 		return Failure{"1.1", "a create event must have no prev_events"}
 	}
 	if serverName(roomID) != serverName(sender) {
@@ -244,7 +247,7 @@ func checkCreate(rules roomversion.Rules, event map[string]any, roomID, sender s
 
 // checkAuthEvents implements rule 2.
 func checkAuthEvents(rules roomversion.Rules, event map[string]any, state Snapshot) error {
-	authIDs := stringSlice(event["auth_events"])
+	authIDs := events.ReferencedIDs(event, "auth_events")
 	if len(authIDs) > 10 {
 		return Failure{"2.0", "more than ten auth events"}
 	}
@@ -408,7 +411,7 @@ func checkMember(rules roomversion.Rules, event map[string]any, state Snapshot, 
 		// was wrong in a way that only federation exposed: prev_events are not auth_events,
 		// so a receiver checking an event against the auth events its sender cited can almost
 		// never resolve them, and every remote join but the creator's own was refused.
-		if prev := stringSlice(event["prev_events"]); len(prev) == 1 {
+		if prev := events.ReferencedIDs(event, "prev_events"); len(prev) == 1 {
 			if create, ok := state.Event(prev[0]); ok {
 				if typ, _ := stringOf(create, "type"); typ == TypeCreate && stateKey == creatorOf(rules, create) {
 					return nil
@@ -507,9 +510,16 @@ func checkMember(rules roomversion.Rules, event map[string]any, state Snapshot, 
 
 	case MembershipLeave:
 		// 4.5.1: leaving is allowed for a user who is invited, joined or knocking.
+		// Room versions 1 and 2 have no knock membership, so for them the state a
+		// user can leave from is invite or join, which is what their page says.
 		if sender == stateKey {
 			switch currentTarget {
-			case MembershipInvite, MembershipJoin, MembershipKnock:
+			case MembershipInvite, MembershipJoin:
+				return nil
+			case MembershipKnock:
+				if !rules.SupportsKnock {
+					return Failure{"4.5.1", "room version " + rules.ID + " has no knock membership"}
+				}
 				return nil
 			default:
 				return Failure{"4.5.1", "the user is not in a state that can be left"}

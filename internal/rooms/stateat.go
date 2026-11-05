@@ -3,6 +3,7 @@ package rooms
 import (
 	"context"
 	"fmt"
+	"github.com/enimatek/lattice/internal/events"
 
 	"github.com/enimatek/lattice/internal/persist"
 )
@@ -62,7 +63,7 @@ func (s *Service) recordStateAt(ctx context.Context, event map[string]any, row *
 // baseStateGroup returns the snapshot a new event descends from: its predecessors' shared
 // snapshot, or an empty one for a create event.
 func (s *Service) baseStateGroup(ctx context.Context, roomID string, event map[string]any) (int64, error) {
-	prevs := anyStrings(event["prev_events"])
+	prevs := events.ReferencedIDs(event, "prev_events")
 	if len(prevs) == 0 {
 		return s.groups.EmptyGroup(ctx, roomID)
 	}

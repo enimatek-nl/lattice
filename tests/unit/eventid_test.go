@@ -22,10 +22,10 @@ import (
 // cannot be reconstructed and asking for it is correct.
 func TestEventIsNamedByItsContentNotItsLabel(t *testing.T) {
 	t.Parallel()
-	// Room versions 1 and 2 are known to this server but not offered for new rooms, so they are
-	// named here rather than left to Supported(); their identifier rules are the ones this test
-	// is most particular about.
-	versions := append(roomversion.Supported(), roomversion.MustGet("1"), roomversion.MustGet("2"))
+	// Every version this server offers. The identifier rules differ across them, and room
+	// versions 1 and 2 are the case where the identifier really is the sender's to choose rather
+	// than something the receiver can work out.
+	versions := roomversion.Supported()
 	for _, rules := range versions {
 		t.Run("room version "+rules.ID, func(t *testing.T) {
 			signer := newTestSigner(t)

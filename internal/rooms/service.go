@@ -414,6 +414,10 @@ func (s *Service) createRoom(ctx context.Context, rules roomversion.Rules, roomI
 	}
 
 	snapshot := newMemorySnapshot()
+	// The initial state is built in a chain, and in a room version 1 or 2 room each event has to
+	// name the reference hash of the event before it — which is not in storage yet, because the room
+	// and its state are committed together. So the events built in this pass are kept at hand.
+	known := make(map[string]map[string]any, len(built))
 	var previous string
 	var lastStream int64
 	for index, event := range built {
@@ -424,6 +428,9 @@ func (s *Service) createRoom(ctx context.Context, rules roomversion.Rules, roomI
 		}
 		event["depth"] = int64(index + 1)
 		event["auth_events"] = toAnySlice(eventauth.SelectEventIDs(rules, event, snapshot))
+		if err := s.nameAndReference(event, ctx, rules, known); err != nil {
+			return "", err
+		}
 
 		// Seal first, because the event ID is a hash of the sealed event.
 		if err := events.Seal(s.name, rules, event, s.signer); err != nil {
@@ -434,6 +441,7 @@ func (s *Service) createRoom(ctx context.Context, rules roomversion.Rules, roomI
 			return "", fmt.Errorf("rooms: cannot compute the event ID of the initial state: %w", err)
 		}
 		event["event_id"] = eventID
+		known[eventID] = event
 
 		// Authorising our own construction is not busywork. It is the only thing
 		// standing between a bug in this builder and a room that every other server
@@ -544,6 +552,9 @@ func (s *Service) send(ctx context.Context, req SendRequest) (string, error) {
 		event[field] = value
 	}
 	event["auth_events"] = toAnySlice(eventauth.SelectEventIDs(rules, event, snapshot))
+	if err := s.nameAndReference(event, ctx, rules, nil); err != nil {
+		return "", err
+	}
 
 	// A room may only advertise aliases this server can resolve, so the alias claims
 	// in m.room.canonical_alias are checked before the event is signed.
@@ -644,12 +655,12 @@ func (s *Service) persistEvent(ctx context.Context, event map[string]any, stream
 		return fmt.Errorf("rooms: cannot store the event: %w", err)
 	}
 
-	for _, reference := range anyStrings(event["prev_events"]) {
+	for _, reference := range events.ReferencedIDs(event, "prev_events") {
 		if err := s.events.Link(ctx, eventID, reference, persist.EdgePrev); err != nil {
 			return fmt.Errorf("rooms: cannot record a prev_event: %w", err)
 		}
 	}
-	authIDs := anyStrings(event["auth_events"])
+	authIDs := events.ReferencedIDs(event, "auth_events")
 	for _, reference := range authIDs {
 		if err := s.events.Link(ctx, eventID, reference, persist.EdgeAuth); err != nil {
 			return fmt.Errorf("rooms: cannot record an auth_event: %w", err)
@@ -681,7 +692,7 @@ func (s *Service) persistEvent(ctx context.Context, event map[string]any, stream
 	}
 	// And the room's current state is wherever the branches say it is, which after a fork
 	// is not wherever the last write left it.
-	if err := s.reconcileCurrentState(ctx, row, len(anyStrings(event["prev_events"]))); err != nil {
+	if err := s.reconcileCurrentState(ctx, row, len(events.ReferencedIDs(event, "prev_events"))); err != nil {
 		return err
 	}
 	// A redaction and the destruction it causes are stored together, and an event that

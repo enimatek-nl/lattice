@@ -205,7 +205,7 @@ func (d *Deps) handleSendJoin(w http.ResponseWriter, r *http.Request) {
 			seeds = append(seeds, entry.EventID)
 		}
 	}
-	seeds = append(seeds, anyStringSlice(event["auth_events"])...)
+	seeds = append(seeds, events.ReferencedIDs(event, "auth_events")...)
 	authChain, err := d.Joins.AuthChainPDUs(r.Context(), seeds)
 	if err != nil {
 		d.Log.Error("federation: cannot read an auth chain for a send_join",
@@ -360,7 +360,7 @@ func (d *Deps) handleEventAuth(w http.ResponseWriter, r *http.Request) {
 			"The server encountered an internal error."))
 		return
 	}
-	seeds := anyStringSlice(event["auth_events"])
+	seeds := events.ReferencedIDs(event, "auth_events")
 	chain, err := d.Joins.AuthChainPDUs(r.Context(), seeds)
 	if err != nil {
 		d.Log.Error("federation: cannot read an auth chain", "event_id", eventID, "error", err)

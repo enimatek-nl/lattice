@@ -22,6 +22,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/enimatek/lattice/internal/matrixjson"
 	"github.com/enimatek/lattice/internal/redaction"
@@ -140,6 +141,33 @@ func AssignEventID(rules roomversion.Rules, event map[string]any) (string, error
 	}
 	event["event_id"] = computed
 	return computed, nil
+}
+
+// MintEventID records an identifier on an event this server is creating, for the room versions
+// where the identifier is chosen by the origin server rather than derived from the content: room
+// versions 1 and 2. It has to happen before the event is sealed, because in those versions the
+// identifier is inside what the content hash and the signature cover; giving the event its name
+// afterwards would leave a signature over an event that did not yet have it, which every receiver
+// would reject.
+//
+// The domain used is the sending server's own name. The room version page describes the domain as
+// that of the homeserver which created the room, and states its purpose: namespacing, so that two
+// homeservers' local identifiers cannot collide. The server minting the identifier is the one that
+// can guarantee its own local part is unique, so its own name is the namespace that serves that
+// purpose; Synapse names them the same way. The reading is recorded in docs/requirements.md.
+func MintEventID(rules roomversion.Rules, event map[string]any, localPart, domain string) (string, error) {
+	if rules.EventIDs != roomversion.EventIDServerAssigned {
+		return "", fmt.Errorf("events: room version %s derives its event identifiers from the event, so none is minted", rules.ID)
+	}
+	if localPart == "" || strings.ContainsAny(localPart, ":/\\") {
+		return "", fmt.Errorf("events: %q cannot be the local part of an event ID", localPart)
+	}
+	if domain == "" {
+		return "", errors.New("events: minting an event ID needs the server name it belongs to")
+	}
+	id := "$" + localPart + ":" + domain
+	event["event_id"] = id
+	return id, nil
 }
 
 // Seal adds the content hash and the origin server's signature to an event in

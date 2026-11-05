@@ -142,12 +142,19 @@ func TestPick(t *testing.T) {
 	if chosen, usedDefault, err := roomversion.Pick("7"); err != nil || usedDefault || chosen.ID != "7" {
 		t.Errorf("Pick(\"7\") = %+v, %v, %v; version 7 is offered because its rules are implemented", chosen, usedDefault, err)
 	}
-	// Version 2 is in the registry, so its events can be read, but this server will not
-	// create a room in it: its authorisation rules differ from version 3's, and
-	// substituting a newer version silently would give the client a room with different
-	// semantics than it asked for.
-	if _, _, err := roomversion.Pick("2"); err == nil {
-		t.Errorf("Pick(\"2\") should refuse a registered but unoffered version instead of substituting one")
+	// Room versions 1 and 2 are offered, because the rules that make them different are
+	// implemented: their own authorisation table, State Resolution 1 in the version that
+	// needs it, identifiers the origin server chooses, and references written as pairs.
+	for _, legacy := range []string{"1", "2"} {
+		if chosen, usedDefault, err := roomversion.Pick(legacy); err != nil || usedDefault || chosen.ID != legacy {
+			t.Errorf("Pick(%q) = %+v, %v, %v; room version %s is offered", legacy, chosen, usedDefault, err, legacy)
+		}
+	}
+	// A version this server has rules for but has not implemented is refused rather than
+	// quietly substituted: the client asked for particular semantics, and handing it different
+	// ones without saying so is worse than saying no.
+	if _, _, err := roomversion.Pick("12"); err == nil {
+		t.Errorf("Pick(\"12\") should refuse a registered but unimplemented version instead of substituting one")
 	}
 	if _, _, err := roomversion.Pick("Not A Version"); err == nil {
 		t.Errorf("Pick should reject a malformed version")
@@ -167,8 +174,8 @@ func TestAvailable(t *testing.T) {
 			t.Errorf("supported version %s is missing from the capability map", rules.ID)
 		}
 	}
-	if _, ok := available["1"]; ok {
-		t.Errorf("room version 1 must not be advertised while it cannot be created")
+	if _, ok := available["12"]; ok {
+		t.Errorf("room version 12 must not be advertised while it cannot be created")
 	}
 	if !roomversion.IsKnown("1") {
 		t.Errorf("room version 1 must still be known: events in such rooms need its rules")

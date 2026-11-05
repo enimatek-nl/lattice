@@ -7,9 +7,9 @@
 // room split. The algorithm here follows the "State resolution" section of the
 // pinned room version pages (v1.19) step by step.
 //
-// Room versions 2 through 11 use the algorithm implemented here. Room version 1 uses
-// the older algorithm and version 12 a revised one; both are refused rather than
-// approximated.
+// Room versions 2 through 11 use the algorithm implemented in this file; room version
+// 1 uses the older and much smaller algorithm implemented in stateresolutionv1.go.
+// Room version 12's revision is refused rather than approximated.
 package state
 
 import (
@@ -73,6 +73,8 @@ func (s *Snapshot) Rejected(id string) bool { return s.graph.Rejected(id) }
 func Resolve(rules roomversion.Rules, graph Graph, states []State, authChecks eventauth.Opts) (State, error) {
 	switch rules.StateRes {
 	case roomversion.StateResV2:
+	case roomversion.StateResV1:
+		return resolveV1(rules, graph, states, authChecks)
 	default:
 		return nil, fmt.Errorf("%w: room version %s uses %s", ErrAlgorithmUnsupported, rules.ID, rules.StateRes)
 	}

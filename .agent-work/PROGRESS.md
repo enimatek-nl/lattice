@@ -1391,3 +1391,87 @@ lists over federation, T-4009c) are the remaining failures in that set. New test
 `tests/integration/federationjoins_test.go`
 (`TestMakeJoinReadsEveryVersionTheAskerLists`) — the latter two were confirmed to fail against the
 code before the change. `make verify` clean under `-race`, `golangci-lint` clean.
+
+## 2026-11-08 — room versions 1 and 2 are offered, with the rules those versions actually have (T-4013, cycle 17)
+
+Room versions 1 and 2 have been the oldest open Complement failure since cycle 4:
+`TestRoomCreate/creates_a_room_with_the_given_version` asks a homeserver to make a room in version 2
+and this server answered `M_UNSUPPORTED_ROOM_VERSION`. It was refused because supporting it honestly
+means implementing the parts where those versions differ, and nothing less than that is worth
+shipping. It now passes, along with the rest of `TestRoomCreate`.
+
+What "the parts where they differ" turned out to be, in the order it was found:
+
+* **The authorisation table those two pages share is not the later table early.** It is a separate
+  ruleset (`eventauth.RulesV1V2`) because the clauses disagree in places that decide real events:
+  a room whose `m.room.create` has no `join_rule` and no `m.room.join_rules` event admits the join
+  (rule 4.4 — the later tables removed that clause, and Synapse has an equivalent accommodation
+  through its `room_version → None` join-rule mapping, so this is not exotic); the membership clauses
+  are keyed on the *event's own* sender-server name rather than the room's, which is also where the
+  "origin must match the room" clause of later versions used to be; a redaction is allowed by the
+  moderator clause **or** because the redacted event's event ID sits in the sender's domain; and the
+  invite clauses care about the target's domain (version 1) or about the target having already left
+  (version 2). The v1/v2 power levels rule also tolerates a top-level `users_default`, which later
+  versions dropped.
+* **State Resolution 1 is a different algorithm** (`internal/state/stateresolutionv1.go`): conflicts
+  resolved one state class at a time — power levels, join rules, memberships, then everything else —
+  with depth and the SHA-1 of the event ID as ordering keys. It is implemented because rooms in that
+  version exist and their state has to be computed the way that version defines it, not because the
+  algorithm is good; its documented failure modes are written in the file's comment. Noted honestly:
+  Synapse resolves those rooms with a richer procedure (auth difference, power events, reverse
+  topological order). The two agree on an unforked room and can disagree on a forked one; this server
+  follows the pinned specification page, and the divergence is recorded in
+  `docs/compliance-matrix.md` item 5 rather than discovered later by an operator.
+* **The identifier is the origin server's to choose, and it is inside what gets signed.** Every
+  outbound path had to mint an ID before sealing: local send (`rooms.prepare`), the join handshake
+  (the joining server mints its own; the resident server's template carries one, and `send_join`
+  takes the identifier from the event it was sent because that is the event the joiner signed), and
+  backfill. In a room whose version names an event by its hash, an incoming event with no `event_id`
+  is named by its content (DEC-036); in these versions there is nothing to compute, so a missing
+  identifier is a rejected event. `events.Seal` now refuses rather than signing something that cannot
+  carry the name it will be stored under.
+* **References are pairs in these versions** — `[event_id, {"sha256": hash}]` — and that shape is
+  inside what gets hashed, so it cannot be normalised away. `events.References`/`ReferencedIDs` are
+  now room-version aware, and the state resolver, the graph walk and the auth checks read references
+  through them.
+* **The auth chain ends where this server stops understanding the room.** An auth event from an
+  unrecognised room version is still required to resolve, so an unresolvable one means the chain is
+  incomplete rather than merely short (T-4013 in the ledger). A chain that stops early would let a
+  forged event be checked against state the chain never reached.
+* **Power levels in those versions may be written as strings, or as floats to be truncated**
+  (`"100"`, `" 00100 "`, `"+25"`, `50.57`). The loader reads them only in the versions that allow it.
+  A room whose moderators were written that way is a room with moderators; treating the values as
+  absent would have quietly demoted everyone in it.
+
+Two defects found while doing this, both wider than room versions 1 and 2:
+
+* `events.ReferencedIDs` skipped pair-form entries entirely — it only ever read bare strings. That is
+  the function the graph walk uses for `prev_events` in *every* room version, so a reference written
+  in the pair form was invisible: the event looked like it had no parents.
+* The server ACL check on a join template did not run for a room in version 1 or 2, because their
+  templates carry no `event_id` and the ACL code uses the event ID domain to decide whose room is
+  being templated. The rule reads the *room ID* domain in that case; a banned server can no longer be
+  handed a join template for a version 1 room it was excluded from.
+
+Verification: `make verify` clean, including `-race` and `-count=2` (`tests/unit` 1136s of test
+work, `tests/integration` green); `go vet ./...` clean; `gofmt -l` clean. New tests:
+`tests/unit/authorisation_legacy_test.go` (3), `tests/unit/stateresolvev1_test.go` (6 plus
+subtests), `tests/unit/powerlevels_legacy_test.go`, `tests/unit/eventid_test.go` (2),
+`tests/unit/chain_test.go` (+2 cases), `tests/unit/eventauth_test.go` (+1), and
+`tests/integration/roomversionlegacy_test.go` (2): rooms created in versions 1 and 2, their events
+named `$opaque:hs1`, every `prev_events`/`auth_events` entry fetched over federation checked to be a
+pair whose hash recomputes to the referenced event's real reference hash, and a full federation join
+handshake into a version 2 room. `tests/unit/eventsignature_test.go` now seals and verifies in every
+offered version, writing each version's references in that version's shape and minting the identifier
+where that version requires it first.
+
+Complement: the **full** `./tests` + `./tests/csapi` suite was run for the first time since the
+earliest record in this ledger, as a baseline rather than a filter: **60 top-level tests passing,
+136 failing** (Run 1, five cycles ago: 8 and 189). `TestRoomCreate` is green including
+`POST_/createRoom_creates_a_room_with_the_given_version`; `TestRedact`, `TestServerCapabilities`,
+`TestVersionStructure`, `TestCannotSendNonJoinViaSendJoinV2` and `TestCumulativeJoinLeaveJoinSync`
+are green. The room-version tests that stay red are the ones about work not done: the MSC4297 state
+resolution v2.1 pair (room version 12), `TestMSC4289PrivilegedRoomCreators_Upgrades` and
+`TestMSC4291RoomIDAsHashOfCreateEvent_UpgradedRooms` (version 12 formats), and
+`TestOutboundFederationIgnoresMissingEventWithBadJSONForRoomVersion6`. No Complement assertion was
+modified.

@@ -78,7 +78,9 @@ Specification: Matrix v1.19 (`docs/specification-version.md`).
 
 | Capability | Status | Evidence |
 | --- | --- | --- |
-| Room version registry v1-v12 (state res, event ID format, auth rule set, redaction profile, join rules, integer power levels, creator placement, redacts placement, domain-free room IDs) | implemented | `tests/unit/roomversion_test.go` |
+| Room version registry v1-v12 (state resolution, event ID format, auth rule set, redaction profile, join rules, integer power levels, canonical-JSON strictness, creator placement, redacts placement, aliases as special-case state, domain-free room IDs) | implemented | `tests/unit/roomversion_test.go` |
+| Room versions 1 and 2 as their own pages define them: the authorisation table those two versions share, State Resolution 1, identifiers the origin server chooses, references as `[event_id, {"sha256": hash}]` pairs, and the pre-canonical-JSON power level forms | implemented+tested | `tests/unit/authorisation_legacy_test.go`, `tests/unit/stateresolvev1_test.go`, `tests/unit/powerlevels_legacy_test.go`, `tests/unit/eventid_test.go`, `tests/unit/eventsignature_test.go`, `tests/integration/roomversionlegacy_test.go` (a created room, its events named `$opaque:hs1`, and every fetched reference checked to carry the referenced event's real reference hash) |
+| Room version 12 and the unstable versions | recognised and refused rather than invented: their rules are registered so a request is answered honestly, but the revised state resolution and the pseudo-identifier event format are not written | `tests/unit/roomversion_test.go`, `tests/integration/rooms_test.go` |
 | Room version grammar validation | implemented | `tests/unit/roomversion_test.go` |
 | Only supported versions offered/advertised (`roomversion.Supported`/`Available`) | implemented and now wired into `/capabilities`, so the advertised set and the set rooms can be created in are one table | `tests/integration/rooms_test.go` |
 | Redaction algorithm, per room version | implemented | `tests/unit/redaction_test.go` |
@@ -192,3 +194,12 @@ membership, alias and M1-regression subset, and it is reported as such.
 3. `TestFilter` passing is incidental; the filter endpoint is not implemented.
 4. `TestLogout`/`TestDeviceManagement` subtests fail only because the assertion vehicle (`/sync`)
    does not exist; the logout/device behaviour itself is covered by this project's integration tests.
+5. Room version 1 state resolution follows the algorithm the pinned specification page for that
+   version describes. Synapse resolves those rooms with a richer procedure inherited from an older
+   and fuller description of state resolution 1 (auth difference, power events, a reverse
+   topological sort). The two agree on a room that has not forked, which is nearly all of them, and
+   can disagree about which of two conflicting power levels events stands on a forked version 1
+   room. This server follows the specification page rather than either implementation, because the
+   pages are what the project's precedence rules make normative; the divergence is recorded here so
+   that a version 1 room that disagrees between servers is investigated rather than assumed away.
+   Interoperability against Synapse on such a room is not tested.

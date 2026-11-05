@@ -21,16 +21,41 @@ func TestEventSignatureSurvivesEveryRoomVersion(t *testing.T) {
 	for _, rules := range roomversion.Supported() {
 		t.Run("room version "+rules.ID, func(t *testing.T) {
 			signer := newTestSigner(t)
+			// The references are written in the shape the room's own version defines. In room
+			// versions 1 and 2 that is a pair of event ID and reference hash, and that shape is
+			// part of what gets hashed and signed — so signing an event that spells them the
+			// later way would prove nothing about those versions.
+			hashOfReference := func(string) (string, error) {
+				return "cmVmZXJlbmNlIGhhc2g", nil
+			}
+			authEvents, err := events.References(rules,
+				[]string{"$create:example.org", "$join:example.org"}, hashOfReference)
+			if err != nil {
+				t.Fatalf("rendering the auth events: %v", err)
+			}
+			prevEvents, err := events.References(rules, []string{"$previous:example.org"}, hashOfReference)
+			if err != nil {
+				t.Fatalf("rendering the prev events: %v", err)
+			}
 			event := map[string]any{
-				"auth_events":      []any{"$create:example.org", "$join:example.org"},
+				"auth_events":      authEvents,
 				"content":          map[string]any{"body": "carried across", "msgtype": "m.text"},
 				"depth":            float64(7),
 				"origin":           "example.org",
 				"origin_server_ts": float64(1700000002000),
-				"prev_events":      []any{"$previous:example.org"},
+				"prev_events":      prevEvents,
 				"room_id":          "!room:example.org",
 				"sender":           "@alice:example.org",
 				"type":             "m.room.message",
+			}
+			// Room versions 1 and 2 take their identifiers from the origin server, and the
+			// identifier is inside what gets hashed — so it has to exist before the seal, not
+			// after it. Getting that order wrong signs an event that does not have the name it
+			// is later stored under.
+			if rules.EventIDs == roomversion.EventIDServerAssigned {
+				if _, err := events.MintEventID(rules, event, "signaturetest", "example.org"); err != nil {
+					t.Fatalf("minting the event ID: %v", err)
+				}
 			}
 			if err := events.Seal("example.org", rules, event, signer); err != nil {
 				t.Fatalf("sealing in room version %s: %v", rules.ID, err)

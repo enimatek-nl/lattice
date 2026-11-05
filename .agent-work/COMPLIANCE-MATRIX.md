@@ -173,3 +173,28 @@ are in `.agent-work/PROGRESS.md`. No Complement assertion was modified.
 Each milestone records: the Complement filter run, the pass count, and the newly failing/passing
 tests attributable to that milestone. A test that starts failing without an explanatory code change
 is treated as a regression and blocks the milestone.
+
+## Latest full run (2026-11-08, room versions 1 and 2 — T-4013)
+
+```sh
+cd ~/complement
+COMPLEMENT_BASE_IMAGE=complement-lattice:latest COMPLEMENT_LOCAL_MIGRATIONS=true \
+  go test ./tests ./tests/csapi -count=1 -timeout 25m -v
+```
+
+**60 top-level tests pass, 136 fail** across `./tests` and `./tests/csapi`. This is a full-suite
+number, the first since Run 1 ("8 passed, 189 failed"), so it is the baseline later cycles compare
+against rather than a filtered comparison.
+
+Room versions: `TestRoomCreate` passes in full, including
+`POST_/createRoom_creates_a_room_with_the_given_version` — the subtest that had asked for a room
+version 2 room and been refused since cycle 4. `TestRedact` passes. Still red, for work not done
+rather than for this change: the MSC4297 state-resolution-v2.1 tests (room version 12),
+`TestMSC4289PrivilegedRoomCreators_Upgrades` and
+`TestMSC4291RoomIDAsHashOfCreateEvent_UpgradedRooms` (version 12 formats), and
+`TestOutboundFederationIgnoresMissingEventWithBadJSONForRoomVersion6`.
+
+A room version 1 or 2 room is otherwise covered by this project's own tests rather than by
+Complement: `tests/integration/roomversionlegacy_test.go` creates such rooms, checks the
+origin-server identifier on the wire, fetches the events over federation and recomputes every
+reference hash, and runs a join handshake into a version 2 room.

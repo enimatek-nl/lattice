@@ -47,8 +47,18 @@ func joinHandshake(t *testing.T, joiner, resident *fedNode, roomID, userID strin
 	if content["membership"] != "join" {
 		t.Fatalf("%s offered a membership of %v", resident.name, content["membership"])
 	}
+	// A room whose version names an event by its hash must not come back with an identifier
+	// already chosen: the joining server has to compute that name itself, and a resident server
+	// that guesses one is offering an event it has already decided the name of. Room versions 1
+	// and 2 are the other way round — the identifier cannot be computed there, so the resident
+	// server supplies one, and it is part of what both servers then sign.
 	if _, present := template["event_id"]; present {
-		t.Errorf("%s offered a template that already has an event ID: %v", resident.name, template)
+		if version := roomversion.MustGet(offer.RoomVersion); version.EventIDs != roomversion.EventIDServerAssigned {
+			t.Errorf("%s offered a template that already has an event ID: %v", resident.name, template)
+		}
+	} else if version := roomversion.MustGet(offer.RoomVersion); version.EventIDs == roomversion.EventIDServerAssigned {
+		t.Errorf("%s offered a room version %s template with no event ID, which the joining server "+
+			"cannot sign without one: %v", resident.name, offer.RoomVersion, template)
 	}
 	if _, present := template["signatures"]; present {
 		t.Errorf("%s signed a join it does not speak for: %v", resident.name, template)
@@ -57,7 +67,11 @@ func joinHandshake(t *testing.T, joiner, resident *fedNode, roomID, userID strin
 		t.Errorf("%s hashed a join it does not speak for: %v", resident.name, template)
 	}
 	// The fields the joining server cannot invent.
-	if len(anyStringSlice(template["prev_events"])) == 0 || len(anyStringSlice(template["auth_events"])) == 0 {
+	// Read with the room's own version in mind: in room versions 1 and 2 these are written as
+	// [event_id, {"sha256": hash}] pairs, and a reader that only understands bare IDs would call
+	// a well-formed template empty.
+	if len(events.ReferencedIDs(template, "prev_events")) == 0 ||
+		len(events.ReferencedIDs(template, "auth_events")) == 0 {
 		t.Errorf("%s offered a template without the room's own shape: %v", resident.name, template)
 	}
 

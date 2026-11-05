@@ -372,11 +372,32 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
 - [ ] T-2016b `GET /rooms/{roomID}/event_auth/{eventID}` and
       `GET /rooms/{roomID}/timestamp`: still absent; `/timestamp` also wants depth-based
       paging (T-3001d)
-- [ ] T-4013 room versions 1 and 2 for creating rooms: their authorisation rules and state
-      resolution v1 are refused by design, so a client that asks for version 2 is answered
-      `M_UNSUPPORTED_ROOM_VERSION`. Complement's `TestRoomCreate/creates_a_room_with_the_given_version`
-      asks for exactly that; supporting it is a real piece of work (v1/v2 rules, state
-      resolution v1), not a configuration flag
+- [x] T-4013 room versions 1 and 2 are offered for new rooms, with the rules those versions
+      actually have rather than the later versions' rules applied early: their shared authorisation
+      table (`eventauth.RulesV1V2` — join rule ignored for a room with no `m.room.join_rules`, the
+      membership clauses keyed on the event's own domain, the redaction moderator-or-same-domain
+      clause, the invite clauses for the target's domain and for a target already gone), State
+      Resolution 1 in version 1 (`internal/state/stateresolutionv1.go`), identifiers the origin
+      server chooses (`roomversion.EventIDServerAssigned`, `events.MintEventID`, and minting in the
+      outbound join template and in `rooms.prepare`), references written as
+      `[event_id, {"sha256": hash}]` pairs (`events.References`/`ReferencedIDs` are now
+      version-aware, and the graph walk and auth-chain walk read through them), the redaction
+      profile those versions use, and the power level forms the pre-canonical-JSON versions allow
+      (`LoadPowerLevels` reads `"100"`, `" 00100 ",` `"+25"` and `50.57`). `Supported()` now returns
+      versions 1–11, with 1 and 2 last; version 12 and the unstable versions stay recognised and
+      refused.
+      tests: `tests/unit/authorisation_legacy_test.go`, `tests/unit/stateresolvev1_test.go`,
+      `tests/unit/powerlevels_legacy_test.go`, `tests/unit/eventid_test.go`,
+      `tests/unit/eventsignature_test.go` (now signs and verifies in every offered version, with
+      each version's reference shape and its identifier order), `tests/unit/roomversion_test.go`,
+      `tests/unit/chain_test.go`, `tests/unit/eventauth_test.go`,
+      `tests/integration/roomversionlegacy_test.go` (rooms created in versions 1 and 2, their events
+      named `$opaque:hs1`, every fetched reference a pair whose hash recomputes to the referenced
+      event's real reference hash, and a federation join handshake into a version 2 room),
+      `tests/integration/aliases_test.go`, `tests/integration/rooms_test.go`.
+      outstanding: room version 12's revised state resolution and the unstable versions'
+      pseudo-identifier format (T-4019); the Synapse divergence on forked version 1 rooms is
+      recorded in `docs/compliance-matrix.md` item 5 and is not interoperability-tested
 - [ ] T-4011 the address policy is applied when discovery resolves a name, not when the
       socket is opened. A name whose answer changes between the two (DNS rebinding) is not
       covered; the fix is a dialer that re-checks the address it is about to connect to

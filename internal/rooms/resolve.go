@@ -75,7 +75,7 @@ func (g *storedGraph) AuthEventIDs(id string) []string {
 	if !ok {
 		return nil
 	}
-	ids := anyStrings(event["auth_events"])
+	ids := events.ReferencedIDs(event, "auth_events")
 	g.authIDs[id] = ids
 	return ids
 }

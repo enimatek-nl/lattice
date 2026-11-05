@@ -254,7 +254,7 @@ func (s *Service) storeBundleEvent(ctx context.Context, event map[string]any, ru
 		return "", false, false, err
 	}
 
-	authIDs := anyStrings(event["auth_events"])
+	authIDs := events.ReferencedIDs(event, "auth_events")
 	stored, err := s.events.ByIDs(ctx, authIDs)
 	if err != nil {
 		return "", false, false, fmt.Errorf("rooms: cannot read the auth events of a handed-over event: %w", err)
@@ -303,7 +303,7 @@ func (s *Service) storeBundleEvent(ctx context.Context, event map[string]any, ru
 	// An event whose predecessors arrived with the bundle is linked into the history; one
 	// whose predecessors did not is an outlier.
 	outlier := false
-	for _, id := range anyStrings(event["prev_events"]) {
+	for _, id := range events.ReferencedIDs(event, "prev_events") {
 		if _, ok := known[id]; ok {
 			continue
 		}
