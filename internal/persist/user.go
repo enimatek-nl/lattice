@@ -31,6 +31,10 @@ type UserRepo interface {
 	ByLocalpart(ctx context.Context, localpart string) (*User, error)
 	SetDeactivated(ctx context.Context, userID string, deactivated bool) error
 	Count(ctx context.Context) (int64, error)
+	// ListUserIDs returns every account on this server in a stable order. It exists
+	// for work that has to visit each user exactly once, such as giving accounts that
+	// predate a feature the data that feature assumes.
+	ListUserIDs(ctx context.Context) ([]string, error)
 }
 
 // UserRepoImpl is the GORM implementation of [UserRepo].
@@ -92,6 +96,15 @@ func (u *UserRepoImpl) Count(ctx context.Context) (int64, error) {
 	var n int64
 	err := u.db.WithContext(ctx).Model(&User{}).Count(&n).Error
 	return n, err
+}
+
+// ListUserIDs implements [UserRepo].
+func (u *UserRepoImpl) ListUserIDs(ctx context.Context) ([]string, error) {
+	var ids []string
+	if err := u.db.WithContext(ctx).Model(&User{}).Order("user_id ASC").Pluck("user_id", &ids).Error; err != nil {
+		return nil, err
+	}
+	return ids, nil
 }
 
 // NewUserRepo returns the GORM implementation of [UserRepo].

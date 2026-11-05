@@ -14,6 +14,7 @@ import (
 	"github.com/enimatek/lattice/internal/keys"
 	"github.com/enimatek/lattice/internal/matrixerr"
 	"github.com/enimatek/lattice/internal/persist"
+	"github.com/enimatek/lattice/internal/pushrules"
 	"github.com/enimatek/lattice/internal/rooms"
 	"github.com/enimatek/lattice/internal/sync"
 	"github.com/enimatek/lattice/internal/users"
@@ -21,17 +22,18 @@ import (
 
 // Deps are the services the Client-Server API needs.
 type Deps struct {
-	Cfg     *config.Config
-	Log     *slog.Logger
-	Users   *users.Service
-	Tokens  *auth.TokenService
-	UIA     *auth.UIAService
-	Keys    *keys.Service
-	Rooms   *rooms.Service
-	Sync    *sync.Service
-	DB      *persist.Database
-	Version string
-	Started time.Time
+	Cfg       *config.Config
+	Log       *slog.Logger
+	Users     *users.Service
+	Tokens    *auth.TokenService
+	UIA       *auth.UIAService
+	Keys      *keys.Service
+	Rooms     *rooms.Service
+	PushRules *pushrules.Service
+	Sync      *sync.Service
+	DB        *persist.Database
+	Version   string
+	Started   time.Time
 }
 
 // serviceError writes a service-layer failure with the status the protocol prescribes
@@ -51,6 +53,17 @@ func (d *Deps) serviceError(w http.ResponseWriter, err error) {
 		d.Log.Error("a room operation failed", slog.String("error", err.Error()))
 	}
 	matrixerr.WriteServiceError(w, err)
+}
+
+// unknownPath answers a path that sits under a prefix this server does handle without
+// claiming to know it. The router produces the same response for a path no route
+// matches; a handler that walks a path subtree needs to be able to say the same thing
+// when a client asks for a part of that subtree that is not in the specification.
+func (d *Deps) unknownPath(w http.ResponseWriter, req *http.Request) {
+	matrixerr.Write(w, http.StatusNotFound, matrixerr.Newf(
+		matrixerr.CodeUnrecognized,
+		"Unrecognized endpoint %s.", req.URL.Path,
+	))
 }
 
 // Register installs the Client-Server API routes on r. requireAuth is the
@@ -160,6 +173,14 @@ func Register(r *httpserver.Router, d *Deps, requireAuth func(http.Handler) http
 
 	// Capabilities.
 	r.Handle("GET", "/_matrix/client/v1/capabilities", authed(d.handleCapabilities))
+
+	// Push rules. The specification's paths under /pushrules form a tree that Go's mux
+	// cannot express with a wildcard in the middle of a path, so one route per method
+	// catches the subtree and the handler walks the segments.
+	r.Handle("GET", "/_matrix/client/v3/pushrules/{rest...}", authed(d.handlePushRulesGet))
+	r.Handle("PUT", "/_matrix/client/v3/pushrules/{rest...}", authed(d.handlePushRulesPut))
+	r.Handle("DELETE", "/_matrix/client/v3/pushrules/{rest...}", authed(d.handlePushRulesDelete))
+	r.Handle("GET", "/_matrix/client/v3/pushrules", authed(d.handlePushRulesGet))
 
 	// The room summary is spelled only under v1 in the specification's own path.
 	r.Handle("GET", "/_matrix/client/v1/room_summary/{roomIDOrAlias}", authed(d.handleRoomSummary))

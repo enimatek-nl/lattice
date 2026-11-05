@@ -78,8 +78,12 @@ type Request struct {
 
 // Result is the `/sync` response.
 type Result struct {
-	NextBatch   string       `json:"next_batch"`
-	Rooms       Rooms        `json:"rooms"`
+	NextBatch string `json:"next_batch"`
+	Rooms     Rooms  `json:"rooms"`
+	// AccountData carries the user's own values — push rules today — that changed since
+	// their token. It is a section of its own because it belongs to the user rather
+	// than to any room.
+	AccountData Events       `json:"account_data"`
 	ToDevice    []Event      `json:"to_device,omitempty"`
 	Complete    bool         `json:"complete"`
 	DeviceLists *DeviceLists `json:"device_lists,omitempty"`
@@ -163,6 +167,7 @@ type Service struct {
 	events  persist.EventRepo
 	state   persist.StateRepo
 	filters persist.FilterRepo
+	account persist.AccountDataRepo
 	log     *slog.Logger
 }
 
@@ -173,6 +178,7 @@ func NewService(db *persist.Database, log *slog.Logger) *Service {
 		events:  db.Events,
 		state:   db.State,
 		filters: db.Filters,
+		account: db.AccountData,
 		log:     log,
 	}
 }
@@ -337,8 +343,16 @@ func (s *Service) build(ctx context.Context, userID string, since Token, filter 
 		}
 	}
 
+	// The user's own data counts as a change: a client waiting for something new is
+	// waiting for news about itself too, and a ruleset the user just edited is news.
+	accountData, err := s.accountEvents(ctx, userID, int64(since))
+	if err != nil {
+		return nil, false, err
+	}
+	result.AccountData = Events{Events: accountData}
+
 	changed := result.Rooms.Join != nil || result.Rooms.Invite != nil ||
-		result.Rooms.Leave != nil || result.Rooms.Knock != nil
+		result.Rooms.Leave != nil || result.Rooms.Knock != nil || len(accountData) > 0
 	return result, changed, nil
 }
 

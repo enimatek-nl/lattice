@@ -36,6 +36,7 @@ type Database struct {
 	State       StateRepo
 	Aliases     RoomAliasRepo
 	Filters     FilterRepo
+	AccountData AccountDataRepo
 }
 
 // Open opens (creating if needed) the SQLite database at path.
@@ -78,6 +79,7 @@ func Open(path string, log *slog.Logger) (*Database, error) {
 	d.State = NewStateRepo(gdb)
 	d.Aliases = NewRoomAliasRepo(gdb)
 	d.Filters = NewFilterRepo(gdb)
+	d.AccountData = NewAccountDataRepo(gdb)
 	return d, nil
 }
 
@@ -101,7 +103,7 @@ func applyPragmas(gdb *gorm.DB) error {
 // matter for Matrix lookups and are not derived from struct tags.
 func (d *Database) migrate(log *slog.Logger) error {
 	if err := d.db.AutoMigrate(&User{}, &Device{}, &AccessToken{}, &SigningKey{},
-		&Room{}, &Event{}, &EventEdge{}, &RoomState{}, &EventAuthContext{}, &EventTxn{}, &RoomAlias{}, &Filter{}); err != nil {
+		&Room{}, &Event{}, &EventEdge{}, &RoomState{}, &EventAuthContext{}, &EventTxn{}, &RoomAlias{}, &Filter{}, &AccountData{}); err != nil {
 		return fmt.Errorf("persist: migration failed: %w", err)
 	}
 	statements := []string{
@@ -112,6 +114,10 @@ func (d *Database) migrate(log *slog.Logger) error {
 		"CREATE UNIQUE INDEX IF NOT EXISTS idx_tokens_hash ON access_tokens(token_hash)",
 		"CREATE INDEX IF NOT EXISTS idx_tokens_user_device ON access_tokens(user_id, device_id)",
 		"CREATE UNIQUE INDEX IF NOT EXISTS idx_signing_keys_key_id ON signing_keys(key_id)",
+
+		// A user's account data is read by type, and sync reads it by position.
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_account_data_user_type ON account_data(user_id, data_type)",
+		"CREATE INDEX IF NOT EXISTS idx_account_data_user_stream ON account_data(user_id, stream_ordering)",
 
 		// Room and event lookups. An event ID is globally unique, which is what
 		// turns a repeated event into ErrConflict instead of a second row.
