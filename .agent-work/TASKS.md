@@ -92,8 +92,16 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
       signing, sealing and persistence; plus `PUT /rooms/{roomId}/state/{type}[/{key}]`
       (empty state key supported, deeper paths refused) —
       `tests/integration/rooms_test.go` incl. `TestCreatedEventIsVerifiable`
-- [ ] T-2006a Persist the outcome of the on-receipt checks so `Snapshot.Rejected` is real;
-      until then an event that failed on receipt could be used as an auth event
+- [x] T-2006a Persist the outcome of the on-receipt checks: `event_rejections` records the
+      reason a PDU was refused, `dbSnapshot.Rejected` and `citedSnapshot.Rejected` read it,
+      and rule 2.3 is asked before the lookup so "seen and refused" is not answered as
+      "never heard of it". A refusal that was only a gap (missing predecessors, an auth
+      event nobody has mentioned, an unknown room) is not recorded — DEC-021 — and an ID
+      this server holds is never recorded, so a stranger's claim under a good event's ID
+      cannot turn that event into a rejected one —
+      `tests/unit/rejections_test.go`, `tests/integration/federation_test.go`
+      (`TestFederationRefusalIsAVerdict`: forged PDU → refused and remembered; an event
+      citing it → refused naming the refusal; a gap → refused and *not* recorded)
 - [x] T-2007 membership events: join (both spellings, by room ID or local alias),
       leave, invite, kick, ban, unban, knock; the permission decision stays in the
       authorisation rules; remote-user membership refused with 501 —
@@ -259,6 +267,14 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
       `TestServerKeysVerifies` asserts the body is its own canonical form and that the
       signature checks over the bytes sent — Complement `TestInboundFederationKeys` passes
       (it failed while the endpoint re-encoded through Go's JSON encoder)
+- [ ] T-2017 make the room's current state the result of the state resolution algorithm
+      rather than of arrival order. `internal/state.Resolve` implements State Resolution 2
+      and is unit-tested, but nothing calls it: `rooms.persistEvent` answers a state key
+      with the last state event persisted for it. For one server that is usually the same
+      answer; for two it is not, and the specification forbids the substitution. The
+      dependency is T-3004 — the resolver needs the state each forward extremity was
+      carrying, and there is no per-event state yet — so this is sequenced after it, not
+      worked around
 - [ ] T-2014 `GET /rooms/{roomID}/event/{eventID}`: read one event by ID, with the same
       membership rule the other room reads use. Complement's `SendEventSynced` helper uses it,
       so it is the reason `TestPowerLevels` fails even though the power-level steps themselves

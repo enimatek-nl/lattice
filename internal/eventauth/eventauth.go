@@ -253,6 +253,15 @@ func checkAuthEvents(rules roomversion.Rules, event map[string]any, state Snapsh
 	seen := make(map[Key]bool, len(authIDs))
 	var got []Key
 	for _, id := range authIDs {
+		// A refused event is asked about before it is looked up, and that order is not a
+		// detail. A server that refuses an event does not keep it, so looking it up first
+		// would answer "cannot be resolved" — which is true but is not the verdict, and it
+		// loses the distinction the specification draws between an auth event nobody has
+		// seen and one that was seen and refused. The second is what makes an event that
+		// cites it invalid, and only the first is a gap someone could still fill.
+		if state.Rejected(id) {
+			return Failure{"2.3", "auth event " + id + " was rejected on receipt"}
+		}
 		ev, ok := state.Event(id)
 		if !ok {
 			return Failure{"2.2", "auth event " + id + " cannot be resolved, so it cannot be checked"}
@@ -264,9 +273,6 @@ func checkAuthEvents(rules roomversion.Rules, event map[string]any, state Snapsh
 			return Failure{"2.1", "duplicate auth event for " + key.String()}
 		}
 		seen[key] = true
-		if state.Rejected(id) {
-			return Failure{"2.3", "auth event " + id + " was rejected on receipt"}
-		}
 		if authRoom, _ := stringOf(ev, "room_id"); authRoom != roomID {
 			return Failure{"2.5", "auth event " + id + " belongs to another room"}
 		}

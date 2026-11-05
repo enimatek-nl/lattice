@@ -234,7 +234,38 @@ type EventRepo interface {
 	// TxnLookup returns the event a device's transaction ID already produced.
 	TxnLookup(ctx context.Context, deviceID, txnID string) (*EventTxn, error)
 	TxnSave(ctx context.Context, txn *EventTxn) error
+
+	// RecordRejection remembers that this server refused an event, and why. The event is
+	// not stored, but the verdict has to survive it: the authorisation rules refuse an
+	// event whose auth event was rejected, and a verdict that is forgotten lets the same
+	// event be offered again, or a successor that cites it be judged from scratch by a
+	// server that has lost its own memory.
+	RecordRejection(ctx context.Context, rejection *EventRejection) error
+	// Rejections returns the recorded reason for each of the given event IDs. An ID this
+	// server never refused is absent from the result, which is the difference between
+	// "never seen" and "seen and refused".
+	Rejections(ctx context.Context, eventIDs []string) (map[string]string, error)
 }
+
+// EventRejection is a refusal this server stands by.
+//
+// Only verdicts about the event itself belong here — it is not valid in its room
+// version, its ID is not the hash its content makes, its content hash does not match,
+// its origin server did not sign it, its cited auth events do not authorise it, or one of
+// them was itself refused. A refusal that was only "this server could not judge yet" —
+// missing predecessors, an unknown room — is not a verdict and must not be recorded,
+// because the missing context may arrive and the same event may then be perfectly good.
+type EventRejection struct {
+	ID        uint64 `gorm:"primaryKey;autoIncrement"`
+	EventID   string `gorm:"column:event_id;size:255;not null;uniqueIndex"`
+	RoomID    string `gorm:"column:room_id;size:255;not null;index"`
+	Reason    string `gorm:"column:reason;type:text;not null"`
+	Refuser   string `gorm:"column:refuser;size:255;not null;default:''"`
+	RefusedAt time.Time
+}
+
+// TableName fixes the table name.
+func (EventRejection) TableName() string { return "event_rejections" }
 
 type eventRepo struct{ db *gorm.DB }
 
@@ -368,6 +399,39 @@ func (r *eventRepo) TxnSave(ctx context.Context, txn *EventTxn) error {
 		return asConflict(err)
 	}
 	return nil
+}
+
+// RecordRejection implements [EventRepo]. Recording the same event ID twice keeps the
+// first verdict: the reason the event was refused does not change because it was refused
+// again, and overwriting it with a later, vaguer reason would lose what was actually wrong.
+func (r *eventRepo) RecordRejection(ctx context.Context, rejection *EventRejection) error {
+	if rejection == nil || rejection.EventID == "" {
+		return nil
+	}
+	if rejection.RefusedAt.IsZero() {
+		rejection.RefusedAt = time.Now().UTC()
+	}
+	err := r.db.WithContext(ctx).Create(rejection).Error
+	if err != nil && asConflict(err) != nil {
+		return nil
+	}
+	return err
+}
+
+// Rejections implements [EventRepo].
+func (r *eventRepo) Rejections(ctx context.Context, eventIDs []string) (map[string]string, error) {
+	rejections := map[string]string{}
+	if len(eventIDs) == 0 {
+		return rejections, nil
+	}
+	var rows []EventRejection
+	if err := r.db.WithContext(ctx).Where("event_id IN ?", eventIDs).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		rejections[row.EventID] = row.Reason
+	}
+	return rejections, nil
 }
 
 // StateRepo persists current room state.

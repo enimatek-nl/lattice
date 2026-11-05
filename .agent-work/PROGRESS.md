@@ -907,3 +907,48 @@ Follow-up in the same window, found while writing the queue's own tests:
   table, giving up leaves a record that stops counting as owing.
 
 `make verify` and `golangci-lint run ./...` clean: 191 integration, 211 unit tests.
+
+## 2026-11-05 — a refusal that outlives the event it refuses (M2, T-2006a)
+
+The authorisation rules have always said that an event citing a rejected auth event is
+rejected. Nothing in this server could act on that: a refused PDU was not stored, and the
+verdict went with it, so `Snapshot.Rejected` answered `false` in every real snapshot and the
+two rule paths that consult it — `eventauth` rule 2.3 and the iterative check inside state
+resolution — were decoration.
+
+Now `event_rejections` holds the verdict: event ID, room, the reason, the server that
+refused it. `dbSnapshot.Rejected` and `citedSnapshot.Rejected` read it, and rule 2.3 is
+asked **before** the auth event is looked up. That order is the whole point. A refused
+event is absent from this server either because nobody mentioned it or because this server
+was told and said no, and looking it up first answers both with "cannot be resolved" —
+which turns a verdict into a gap someone could still fill.
+
+Two boundaries matter as much as the memory:
+
+* A refusal that was only "this server could not judge yet" — unknown room, missing
+  predecessors, an auth event nobody has mentioned — is **not** recorded (DEC-021). A
+  handover that arrives out of order is a temporary hole; recording it as a verdict would
+  permanently ban an event this server never actually judged.
+* An event ID this server already holds is never recorded. Without that, a stranger
+  offering forged bytes under a good event's ID would have made the good event a rejected
+  one, and every successor citing it would have been refused. The lookup that decides
+  "already have it" now also stops a storage error from being answered as a verdict.
+
+Evidence: `tests/unit/rejections_test.go` (the verdict survives, a second refusal does not
+rewrite the first, an unseen ID is not reported as refused, rule 2.3 fires for an absent
+but refused auth event while an unmentioned one still reports a gap) and
+`tests/integration/federation_test.go` (`TestFederationRefusalIsAVerdict`: two homeservers,
+a forged PDU refused and remembered, an honestly sealed event citing that PDU refused with
+the refusal named, an honestly sealed event citing an unmentioned ID refused and *not*
+recorded).
+
+Found while doing this, and now tracked as T-2017: **the room's current state is settled by
+arrival order.** `rooms.persistEvent` sets a state key to the last state event persisted for
+it; `internal/state.Resolve` implements State Resolution 2, is unit-tested, and is never
+called. For one server that is usually the same answer. For two it is not, and AGENTS.md and
+the specification both forbid the substitution. The resolver needs the state each forward
+extremity was carrying, which is per-event state snapshots (T-3004) — so T-2017 is
+sequenced after T-3004 rather than worked around. The compliance matrix now says this out
+loud instead of listing SR2 as implemented.
+
+`make verify` (fmt, vet, `-race`) and `golangci-lint run ./...` clean.
