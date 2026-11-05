@@ -107,7 +107,7 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
       Complement `TestRoomAlias` verified
 - [x] T-2008 see above (client-side state reads done; `/state_ids` is federation, M4)
 - [ ] T-2009 `m.room.redaction` application: power level or same server name rule, redacted
-      form stored, hashes/signatures stay valid
+      form stored, hashes/signatures stay valid — Complement `TestRedact/Event_content_is_redacted`
 - [x] T-2010 room upgrade path: `POST /rooms/{roomId}/upgrade` and a client-supplied
       `predecessor` in `creation_content`, with the transferable state carried, the aliases
       moved, the tombstone sent, and each local user's room rules carried across —
@@ -259,6 +259,15 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
       `TestServerKeysVerifies` asserts the body is its own canonical form and that the
       signature checks over the bytes sent — Complement `TestInboundFederationKeys` passes
       (it failed while the endpoint re-encoded through Go's JSON encoder)
+- [ ] T-2014 `GET /rooms/{roomID}/event/{eventID}`: read one event by ID, with the same
+      membership rule the other room reads use. Complement's `SendEventSynced` helper uses it,
+      so it is the reason `TestPowerLevels` fails even though the power-level steps themselves
+      answered correctly — a missing endpoint hides unrelated coverage
+- [ ] T-2015 `GET /rooms/{roomID}/context/{eventID}` (`event`, `events_before`, `events_after`,
+      `state`), which `GET /event` and `/messages` already have the parts of
+- [ ] T-2016 redaction as a client action: `POST /rooms/{roomID}/redact/{eventID}/{txn}` next
+      to the application rule (T-2009), and `GET /rooms/{roomID}/event_auth/{eventID}` plus
+      `GET /rooms/{roomID}/timestamp`
 - [ ] T-4013 room versions 1 and 2 for creating rooms: their authorisation rules and state
       resolution v1 are refused by design, so a client that asks for version 2 is answered
       `M_UNSUPPORTED_ROOM_VERSION`. Complement's `TestRoomCreate/creates_a_room_with_the_given_version`
