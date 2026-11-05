@@ -73,7 +73,9 @@ Specification: Matrix v1.19 (`docs/specification-version.md`).
 | Auth events selection and its validation (duplicates, foreign rooms, rejected auth events) | implemented | `tests/unit/eventauth_test.go` |
 | Restricted-room allow list evaluation | partial: enforced for locally created joins only | `tests/unit/eventauth_test.go` |
 | Event authorisation for room versions 1 and 2 | not implemented (refused with `ErrRulesetUnsupported`) | `tests/unit/eventauth_test.go` |
-| State resolution (v1 / v2 / v2.1) | not implemented | M2 |
+| State Resolution 2 (room versions 2-11): auth difference, power events, reverse topological power ordering, mainline ordering, iterative auth checks | implemented | `tests/unit/stateresolve_test.go` |
+| State resolution for room versions 1 and 12 | not implemented (refused with `ErrAlgorithmUnsupported`) | `tests/unit/stateresolve_test.go` |
+| State resolution cross-checked against another implementation | not done yet | follow-up task T-2005a |
 | Event graph storage (events, prev/auth edges, per-event auth context) and the forward-extremities query | implemented | `tests/unit/eventstore_test.go` |
 | Transaction ID store for `/send/{type}/{txn}` idempotency (unique per device) | implemented (storage only; the endpoint does not exist yet) | `tests/unit/eventstore_test.go` |
 | `depth` validation against `prev_events` | not implemented | M2 |
