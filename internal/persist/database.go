@@ -31,6 +31,9 @@ type Database struct {
 	Devices     DeviceRepo
 	Tokens      TokenRepo
 	SigningKeys SigningKeyRepo
+	Rooms       RoomRepo
+	Events      EventRepo
+	State       StateRepo
 }
 
 // Open opens (creating if needed) the SQLite database at path.
@@ -68,6 +71,9 @@ func Open(path string, log *slog.Logger) (*Database, error) {
 	d.Devices = NewDeviceRepo(gdb)
 	d.Tokens = NewTokenRepo(gdb)
 	d.SigningKeys = NewSigningKeyRepo(gdb)
+	d.Rooms = NewRoomRepo(gdb)
+	d.Events = NewEventRepo(gdb)
+	d.State = NewStateRepo(gdb)
 	return d, nil
 }
 
@@ -90,7 +96,8 @@ func applyPragmas(gdb *gorm.DB) error {
 // to the Go types; the explicit index statements document the indexes that
 // matter for Matrix lookups and are not derived from struct tags.
 func (d *Database) migrate(log *slog.Logger) error {
-	if err := d.db.AutoMigrate(&User{}, &Device{}, &AccessToken{}, &SigningKey{}); err != nil {
+	if err := d.db.AutoMigrate(&User{}, &Device{}, &AccessToken{}, &SigningKey{},
+		&Room{}, &Event{}, &EventEdge{}, &RoomState{}, &EventAuthContext{}, &EventTxn{}); err != nil {
 		return fmt.Errorf("persist: migration failed: %w", err)
 	}
 	statements := []string{
@@ -101,6 +108,27 @@ func (d *Database) migrate(log *slog.Logger) error {
 		"CREATE UNIQUE INDEX IF NOT EXISTS idx_tokens_hash ON access_tokens(token_hash)",
 		"CREATE INDEX IF NOT EXISTS idx_tokens_user_device ON access_tokens(user_id, device_id)",
 		"CREATE UNIQUE INDEX IF NOT EXISTS idx_signing_keys_key_id ON signing_keys(key_id)",
+
+		// Room and event lookups. An event ID is globally unique, which is what
+		// turns a repeated event into ErrConflict instead of a second row.
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_rooms_room_id ON rooms(room_id)",
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_events_event_id ON events(event_id)",
+		// History and read positions walk a room in stream order.
+		"CREATE INDEX IF NOT EXISTS idx_events_room_stream ON events(room_id, stream_ordering)",
+		// State lookups by (room, type, state_key) and membership by sender.
+		"CREATE INDEX IF NOT EXISTS idx_events_room_type_state ON events(room_id, type, state_key)",
+		"CREATE INDEX IF NOT EXISTS idx_events_sender ON events(sender)",
+		// The event graph: forward extremities need the reverse direction, and
+		// auth chain walks need the forward one.
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_event_edges_unique ON event_edges(event_id, reference_id, kind)",
+		"CREATE INDEX IF NOT EXISTS idx_event_edges_reference ON event_edges(reference_id, kind)",
+		// Current room state is a map keyed by (room, type, state_key).
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_room_state_key ON room_state(room_id, type, state_key)",
+		"CREATE INDEX IF NOT EXISTS idx_room_state_event ON room_state(event_id)",
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_context_unique ON event_auth_context(event_id, state_event_id)",
+		"CREATE INDEX IF NOT EXISTS idx_auth_context_event ON event_auth_context(event_id)",
+		// Idempotency of PUT /send/{type}/{txn}: unique per device, not global.
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_event_txn ON event_txn(device_id, txn_id)",
 	}
 	for _, stmt := range statements {
 		if err := d.db.Exec(stmt).Error; err != nil {

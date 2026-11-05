@@ -71,8 +71,10 @@ Specification: Matrix v1.19 (`docs/specification-version.md`).
 | Cross-implementation agreement on redaction and event IDs | verified against gomatrixserverlib v0.0.0-20260716140101-4fe595dc7f58 by golden test | `TestRedactionAndEventIDsAgainstReferenceImplementation` |
 | Event authorisation rules per room version | not implemented | M2 |
 | State resolution (v1 / v2 / v2.1) | not implemented | M2 |
-| Event graph storage, forward extremities, depth validation | not implemented | M2 |
-| Redaction application rules (power level or same domain) | not implemented | M2 |
+| Event graph storage (events, prev/auth edges, per-event auth context) and the forward-extremities query | implemented | `tests/unit/eventstore_test.go` |
+| Transaction ID store for `/send/{type}/{txn}` idempotency (unique per device) | implemented (storage only; the endpoint does not exist yet) | `tests/unit/eventstore_test.go` |
+| `depth` validation against `prev_events` | not implemented | M2 |
+| Redaction application rules (power level or same domain) | not implemented; the redacted form has a column to live in | M2 |
 
 ## Complement run record
 
