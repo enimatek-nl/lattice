@@ -3,11 +3,13 @@ package rooms
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 
 	"github.com/enimatek/lattice/internal/eventauth"
 	"github.com/enimatek/lattice/internal/matrixerr"
+	"github.com/enimatek/lattice/internal/redaction"
 	"github.com/enimatek/lattice/internal/stream"
 )
 
@@ -84,7 +86,14 @@ func (s *Service) Event(ctx context.Context, roomID, eventID, requester string) 
 	if row.RoomID != roomID {
 		return nil, matrixerr.Newf(matrixerr.CodeNotFound, "Event %q is not known to this server.", eventID)
 	}
-	return s.serveEvent(ctx, row)
+	event, err := s.serveEvent(ctx, row)
+	if errors.Is(err, redaction.ErrWithheld) {
+		// The same answer as for an event this server has never heard of. Saying "I have
+		// this redaction but not yet what it destroys" would tell the client about an event
+		// it is not allowed to see yet.
+		return nil, matrixerr.Newf(matrixerr.CodeNotFound, "Event %q is not known to this server.", eventID)
+	}
+	return event, err
 }
 
 func (s *Service) History(ctx context.Context, roomID, requester string, req HistoryRequest) (HistoryPage, error) {
@@ -157,8 +166,13 @@ func (s *Service) History(ctx context.Context, roomID, requester string, req His
 			hiddenByHorizon = true
 			continue
 		}
-		body, err := s.eventJSON(ctx, event.EventID)
+		body, err := s.serveEvent(ctx, event)
 		if err != nil {
+			if errors.Is(err, redaction.ErrWithheld) {
+				// A redaction whose target has not arrived is left out of the page: the
+				// client would learn that something was destroyed with no way to see it.
+				continue
+			}
 			return HistoryPage{}, err
 		}
 		page.Chunk = append(page.Chunk, body)

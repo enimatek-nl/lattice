@@ -17,6 +17,7 @@ package sync
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -25,6 +26,7 @@ import (
 	"github.com/enimatek/lattice/internal/eventauth"
 	"github.com/enimatek/lattice/internal/events"
 	"github.com/enimatek/lattice/internal/persist"
+	"github.com/enimatek/lattice/internal/redaction"
 	"github.com/enimatek/lattice/internal/stream"
 )
 
@@ -176,9 +178,13 @@ type LeftRoom struct {
 
 // Service answers sync requests against stored events.
 type Service struct {
-	db       *persist.Database
-	events   persist.EventRepo
-	state    persist.StateRepo
+	db     *persist.Database
+	events persist.EventRepo
+	state  persist.StateRepo
+	// serve turns a stored event into what a client may see. It is the same servicer the
+	// room read paths use: a room whose redaction rules /messages applies but that /sync
+	// ignores is one room with two answers.
+	serve    *redaction.Servicer
 	filters  persist.FilterRepo
 	account  persist.AccountDataRepo
 	presence persist.PresenceRepo
@@ -195,6 +201,7 @@ func NewService(db *persist.Database, log *slog.Logger) *Service {
 		db:       db,
 		events:   db.Events,
 		state:    db.State,
+		serve:    redaction.NewServicer(db.Events, db.Rooms),
 		filters:  db.Filters,
 		account:  db.AccountData,
 		presence: db.Presence,
@@ -609,8 +616,13 @@ func (s *Service) room(ctx context.Context, roomID string, since Token, until in
 		if !filter.AllowsTimeline(event.Type) {
 			continue
 		}
-		body, err := clientEvent(event)
+		body, err := s.clientEvent(ctx, event)
 		if err != nil {
+			if errors.Is(err, redaction.ErrWithheld) {
+				// A redaction whose target has not reached this server is left out of the
+				// timeline rather than shown as a destruction the client cannot place.
+				continue
+			}
 			return roomUpdate{}, err
 		}
 		accepted = append(accepted, body)
@@ -686,8 +698,11 @@ func (s *Service) stateEvents(ctx context.Context, roomID string, since Token, u
 		} else if req.HasSince && !req.FullState && event.StreamOrdering <= int64(since) {
 			continue
 		}
-		body, err := clientEvent(event)
+		body, err := s.clientEvent(ctx, event)
 		if err != nil {
+			if errors.Is(err, redaction.ErrWithheld) {
+				continue
+			}
 			return Events{}, err
 		}
 		out = append(out, body)
@@ -740,16 +755,13 @@ func (s *Service) strippedState(ctx context.Context, roomID, userID string) Even
 	return Events{Events: out}
 }
 
-// clientEvent renders a stored event as it goes to a client. A redacted event is sent in
-// its redacted form so the server does not hand out content it has agreed to remove.
-func clientEvent(event *persist.Event) (Event, error) {
-	raw := event.JSON
-	if event.Redacted && len(event.RedactedJSON) > 0 {
-		raw = event.RedactedJSON
-	}
-	body, err := events.Parse(raw)
+// clientEvent renders a stored event as it goes to a client: the redacted form when a
+// redaction has been applied, `redacts` where the room version puts it, and the redaction
+// itself under `unsigned.redacted_because`.
+func (s *Service) clientEvent(ctx context.Context, event *persist.Event) (Event, error) {
+	body, err := s.serve.Serve(ctx, event)
 	if err != nil {
-		return nil, fmt.Errorf("sync: stored event %s does not parse: %w", event.EventID, err)
+		return nil, err
 	}
 	return Event(body), nil
 }

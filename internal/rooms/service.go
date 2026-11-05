@@ -28,6 +28,7 @@ import (
 	"github.com/enimatek/lattice/internal/matrixerr"
 	"github.com/enimatek/lattice/internal/matrixid"
 	"github.com/enimatek/lattice/internal/persist"
+	"github.com/enimatek/lattice/internal/redaction"
 	"github.com/enimatek/lattice/internal/roomversion"
 )
 
@@ -107,6 +108,11 @@ type Service struct {
 	groups persist.StateGroupRepo
 	alias  persist.RoomAliasRepo
 	signer events.Signer
+	// serve turns a stored event into the form a client is allowed to see. It lives here
+	// so that `/messages`, `/event` and `/sync` answer the redaction question the same
+	// way; when each path decided for itself, the same event could come back with its
+	// content in one response and emptied in another.
+	serve *redaction.Servicer
 	// presence announces a user's arrival to the members of a room they join. It is a
 	// separate service because presence is the user's, not the room's; the room service
 	// only tells it that somebody arrived.
@@ -182,6 +188,7 @@ func New(db *persist.Database, signer events.Signer, presence PresenceNotifier, 
 		db:       db,
 		rooms:    db.Rooms,
 		events:   db.Events,
+		serve:    redaction.NewServicer(db.Events, db.Rooms),
 		state:    db.State,
 		groups:   db.StateGroups,
 		alias:    db.Aliases,
@@ -197,10 +204,12 @@ func New(db *persist.Database, signer events.Signer, presence PresenceNotifier, 
 // WithTx returns a service whose repositories work inside tx, so a multi-step
 // operation is atomic.
 func (s *Service) WithTx(tx *gorm.DB) *Service {
+	rooms, events := s.rooms.WithTx(tx), s.events.WithTx(tx)
 	return &Service{
 		db:       s.db,
-		rooms:    s.rooms.WithTx(tx),
-		events:   s.events.WithTx(tx),
+		rooms:    rooms,
+		events:   events,
+		serve:    redaction.NewServicer(events, rooms),
 		state:    s.state.WithTx(tx),
 		groups:   s.groups.WithTx(tx),
 		alias:    s.alias.WithTx(tx),

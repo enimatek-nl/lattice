@@ -5,11 +5,8 @@ import (
 	"fmt"
 
 	"github.com/enimatek/lattice/internal/eventauth"
-	"github.com/enimatek/lattice/internal/events"
 	"github.com/enimatek/lattice/internal/matrixerr"
 	"github.com/enimatek/lattice/internal/persist"
-	"github.com/enimatek/lattice/internal/redaction"
-	"github.com/enimatek/lattice/internal/roomversion"
 )
 
 // CurrentState returns the room's current state events, as stored.
@@ -340,56 +337,9 @@ func (s *Service) eventJSON(ctx context.Context, eventID string) (map[string]any
 	return s.serveEvent(ctx, row)
 }
 
-// roomIDOf reads the room an event belongs to, or the empty string.
-func roomIDOf(event map[string]any) string {
-	roomID, _ := event["room_id"].(string)
-	return roomID
-}
-
-// serveEvent is eventJSON over a row already in hand.
+// serveEvent is eventJSON over a row already in hand. The decision about what a client may
+// see is the redaction servicer's, not this package's: `/messages`, `/event` and `/sync` all
+// go through the same one.
 func (s *Service) serveEvent(ctx context.Context, row *persist.Event) (map[string]any, error) {
-	event, err := events.Parse(row.Serving())
-	if err != nil {
-		return nil, fmt.Errorf("rooms: stored event %s does not parse: %w", row.EventID, err)
-	}
-	rules, err := s.roomRules(ctx, roomIDOf(event))
-	if err != nil {
-		rules = roomversion.Rules{}
-	}
-	redaction.ForClient(rules, event)
-	if !row.Redacted {
-		return event, nil
-	}
-	links, err := s.events.RedactionsTargeting(ctx, row.EventID)
-	if err != nil {
-		return nil, fmt.Errorf("rooms: cannot read what redacted %s: %w", row.EventID, err)
-	}
-	for _, link := range links {
-		if !link.Applied {
-			continue
-		}
-		because, err := s.events.ByID(ctx, link.RedactionID)
-		if err != nil {
-			if notFound(err) {
-				continue
-			}
-			return nil, fmt.Errorf("rooms: cannot read the redaction of %s: %w", row.EventID, err)
-		}
-		becauseEvent, err := events.Parse(because.Serving())
-		if err != nil {
-			return nil, fmt.Errorf("rooms: redaction %s does not parse: %w", link.RedactionID, err)
-		}
-		// The copy a client sees under `unsigned` gets the same adjustment as a redaction
-		// read on its own: a client should not have to know which room version placed the
-		// field it is looking for.
-		redaction.ForClient(rules, becauseEvent)
-		unsigned, _ := event["unsigned"].(map[string]any)
-		if unsigned == nil {
-			unsigned = map[string]any{}
-		}
-		unsigned["redacted_because"] = becauseEvent
-		event["unsigned"] = unsigned
-		return event, nil
-	}
-	return event, nil
+	return s.serve.Serve(ctx, row)
 }
