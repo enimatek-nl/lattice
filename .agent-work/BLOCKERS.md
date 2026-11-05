@@ -109,11 +109,26 @@ events are accepted, where a peer can send an event that failed here.
 Action: add the column and write the outcome during ingest (T-2006a), before
 `internal/federation` starts accepting PDUs.
 
-## F-012 — no membership endpoints, so rooms are single-member (open, M2)
+## F-012 — no membership endpoints, so rooms are single-member (resolved)
 
-Join, invite, knock and leave are not implemented, and `/send` deliberately refuses
-`m.room.member`. Consequence, stated plainly: no room on this server can currently have a
-second member, so the multi-user behaviour that Complement's room tests exercise cannot
-pass yet, even though creation and sending work.
+Closed in iteration 7: join (both spellings), leave, invite, kick, ban, unban and knock
+are implemented and tested, and Complement's `TestCannotKickNonPresentUser` passes. The
+refusal of `m.room.member` on `/send` remains deliberate.
 
-Action: T-2007.
+## F-013 — `/sync` is missing, and it is now the gate on most room tests (open, M3)
+
+With creation, sending, membership and aliases working, the Complement suites listed in
+T-3001 proceed through every protocol step and then stop at `GET /sync` returning 404.
+This is not a protocol disagreement: the tests use sync to observe the state they have
+just written, which is also how real clients work. Until sync exists, no multi-step room
+flow can be demonstrated end to end from a client's point of view.
+
+Action: T-3001 (sync tokens, timeline, state, invite rooms).
+
+## F-014 — anything that needs another homeserver answers 501 (open, M4)
+
+Inviting, banning or kicking a user on another server, and resolving an alias owned by
+another server, are refused with 501 and an explicit message. Consequence: Complement's
+multi-server suites (knocking with a remote invite, restricted-room remote joins, all
+federation suites) cannot pass. The refusals are recorded rather than hidden, and 403 or
+200 would both be lies.

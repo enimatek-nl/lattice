@@ -94,12 +94,25 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
       `tests/integration/rooms_test.go` incl. `TestCreatedEventIsVerifiable`
 - [ ] T-2006a Persist the outcome of the on-receipt checks so `Snapshot.Rejected` is real;
       until then an event that failed on receipt could be used as an auth event
-- [ ] T-2007 membership events: join/leave/invite/ban/kick (local), member state reads,
-      `knock` gated on room version >= 7
-- [ ] T-2008 `GET /rooms/{roomId}/state` and `/{type}/{state_key}`
+- [x] T-2007 membership events: join (both spellings, by room ID or local alias),
+      leave, invite, kick, ban, unban, knock; the permission decision stays in the
+      authorisation rules; remote-user membership refused with 501 —
+      `tests/integration/membership_test.go`, Complement `TestCannotKickNonPresentUser`
+- [x] T-2008 (client side) `GET /rooms/{roomID}/state`, `/state/{type}[/{key}]` with
+      `format=event`, `/members` with `not_membership`, `/joined_members`,
+      `/joined_rooms`, `/aliases`; reads require a current membership —
+      `tests/integration/aliases_test.go`. `/state_ids` is federation-side and still M4
+- [x] T-2011 room aliases: `room_alias_name`, `PUT/GET/DELETE /directory/room/{alias}`,
+      join by alias, canonical-alias validation (`M_BAD_ALIAS`), Unicode aliases —
+      Complement `TestRoomAlias` verified
+- [x] T-2008 see above (client-side state reads done; `/state_ids` is federation, M4)
 - [ ] T-2009 `m.room.redaction` application: power level or same server name rule, redacted
       form stored, hashes/signatures stay valid
 - [ ] T-2010 room upgrade path (`m.room.create.predecessor`, `POST /rooms/{roomId}/upgrade`)
 
-- [ ] T-3001 `GET /sync` (timeline, state, invite rooms, device list changes), `/messages` pagination, `since`/`next_batch` tokens, filter storage
+- [ ] T-3001 `GET /sync` — now the single largest blocker in the Complement record:
+      `TestRoomCreate`, `TestRoomMembers`, `TestRoomState`, `TestRoomDeleteAlias`,
+      `TestRoomCanonicalAlias`, `TestNotPresentUserCannotBanOthers`,
+      `TestCannotKickLeftUser`, `TestLogout` and `TestDeviceManagement` all fail at the
+      `/sync` step after everything else succeeded (timeline, state, invite rooms, device list changes), `/messages` pagination, `since`/`next_batch` tokens, filter storage
 - [ ] T-3002 Unblocks Complement `TestLogout` behavioural subtests and `TestDeviceManagement/DELETE…` (they assert through `/sync`)

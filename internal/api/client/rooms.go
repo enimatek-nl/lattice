@@ -43,11 +43,6 @@ func (d *Deps) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
 	if !httpx.DecodeJSONOrError(w, r, d.maxBody(), &body) {
 		return
 	}
-	if body.RoomAliasName != nil {
-		matrixerr.Write(w, http.StatusBadRequest, matrixerr.New(matrixerr.CodeInvalidParam,
-			"This server does not create room aliases as part of room creation yet; create the room, then add an alias."))
-		return
-	}
 	if body.Visibility != "" && body.Visibility != "private" && body.Visibility != "public" {
 		matrixerr.Write(w, http.StatusBadRequest, matrixerr.Newf(matrixerr.CodeInvalidParam,
 			"visibility %q is not one of private or public.", body.Visibility))
@@ -63,6 +58,9 @@ func (d *Deps) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
 		Name:               body.Name,
 		Topic:              body.Topic,
 		AvatarURL:          body.AvatarURL,
+	}
+	if body.RoomAliasName != nil {
+		request.RoomAliasName = *body.RoomAliasName
 	}
 	for _, entry := range body.InitialState {
 		if err := matrixid.EventTypeValid(entry.Type); err != nil {

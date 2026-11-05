@@ -354,3 +354,79 @@ and `/send` refuses membership events by design, so multi-user Complement room t
 cannot pass (F-012). The rejection outcome of on-receipt checks is not stored, so
 `Snapshot.Rejected` reports false for stored events (F-011) — harmless while every event is
 locally authored, must be fixed before federation ingest.
+
+---
+
+# Iteration 7 — membership, room aliases and state reads (T-2007, T-2008, T-2011)
+
+Timestamp: 2026-11-05 (UTC)
+
+## Built
+
+`POST /join/{roomIDOrAlias}`, `POST /rooms/{roomID}/join`, `leave`, `invite`, `kick`,
+`ban`, `unban`, `knock`; `PUT/GET/DELETE /directory/room/{alias}`,
+`GET /rooms/{roomID}/aliases`, `room_alias_name` in `createRoom`, join by local alias,
+canonical-alias validation; `GET /rooms/{roomID}/state[/{type}[/{key}]]` with
+`format=event`, `/members` with `not_membership`, `/joined_members`, `/joined_rooms`.
+Room aliases are a new table (`room_aliases`) with a unique index.
+The offered room version range widened from {10,11} to {7,8,9,10,11}: those are the
+versions whose authorisation rules and state resolution are implemented and where knock
+and restricted join rules exist.
+
+Two findings about the endpoints, not the protocol:
+
+* The same action has two spellings — `POST /join/{roomID}` and
+  `POST /rooms/{roomID}/join`. Answering the second with `M_UNRECOGNIZED` looked like a
+  broken homeserver in `TestRoomMembers`, so both are served.
+* Complement still calls `r0` paths. A homeserver that only serves `v3` fails
+  `TestRoomState` on `r0/rooms/…/joined_members`, so every client endpoint is registered
+  under both `v3` and `r0`.
+
+## Findings worth recording
+
+1. **A repository without `WithTx` deadlocks the server.** `RoomAliasRepo` was written
+   without a transaction variant, so `WithTx` handed it the *outer* connection while a
+   transaction held the only SQLite writer. The request never returned: no error, no
+   timeout, just a hung PUT. Found by a test that timed out, and it would have been a
+   production hang. `WithTx` is now part of the interface and the reason is commented.
+2. **Kicking someone who is not in the room.** The room version rules permit a leave
+   event for a user with no membership, so `eventauth` correctly allowed it; Complement
+   and sytest expect 403. The rule belongs to the Client-Server endpoint, so it lives in
+   `rooms.SetMembership`, and `eventauth` stays faithful to the room version rules.
+3. **Room reads were unauthenticated-by-membership.** Any token could read any room's
+   state and member list. Now a current membership is required, and a left member loses
+   the read (Complement asserts 403 after leaving).
+4. **Alias localparts are opaque Unicode.** `#老虎£яඞ:hs1` must work; a bare `%` must
+   not. Both are Complement-asserted.
+5. **`GET /directory/room/{alias}` must not require a token** — it is how a client finds
+   a room to join.
+6. **`format=event`** on a state read returns the whole event, not the content; returning
+   content made `TestRoomState` report a missing `sender`.
+7. **`M_BAD_ALIAS` and `M_DUPLICATE_ALIAS`** are needed for a canonical alias that names
+   another room and for an alias already in use; a plain `M_UNKNOWN` would have lost the
+   distinction the client acts on.
+
+## Complement evidence (targeted run, not the full suite)
+
+`TestRoomAlias` — including Unicode aliases and "only room members can list aliases" —
+and `TestCannotKickNonPresentUser` now **pass**. `TestRoomCreate`, `TestRoomMembers`,
+`TestRoomState`, `TestRoomDeleteAlias`, `TestRoomCanonicalAlias`,
+`TestNotPresentUserCannotBanOthers` and `TestCannotKickLeftUser` now get through every
+protocol step and fail at `GET /sync` (F-013). `TestKnocking*` refuses a remote-user
+invite with 501 (F-014). No M1 regression: `TestVersionStructure`,
+`TestUnknownEndpoints`, `TestRegistration`, `TestLogin`, `TestCanRegisterAdmin`,
+`TestServerCapabilities`, `TestMediaConfig` still pass. Zero panics, zero HTTP 500.
+No Complement assertion was changed.
+
+## Local evidence
+
+`go test -count=1 ./tests/...` ok; `make verify` (`-race`) ok; `golangci-lint run ./...`
+0 issues. New tests: `tests/integration/membership_test.go`,
+`tests/integration/aliases_test.go`, plus `tests/unit/roomslogic_test.go` additions and a
+corrected `TestPick` for the widened version range.
+
+## Honest status
+
+Still single-server only: any membership change or alias resolution that needs another
+homeserver is refused with 501. No `/sync`, so no client-observable room flow end to end.
+The on-receipt rejection outcome is still not persisted (F-011).

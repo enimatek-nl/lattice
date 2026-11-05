@@ -107,8 +107,19 @@ the parts that must be byte-exact before any room is created.
 | REQ-AUTH-024 | Room Versions §Authorisation rules (aliases) | The historic `m.room.aliases` exemption applies only where the room version still has it | MUST | implemented (versions up to 5; ordinary state rules from version 6) | `tests/unit/eventauth_test.go` (`TestAuthRulesAliases`) |
 | REQ-AUTH-025 | Room Versions §Authorisation rules | Knock, `restricted` and `knock_restricted` are unknown to room versions that predate them | MUST | implemented | `tests/unit/eventauth_test.go` (`TestAuthRulesKnockGating`, `TestAuthRulesRestrictedJoins`) |
 | REQ-AUTH-022 | Room Versions §Authorisation rule 9 (v10+) | Integer-only power-level content validation | MUST | implemented (room version 9 and earlier keep their lenient behaviour, which the tests pin as a decision) | `tests/unit/eventauth_test.go` |
-| REQ-TXN-001 | CS §Idempotency | Transaction IDs on `PUT /send/{type}/{txn}` are per-device and replay yields the same event | MUST | partial — the storage layer enforces per-device uniqueness and returns the prior event; no endpoint yet | `tests/unit/eventstore_test.go` (endpoint coverage pending, M2) |
-| REQ-ROOM-001 | CS §Rooms | `POST /createRoom` with version negotiation, initial state, presets | MUST | not implemented | M2 |
+| REQ-TXN-001 | CS §Idempotency | Transaction IDs on `PUT /send/{type}/{txn}` are per-device and replay yields the same event | MUST | implemented, through the endpoint | `tests/unit/eventstore_test.go`, `tests/integration/rooms_test.go` |
+| REQ-ROOM-001 | CS §Rooms | `POST /createRoom` with version negotiation, presets, initial state, `creation_content` restrictions, `room_alias_name` | MUST | implemented | `tests/integration/rooms_test.go`, `tests/integration/aliases_test.go` |
+| REQ-ROOM-003 | CS §Sending events | `PUT /rooms/{roomID}/send/{type}/{txn}`: authorisation before signing, per-device idempotency, server-computed depth and references | MUST | implemented | `tests/integration/rooms_test.go` |
+| REQ-ROOM-004 | SS §Signing events | An event this server produced re-verifies from storage: its ID is the hash of what is stored, it carries this server's `ed25519:v1` signature, and the authorisation rules accept it against the stored state and auth context | MUST | implemented | `tests/integration/rooms_test.go` (`TestCreatedEventIsVerifiable`) |
+| REQ-ROOM-005 | CS §Joining, leaving, inviting, knocking | `POST /join/{roomIDOrAlias}`, `POST /rooms/{roomID}/join`, `leave`, `invite`, `kick`, `ban`, `unban`, `knock`; permission comes from the authorisation rules, not a per-endpoint check | MUST | implemented | `tests/integration/membership_test.go`; Complement `TestCannotKickNonPresentUser` **verified** |
+| REQ-ROOM-006 | CS §Room aliases | `room_alias_name` creates the alias with the room in one transaction; `PUT/GET/DELETE /directory/room/{alias}`; `GET /rooms/{roomID}/aliases`; join by alias | MUST | implemented | `tests/integration/aliases_test.go`; Complement `TestRoomAlias` **verified** |
+| REQ-ROOM-007 | CS §Room aliases | `m.room.canonical_alias` may only name aliases this server resolves to this room: bad syntax → 400 `M_INVALID_PARAM`; unresolvable or another room → 400 `M_BAD_ALIAS` | MUST | implemented | `tests/integration/aliases_test.go` (`TestCanonicalAliasValidation`) |
+| REQ-ROOM-008 | Security | Reading a room's state, members, joined members or aliases requires a current membership; a left member loses the read | MUST | implemented | `tests/integration/aliases_test.go` (`TestRoomReadsNeedMembership`) |
+| REQ-ROOM-009 | CS §Room versions | The versions offered for creation are those whose rules are implemented (7-11); registered-but-unoffered versions are refused, not substituted | MUST | implemented | `tests/unit/roomversion_test.go`, `tests/integration/aliases_test.go` |
+| REQ-ROOM-010 | CS §State events | `PUT /rooms/{roomID}/state/{type}[/{key}]` including the empty state key; `GET` returns content, or the whole event with `format=event` | MUST | implemented | `tests/integration/rooms_test.go`, `tests/integration/aliases_test.go` |
+| REQ-ROOM-011 | CS §Versioning | The legacy `r0` prefix is served alongside `v3` for the endpoints this server implements | SHOULD | implemented | `tests/integration/aliases_test.go` (`TestLegacyR0Paths`) |
+| REQ-ROOM-012 | SS §Invites and alias resolution | Membership change for a user on another homeserver, and resolution of an alias owned by another server, are refused with 501 rather than pretended | MUST NOT (fake success) | implemented as an explicit refusal | `tests/integration/membership_test.go` (`TestMembershipErrors`) |
+| REQ-ROOM-013 | CS §Room directory, upgrades | `GET /publicRooms`, `POST /rooms/{roomID}/upgrade`, `GET /rooms/{roomID}/event/{eventID}` | MUST | not implemented | M3 |
 | REQ-ROOM-002 | Room Versions §room IDs | v12's domain-free room IDs and privileged creators | MUST | represented in the registry, not implemented | M6 |
 
 ### Interpretation decisions where the specification and implementations need reconciling
@@ -138,7 +149,22 @@ the parts that must be byte-exact before any room is created.
    treats a pattern ending in `/` after a wildcard as a subtree, so that pattern also
    matches `/state/a/b/c`; the handler counts the remaining segments and refuses the
    longer paths with `M_INVALID_PARAM` instead of quietly treating them as an empty key.
-8. **`m.` event types are lowercase.** Client-supplied event types are validated: an
+9. **Kicking requires a present member.** The room version authorisation rules allow a
+   `m.room.member` leave event for a user who has no membership, because the event is not
+   invalid on its own. The Client-Server endpoint is where "you cannot kick someone who is
+   not here" lives; sytest, Complement and Synapse all expect 403. It is enforced in
+   `rooms.SetMembership` so `internal/eventauth` stays faithful to the room version rules.
+10. **Alias resolution is unauthenticated.** `GET /directory/room/{alias}` answers without
+    a token: it is how a client finds a room to join, and requiring a token would make the
+    first join impossible. Creating and deleting an alias require a membership and, for a
+    deletion by someone other than the alias creator, the room's kick power level.
+11. **Membership changes for remote users are refused with 501.** Returning 403 would
+    report a permission problem where the missing thing is federation, and returning 200
+    would record state that no remote server was ever told about.
+12. **Room aliases may hold opaque Unicode.** `#老虎£яඞ:hs1` is a legal alias; a bare `%`
+    in the local part is refused because percent is the escape character. Complement tests
+    both.
+13. **`m.` event types are lowercase.** Client-supplied event types are validated: an
    `m.`-prefixed type may hold only lowercase letters, digits and underscores per
    component. Accepting `m.Room.Message` would create state and power-level entries no
    specification event ever matches. Custom types must be dotted, so two servers cannot

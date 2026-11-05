@@ -58,9 +58,12 @@ type CreateRequest struct {
 	InitialState []StateContent
 	// PowerLevelOverride merges into the preset's m.room.power_levels event.
 	PowerLevelOverride map[string]any
-	Name               string
-	Topic              string
-	AvatarURL          string
+	// RoomAliasName is the local part of an alias to create for the room, on this
+	// server's name.
+	RoomAliasName string
+	Name          string
+	Topic         string
+	AvatarURL     string
 }
 
 // StateContent is one requested state event.
@@ -90,6 +93,7 @@ type Service struct {
 	rooms  persist.RoomRepo
 	events persist.EventRepo
 	state  persist.StateRepo
+	alias  persist.RoomAliasRepo
 	signer events.Signer
 	name   string
 	log    *slog.Logger
@@ -118,6 +122,7 @@ func New(db *persist.Database, signer events.Signer, serverName string, log *slo
 		rooms:  db.Rooms,
 		events: db.Events,
 		state:  db.State,
+		alias:  db.Aliases,
 		signer: signer,
 		name:   serverName,
 		log:    log,
@@ -133,6 +138,7 @@ func (s *Service) WithTx(tx *gorm.DB) *Service {
 		rooms:  s.rooms.WithTx(tx),
 		events: s.events.WithTx(tx),
 		state:  s.state.WithTx(tx),
+		alias:  s.alias.WithTx(tx),
 		signer: s.signer,
 		name:   s.name,
 		log:    s.log,
@@ -192,11 +198,36 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (string, error)
 	}
 	initial = append(initial, req.InitialState...)
 
+	// A requested alias is created with the room, in the same transaction: a room
+	// that existed without the alias its creator asked for would be a room nobody can
+	// find by the name it was given.
+	alias := ""
+	if req.RoomAliasName != "" {
+		alias = "#" + req.RoomAliasName + ":" + s.name
+		if err := matrixid.RoomAliasValid(alias); err != nil {
+			return "", matrixerr.Newf(matrixerr.CodeInvalidParam, "%q is not a usable room alias.", req.RoomAliasName)
+		}
+		if _, domain, err := matrixid.SplitID(matrixid.SigilAlias, alias); err != nil || !matrixid.IsLocal(domain, s.name) {
+			return "", matrixerr.Newf(matrixerr.CodeInvalidParam,
+				"A room alias this server creates must be on this server's name, not %q.", alias)
+		}
+	}
+
 	var created string
 	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
 		id, err := s.WithTx(tx).createRoom(ctx, rules, roomID, req.Creator, createContent, initial)
 		if err != nil {
 			return err
+		}
+		if alias != "" {
+			if err := s.WithTx(tx).alias.Create(ctx, &persist.RoomAlias{
+				Alias: alias, RoomID: id, Creator: req.Creator,
+			}); err != nil {
+				if errors.Is(err, persist.ErrConflict) {
+					return matrixerr.Newf(matrixerr.CodeDuplicateAlias, "The alias %q is already in use.", alias)
+				}
+				return fmt.Errorf("rooms: cannot store the room alias: %w", err)
+			}
 		}
 		created = id
 		return nil
@@ -351,6 +382,14 @@ func (s *Service) send(ctx context.Context, req SendRequest) (string, error) {
 		event["state_key"] = req.StateKey
 	}
 	event["auth_events"] = toAnySlice(eventauth.SelectEventIDs(rules, event, snapshot))
+
+	// A room may only advertise aliases this server can resolve, so the alias claims
+	// in m.room.canonical_alias are checked before the event is signed.
+	if req.IsState && req.EventType == "m.room.canonical_alias" {
+		if err := s.checkCanonicalAlias(ctx, req.RoomID, valueOrEmpty(req.Content)); err != nil {
+			return "", err
+		}
+	}
 
 	if err := eventauth.Check(rules, event, snapshot, eventauth.Opts{}); err != nil {
 		return "", s.refused(err, req)

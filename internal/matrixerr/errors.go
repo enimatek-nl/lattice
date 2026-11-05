@@ -40,9 +40,18 @@ const (
 	CodeInvalidSTS            Code = "M_INVALID_STK" //nolint:gocritic // Matrix code name
 
 	// Room and event errors from the Client-Server API.
-	CodeUnsupportedRoomVersion    Code = "M_UNSUPPORTED_ROOM_VERSION"
-	CodeIncompatibleRoomVersion   Code = "M_INCOMPATIBLE_ROOM_VERSION"
-	CodeBadState                  Code = "M_BAD_STATE"
+
+	// CodeDuplicateAlias is Synapse's code for an alias already in use. It is not a
+	// specification code, but an alias collision needs one and clients recognise this.
+	CodeDuplicateAlias          Code = "M_DUPLICATE_ALIAS"
+	CodeUnsupportedRoomVersion  Code = "M_UNSUPPORTED_ROOM_VERSION"
+	CodeIncompatibleRoomVersion Code = "M_INCOMPATIBLE_ROOM_VERSION"
+	CodeBadState                Code = "M_BAD_STATE"
+
+	// CodeBadAlias reports an alias that is well formed but cannot be used: it does
+	// not exist on this server, or it points at a different room than the one being
+	// edited. Synapse uses this code and Complement asserts it.
+	CodeBadAlias                  Code = "M_BAD_ALIAS"
 	CodeCannotLeaveServerNotice   Code = "M_CANNOT_LEAVE_SERVER_NOTICE_ROOM"
 	CodeResourceLimitExceededRoom Code = "M_RESOURCE_LIMIT_EXCEEDED"
 )
@@ -143,8 +152,10 @@ var statusByCode = map[Code]int{
 	CodeTooLarge:                http.StatusRequestEntityTooLarge,
 	CodeUnrecognized:            http.StatusBadRequest,
 	CodeUnsupportedRoomVersion:  http.StatusBadRequest,
+	CodeDuplicateAlias:          http.StatusConflict,
 	CodeIncompatibleRoomVersion: http.StatusBadRequest,
 	CodeBadState:                http.StatusBadRequest,
+	CodeBadAlias:                http.StatusBadRequest,
 }
 
 // Status returns the HTTP status the specification associates with an error code. An

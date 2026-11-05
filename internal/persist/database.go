@@ -34,6 +34,7 @@ type Database struct {
 	Rooms       RoomRepo
 	Events      EventRepo
 	State       StateRepo
+	Aliases     RoomAliasRepo
 }
 
 // Open opens (creating if needed) the SQLite database at path.
@@ -74,6 +75,7 @@ func Open(path string, log *slog.Logger) (*Database, error) {
 	d.Rooms = NewRoomRepo(gdb)
 	d.Events = NewEventRepo(gdb)
 	d.State = NewStateRepo(gdb)
+	d.Aliases = NewRoomAliasRepo(gdb)
 	return d, nil
 }
 
@@ -97,7 +99,7 @@ func applyPragmas(gdb *gorm.DB) error {
 // matter for Matrix lookups and are not derived from struct tags.
 func (d *Database) migrate(log *slog.Logger) error {
 	if err := d.db.AutoMigrate(&User{}, &Device{}, &AccessToken{}, &SigningKey{},
-		&Room{}, &Event{}, &EventEdge{}, &RoomState{}, &EventAuthContext{}, &EventTxn{}); err != nil {
+		&Room{}, &Event{}, &EventEdge{}, &RoomState{}, &EventAuthContext{}, &EventTxn{}, &RoomAlias{}); err != nil {
 		return fmt.Errorf("persist: migration failed: %w", err)
 	}
 	statements := []string{
@@ -129,6 +131,10 @@ func (d *Database) migrate(log *slog.Logger) error {
 		"CREATE INDEX IF NOT EXISTS idx_auth_context_event ON event_auth_context(event_id)",
 		// Idempotency of PUT /send/{type}/{txn}: unique per device, not global.
 		"CREATE UNIQUE INDEX IF NOT EXISTS idx_event_txn ON event_txn(device_id, txn_id)",
+		// An alias resolves to exactly one room, and a room's aliases are listed
+		// together.
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_room_aliases_alias ON room_aliases(alias)",
+		"CREATE INDEX IF NOT EXISTS idx_room_aliases_room ON room_aliases(room_id)",
 	}
 	for _, stmt := range statements {
 		if err := d.db.Exec(stmt).Error; err != nil {
