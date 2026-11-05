@@ -97,11 +97,13 @@ complement-image: ## Build the Complement container image for this binary
 	CGO_ENABLED=0 $(GO) build -trimpath -o $(BIN_DIR)/$(BINARY) ./cmd/server
 	docker build -t $(COMPLEMENT_IMAGE) -f deploy/complement/Dockerfile .
 
-# `make complement` runs the whole client-API suite (about five minutes); add
+# `make complement` runs the whole client-API suite (106 tests, about 7 minutes here); add
 # COMPLEMENT_RUN to narrow it, e.g.
 #   make complement COMPLEMENT_RUN='TestRoomAlias|TestRoomCanonicalAlias'
-# and add COMPLEMENT_PKG=./tests for the server-server suite (91 tests, most of
-# them starting two containers, so about 40 minutes for the whole package).
+# and add COMPLEMENT_PKG=./tests for the server-server suite (92 tests, about 4 minutes; the
+# slowest case is 11 seconds). Complement keeps its federation tests sequential, so the cost is
+# the sum of the cases: each one stands up two containers. -timeout below is a ceiling, not an
+# estimate - a run that reaches it has hung, and the output shows which case it hung in.
 # The suite runs from the Complement checkout, which has to be present; it is not
 # a module dependency because Complement's own go.mod owns the test binaries.
 complement: complement-image ## Run the Complement client-API suite against the image
