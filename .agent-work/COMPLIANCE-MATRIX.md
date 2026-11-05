@@ -72,7 +72,21 @@ Every failure is a *missing feature*, not a wrong answer, except two worth namin
 Rooms, membership, events, state, sync, E2EE key management and federation therefore remain the
 long tail; their Complement coverage is the measuring stick for M2–M5.
 
-## Latest filtered run (2026-11-05, push notifications)
+## Latest filtered run (2026-11-05, presence)
+
+Filter: presence, push rules and push sync, room directory and summaries, `/messages`,
+logout and devices, registration and login.
+`TestPresence` passes, including "Presence can be set from sync" and the two "reported to
+local room members" subtests, and both presence subtests of `TestSync`
+(`Newly_joined_room_includes_presence_in_incremental_sync`,
+`Get_presence_for_newly_joined_members_in_incremental_sync`) pass.
+
+`TestSync` in `tests/csapi` now fails on three things only: `Device_list_tracking`
+(T-3008, needs device keys), the sync token across a redaction of an unknown event (needs
+federation to create the event, T-4005), and MSC4222 `state_after` (an unstable extension
+deliberately not implemented). Presence is no longer among them.
+
+## Earlier filtered run (2026-11-05, push notifications)
 
 Filter: push rules and push sync, room directory, room summaries, `/messages`, sync
 filters, logout and devices, registration and login, room creation.

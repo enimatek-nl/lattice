@@ -43,7 +43,11 @@ func (d *Deps) handleSync(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	result, err := d.Sync.Sync(r.Context(), auth.UserID(r), req)
+	userID := auth.UserID(r)
+	if !d.applySyncPresence(w, r, userID, req.SetPresence) {
+		return
+	}
+	result, err := d.Sync.Sync(r.Context(), userID, req)
 	if err != nil {
 		if r.Context().Err() != nil {
 			// The client stopped a long poll. There is no response to write and nothing

@@ -128,8 +128,14 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
       `GET`/`PUT /directory/list/room/{roomID}`, `visibility` on `/createRoom`, and
       `GET /v1/room_summary/{roomIdOrAlias}` — Complement `TestPublicRooms`,
       `TestRoomState`, `TestRoomSummaryAllowedRoomIDs`
-- [ ] T-3001c `presence` in `/sync` and `PUT /presence/{userID}/status` (Complement
-      `TestSync/parallel/Newly_joined_room_includes_presence_in_incremental_sync`)
+- [x] T-3001c presence: `GET`/`PUT /presence/{userID}/status`, `set_presence` on `/sync`,
+      the `presence` section, and the join that makes one user's presence another user's to
+      see — Complement `TestPresence` and both presence subtests of `TestSync`
+- [ ] T-3001e presence that goes quiet on its own: an idle timeout, so a user who stops
+      asking does not stay `online` forever. This needs a policy decision (how long, and
+      whether a sync alone counts as activity), so it is a task rather than a guess
+- [ ] T-3001f the `presence` section of a sync filter, which is not applied to the section
+      this server sends
 - [ ] T-3001d depth-ordered history paging: order by depth then stream position and widen
       the token to carry both, so a room whose events arrive out of depth order pages the
       way the reference server pages it (Complement `TestLeftRoomFixture`)

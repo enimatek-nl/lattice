@@ -101,8 +101,12 @@ type Service struct {
 	state  persist.StateRepo
 	alias  persist.RoomAliasRepo
 	signer events.Signer
-	name   string
-	log    *slog.Logger
+	// presence announces a user's arrival to the members of a room they join. It is a
+	// separate service because presence is the user's, not the room's; the room service
+	// only tells it that somebody arrived.
+	presence PresenceNotifier
+	name     string
+	log      *slog.Logger
 	// now is replaced in tests. A homeserver's timestamps must come from the server,
 	// but a test has to control them to make ordering assertions.
 	now func() time.Time
@@ -110,7 +114,18 @@ type Service struct {
 
 // New builds the room service. signer must not be nil: an unsigned event is refused
 // by every other server, so there is no useful unsigned mode.
-func New(db *persist.Database, signer events.Signer, serverName string, log *slog.Logger) (*Service, error) {
+// PresenceNotifier is what the room service uses to say that a user has arrived in a
+// room. Implemented by [*presence.Service].
+//
+// It is deliberately called only after the transaction that wrote the membership event
+// committed. The presence service writes through the pool, and a write attempted while a
+// transaction holds the single connection would wait for that same connection: a deadlock
+// rather than a delay.
+type PresenceNotifier interface {
+	Announce(ctx context.Context, userID string) error
+}
+
+func New(db *persist.Database, signer events.Signer, presence PresenceNotifier, serverName string, log *slog.Logger) (*Service, error) {
 	if db == nil {
 		return nil, errors.New("rooms: a database is required")
 	}
@@ -124,15 +139,16 @@ func New(db *persist.Database, signer events.Signer, serverName string, log *slo
 		log = slog.New(slog.DiscardHandler)
 	}
 	return &Service{
-		db:     db,
-		rooms:  db.Rooms,
-		events: db.Events,
-		state:  db.State,
-		alias:  db.Aliases,
-		signer: signer,
-		name:   serverName,
-		log:    log,
-		now:    func() time.Time { return time.Now().UTC() },
+		db:       db,
+		rooms:    db.Rooms,
+		events:   db.Events,
+		state:    db.State,
+		alias:    db.Aliases,
+		signer:   signer,
+		presence: presence,
+		name:     serverName,
+		log:      log,
+		now:      func() time.Time { return time.Now().UTC() },
 	}, nil
 }
 
@@ -140,15 +156,16 @@ func New(db *persist.Database, signer events.Signer, serverName string, log *slo
 // operation is atomic.
 func (s *Service) WithTx(tx *gorm.DB) *Service {
 	return &Service{
-		db:     s.db,
-		rooms:  s.rooms.WithTx(tx),
-		events: s.events.WithTx(tx),
-		state:  s.state.WithTx(tx),
-		alias:  s.alias.WithTx(tx),
-		signer: s.signer,
-		name:   s.name,
-		log:    s.log,
-		now:    s.now,
+		db:       s.db,
+		rooms:    s.rooms.WithTx(tx),
+		events:   s.events.WithTx(tx),
+		state:    s.state.WithTx(tx),
+		alias:    s.alias.WithTx(tx),
+		signer:   s.signer,
+		presence: s.presence,
+		name:     s.name,
+		log:      s.log,
+		now:      s.now,
 	}
 }
 
@@ -275,6 +292,10 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (string, error)
 	if err != nil {
 		return "", err
 	}
+	// The creator's join is written by createRoom rather than by Send, so it is
+	// announced here. A room whose creator is invisible to nobody is a room where the
+	// first member is told nothing about anybody, including themselves being seen.
+	s.announceArrival(ctx, created, req.Creator)
 	return created, nil
 }
 
@@ -389,6 +410,7 @@ func (s *Service) Send(ctx context.Context, req SendRequest) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	s.announceJoin(ctx, eventID)
 	return eventID, nil
 }
 

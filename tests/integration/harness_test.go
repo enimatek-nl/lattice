@@ -195,6 +195,12 @@ func (h *harness) post(t *testing.T, path string, body any, token string) respon
 	return h.do(t, http.MethodPost, h.clientURL+path, body, token, h.client)
 }
 
+// put performs a PUT with a JSON body, which the endpoints that replace a value use.
+func (h *harness) put(t *testing.T, path string, body any, token string) response {
+	t.Helper()
+	return h.do(t, http.MethodPut, h.clientURL+path, body, token, h.client)
+}
+
 // federationGet performs a GET against the HTTPS federation listener.
 func (h *harness) federationGet(t *testing.T, path string) response {
 	t.Helper()

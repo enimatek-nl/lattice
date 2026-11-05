@@ -18,6 +18,7 @@ import (
 	"github.com/enimatek/lattice/internal/httpserver"
 	"github.com/enimatek/lattice/internal/keys"
 	"github.com/enimatek/lattice/internal/persist"
+	"github.com/enimatek/lattice/internal/presence"
 	"github.com/enimatek/lattice/internal/pushrules"
 	"github.com/enimatek/lattice/internal/rooms"
 	"github.com/enimatek/lattice/internal/sync"
@@ -39,6 +40,7 @@ type App struct {
 	UIA       *auth.UIAService
 	Users     *users.Service
 	PushRules *pushrules.Service
+	Presence  *presence.Service
 	Server    *httpserver.Server
 
 	Started time.Time
@@ -66,17 +68,24 @@ func New(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, error
 	tokens := auth.NewTokenService(db.Tokens)
 	uia := auth.NewUIAService(5*time.Minute, 8192)
 	userService := users.New(db, tokens, cfg.Registration, cfg.ServerName, log)
-	roomService, err := rooms.New(db, signingKeys, cfg.ServerName, log)
+	presenceService := presence.New(db, cfg.ServerName, log)
+	roomService, err := rooms.New(db, signingKeys, presenceService, cfg.ServerName, log)
 	if err != nil {
 		_ = db.Close()
 		return nil, err
 	}
 
 	pushRules := pushrules.NewService(db, log)
-	// A user's push rules are theirs from the moment they exist: their first sync has
-	// to carry them, so they are created with the account rather than guessed at when a
-	// client asks. Accounts that predate this code are covered by the sweep below.
-	userService.AfterRegister = pushRules.EnsureDefaults
+	// What a user owns from the moment they exist: their push rules, and a presence
+	// entry so that the first question about them is answered with something this server
+	// knows rather than with a guess. Accounts that predate this code are covered by the
+	// sweeps below.
+	userService.AfterRegister = func(ctx context.Context, userID string) error {
+		if err := pushRules.EnsureDefaults(ctx, userID); err != nil {
+			return err
+		}
+		return presenceService.Set(ctx, userID, persist.PresenceOnline, "")
+	}
 
 	a := &App{
 		Cfg:              cfg,
@@ -87,6 +96,7 @@ func New(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, error
 		UIA:              uia,
 		Users:            userService,
 		PushRules:        pushRules,
+		Presence:         presenceService,
 		Started:          time.Now().UTC(),
 		clientRouter:     httpserver.NewRouter(),
 		federationRouter: httpserver.NewRouter(),
@@ -95,6 +105,12 @@ func New(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, error
 	if err := pushRules.EnsureAllDefaults(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
+	}
+	if created, err := presenceService.EnsureDefaults(ctx); err != nil {
+		_ = db.Close()
+		return nil, err
+	} else if created > 0 {
+		log.Info("presence: gave the existing accounts a presence entry", "accounts", created)
 	}
 
 	requireAuth := auth.RequireAuth(tokens, userService)
@@ -107,6 +123,7 @@ func New(ctx context.Context, cfg *config.Config, log *slog.Logger) (*App, error
 		Keys:      signingKeys,
 		Rooms:     roomService,
 		PushRules: pushRules,
+		Presence:  presenceService,
 		Sync:      sync.NewService(db, log),
 		DB:        db,
 		Version:   Version,

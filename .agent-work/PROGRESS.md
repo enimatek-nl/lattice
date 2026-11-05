@@ -623,3 +623,54 @@ something (T-3005a).
 Local evidence: `make verify` `-race` ok — 174 integration, 199 unit tests; `go vet` and
 `golangci-lint run ./...` 0 issues. No Complement test changed, because none of this is
 reachable from the API yet.
+
+---
+
+## 2026-11-05 — presence, and one stream instead of three (M3)
+
+Scope: `internal/presence` (new), `internal/persist/presence.go`,
+`internal/persist/stream.go` (new), `internal/api/client/presence.go`, the presence section
+in `internal/sync`, a join hook in `internal/rooms`.
+
+What is now true:
+
+* `GET`/`PUT /presence/{userID}/status` answer. A user may only set their own; an unknown
+  presence value is refused; a user on another server is answered as not known rather than
+  guessed; a user this server has never reported is `offline`, because "are they around"
+  has that answer before it has "I don't know them".
+* `/sync` has a `presence` section. Presence is not room data, but the room is what decides
+  whose presence you may see, so a join announces the arrival to the members already there
+  and their presence to the joiner.
+* `set_presence` is honoured. It defaults to `online`, and an unchanged status is *not*
+  written again: a client polls, and writing every poll would announce the user to everyone
+  they share a room with over and over. `MarkActive` exists for the same split — being seen
+  refreshes `last_active_ago` and deliberately takes no stream position.
+
+A real defect was found on the way, and it was in code shipped two days ago:
+
+* Positions were taken as `MAX(events.stream_ordering) + 1` by every writer — events *and*
+  account data. So the position `/sync` reported as `next_batch` (the events maximum) could
+  sit below positions account data had already taken, and a later event could be handed a
+  position an account data write had taken. A sync token is supposed to mean "everything up
+  to here"; under that scheme it meant "every event up to here, and possibly some things
+  after it, and a client holding it may be told the same thing again on every poll".
+  Positions now come from one counter — the maximum across `events`, `account_data` and
+  `presence` — and `next_batch` is that same maximum. `TestPresenceStreamSharedWithEvents`
+  pins the cross-table ordering, because that is the invariant, not the implementation.
+* The join hook runs *after* the membership transaction commits. Calling the presence
+  service inside it would have reproduced the deadlock already recorded in the push rule
+  service: the presence write goes through the pool, and the pool has one writer which the
+  open transaction is holding.
+
+Honest gaps: nothing makes a user go quiet, so `online` sticks until the user or a room
+event says otherwise (T-3001e — it needs a policy decision, so it is a task, not a guess);
+no federation presence EDUs, so remote users are not known (M4); the filter's `presence`
+section is not applied (T-3001f).
+
+Complement: `TestPresence` passes with all its subtests, and both presence subtests of
+`TestSync` pass. `TestSync` now fails on three things: `Device_list_tracking` (device keys,
+T-3008), a sync token across a redaction of an unknown event (needs federation to create
+the event, T-4005), and MSC4222 `state_after` (unstable, deliberately out).
+
+Local evidence: `make verify` `-race` ok — 176 integration, 203 unit tests; `go vet` and
+`golangci-lint run ./...` 0 issues. No Complement assertion was modified.
