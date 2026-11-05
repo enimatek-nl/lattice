@@ -131,13 +131,51 @@ func TestRoomServerACLRefusesTheExcludedServer(t *testing.T) {
 		t.Errorf("%s was still refused state_ids after the room lifted its exclusion: %d (%s)",
 			hs2.name, status, body)
 	}
-	// What the exclusion withheld stays missing, and is not silently forgiven: the messages sent
-	// while the door was shut are not in this server's copy of the room, and a message that
-	// follows them cites events this server has never been told about. Catching up on them is the
-	// bounded missing-event ask of T-4009b2; what this test pins is that the exclusion neither
-	// leaks during nor hardens after.
-	if row, err := hs2.app.DB.Events.ByID(context.Background(), lateID); err == nil && row != nil {
-		t.Errorf("%s received the message that was withheld during the exclusion", hs2.name)
+	// What the exclusion withheld does not stay missing once the room deals with this server
+	// again. The next message descends from the one that was withheld, so this server cannot place
+	// it — and asking the server that offered it for what is missing is what lets both be placed.
+	// A room whose history stays holed after a door reopens would be a room this server can never
+	// catch up on.
+	_, opened := hs1.clientDo(t, http.MethodPut, "/_matrix/client/v3/rooms/"+roomID+"/send/m.room.message/acl-open",
+		map[string]any{"msgtype": "m.text", "body": "the door is open again"}, alice)
+	openID, _ := opened["event_id"].(string)
+	if openID == "" {
+		t.Fatal("the message sent after the lifting has no ID")
+	}
+	if !waitFor(t, 15*time.Second, func() bool {
+		row, err := hs2.app.DB.Events.ByID(context.Background(), openID)
+		return err == nil && row != nil
+	}) {
+		_, page := hs2.clientDo(t, http.MethodGet, "/_matrix/client/v3/rooms/"+roomID+"/messages?limit=50", nil, bea)
+		t.Fatalf("%s never took the message that arrived after the exclusion was lifted: %v", hs2.name, bodies(t, page))
+	}
+	// And the history reads in the order it happened, not the order it arrived: the withheld
+	// message was fetched after the message that follows it was offered, and a server that gave its
+	// own ordering by arrival would tell this room's reader that the door opened before the message
+	// it was withheld from was ever written.
+	_, page := hs2.clientDo(t, http.MethodGet, "/_matrix/client/v3/rooms/"+roomID+"/messages?limit=50", nil, bea)
+	seen := bodies(t, page)
+	withheld, reopened := -1, -1
+	for i, body := range seen {
+		switch body {
+		case "not for the excluded server":
+			withheld = i
+		case "the door is open again":
+			reopened = i
+		}
+	}
+	// `/messages` is newest first, so the chased event — which the other message descends from —
+	// must sit after it in the page. It sitting before would mean this server ordered the room by
+	// the order events happened to arrive.
+	if withheld >= 0 && reopened >= 0 && withheld < reopened {
+		t.Errorf("%s reads the message it chased as newer than the message that triggered the chase: %v",
+			hs2.name, seen)
+	}
+	if row, err := hs2.app.DB.Events.ByID(context.Background(), lateID); err == nil && row == nil {
+		t.Errorf("%s took a message that descends from %s without chasing the event it descends from; "+
+			"the room's history stays holed here", hs2.name, lateID)
+	} else if err != nil {
+		t.Errorf("reading the withheld event on %s: %v", hs2.name, err)
 	}
 }
 

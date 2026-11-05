@@ -305,13 +305,15 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
 - [ ] T-4009b2 the other triggers and the answering side: a bounded backfill pass in the federation
       worker for rooms with gaps, filling on demand when a client pages a timeline that stops at a
       gap, and answering `GET /backfill` ourselves (REQ-FED-001). Only a join triggers a fetch today
-- [ ] T-4009b3 asking for the predecessors an incoming event cites when this server does not hold
-      them. Evidence from the server-ACL test: a room excludes a server, messages are withheld
-      during the exclusion, the exclusion is lifted, and the next message is refused by this server
-      because it descends from events this server was never told about ("its predecessors are not
-      stored here"). The room is reachable again; the hole in the middle of it is what is missing.
-      The specification's answer is `GET /get_missing_events`, and the machinery already exists in
-      `federation.Backfiller` (REQ-FED-001, REQ-FED-016)
+- [x] T-4009b3 ask for the predecessors an incoming event cites when this server does not hold
+      them. The room service now returns a `rooms.MissingPredecessorsError` naming the events, which
+      is not a verdict but a request for the caller to go and get them; the transaction handler asks
+      the server that just offered the event (it plainly has them), ingests what comes back parents
+      first, and re-offers the event once. Evidence is the server-ACL test: messages withheld during
+      an exclusion are still missing when the exclusion is lifted, the next message is refused for
+      its hole, and after the ask both halves are held here and read in the order they happened.
+      `GET /get_missing_events` is not implemented — the ask goes over `GET /event`, which is a
+      legitimate route to the same events (REQ-FED-016, DEC-033)
 - [x] T-4011 `m.room.server_acl` is enforced (REQ-FED-012, DEC-031): the join template (v1 and v3),
       `/state_ids`, `/event_auth`, `/event`, and each PDU of a transaction answer an excluded server
       with 403 `M_FORBIDDEN`; a room's events are not relayed to it; events from an excluded server

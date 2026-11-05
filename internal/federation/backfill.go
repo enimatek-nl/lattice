@@ -76,6 +76,19 @@ type FillOutcome struct {
 // one call walks backwards through the history until the budget runs out or the chain joins up
 // with something this server holds.
 func (b *Backfiller) Fill(ctx context.Context, roomID string, destinations []string) (FillOutcome, error) {
+	return b.fill(ctx, roomID, destinations, nil)
+}
+
+// FillFrom catches up on a named set of events rather than on every hole in the room. It is what
+// an incoming event asks for: a server offers an event, this server says the events it descends
+// from are not here, and the server that offered it is the one to ask. Asking for exactly those,
+// and following them backwards, is what keeps a single unexpected event from turning into a survey
+// of a room this server may hold only partly.
+func (b *Backfiller) FillFrom(ctx context.Context, roomID string, destinations, seeds []string) (FillOutcome, error) {
+	return b.fill(ctx, roomID, destinations, seeds)
+}
+
+func (b *Backfiller) fill(ctx context.Context, roomID string, destinations, seeds []string) (FillOutcome, error) {
 	outcome := FillOutcome{Refused: map[string]string{}}
 	if b.Client == nil || b.Store == nil {
 		return outcome, errors.New("federation: backfill is not wired up")
@@ -94,10 +107,18 @@ func (b *Backfiller) Fill(ctx context.Context, roomID string, destinations []str
 	// held caches what this server stores, so the walk stops where its history begins instead of
 	// re-asking for events it already has.
 	held := map[string]bool{}
+	// first holds the events this call was asked for by name. A later pass learns from what the
+	// first brought, and asks about the holes that opened behind it.
+	first := seeds
 	for pass := 0; pass < passes; pass++ {
-		seeds, err := b.Store.MissingPredecessors(ctx, roomID, budget)
-		if err != nil {
-			return outcome, err
+		seeds := first
+		first = nil
+		if len(seeds) == 0 {
+			var err error
+			seeds, err = b.Store.MissingPredecessors(ctx, roomID, budget)
+			if err != nil {
+				return outcome, err
+			}
 		}
 		queue := make([]string, 0, len(seeds))
 		for _, id := range seeds {

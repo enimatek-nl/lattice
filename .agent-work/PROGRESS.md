@@ -1293,3 +1293,31 @@ machinery `federation.Backfiller` already provides.
 `make verify` clean (`-race`), `golangci-lint` clean. Complement: the filtered `csapi` set was run
 at the previous commit and this change touches no Client-Server API surface; the server-ACL tests
 are federation-path tests and Complement has no `federation_*` run against this server yet.
+
+## 2026-11-05 — a hole under an incoming event is asked about, not judged (T-4009b3, REQ-FED-016)
+
+An event that arrives describing itself as descending from events this server does not hold has two
+bad answers and one good one. Refusing it is a verdict about an event that may be perfectly good,
+judged by the state of this server's copy of the room. Storing it as an outlier without any way to
+ask leaves it invisible to clients for as long as the hole stays. The good answer: name the missing
+events, ask the server that just offered the event for them — it plainly has them — and offer the
+event again.
+
+`AcceptRemoteEvent` now returns `*rooms.MissingPredecessorsError` with the IDs, and the transaction
+handler answers it with one bounded ask (`Backfiller.FillFrom`, seeded by exactly those events and
+walking backwards from them) followed by one retry. One ask and one retry: a sender that keeps
+offering unplaceable events must not turn each offer into a fetch. What comes back is ingested
+parents first, which is what keeps the chased event from reading as newer than the event that
+triggered the chase — the ordering rule of DEC-030 doing its job in a second situation.
+
+The test that proves it is the server-ACL test, because an exclusion is a convenient way to make a
+hole honestly: a room excludes a server, messages are withheld during the exclusion, the exclusion is
+lifted, and the next message is refused for its hole. After the ask, both halves are held, the
+timeline reads in the order the messages happened rather than the order they arrived, and the room is
+caught up rather than permanently forked.
+
+The specification's own endpoint for this — `GET /get_missing_events` — is still not implemented, and
+this server does not answer `/backfill` either; the ask travels over `GET /event`, which reaches the
+same events. Recorded under T-4009b2 and T-4012 rather than counted as done.
+
+`make verify` clean (`-race`), `golangci-lint` clean.

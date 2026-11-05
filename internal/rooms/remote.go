@@ -129,10 +129,21 @@ func (s *Service) AcceptRemoteEvent(ctx context.Context, pdu []byte, verify Veri
 			return "", fmt.Errorf("rooms: cannot read the predecessors of a remote event: %w", err)
 		}
 		if len(prevEvents) != len(prevIDs) {
-			// Without the parents this event hangs off, this server cannot say where in
-			// the history it belongs. Storing it as an outlier would hide it from
-			// clients until the gap was filled; asking for the gap is T-4007.
-			return "", fmt.Errorf("its predecessors are not stored here")
+			// Without the parents this event hangs off, this server cannot say where in the
+			// history it belongs. Storing it as an outlier would keep it from clients until the
+			// gap was filled, and refusing it outright would be a verdict on an event that may be
+			// perfectly good. What is missing is named so the caller can go and get it.
+			held := make(map[string]bool, len(prevEvents))
+			for _, entry := range prevEvents {
+				held[entry.EventID] = true
+			}
+			missing := make([]string, 0, len(prevIDs))
+			for _, id := range prevIDs {
+				if !held[id] {
+					missing = append(missing, id)
+				}
+			}
+			return "", &MissingPredecessorsError{EventID: eventID, RoomID: roomID, Missing: missing}
 		}
 	}
 

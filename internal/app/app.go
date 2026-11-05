@@ -236,6 +236,7 @@ func NewWithOptions(ctx context.Context, cfg *config.Config, log *slog.Logger, o
 			Log:       log,
 		}
 		a.Backfill = backfiller
+		federationDeps.Backfill = backfiller
 		joiner := &federation.Joiner{
 			Client:    client,
 			Keyring:   a.Keyring,

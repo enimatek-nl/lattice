@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -189,9 +190,24 @@ func (d *Deps) acceptPDU(r *http.Request, raw []byte) (eventID, problem string) 
 		// refuses this event, and whatever else the transaction carries is still processed.
 		return envelope.EventID, "the room excludes the server that sent this event"
 	}
-	id, err := d.Rooms.AcceptRemoteEvent(r.Context(), raw, func(event map[string]any, rules roomversion.Rules) error {
+	verify := func(event map[string]any, rules roomversion.Rules) error {
 		return events.Verify(rules, event, d.Keyring.LookupForRoom(r.Context(), rules))
-	})
+	}
+	id, err := d.Rooms.AcceptRemoteEvent(r.Context(), raw, verify)
+	var missing *rooms.MissingPredecessorsError
+	if errors.As(err, &missing) && d.Backfill != nil && envelope.RoomID != "" {
+		// The server that just offered this event plainly has the events it descends from. Asking
+		// it for those, and re-offering once, is the difference between a room this server can
+		// catch up on and a room it will keep refusing for as long as the hole stays. One ask, one
+		// retry: a sender that keeps offering unplaceable events is not given an open-ended fetch.
+		origin, _ := r.Context().Value(originContextKey{}).(string)
+		if _, fillErr := d.Backfill.FillFrom(r.Context(), envelope.RoomID, []string{origin}, missing.Missing); fillErr != nil {
+			d.Log.Warn("federation: the events an incoming event descends from could not be fetched",
+				"event_id", envelope.EventID, "room_id", envelope.RoomID, "origin", origin, "error", fillErr)
+		} else {
+			id, err = d.Rooms.AcceptRemoteEvent(r.Context(), raw, verify)
+		}
+	}
 	if err != nil {
 		if id == "" {
 			id = envelope.EventID
