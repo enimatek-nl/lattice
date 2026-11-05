@@ -15,11 +15,19 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
 image="${COMPLEMENT_BASE_IMAGE:-complement-lattice:latest}"
-complement_dir="${COMPLEMENT_DIR:-../complement}"
+# Candidate locations for the Complement checkout, in the order people usually have it.
+candidates=("${COMPLEMENT_DIR:-}" ../complement "$HOME/complement" ../complement-checkout)
+complement_dir=""
+for candidate in "${candidates[@]}"; do
+	if [[ -n "$candidate" && -f "$candidate/go.mod" ]]; then
+		complement_dir="$candidate"
+		break
+	fi
+done
 
-if [[ ! -f "$complement_dir/go.mod" ]]; then
+if [[ -z "$complement_dir" ]]; then
 	cat >&2 <<-EOF
-	Complement checkout not found at: $complement_dir
+	Complement checkout not found. Looked in: ${candidates[*]}
 	Clone it, or point COMPLEMENT_DIR at an existing checkout:
 	    git clone https://github.com/matrix-org/complement ../complement
 	EOF
