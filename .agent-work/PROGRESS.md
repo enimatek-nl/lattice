@@ -674,3 +674,32 @@ the event, T-4005), and MSC4222 `state_after` (unstable, deliberately out).
 
 Local evidence: `make verify` `-race` ok — 176 integration, 203 unit tests; `go vet` and
 `golangci-lint run ./...` 0 issues. No Complement assertion was modified.
+
+---
+
+## 2026-11-05 — device list tracking in `/sync` (M3)
+
+Scope: `internal/persist/device_lists.go` (new), `internal/rooms/membership_effects.go`
+(renamed from `presence.go`), the `device_lists` section in `internal/sync`.
+
+`device_lists.changed` names a user whose keys are worth asking for again;
+`device_lists.left` names one whose keys are no longer worth keeping. Both take a position
+in the shared stream, and both record the room the change happened in — the member list of a
+room cannot answer "who may hear about this", because the user who left is no longer in it.
+
+The section is absent rather than empty when there is nothing to say: an empty object reads
+as "nothing changed", which is a different answer from "there is nothing to report".
+
+Membership is the only trigger today. Key uploads, new devices and cross-signing updates are
+the other triggers in the specification, and none of those endpoints exist on this server
+yet, so the requirement row says "partially" and the task list carries T-3008b rather than
+letting a passing Complement test imply that encryption works. It does not: a client told to
+re-fetch keys has nowhere to ask.
+
+Complement: `TestSync/parallel/Device_list_tracking` passes, including the retry case.
+`TestSync` now fails on two things only — a redaction of an unknown event that needs a
+second homeserver to create (T-4005), and MSC4222 `state_after` (unstable, deliberately out,
+along with the whole `tests/msc4222` package).
+
+Local evidence: `make verify` `-race` ok — 178 integration, 204 unit tests; `go vet` and
+`golangci-lint run ./...` 0 issues. No Complement assertion was modified.

@@ -156,8 +156,14 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
       (T-3005i); what is missing is the read marker that makes "unread" mean something,
       then the per-event lookup each condition needs (display name, member count, power
       levels) and the storage of the outcome
-- [ ] T-3008 `device_lists` in `/sync`: whose device lists changed. Complement
-      `TestSync/parallel/Device_list_tracking` asks for it; it depends on device keys
+- [x] T-3008 `device_lists` in `/sync`: `changed` on a join, `left` on a leave or ban,
+      recorded with the room it happened in — Complement
+      `TestSync/parallel/Device_list_tracking` (including the retry case)
+- [ ] T-3008b the keys themselves: `PUT /keys/upload`, `POST /keys/query`,
+      `POST /keys/claim`, `GET /keys/changes`. Without them the lists this server sends
+      tell a client to re-fetch keys it has nowhere to fetch
+- [ ] T-3008c device list changes triggered by a key upload, a new device or a
+      cross-signing update, once those exist; only membership triggers one today
 - [ ] T-3001 (leftover numbering, same work as T-3001a-d and T-4005 above): what still
       fails at a `/sync` step is presence, `device_lists`, MSC4222 `state_after`, and the
       two-server cases that need federation

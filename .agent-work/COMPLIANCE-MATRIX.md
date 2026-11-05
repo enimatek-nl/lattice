@@ -72,6 +72,18 @@ Every failure is a *missing feature*, not a wrong answer, except two worth namin
 Rooms, membership, events, state, sync, E2EE key management and federation therefore remain the
 long tail; their Complement coverage is the measuring stick for M2–M5.
 
+## Latest filtered run (2026-11-05, device list tracking)
+
+Filter: presence, push rules and push sync, room directory and summaries, `/messages`,
+logout and devices, registration and login.
+`TestSync/parallel/Device_list_tracking` now passes, including the "even if she makes the
+request twice" case. What is left failing in `TestSync` is two things, both known:
+
+  * `sync_should_succeed_even_if_the_sync_token_points_to_a_redaction_of_an_unknown_event`
+    — the test needs a second homeserver to create the event, so it is T-4005 (federation).
+  * the two MSC4222 `state_after` subtests, and the whole `tests/msc4222` package, which is
+    an unstable specification extension this server does not implement.
+
 ## Latest filtered run (2026-11-05, presence)
 
 Filter: presence, push rules and push sync, room directory and summaries, `/messages`,

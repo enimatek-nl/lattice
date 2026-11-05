@@ -410,7 +410,7 @@ func (s *Service) Send(ctx context.Context, req SendRequest) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	s.announceJoin(ctx, eventID)
+	s.announceMembership(ctx, eventID)
 	return eventID, nil
 }
 
