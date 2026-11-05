@@ -131,6 +131,14 @@ func TestRoomUpgradeErrors(t *testing.T) {
 	if unsupported["errcode"] != "M_UNSUPPORTED_ROOM_VERSION" {
 		t.Errorf("an unsupported room version: %v", unsupported)
 	}
+	// A version this server has rules for but has not implemented is the same answer, and it
+	// matters for a different reason than creation does: a room upgraded into such a version
+	// would still exist, still take events, and still be a room this server cannot work out
+	// the state of. Recognising a version is not the same as being able to run it.
+	if got := h.mustStatus(t, h.post(t, "/_matrix/client/v3/rooms/"+roomID+"/upgrade",
+		map[string]any{"new_version": "12"}, aliceToken), http.StatusBadRequest).decoded(t); got["errcode"] != "M_UNSUPPORTED_ROOM_VERSION" {
+		t.Errorf("an upgrade into a version this server recognises but does not implement: %v", got)
+	}
 	// A request that does not name a version at all is missing a parameter, which is a
 	// different mistake.
 	if got := h.mustStatus(t, h.post(t, "/_matrix/client/v3/rooms/"+roomID+"/upgrade",

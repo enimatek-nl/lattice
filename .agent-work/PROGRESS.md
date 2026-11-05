@@ -1475,3 +1475,18 @@ resolution v2.1 pair (room version 12), `TestMSC4289PrivilegedRoomCreators_Upgra
 `TestMSC4291RoomIDAsHashOfCreateEvent_UpgradedRooms` (version 12 formats), and
 `TestOutboundFederationIgnoresMissingEventWithBadJSONForRoomVersion6`. No Complement assertion was
 modified.
+
+## 2026-11-08 — an upgrade into a version this server only recognises is refused (T-4021)
+
+Offering room versions 1 and 2 made the offered set wider than it had been, and looking at what else
+reads that set turned up a doorway that had never been limited to it: `PUT /upgrade` checked
+`roomversion.Get` — "do we have rules for this version?" — rather than "can we run a room in it?".
+Room version 12 has registered rules and an unimplemented revised state resolution, so a room could
+be upgraded into it: it would exist, keep accepting events, and be a room this server could not work
+out the state of, while every other server in it computed something else. `roomversion.IsOffered`
+now answers that question once, the upgrade path uses it, and the refusal is the same
+`M_UNSUPPORTED_ROOM_VERSION` creation already gives.
+
+`make verify` clean. Tests: `TestRoomUpgradeErrors` asks for `new_version: "12"`; `roomversion_test.go`
+asserts that the advertised set and `IsOffered` agree, and that a known version is not automatically
+an offered one.

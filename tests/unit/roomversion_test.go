@@ -180,4 +180,16 @@ func TestAvailable(t *testing.T) {
 	if !roomversion.IsKnown("1") {
 		t.Errorf("room version 1 must still be known: events in such rooms need its rules")
 	}
+	// The upgrade path asks the same question by a different route, so the two answers have to
+	// agree: a version can be recognised and still not be one this server can run a room in.
+	for _, version := range roomversion.Supported() {
+		if !roomversion.IsOffered(version.ID) {
+			t.Errorf("room version %s is offered for creation but IsOffered says it is not", version.ID)
+		}
+	}
+	for _, version := range []string{"12", "org.matrix.msc4458", "not a version"} {
+		if roomversion.IsOffered(version) {
+			t.Errorf("IsOffered claims this server runs room version %q", version)
+		}
+	}
 }

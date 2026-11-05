@@ -428,10 +428,15 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
       refused honestly today; implementing them is what turns the refusal into support.
 - [ ] T-4020 sync filtering (`/filter`, filter IDs, the lazy-loading and event-field limits), which
       is what `TestSyncOmitsStateChangeOnFilteredEvents` asks for and what several clients assume.
-- [ ] T-4021 `PUT /upgrade` accepts any version this server *knows* (`roomversion.Get`) rather than
-      any it can actually run (`roomversion.Supported`): a room upgraded into version 12 or an
-      unstable version lands in a state this server cannot resolve. Offer only the supported set,
-      and refuse the rest with `M_UNSUPPORTED_ROOM_VERSION` as creation already does.
+- [x] T-4021 `PUT /upgrade` accepted any version this server *knows* (`roomversion.Get`) rather than
+      any it can actually run: a room upgraded into version 12 or an unstable version would exist,
+      take events, and be a room this server cannot work out the state of. `roomversion.IsOffered`
+      now answers the question in one place and the upgrade path uses it, so a recognised-but-
+      unimplemented version is refused `M_UNSUPPORTED_ROOM_VERSION` exactly as creation refuses it.
+      tests: `tests/integration/upgrade_test.go` (`TestRoomUpgradeErrors`: `new_version: "12"`),
+      `tests/unit/roomversion_test.go` (known ≠ offered). Found while offering room versions 1 and 2,
+      which is what widened the hole: the offered set grew, and the upgrade doorway had never been
+      limited to it.
 - [ ] T-4014 audit the remaining federation responses for the same mistake as T-4006a: any
       object that carries a signature must be written as the bytes that signature covers.
       `pdus` are already carried as raw stored bytes; the transaction answer and the error

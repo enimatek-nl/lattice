@@ -74,8 +74,13 @@ type UpgradeRequest struct {
 // the user may not send it, nothing else happened either. Checking first and creating later
 // would leave a room that exists but was never announced, which is worse than no room.
 func (s *Service) Upgrade(ctx context.Context, req UpgradeRequest) (string, error) {
+	// Only a version this server actually runs, not merely one it has rules for. A room
+	// upgraded into a version whose state resolution is not written lands in a room the
+	// server can store and cannot evaluate: it would accept events, fail to work out who is
+	// in the room, and give every other server a different answer. Creation already refuses
+	// this; an upgrade is the same doorway.
 	rules, known := roomversion.Get(req.NewVersion)
-	if !known {
+	if !known || !roomversion.IsOffered(req.NewVersion) {
 		return "", matrixerr.New(matrixerr.CodeUnsupportedRoomVersion,
 			"This server does not support that room version.").
 			WithExtra(map[string]any{"room_version": req.NewVersion})
