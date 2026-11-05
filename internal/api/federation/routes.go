@@ -30,6 +30,9 @@ type Deps struct {
 	Federation persist.FederationRepo
 	// Rooms accepts events that arrived over federation.
 	Rooms PDUAcceptor
+	// Joins answers the join handshake: the template a joining server signs, the state it
+	// needs to catch up, and what authorises both.
+	Joins JoinAcceptor
 	// DB reads events for the federation read endpoints.
 	DB *persist.Database
 }
@@ -39,6 +42,21 @@ func Register(r *httpserver.Router, d *Deps) {
 	// A transaction is authenticated before a single byte of it is processed.
 	r.Handle("PUT", "/_matrix/federation/v1/send/{txnId}", d.requireCredential(d.handleSendTransaction))
 	r.Handle("GET", "/_matrix/federation/v1/event/{eventId}", d.requireCredential(d.handleGetEvent))
+
+	// The join handshake. A remote user joins by asking a server that is already in the room
+	// for the shape a join by them would take, signing the answer, and handing it back; the
+	// server that answers is the one that decides whether its copy of the room lets them in.
+	// Version 3 of `/make_join` differs from version 1 only by a query parameter this server
+	// does not need, so both are answered by the same handler rather than by a stub that
+	// claims the newer version is unavailable.
+	r.Handle("GET", "/_matrix/federation/v1/make_join/{roomId}/{userId}", d.requireCredential(d.handleMakeJoin))
+	r.Handle("GET", "/_matrix/federation/v3/make_join/{roomId}/{userId}", d.requireCredential(d.handleMakeJoin))
+	r.Handle("PUT", "/_matrix/federation/v2/send_join/{roomId}/{eventId}", d.requireCredential(d.handleSendJoin))
+
+	// What a room's state is, and what authorises it, in a form a server that has never seen
+	// the room can check for itself.
+	r.Handle("GET", "/_matrix/federation/v1/state_ids/{roomId}", d.requireCredential(d.handleStateIDs))
+	r.Handle("GET", "/_matrix/federation/v1/event_auth/{roomId}/{eventId}", d.requireCredential(d.handleEventAuth))
 	r.Handle("GET", "/_matrix/federation/v1/version", d.handleVersion)
 	r.Handle("GET", "/_matrix/key/v2/server", d.handleServerKeys)
 	r.Handle("POST", "/_matrix/key/v2/query", d.handleKeyQuery)

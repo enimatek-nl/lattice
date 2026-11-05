@@ -401,14 +401,18 @@ func checkMember(rules roomversion.Rules, event map[string]any, state Snapshot, 
 
 	switch membership {
 	case MembershipJoin:
-		// 4.3.1: the room creator's first join needs no invitation.
+		// 4.3.1: the room creator's first join needs no invitation. This clause only ever
+		// allows; a join that does not match it falls through to the ordinary rules.
+		//
+		// It used to refuse when the single prev_event could not be resolved here, and that
+		// was wrong in a way that only federation exposed: prev_events are not auth_events,
+		// so a receiver checking an event against the auth events its sender cited can almost
+		// never resolve them, and every remote join but the creator's own was refused.
 		if prev := stringSlice(event["prev_events"]); len(prev) == 1 {
 			if create, ok := state.Event(prev[0]); ok {
 				if typ, _ := stringOf(create, "type"); typ == TypeCreate && stateKey == creatorOf(rules, create) {
 					return nil
 				}
-			} else {
-				return Failure{"4.3.1", "the single prev_event cannot be resolved, so the creator join cannot be confirmed"}
 			}
 		}
 		// 4.3.2
