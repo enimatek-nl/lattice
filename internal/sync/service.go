@@ -20,14 +20,12 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/enimatek/lattice/internal/eventauth"
 	"github.com/enimatek/lattice/internal/events"
-	"github.com/enimatek/lattice/internal/matrixerr"
 	"github.com/enimatek/lattice/internal/persist"
+	"github.com/enimatek/lattice/internal/stream"
 )
 
 // Limits chosen to keep one sync cheap and bounded. The timeline limit default follows
@@ -52,26 +50,14 @@ const (
 	pollInterval = 250 * time.Millisecond
 )
 
-// Token is a position in this server's event stream.
-type Token int64
-
-// String renders the token the way clients see it. The prefix marks it as ours, so a
-// bare number typed into a request is not mistaken for a valid position.
-func (t Token) String() string { return "s" + strconv.FormatInt(int64(t), 10) }
+// Token is a position in this server's event stream. The type lives in [stream] because
+// `/messages` pages over the same positions, and a `prev_batch` from one endpoint is
+// meant to work as `from` in the other.
+type Token = stream.Position
 
 // ParseToken reads a token a client returned.
-func ParseToken(raw string) (Token, error) {
-	if !strings.HasPrefix(raw, "s") {
-		return 0, matrixerr.New(matrixerr.CodeInvalidToken,
-			"The sync token is not one this server issued.")
-	}
-	value, err := strconv.ParseInt(raw[1:], 10, 64)
-	if err != nil || value < 0 {
-		return 0, matrixerr.New(matrixerr.CodeInvalidToken,
-			"The sync token is not one this server issued.")
-	}
-	return Token(value), nil
-}
+// ParseToken reads a token issued by this server.
+func ParseToken(raw string) (Token, error) { return stream.Parse(raw) }
 
 // Request is one `/sync` call.
 type Request struct {

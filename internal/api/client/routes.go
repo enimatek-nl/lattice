@@ -133,6 +133,7 @@ func Register(r *httpserver.Router, d *Deps, requireAuth func(http.Handler) http
 	versioned("GET", "/rooms/{roomID}/state/{eventType}/", d.handleRoomStateSingle)
 	versioned("GET", "/rooms/{roomID}/members", d.handleMembers)
 	versioned("GET", "/rooms/{roomID}/joined_members", d.handleJoinedMembers)
+	versioned("GET", "/rooms/{roomID}/messages", d.handleRoomMessages)
 	versioned("GET", "/joined_rooms", d.handleJoinedRooms)
 
 	// Synchronisation and the filters that shape it.
