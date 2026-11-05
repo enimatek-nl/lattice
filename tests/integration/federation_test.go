@@ -1061,3 +1061,138 @@ func TestLocallyWrittenEventsNameTheirOriginServer(t *testing.T) {
 		}
 	}
 }
+
+// TestEventOfferedWithoutItsLabelIsNamedByItsContent covers what a PDU is called, not what
+// it says. In every room version from 3 on, the event format does not list an event_id among
+// the required properties: the identifier is the reference hash of the event, which each
+// receiver computes for itself. Two failures follow from missing that. A server that demands
+// the label refuses events that are perfectly well formed — and a room it is being told about
+// stays half-empty forever. A server that believes the label stores an event under a name no
+// other server uses, so the room's servers cannot agree about which event is which.
+//
+// Both are checked here: an event offered with its event_id removed, and an event offered with
+// a label its own content does not make. Each has to end up filed under the ID the content
+// makes, and be readable by that ID.
+func TestEventOfferedWithoutItsLabelIsNamedByItsContent(t *testing.T) {
+	t.Parallel()
+	hs1, hs2 := federationPair(t)
+
+	token := hs1.registerUser(t, "labelalice", "pw-labelalice")
+	status, created := hs1.clientDo(t, http.MethodPost, "/_matrix/client/v3/createRoom",
+		map[string]any{"preset": "private_chat", "name": "who names an event"}, token)
+	if status != http.StatusOK {
+		t.Fatalf("creating the room: %v", created)
+	}
+	roomID, _ := created["room_id"].(string)
+	if roomID == "" {
+		t.Fatalf("no room id: %v", created)
+	}
+
+	send := func(txn, body string) string {
+		t.Helper()
+		status, answer := hs1.clientDo(t, http.MethodPut,
+			"/_matrix/client/v3/rooms/"+roomID+"/send/m.room.message/"+txn,
+			map[string]any{"msgtype": "m.text", "body": body}, token)
+		if status != http.StatusOK {
+			t.Fatalf("sending %q: %v", body, answer)
+		}
+		id, _ := answer["event_id"].(string)
+		if id == "" {
+			t.Fatalf("no event id for %q: %v", body, answer)
+		}
+		return id
+	}
+	keptID := send("txn-kept", "handed over normally")
+	unlabelledID := send("txn-unlabelled", "offered with no label at all")
+	mislabelledID := send("txn-mislabelled", "offered under somebody else's label")
+
+	snapshot := hs1.roomSnapshot(t, roomID, token)
+	all := byDepth(dedupe(snapshot.State, snapshot.Messages))
+
+	// The room up to and including the first message, but not the two events this test is
+	// about: otherwise the answer proves nothing about whether they were taken.
+	handover := make([]map[string]any, 0, len(all))
+	for _, event := range all {
+		id := stringAny(event, "event_id")
+		if id == unlabelledID || id == mislabelledID {
+			continue
+		}
+		handover = append(handover, event)
+	}
+	if eventWithID(handover, keptID) == nil {
+		t.Fatalf("the snapshot does not hold %s, so this test would prove nothing", keptID)
+	}
+	status, answer := hs1.sendTransaction(t, hs2, "labelling-setup", handover)
+	if status != http.StatusOK {
+		t.Fatalf("the setup transaction was refused as a whole: %d %v", status, answer)
+	}
+	for eventID, result := range answer.PDUs {
+		if result.Error != "" {
+			t.Fatalf("%s refused a setup event %s: %s", hs2.name, eventID, result.Error)
+		}
+	}
+
+	// The event the room version does not require a label for.
+	unlabelled := copyEvent(eventWithID(all, unlabelledID))
+	delete(unlabelled, "event_id")
+	if status, answer := hs1.sendTransaction(t, hs2, "labelling-unlabelled",
+		[]map[string]any{unlabelled}); status != http.StatusOK {
+		t.Fatalf("the unlabelled event: %d %v", status, answer)
+	} else if problem, ok := answer.PDUs[unlabelledID]; !ok {
+		t.Errorf("%s did not answer for the unlabelled event under the ID its content makes: %v",
+			hs2.name, answer.PDUs)
+	} else if problem.Error != "" {
+		t.Errorf("%s refused the unlabelled event: %s", hs2.name, problem.Error)
+	}
+
+	// The event carrying a label that its content contradicts.
+	mislabelled := copyEvent(eventWithID(all, mislabelledID))
+	mislabelled["event_id"] = "$not-the-event-this-content-makes:hs1"
+	if status, answer := hs1.sendTransaction(t, hs2, "labelling-mislabelled",
+		[]map[string]any{mislabelled}); status != http.StatusOK {
+		t.Fatalf("the mislabelled event: %d %v", status, answer)
+	} else if problem, ok := answer.PDUs[mislabelledID]; !ok {
+		t.Errorf("%s did not answer for the mislabelled event under the ID its content makes: %v",
+			hs2.name, answer.PDUs)
+	} else if problem.Error != "" {
+		t.Errorf("%s refused the mislabelled event: %s", hs2.name, problem.Error)
+	}
+
+	// An acceptance is only worth what the server can afterwards be asked about. Each event
+	// has to be findable by the ID its content makes, and the copy handed back has to carry
+	// that ID — a client was never told the label, so a stored event without one is a message
+	// nobody can quote, redact, or reply to.
+	for _, id := range []string{unlabelledID, mislabelledID} {
+		status, payload := hs1.signedRequest(t, hs2, http.MethodGet,
+			"/_matrix/federation/v1/event/"+id, nil)
+		if status != http.StatusOK {
+			t.Errorf("%s does not hold %s, which it accepted: %d %s", hs2.name, id, status, payload)
+			continue
+		}
+		var answer struct {
+			PDUs []json.RawMessage `json:"pdus"`
+		}
+		if err := json.Unmarshal(payload, &answer); err != nil || len(answer.PDUs) != 1 {
+			t.Errorf("the answer about %s is the wrong shape: %s", id, payload)
+			continue
+		}
+		var stored map[string]any
+		if err := json.Unmarshal(answer.PDUs[0], &stored); err != nil {
+			t.Errorf("decoding the stored event %s: %v", id, err)
+			continue
+		}
+		if got := stringAny(stored, "event_id"); got != id {
+			t.Errorf("%s stores %s under %s", hs2.name, id, got)
+		}
+	}
+}
+
+// copyEvent makes a shallow copy of a decoded event so a test can change one field without
+// editing what the snapshot holds.
+func copyEvent(event map[string]any) map[string]any {
+	out := make(map[string]any, len(event))
+	for key, value := range event {
+		out[key] = value
+	}
+	return out
+}

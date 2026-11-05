@@ -147,6 +147,16 @@ func (s *Service) AcceptRemoteBundle(ctx context.Context, bundle RemoteBundle, v
 			}
 			versions[entry.roomID] = rules
 		}
+		// The bundle's events are named by this server, not by the server that sent them: those
+		// versions' event format carries no event_id, and a bundle that names one wrongly is still
+		// the same set of events. Everything downstream — the duplicate check, the verdicts, the
+		// IDs returned to the caller — uses the name computed here.
+		id, err := events.AssignEventID(rules, entry.event)
+		if err != nil {
+			outcome.Refused[entry.eventID] = err.Error()
+			continue
+		}
+		entry.eventID = id
 		if err := verify(entry.event, rules); err != nil {
 			reason := fmt.Sprintf("the event failed its signature and hash checks: %v", err)
 			if err := s.refuse(ctx, entry.roomID, entry.eventID, reason); err != nil {

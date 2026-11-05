@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/enimatek/lattice/internal/eventauth"
@@ -58,24 +60,27 @@ func (d *Deps) handleMakeJoin(w http.ResponseWriter, r *http.Request) {
 		d.answerServiceError(w, "make_join", roomID, err)
 		return
 	}
-	// The specification reserves M_INCOMPATIBLE_ROOM_VERSION for a room version the *asking*
-	// server cannot speak, and the answer to that is a refusal. An ask for a version this server
-	// can speak but the room did not choose is a different thing: the template handed over is in
-	// the room's own version, and the response names that version, so the asker signs what the
-	// room actually uses. Refusing here would be turning a question of fact — which version does
-	// this room use — into a failure, and every server that asks before it knows ends up unable to
-	// join. The parameter is spelled `ver` because that is what the Server-Server API calls it.
-	if asked := r.URL.Query().Get("ver"); asked != "" && asked != roomVersion {
-		if _, speakable := roomversion.Get(asked); !speakable {
-			matrixerr.Write(w, http.StatusBadRequest, matrixerr.Newf(matrixerr.CodeIncompatibleRoomVersion,
-				"Room %q uses room version %s, which is not the version %s this server was asked in. "+
-					"%s is not a room version this server can take part in.", roomID, roomVersion, asked, asked).
-				WithExtra(map[string]any{"room_version": roomVersion}))
-			return
-		}
-		d.Log.Debug("federation: a join was asked in a room version the room did not choose; "+
-			"the template was answered in the room's own version",
-			"room_id", roomID, "asked_version", asked, "room_version", roomVersion)
+	// `ver` is repeated once per room version and names the versions the *asking* server can
+	// speak — it is not that server's guess about which version this room is, and a first value
+	// taken from an unordered list proves nothing about the rest of it. What decides the answer is
+	// whether this room's version is in the list: if it is, the template is handed over in the
+	// room's own version and the response names that version, so the asker signs what the room
+	// actually uses; if it is not, no template would help, because the asker cannot authorise the
+	// join it is about to sign. Then the useful answer is the room's version itself, which is what
+	// M_INCOMPATIBLE_ROOM_VERSION carries it in.
+	//
+	// A server that names no versions has said nothing about what it can speak, and the
+	// specification's documented default for that case is the version 1 room format — a legacy
+	// artifact. Refusing on that default would mean every modern room is unjoinable by a server
+	// that simply asks, so silence is answered in the room's own version.
+	if asked := r.URL.Query()["ver"]; len(asked) > 0 && !slices.Contains(asked, roomVersion) {
+		d.Log.Debug("federation: a join was asked by a server that does not list the room's "+
+			"room version among the versions it can speak",
+			"room_id", roomID, "room_version", roomVersion, "asked_versions", strings.Join(asked, ","))
+		matrixerr.Write(w, http.StatusBadRequest, matrixerr.Newf(matrixerr.CodeIncompatibleRoomVersion,
+			"Your homeserver does not support the features required to join this room: %q uses room version %s.",
+			roomID, roomVersion).WithExtra(map[string]any{"room_version": roomVersion}))
+		return
 	}
 	origin, _ := r.Context().Value(originContextKey{}).(string)
 	if d.refusedByRoomACL(w, r, roomID, origin) {

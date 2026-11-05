@@ -44,21 +44,13 @@ type KeyLookup func(origin, keyID string) (ed25519.PublicKey, error)
 // does not know is a failure, not a warning: an unsigned event from a stranger is
 // somebody's guess about what a room contained.
 func Verify(rules roomversion.Rules, event map[string]any, lookup KeyLookup) error {
-	eventID, _ := event["event_id"].(string)
-	if eventID == "" {
-		return InvalidEventError{Reason: "it has no event_id"}
-	}
-	computed, err := EventID(rules, event)
+	// The name is settled before anything else is checked, because in the room versions whose
+	// identifiers are hashes it is not the sender's claim at all: it is what this server computes
+	// from the bytes in front of it. An event arriving without one is therefore not incomplete,
+	// and one arriving with a label that disagrees is not a different event — see AssignEventID.
+	eventID, err := AssignEventID(rules, event)
 	if err != nil {
-		return InvalidEventError{EventID: eventID, Reason: err.Error()}
-	}
-	if computed != eventID {
-		return InvalidEventError{
-			EventID: eventID,
-			Reason: fmt.Sprintf("its content hashes to %s, which is not the ID it carries; "+
-				"storing it would fork this room's history against every server that recomputes the hash",
-				computed),
-		}
+		return InvalidEventError{Reason: err.Error()}
 	}
 
 	if err := verifyContentHash(rules, event); err != nil {
