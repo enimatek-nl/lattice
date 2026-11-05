@@ -272,6 +272,32 @@ func (n *fedNode) rawRequest(t *testing.T, to *fedNode, method, target, header s
 // clientDo performs a Client-Server API call against this node.
 func (n *fedNode) clientDo(t *testing.T, method, path string, body any, token string) (int, map[string]any) {
 	t.Helper()
+	status, payload := n.doWithStatus(t, method, path, body, token)
+	var decoded map[string]any
+	if len(payload) > 0 {
+		if err := json.Unmarshal(payload, &decoded); err != nil {
+			t.Fatalf("%s answered something that is not a JSON object: %s", path, payload)
+		}
+	}
+	return status, decoded
+}
+
+// clientDoList is the same request for the endpoints whose body is a JSON array, which
+// GET /rooms/{roomID}/state is: its own schema says "Array of ClientEvent", so a helper
+// that can only read objects cannot read it.
+func (n *fedNode) clientDoList(t *testing.T, path, token string) []map[string]any {
+	t.Helper()
+	_, payload := n.doWithStatus(t, http.MethodGet, path, nil, token)
+	var events []map[string]any
+	if err := json.Unmarshal(payload, &events); err != nil {
+		t.Fatalf("%s answered something that is not a JSON array: %s", path, payload)
+	}
+	return events
+}
+
+// doWithStatus performs a client-API request and reports the status and the body.
+func (n *fedNode) doWithStatus(t *testing.T, method, path string, body any, token string) (int, []byte) {
+	t.Helper()
 	var reader io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -297,13 +323,7 @@ func (n *fedNode) clientDo(t *testing.T, method, path string, body any, token st
 	if err != nil {
 		t.Fatalf("reading the answer from %s: %v", path, err)
 	}
-	var decoded map[string]any
-	if len(payload) > 0 {
-		if err := json.Unmarshal(payload, &decoded); err != nil {
-			t.Fatalf("%s answered something that is not a JSON object: %s", path, payload)
-		}
-	}
-	return response.StatusCode, decoded
+	return response.StatusCode, payload
 }
 
 // registerUser gives a local user an access token.
@@ -345,22 +365,13 @@ type roomEvents struct {
 
 func (n *fedNode) roomSnapshot(t *testing.T, roomID, token string) roomEvents {
 	t.Helper()
-	status, state := n.clientDo(t, http.MethodGet, "/_matrix/client/v3/rooms/"+roomID+"/state", nil, token)
-	if status != http.StatusOK {
-		t.Fatalf("reading the state of %s: %v", roomID, state)
-	}
+	list := n.clientDoList(t, "/_matrix/client/v3/rooms/"+roomID+"/state", token)
 	status, page := n.clientDo(t, http.MethodGet, "/_matrix/client/v3/rooms/"+roomID+"/messages?limit=50", nil, token)
 	if status != http.StatusOK {
 		t.Fatalf("reading the messages of %s: %v", roomID, page)
 	}
 	events := roomEvents{}
-	if list, ok := state["state"].([]any); ok {
-		for _, entry := range list {
-			if event, ok := entry.(map[string]any); ok {
-				events.State = append(events.State, event)
-			}
-		}
-	}
+	events.State = append(events.State, list...)
 	if timeline, ok := page["chunk"].([]any); ok {
 		for _, entry := range timeline {
 			if event, ok := entry.(map[string]any); ok {

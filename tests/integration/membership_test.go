@@ -338,16 +338,14 @@ func TestStateReads(t *testing.T) {
 	roomID := createRoom(t, h, aliceToken, map[string]any{"preset": "public_chat", "topic": "the topic"})
 
 	state := h.mustStatus(t, h.get("/_matrix/client/v3/rooms/"+roomID+"/state", aliceToken), http.StatusOK)
-	// The answer is an object with a "state" list, which is what the specification's
-	// rule that every endpoint returns a JSON object means here. A bare array is what a
-	// server that never read that rule returns.
-	var envelope struct {
-		State []any `json:"state"`
+	// The body is the bare array the endpoint's own schema describes. The specification
+	// says elsewhere that every endpoint answers with a JSON object, and this is one of
+	// the places where the two statements disagree; the endpoint-specific one is what
+	// clients act on. Recorded here so nobody "fixes" it into an envelope again.
+	var events []any
+	if err := json.Unmarshal(state.body, &events); err != nil {
+		t.Fatalf("GET /state did not return an array: %v (%s)", err, state.body)
 	}
-	if err := json.Unmarshal(state.body, &envelope); err != nil {
-		t.Fatalf("GET /state did not return an object with a state list: %v (%s)", err, state.body)
-	}
-	events := envelope.State
 	types := map[string]bool{}
 	for _, entry := range events {
 		event, _ := entry.(map[string]any)

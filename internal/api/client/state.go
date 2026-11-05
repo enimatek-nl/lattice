@@ -15,10 +15,13 @@ import (
 // removed would produce objects whose hashes and signatures do not match their event
 // IDs, and a client that checked them would conclude the server forged them.
 //
-// They are returned inside an object under "state", not as a bare array: the
-// specification requires every endpoint to answer with a JSON object, and Synapse and
-// the clients written against it read response["state"]. An array here is a protocol
-// violation that a client reports as an empty room rather than as a bug.
+// The body is the bare array this endpoint's own schema describes. The specification
+// contradicts itself here: its API standards say every endpoint answers with a JSON
+// object, while this endpoint documents its response as "Array of ClientEvent" and shows
+// a top-level array. The endpoint-specific statement is the one clients act on — Synapse
+// answers with an array and Complement's room-state test walks one — so wrapping the list
+// here is not a stricter reading of the standards, it is an empty room to a client that
+// walks the array and finds no key to walk.
 func (d *Deps) handleRoomStateRead(w http.ResponseWriter, r *http.Request) {
 	state, err := d.Rooms.CurrentState(r.Context(), r.PathValue("roomID"), auth.UserID(r))
 	if err != nil {
@@ -28,7 +31,7 @@ func (d *Deps) handleRoomStateRead(w http.ResponseWriter, r *http.Request) {
 	if state == nil {
 		state = []map[string]any{}
 	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"state": state})
+	httpx.WriteJSON(w, http.StatusOK, state)
 }
 
 // handleRoomStateSingle implements GET /_matrix/client/v3/rooms/{roomID}/state/{eventType}[/{stateKey}].

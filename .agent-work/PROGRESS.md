@@ -829,10 +829,14 @@ What was built:
 
 Four defects the work exposed, each fixed with a test that used to pass:
 
-* `GET /rooms/{roomID}/state` answered with a bare JSON array. The specification requires
-  every endpoint to answer with a JSON object, and Synapse's clients read `response["state"]`
-  — an array there is an empty room to them. Two of this project's own tests had been written
-  around the wrong shape and asserted it (REQ-HTTP-007).
+* I "fixed" `GET /rooms/{roomID}/state` from a bare array to `{"state": […]}`, on the
+  strength of the API-standards sentence that every endpoint answers with a JSON object, and
+  rewrote two of this project's tests to assert the new shape. That was wrong, and the
+  Complement run in this window is what said so: the endpoint's own schema documents
+  "Array of `ClientEvent`" and shows a top-level array, `TestRoomState` walks that array, and
+  Synapse answers with one. Reverted; the array is the contract (REQ-HTTP-007 now records the
+  contradiction rather than a rule that does not exist). The lesson is recorded too: the local
+  suite had been written around the wrong shape, so it defended the bug.
 * Event signature verification used a generic JSON signer. In the room versions whose event
   IDs are hashes, the identifier is not part of the signed document, so keeping it makes every
   honestly signed event look forged: this server would have refused real events from every
@@ -848,8 +852,8 @@ Four defects the work exposed, each fixed with a test that used to pass:
   feeds the sender — answered no. The queue silently emptied itself and undelivered events
   were lost. Nullable columns in the storage layer are pointers now, where NULL is the answer.
 
-Local evidence: full suite green — `go vet ./...` clean, `tests/unit` and `tests/integration`
-pass (`go test -count=1 ./...`). New: `tests/unit/federationdiscovery_test.go`,
+Local evidence: full suite green — `go vet ./...` clean, `golangci-lint run ./...` 0 issues,
+`tests/unit` and `tests/integration` pass under `-race` (`make verify`). New: `tests/unit/federationdiscovery_test.go`,
 `tests/unit/federationkeys_test.go`, `tests/unit/eventsignature_test.go` (all supported room
 versions), and `tests/integration/federation_test.go`, which runs two homeservers on real
 listeners with real TLS certificates from a test CA and real `X-Matrix` signatures, moves a
@@ -858,6 +862,27 @@ hash depends on, and then checks the refusals: no credential, an unknown key ID,
 after signing, a credential addressed to somebody else, an origin that disagrees with its
 credential, a forged event signature, an event in an unknown room, a transaction of 51 PDUs,
 and a replay.
+
+A Complement run in the same window, and what it said:
+
+* It caught the `/state` shape error above. The local suite could not: its assertions had
+  been written around the wrong shape in the same window.
+* `TestInboundFederationKeys` failed, and the reason was worth having: `GET
+  /_matrix/key/v2/server` signed a document and then served it through Go's encoder. The
+  bytes on the wire were not the bytes the signature covers — a trailing newline, Go's
+  escaping, Go's number formatting. Complement verifies the body it received with the
+  `signatures` member removed, and correctly called our own key invalid. The endpoint now
+  answers with the canonical form (REQ-FED-000), and the integration test asserts both that
+  the body is its own canonical form and that the signature checks over it.
+  `TestInboundFederationKeys` passes. This is the second Complement-caught defect in this
+  window; both were invisible locally because the local checks re-encoded what they
+  verified.
+* `TestRoomCreate` asks for a room in version 2 and is answered `M_UNSUPPORTED_ROOM_VERSION`,
+  because room versions 1 and 2 are deliberately not implemented (T-4013).
+* The sync suites now fail on narrower things than they used to: MSC4222 `state_after`,
+  filters over the state section, depth-ordered paging across a gap, and a sync token that
+  points at a redaction of an unknown event (T-2009). `TestRoomState`, `TestRoomAlias`,
+  `TestRoomMembers` and the M1 suites pass.
 
 What this does *not* establish: Complement's federation suites still fail (F-015) — they drive
 federation through a join, and `/make_join`, `/send_join`, `/state_ids`, `/backfill` and

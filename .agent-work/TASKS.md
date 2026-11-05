@@ -254,8 +254,22 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
       month are forgotten, while everything still current survives —
       `tests/unit/federationqueue_test.go` (which also caught that `SeenTransaction` accepted
       an instant and ignored it, so an answer kept past its expiry was replayed as if current)
+- [x] T-4006a signed responses are answered in the form their signatures cover: the server
+      key document and the key-query response are encoded as canonical JSON, and
+      `TestServerKeysVerifies` asserts the body is its own canonical form and that the
+      signature checks over the bytes sent — Complement `TestInboundFederationKeys` passes
+      (it failed while the endpoint re-encoded through Go's JSON encoder)
+- [ ] T-4013 room versions 1 and 2 for creating rooms: their authorisation rules and state
+      resolution v1 are refused by design, so a client that asks for version 2 is answered
+      `M_UNSUPPORTED_ROOM_VERSION`. Complement's `TestRoomCreate/creates_a_room_with_the_given_version`
+      asks for exactly that; supporting it is a real piece of work (v1/v2 rules, state
+      resolution v1), not a configuration flag
 - [ ] T-4011 the address policy is applied when discovery resolves a name, not when the
       socket is opened. A name whose answer changes between the two (DNS rebinding) is not
       covered; the fix is a dialer that re-checks the address it is about to connect to
+- [ ] T-4014 audit the remaining federation responses for the same mistake as T-4006a: any
+      object that carries a signature must be written as the bytes that signature covers.
+      `pdus` are already carried as raw stored bytes; the transaction answer and the error
+      bodies are unsigned, so they are unaffected today
 - [ ] T-4012 `Sender.MaxAge`/`MaxAttempts` and the queue depth are configured but not exposed
       to an operator: no admin endpoint and no metric reports a queue that will never drain

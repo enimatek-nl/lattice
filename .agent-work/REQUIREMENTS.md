@@ -82,7 +82,7 @@ Requirement coverage and Complement coverage are tracked separately (see COMPLIA
 | REQ-FED-008 | Refuse to dial addresses discovery was not entitled to produce (SSRF through delegation/DNS) | MUST (AGENTS.md §9) | implemented+tested; enforced at resolution rather than at dial (T-4011) | `tests/unit/federationdiscovery_test.go`, `tests/unit/config_test.go` |
 | REQ-FED-009 | Trust in a remote signing key requires that server's own signature; trust window clamped; retired keys until `expired_ts`; expiry per room version | MUST | implemented+tested | `tests/unit/federationkeys_test.go` |
 | REQ-FED-010 | A received PDU's content hash must match its content, or its body is unprotected in the room versions whose ID hashes the redacted form | MUST | implemented+tested | `tests/unit/eventsignature_test.go` |
-| REQ-CS-006 | `GET /rooms/{roomID}/state` answers with a JSON object (`{"state": […]}`), not a bare array | MUST | implemented+tested (was a bare array; fixed) | `tests/integration/membership_test.go`, `aliases_test.go` |
+| REQ-CS-006 | `GET /rooms/{roomID}/state` answers with the bare array its own schema describes ("Array of `ClientEvent`"), not with an envelope. The standards sentence about JSON objects does not reach this endpoint; Complement's `TestRoomState` and Synapse both treat the array as the contract. | MUST | implemented+tested (a change to an envelope was reverted the same day, on Complement evidence) | `tests/integration/membership_test.go`, `aliases_test.go`, Complement `TestRoomState` |
 
 ## Rooms, events, state (architecture requirements of M1; implementation M2+)
 

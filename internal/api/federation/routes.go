@@ -70,7 +70,15 @@ func (d *Deps) handleServerKeys(w http.ResponseWriter, r *http.Request) {
 			"The server encountered an internal error."))
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, doc)
+	// The body has to be the canonical form the signature was made over; see
+	// encodeCanonical. Complement verifies this document over the bytes it received,
+	// which is what any receiver that does not re-serialise effectively does.
+	if err := encodeCanonical(w, http.StatusOK, doc); err != nil {
+		d.Log.Error("server key document could not be encoded", "error", err)
+		matrixerr.Write(w, http.StatusInternalServerError, matrixerr.New(matrixerr.CodeUnknown,
+			"The server encountered an internal error."))
+		return
+	}
 }
 
 // keyQueryRequest is the POST /_matrix/key/v2/query body.
@@ -119,5 +127,12 @@ func (d *Deps) handleKeyQuery(w http.ResponseWriter, r *http.Request) {
 		}
 		docs = append(docs, doc)
 	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"server_keys": docs})
+	// Same reason as the key endpoint: the documents inside this response are signed, so
+	// the response is encoded in the form their signatures were made over.
+	if err := encodeCanonical(w, http.StatusOK, map[string]any{"server_keys": docs}); err != nil {
+		d.Log.Error("key query could not be encoded", "error", err)
+		matrixerr.Write(w, http.StatusInternalServerError, matrixerr.New(matrixerr.CodeUnknown,
+			"The server encountered an internal error."))
+		return
+	}
 }
