@@ -228,6 +228,15 @@ type EventRepo interface {
 	// cites as a predecessor. New events attach here.
 	ForwardExtremities(ctx context.Context, roomID string) ([]string, error)
 
+	// Outliers lists the events in a room this server holds without holding everything they
+	// cite as predecessors.
+	Outliers(ctx context.Context, roomID string) ([]string, error)
+
+	// MissingPredecessors lists the event IDs that this room's events cite as predecessors but
+	// this server does not hold. They are the gaps a missing-event fetch is asked to close, and
+	// the frontier of a history this server has only partly been told.
+	MissingPredecessors(ctx context.Context, roomID string, limit int) ([]string, error)
+
 	// MarkSoftFailed records whether an event passes authorisation against the room's
 	// current state. A soft-failed event is stored and takes part in state resolution,
 	// but is not shown to clients and is not cited by new events.
@@ -381,6 +390,40 @@ func (r *eventRepo) References(ctx context.Context, eventID, kind string) ([]str
 	err := r.db.WithContext(ctx).Model(&EventEdge{}).
 		Where("event_id = ? AND kind = ?", eventID, kind).
 		Pluck("reference_id", &ids).Error
+	return ids, err
+}
+
+// Outliers implements [EventRepo].
+func (r *eventRepo) Outliers(ctx context.Context, roomID string) ([]string, error) {
+	var ids []string
+	err := r.db.WithContext(ctx).Model(&Event{}).
+		Where("room_id = ? AND outlier = ?", roomID, true).
+		Pluck("event_id", &ids).Error
+	return ids, err
+}
+
+// MissingPredecessors implements [EventRepo].
+//
+// The gaps are named in the order the room's own events were told to this server, newest first,
+// because that is the end of a history a remote server is most likely to still have: the
+// extremities a join was made against. A fetcher that starts at the oldest gap would walk a long
+// way back through a room it has never been asked about.
+func (r *eventRepo) MissingPredecessors(ctx context.Context, roomID string, limit int) ([]string, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	// The citing event's room is what scopes this. An edge belongs to the room of the event that
+	// cites it, and a gap in another room is not a gap here.
+	var ids []string
+	err := r.db.WithContext(ctx).Raw(`
+		SELECT e.reference_id
+		  FROM event_edges AS e
+		  JOIN events AS citing ON citing.event_id = e.event_id
+		 WHERE e.kind = ? AND citing.room_id = ?
+		   AND e.reference_id NOT IN (SELECT event_id FROM events WHERE room_id = ?)
+		 GROUP BY e.reference_id
+		 ORDER BY MAX(e.id) DESC
+		 LIMIT ?`, EdgePrev, roomID, roomID, limit).Scan(&ids).Error
 	return ids, err
 }
 

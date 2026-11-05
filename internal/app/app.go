@@ -50,6 +50,9 @@ type App struct {
 	Sender *federation.Sender
 	// Keyring holds the signing keys of other homeservers.
 	Keyring *federation.Keyring
+	// Backfill asks other homeservers for the events this server's rooms cite and does not hold.
+	// It is nil when federation is disabled.
+	Backfill *federation.Backfiller
 	// Joiner carries this server's users into rooms it does not hold. It is nil when
 	// federation is disabled, and a join of a remote room is then refused plainly rather than
 	// attempted against nothing.
@@ -218,6 +221,17 @@ func NewWithOptions(ctx context.Context, cfg *config.Config, log *slog.Logger, o
 		// A local user joining a room held elsewhere is carried by this handshake: ask a
 		// server that holds the room for the shape of the join, sign it here, hand it back.
 		// The room service decides when it is needed; this is the part that reaches out.
+		// A room joined from elsewhere is held only partly: the join cites extremities the
+		// handover does not include. This is what asks for them.
+		backfiller := &federation.Backfiller{
+			Client:    client,
+			Keyring:   a.Keyring,
+			LocalKeys: signingKeys,
+			Name:      cfg.ServerName,
+			Store:     roomService,
+			Log:       log,
+		}
+		a.Backfill = backfiller
 		joiner := &federation.Joiner{
 			Client:    client,
 			Keyring:   a.Keyring,
@@ -227,6 +241,7 @@ func NewWithOptions(ctx context.Context, cfg *config.Config, log *slog.Logger, o
 			Ingest:    roomService,
 			Log:       log,
 		}
+		joiner.Backfill = backfiller
 		a.Joiner = joiner
 		roomService.SetRemoteJoin(joiner)
 		federationDeps.Keyring = a.Keyring

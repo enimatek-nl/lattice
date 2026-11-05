@@ -39,7 +39,11 @@ type Joiner struct {
 	LocalKeys LocalKeyLookup
 	Name      string
 	Ingest    BundleIngestor
-	Log       *slog.Logger
+	// Backfill closes the holes a join leaves: the join cites the room's forward extremities,
+	// and the state handed over with it does not include them. Without this, a joined room is a
+	// room whose history its new member cannot read.
+	Backfill *Backfiller
+	Log      *slog.Logger
 	// Now is replaced in tests.
 	Now func() time.Time
 }
@@ -207,6 +211,21 @@ func (j *Joiner) joinVia(ctx context.Context, destination, roomID, userID string
 			slog.String("room_id", roomID), slog.String("event_id", eventID),
 			slog.String("reason", problem))
 	}
+	if j.Backfill != nil {
+		// A join arrives with a hole under it by construction. Filling it is what turns "this
+		// server holds the room's state" into "this user can read the room". It is not part of
+		// the join succeeding: the membership stands on its own, and an event that could not be
+		// fetched today stays askable tomorrow.
+		fill, err := j.Backfill.Fill(ctx, roomID, []string{destination})
+		if err != nil {
+			j.Log.Warn("federation: the history of a freshly joined room could not be filled in",
+				slog.String("room_id", roomID), slog.Any("error", err))
+		} else if len(fill.Fetched) > 0 {
+			j.Log.Info("federation: a joined room's history arrived",
+				slog.String("room_id", roomID), slog.Int("fetched", len(fill.Fetched)),
+				slog.Int("linked", fill.Linked))
+		}
+	}
 	return rooms.RemoteJoinResult{
 		EventID:  eventID,
 		State:    len(pdusFrom(answer, "state")),
@@ -322,13 +341,7 @@ func pdusFrom(answer map[string]any, key string) [][]byte {
 // and this server's own membership event is part of what comes back — the room it just joined
 // includes the join it just made.
 func (j *Joiner) verifier(ctx context.Context) rooms.VerifyPDU {
-	return func(event map[string]any, rules roomversion.Rules) error {
-		remote := j.Keyring.LookupForRoom(ctx, rules)
-		if origin, _ := event["origin"].(string); origin == j.Name {
-			return events.Verify(rules, event, j.LocalKeys.VerifyLocal)
-		}
-		return events.Verify(rules, event, remote)
-	}
+	return pduVerifier(ctx, j.Keyring, j.Name, j.LocalKeys)
 }
 
 // refusalFrom turns a resident server's refusal into something the caller can tell apart from a

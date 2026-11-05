@@ -11,6 +11,23 @@ import (
 	"gorm.io/gorm"
 )
 
+// HoldsEvents says which of the given events this server already stores. A server catching up on
+// a room has to know where the hole it is filling ends, or it would re-fetch a history it holds.
+func (s *Service) HoldsEvents(ctx context.Context, eventIDs []string) (map[string]bool, error) {
+	held := make(map[string]bool, len(eventIDs))
+	if len(eventIDs) == 0 {
+		return held, nil
+	}
+	rows, err := s.events.ByIDs(ctx, eventIDs)
+	if err != nil {
+		return nil, fmt.Errorf("rooms: cannot read which events this server holds: %w", err)
+	}
+	for _, row := range rows {
+		held[row.EventID] = true
+	}
+	return held, nil
+}
+
 // BundleOutcome reports what a bundle of handed-over events became here.
 type BundleOutcome struct {
 	// Accepted are the events now stored, including ones already held.
