@@ -54,6 +54,7 @@ func (d *Deps) handleJoin(w http.ResponseWriter, r *http.Request) {
 		Membership: eventauth.MembershipJoin,
 		Reason:     reasonOf(extra),
 		Extra:      extra,
+		Via:        viaServers(r),
 	})
 	if err != nil {
 		d.serviceError(w, err)
@@ -61,6 +62,15 @@ func (d *Deps) handleJoin(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = eventID
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"room_id": roomID})
+}
+
+// viaServers reads the servers a client names as able to reach a room. The Client-Server API
+// spells them as repeated `server_name` query parameters; `via` is the older spelling and
+// clients still send it, so both are read. They are only a starting point: which of them holds
+// the room is what the join handshake finds out.
+func viaServers(r *http.Request) []string {
+	values := append([]string{}, r.URL.Query()["server_name"]...)
+	return append(values, r.URL.Query()["via"]...)
 }
 
 // handleLeave implements POST /_matrix/client/v3/rooms/{roomID}/leave.

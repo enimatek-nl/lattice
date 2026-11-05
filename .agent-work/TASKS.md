@@ -282,13 +282,22 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
       join whose single `prev_event` could not be resolved, and `prev_events` are never among
       the auth events a receiver is handed, so every remote join but the creator's own was
       refused (`tests/unit/eventauth_test.go`)
-- [ ] T-4009b the joining half: `make_join` → sign → `send_join` driven by this server when one
-      of its users joins a room held elsewhere, wired to `POST /join/{roomID}` (which answers
-      501 today through `rooms.ErrRemoteTarget`). It needs the snapshot half of T-4007 first:
-      the state and extremities a resident hands over arrive as a bundle, and our ingest refuses
-      an event whose predecessors are not stored here — so a handed-over room has to be
-      accepted as a snapshot (outliers where the predecessors are missing), not as an
-      incremental delivery
+- [x] T-4009b the joining half: `POST /join/{roomID}` of a room held elsewhere now asks a named
+      server for the join template, refuses to sign anything that is not its own user's join in
+      that room, seals and names the event itself, hands it to `/send_join`, and stores what
+      comes back as a snapshot — each event verified on its own, the bundle applied in dependency
+      order, an event accepted without its predecessors kept as an outlier, and a missing citation
+      treated as a gap rather than a verdict (`internal/rooms/bundle.go`, DEC-028). The client's
+      repeated `server_name`/`via` parameters are read and used as the servers to ask.
+      `tests/integration/joinremote_test.go`: a user on hs2 joins, is listed by hs1, holds the
+      room's state on hs2, speaks in it, and is heard on hs1; a join nobody answers invents no
+      room; a forged event in a bundle is refused and remembered. Found on the way: `App.Rooms`
+      was never assigned, so the assembled app exposed no room service at all
+- [ ] T-4009b1 lift the outlier flag by fetching what a handed-over room cites: the missing-event
+      fetch (`/event`) and `/backfill` would fill the predecessors a join cites, at which point
+      the handed-over timeline can appear in `/sync` and `/messages`. Until then a user who joins
+      a room with history in it sees the state and their own membership but not that history
+      (REQ-FED-014)
 - [ ] T-4009c the rest of the handshake family: `/make_leave`, `/send_leave`, `/invite` (v1/v2),
       `/make_knock`, `/send_knock`, `/event_auth` as a *client* of another server, and applying
       `m.room.server_acl` to the join, state, auth and per-PDU paths (REQ-FED-012)

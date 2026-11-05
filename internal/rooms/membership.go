@@ -16,7 +16,7 @@ import (
 // are not allowed" would report a permission problem where there is a missing feature,
 // and an administrator reading it would look in the wrong place.
 var ErrRemoteTarget = matrixerr.New(matrixerr.CodeUnknown,
-	"Changing the membership of a user on another homeserver requires federation, which this server does not implement yet.")
+	"Changing the membership of a user who lives on another homeserver has to be carried out by that server, and this server does not implement that part of federation yet.")
 
 // MembershipChange asks for an m.room.member state event.
 //
@@ -34,6 +34,10 @@ type MembershipChange struct {
 	DeviceID   string
 	Membership string
 	Reason     string
+	// Via names the servers a client believes can reach the room. Only a join uses them:
+	// a room ID names the server that created the room, which is not always one that still
+	// holds it, and the Client-Server API lets a client say otherwise.
+	Via []string
 	// Extra carries the additional keys a client put in a join or knock body. The
 	// Client-Server API copies them into the member event's content, which is how a
 	// client can attach its own information to the fact that it joined. `membership` and
@@ -53,6 +57,16 @@ func (s *Service) SetMembership(ctx context.Context, change MembershipChange) (s
 	}
 	if err := matrixid.RoomIDValid(change.RoomID); err != nil {
 		return "", matrixerr.Newf(matrixerr.CodeInvalidParam, "%q is not a valid room ID.", change.RoomID)
+	}
+
+	// A join in a room this server does not hold is a different operation: it is carried out
+	// by a server that does hold the room, and this server's part is to speak for its own
+	// user and sign. Deciding that here, before any event is built, keeps a half-written
+	// membership event out of a local room.
+	if elsewhere, err := s.joinElsewhere(ctx, change); err != nil {
+		return "", err
+	} else if elsewhere {
+		return s.joinRemote(ctx, change)
 	}
 
 	// A local action only. Deciding this here, before any event is built, keeps a

@@ -1155,3 +1155,51 @@ joining half (T-4009b) needs the snapshot ingest of T-4007, because a handed-ove
 as a bundle and this server's ingest refuses an event whose predecessors it does not hold.
 
 `make verify` clean, `golangci-lint` clean, Complement filtered run unchanged.
+
+## 2026-11-05 — one of our users joins a room held elsewhere (T-4009b)
+
+The resident half of the join handshake was in place; a local user asking to join a remote room
+still stopped at the door. This is the joining half, and the piece it could not work without:
+a room handed over by `/send_join` arrives as a *set* — the room's state, its auth chain, and the
+join — whose members cite each other, and whose join cites the room's forward extremities, which
+are not in the set at all. The existing ingest refused any event whose predecessors it did not
+hold, which is right for a transaction and fatal for a handover: it would refuse the join of
+every room that has ever held a message.
+
+So a bundle is now taken as a snapshot (`internal/rooms/bundle.go`, DEC-028): every event is
+verified on its own — nothing about a bundle makes it trusted as a whole — each is authorised
+against the auth events it cites, whether those are stored here or arrived in the same bundle,
+and the bundle is applied in dependency order by walking it to a fixed point. An event accepted
+without its predecessors is stored with `outlier = true`: its state counts and it can authorise
+later events, but this server does not know where in the history it sits, so it stays out of
+client timelines and out of the room's forward extremities. The room's current state is not used
+to soft-fail any of these events, because in a handover the current state is what the bundle is
+building. A missing citation is a gap and is deliberately not recorded as a refusal — recording
+it would make the gap permanent, so the same event could never be accepted after the missing
+piece arrived. A forged event is a verdict: refused, and remembered.
+
+On the joining side (`internal/federation/join.go`): the client's repeated `server_name`/`via`
+parameters name who to ask, with the server the room ID names as fallback. A template is checked
+before it is signed — this room, this user, membership `join`, and no `event_id`, `hashes` or
+`signatures` already on it, because signing one of those means adding this server's name to an
+event somebody else made. A resident server's refusal on the room's rules is not retried against
+another server: that would be looking for one laxer about the room's join rules. A room ID that
+carries this server's own name is answered 404 rather than asked of a stranger, which is how a
+stranger would otherwise get a room invented under this server's name.
+
+Evidence: `tests/integration/joinremote_test.go`. A user on hs2 joins a room on hs1 through the
+Client-Server API; hs1 lists them as present; hs2 holds the room's foundations, its name, and
+its own user's join in state; the handed-over message is *not* in hs2's timeline — which is the
+outlier rule being honoured, and the assertion T-4009b1 will have to change; and a message the
+joining user sends from hs2 is heard on hs1 through the relay. A join nobody answers invents no
+room. A forged event in a bundle is refused and its refusal recorded.
+
+Also fixed on the way: `App.Rooms` was declared but never assigned, so the assembled homeserver
+exposed no room service to anything holding the app — the reason the bundle test needed it.
+
+Left open and recorded: T-4009b1 (lifting the outlier flag by fetching what a handed-over room
+cites, which is what will make joined history visible), T-4009c (`/make_leave`, `/send_leave`,
+`/invite`, knock, and `m.room.server_acl`).
+
+`make verify` clean, `golangci-lint` clean, Complement filtered run unchanged (TestRoomCreate,
+TestSync and TestSyncTimelineGap were failing before this and still are).

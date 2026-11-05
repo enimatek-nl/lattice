@@ -233,6 +233,12 @@ type EventRepo interface {
 	// but is not shown to clients and is not cited by new events.
 	MarkSoftFailed(ctx context.Context, eventID string, softFailed bool) error
 
+	// MarkOutlier records whether this server holds an event without holding what it
+	// precedes. An outlier's state counts and it can authorise later events, but it has no
+	// resolved place in this server's history, so it is kept out of client timelines and out
+	// of the room's forward extremities until the gap is filled.
+	MarkOutlier(ctx context.Context, eventID string, outlier bool) error
+
 	// NextStreamOrdering returns a fresh global ordering number. Callers must hold a
 	// transaction, so concurrent senders cannot take the same number.
 	NextStreamOrdering(ctx context.Context) (int64, error)
@@ -400,6 +406,15 @@ func (r *eventRepo) MarkSoftFailed(ctx context.Context, eventID string, softFail
 	}
 	return r.db.WithContext(ctx).Model(&Event{}).Where("event_id = ?", eventID).
 		Update("soft_failed", softFailed).Error
+}
+
+// MarkOutlier implements [EventRepo].
+func (r *eventRepo) MarkOutlier(ctx context.Context, eventID string, outlier bool) error {
+	if eventID == "" {
+		return nil
+	}
+	return r.db.WithContext(ctx).Model(&Event{}).Where("event_id = ?", eventID).
+		Update("outlier", outlier).Error
 }
 
 // NextStreamOrdering implements [EventRepo].
