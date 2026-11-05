@@ -14,6 +14,7 @@ import (
 	"github.com/enimatek/lattice/internal/keys"
 	"github.com/enimatek/lattice/internal/matrixerr"
 	"github.com/enimatek/lattice/internal/persist"
+	"github.com/enimatek/lattice/internal/presence"
 	"github.com/enimatek/lattice/internal/pushrules"
 	"github.com/enimatek/lattice/internal/rooms"
 	"github.com/enimatek/lattice/internal/sync"
@@ -30,6 +31,7 @@ type Deps struct {
 	Keys      *keys.Service
 	Rooms     *rooms.Service
 	PushRules *pushrules.Service
+	Presence  *presence.Service
 	Sync      *sync.Service
 	DB        *persist.Database
 	Version   string
@@ -181,6 +183,11 @@ func Register(r *httpserver.Router, d *Deps, requireAuth func(http.Handler) http
 	r.Handle("PUT", "/_matrix/client/v3/pushrules/{rest...}", authed(d.handlePushRulesPut))
 	r.Handle("DELETE", "/_matrix/client/v3/pushrules/{rest...}", authed(d.handlePushRulesDelete))
 	r.Handle("GET", "/_matrix/client/v3/pushrules", authed(d.handlePushRulesGet))
+
+	// Presence. The user ID in the path is a single segment: a colon inside a path
+	// segment needs no escaping, so the mux pattern expresses it directly.
+	r.Handle("GET", "/_matrix/client/v3/presence/{userID}/status", authed(d.handlePresenceGet))
+	r.Handle("PUT", "/_matrix/client/v3/presence/{userID}/status", authed(d.handlePresencePut))
 
 	// The room summary is spelled only under v1 in the specification's own path.
 	r.Handle("GET", "/_matrix/client/v1/room_summary/{roomIDOrAlias}", authed(d.handleRoomSummary))

@@ -323,13 +323,13 @@ func (r *eventRepo) ForwardExtremities(ctx context.Context, roomID string) ([]st
 }
 
 // NextStreamOrdering implements [EventRepo].
+//
+// The position comes from the shared stream counter, not from the events table alone. An
+// event may not take a position a presence change or an account data write already took:
+// a sync token that had covered those would otherwise look like it was from the future,
+// and the client would never be told about them.
 func (r *eventRepo) NextStreamOrdering(ctx context.Context) (int64, error) {
-	var next int64
-	if err := r.db.WithContext(ctx).Model(&Event{}).
-		Select("COALESCE(MAX(stream_ordering), 0) + 1").Scan(&next).Error; err != nil {
-		return 0, err
-	}
-	return next, nil
+	return nextStreamPosition(ctx, r.db)
 }
 
 // TxnLookup implements [EventRepo].

@@ -71,8 +71,9 @@ type Request struct {
 	FullState bool
 	// Timeout is how long the server may wait for something new.
 	Timeout time.Duration
-	// SetPresence is accepted and ignored: presence is not implemented, and refusing a
-	// client because it asked to be marked offline would be worse than ignoring it.
+	// SetPresence is the presence this user wants reported while they sync. An empty
+	// value means the client asked for nothing; an unknown one is ignored rather than
+	// refused, because a client that mistypes a word should still get its events.
 	SetPresence string
 }
 
@@ -83,7 +84,11 @@ type Result struct {
 	// AccountData carries the user's own values — push rules today — that changed since
 	// their token. It is a section of its own because it belongs to the user rather
 	// than to any room.
-	AccountData Events       `json:"account_data"`
+	AccountData Events `json:"account_data"`
+	// Presence reports the users who share a room with this one and whose presence
+	// changed since their token. It is a section of its own because it is not room data:
+	// a client shows a dot beside a name, not beside a room.
+	Presence    Events       `json:"presence"`
 	ToDevice    []Event      `json:"to_device,omitempty"`
 	Complete    bool         `json:"complete"`
 	DeviceLists *DeviceLists `json:"device_lists,omitempty"`
@@ -163,23 +168,29 @@ type LeftRoom struct {
 
 // Service answers sync requests against stored events.
 type Service struct {
-	db      *persist.Database
-	events  persist.EventRepo
-	state   persist.StateRepo
-	filters persist.FilterRepo
-	account persist.AccountDataRepo
-	log     *slog.Logger
+	db       *persist.Database
+	events   persist.EventRepo
+	state    persist.StateRepo
+	filters  persist.FilterRepo
+	account  persist.AccountDataRepo
+	presence persist.PresenceRepo
+	log      *slog.Logger
+	// now is replaced in tests: `last_active_ago` is a difference against the current
+	// clock, and a test cannot assert on a difference it cannot fix.
+	now func() time.Time
 }
 
 // NewService wires the synchronisation service to the storage layer.
 func NewService(db *persist.Database, log *slog.Logger) *Service {
 	return &Service{
-		db:      db,
-		events:  db.Events,
-		state:   db.State,
-		filters: db.Filters,
-		account: db.AccountData,
-		log:     log,
+		db:       db,
+		events:   db.Events,
+		state:    db.State,
+		filters:  db.Filters,
+		account:  db.AccountData,
+		presence: db.Presence,
+		log:      log,
+		now:      time.Now,
 	}
 }
 
@@ -242,7 +253,12 @@ func (s *Service) Sync(ctx context.Context, userID string, req Request) (*Result
 // build reads one snapshot. `changed` says whether any room section was filled, which is
 // what tells a long poll whether to return.
 func (s *Service) build(ctx context.Context, userID string, since Token, filter Filter, req Request) (*Result, bool, error) {
-	position, err := s.events.MaxStreamOrdering(ctx)
+	// The position covers every table that takes part in the stream, not events alone.
+	// A token that stopped at the last event would be a token that had not seen the
+	// account data or presence written after it, and a client holding it would be told
+	// the same thing again on every sync — or, if those writes had taken positions below
+	// a later event's, never told at all.
+	position, err := s.db.StreamPosition(ctx)
 	if err != nil {
 		return nil, false, fmt.Errorf("sync: cannot read the stream position: %w", err)
 	}
@@ -252,6 +268,9 @@ func (s *Service) build(ctx context.Context, userID string, since Token, filter 
 	}
 
 	result := &Result{NextBatch: Token(position).String(), Complete: true}
+	// The users whose presence this one is allowed to see: the members of the rooms they
+	// are in. Presence is not room data, but the room is what decides who may see it.
+	var fellowMembers []string
 	for _, membership := range memberships {
 		membershipValue := membershipValueOf(membership)
 		// A room the user is out of is only reported up to the point where they left:
@@ -268,10 +287,11 @@ func (s *Service) build(ctx context.Context, userID string, since Token, filter 
 		}
 		switch membershipValue {
 		case eventauth.MembershipJoin:
-			joined, invited, err := s.memberCounts(ctx, membership.RoomID)
+			joined, invited, members, err := s.memberCounts(ctx, membership.RoomID)
 			if err != nil {
 				return nil, false, err
 			}
+			fellowMembers = append(fellowMembers, members...)
 			// A joined room is interesting when something happened in it. If nothing
 			// did, reporting it again would make a client re-read a room it already has
 			// and would make "unchanged rooms are omitted" untrue.
@@ -351,8 +371,17 @@ func (s *Service) build(ctx context.Context, userID string, since Token, filter 
 	}
 	result.AccountData = Events{Events: accountData}
 
+	// Presence counts as a change: a client long-polling for news about a room is also
+	// waiting to hear that somebody it shares a room with came back.
+	presenceEvents, err := s.presenceEvents(ctx, userID, fellowMembers, int64(since), int64(position))
+	if err != nil {
+		return nil, false, err
+	}
+	result.Presence = Events{Events: presenceEvents}
+
 	changed := result.Rooms.Join != nil || result.Rooms.Invite != nil ||
-		result.Rooms.Leave != nil || result.Rooms.Knock != nil || len(accountData) > 0
+		result.Rooms.Leave != nil || result.Rooms.Knock != nil ||
+		len(accountData) > 0 || len(presenceEvents) > 0
 	return result, changed, nil
 }
 
@@ -383,31 +412,84 @@ func (s *Service) stateVisibleToOutsider(ctx context.Context, roomID string) (bo
 }
 
 // memberCounts counts the room's members by membership for the room summary.
-func (s *Service) memberCounts(ctx context.Context, roomID string) (joined, invited int, err error) {
+// memberCounts counts the room's members by membership for the room summary, and returns
+// the user IDs of the joined members. The IDs come from the same read: a member event is
+// both the count and the answer to "who is in here".
+func (s *Service) memberCounts(ctx context.Context, roomID string) (joined, invited int, members []string, err error) {
 	entries, err := s.state.ByType(ctx, roomID, eventauth.TypeMember)
 	if err != nil {
-		return 0, 0, fmt.Errorf("sync: cannot count the members of %s: %w", roomID, err)
+		return 0, 0, nil, fmt.Errorf("sync: cannot count the members of %s: %w", roomID, err)
 	}
-	ids := make([]string, 0, len(entries))
+	eventIDs := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		ids = append(ids, entry.EventID)
+		eventIDs = append(eventIDs, entry.EventID)
 	}
-	if len(ids) == 0 {
-		return 0, 0, nil
+	if len(eventIDs) == 0 {
+		return 0, 0, nil, nil
 	}
-	stored, err := s.events.ByIDs(ctx, ids)
+	stored, err := s.events.ByIDs(ctx, eventIDs)
 	if err != nil {
-		return 0, 0, fmt.Errorf("sync: cannot read the member events of %s: %w", roomID, err)
+		return 0, 0, nil, fmt.Errorf("sync: cannot read the member events of %s: %w", roomID, err)
 	}
 	for _, event := range stored {
+		userID := ""
+		if event.StateKey != nil {
+			userID = *event.StateKey
+		}
 		switch membershipValueOf(event) {
 		case eventauth.MembershipJoin:
 			joined++
+			if userID != "" {
+				members = append(members, userID)
+			}
 		case eventauth.MembershipInvite:
 			invited++
 		}
 	}
-	return joined, invited, nil
+	return joined, invited, members, nil
+}
+
+// presenceEvents reads the presence of the given users that changed in (since, until].
+//
+// A presence event in a sync response has no event ID and no timestamp: it is not an event
+// in a room's graph, it is the current answer about a person, delivered at the position
+// where it changed. The specification says so, and inventing an ID would invite a client
+// to try to page back to it.
+func (s *Service) presenceEvents(ctx context.Context, userID string, fellow []string, since, until int64) ([]Event, error) {
+	var others []string
+	seen := map[string]bool{}
+	for _, candidate := range fellow {
+		if candidate == userID || seen[candidate] {
+			continue
+		}
+		seen[candidate] = true
+		others = append(others, candidate)
+	}
+	rows, err := s.presence.ListChangedFor(ctx, others, since, until)
+	if err != nil {
+		return nil, fmt.Errorf("sync: cannot read the presence of this user's fellow members: %w", err)
+	}
+	out := make([]Event, 0, len(rows))
+	now := s.now().UnixMilli()
+	for _, row := range rows {
+		ago := now - row.LastActiveTS
+		if ago < 0 {
+			// A timestamp from the future means the clock moved backwards. Saying the
+			// user was seen zero milliseconds ago is the honest floor; a negative age
+			// is a number no client has a way to show.
+			ago = 0
+		}
+		content := map[string]any{
+			"presence":         row.State,
+			"last_active_ago":  ago,
+			"currently_active": row.Active,
+		}
+		if row.StatusMsg != "" {
+			content["status_msg"] = row.StatusMsg
+		}
+		out = append(out, Event{"type": "m.presence", "sender": row.UserID, "content": content})
+	}
+	return out, nil
 }
 
 // included says whether a room has anything to report in this response.

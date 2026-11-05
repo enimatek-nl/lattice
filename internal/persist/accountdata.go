@@ -87,13 +87,12 @@ func (r *accountDataRepo) ListSince(ctx context.Context, userID string, since in
 // is harmless here: positions only have to be monotonic per row, not unique across the
 // server.
 func (r *accountDataRepo) Put(ctx context.Context, userID, dataType, content string) (int64, error) {
-	var next int64
-	if err := r.db.WithContext(ctx).Model(&Event{}).
-		Select("COALESCE(MAX(stream_ordering), 0) + 1").Scan(&next).Error; err != nil {
+	next, err := nextStreamPosition(ctx, r.db)
+	if err != nil {
 		return 0, err
 	}
 	row := AccountData{UserID: userID, DataType: dataType, Content: content, StreamOrdering: next}
-	err := r.db.WithContext(ctx).
+	err = r.db.WithContext(ctx).
 		Where("user_id = ? AND data_type = ?", userID, dataType).
 		Assign(AccountData{Content: content, StreamOrdering: next}).
 		FirstOrCreate(&row).Error

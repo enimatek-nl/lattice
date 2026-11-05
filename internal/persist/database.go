@@ -37,6 +37,7 @@ type Database struct {
 	Aliases     RoomAliasRepo
 	Filters     FilterRepo
 	AccountData AccountDataRepo
+	Presence    PresenceRepo
 }
 
 // Open opens (creating if needed) the SQLite database at path.
@@ -80,6 +81,7 @@ func Open(path string, log *slog.Logger) (*Database, error) {
 	d.Aliases = NewRoomAliasRepo(gdb)
 	d.Filters = NewFilterRepo(gdb)
 	d.AccountData = NewAccountDataRepo(gdb)
+	d.Presence = NewPresenceRepo(gdb)
 	return d, nil
 }
 
@@ -103,7 +105,7 @@ func applyPragmas(gdb *gorm.DB) error {
 // matter for Matrix lookups and are not derived from struct tags.
 func (d *Database) migrate(log *slog.Logger) error {
 	if err := d.db.AutoMigrate(&User{}, &Device{}, &AccessToken{}, &SigningKey{},
-		&Room{}, &Event{}, &EventEdge{}, &RoomState{}, &EventAuthContext{}, &EventTxn{}, &RoomAlias{}, &Filter{}, &AccountData{}); err != nil {
+		&Room{}, &Event{}, &EventEdge{}, &RoomState{}, &EventAuthContext{}, &EventTxn{}, &RoomAlias{}, &Filter{}, &AccountData{}, &Presence{}); err != nil {
 		return fmt.Errorf("persist: migration failed: %w", err)
 	}
 	statements := []string{
@@ -118,6 +120,11 @@ func (d *Database) migrate(log *slog.Logger) error {
 		// A user's account data is read by type, and sync reads it by position.
 		"CREATE UNIQUE INDEX IF NOT EXISTS idx_account_data_user_type ON account_data(user_id, data_type)",
 		"CREATE INDEX IF NOT EXISTS idx_account_data_user_stream ON account_data(user_id, stream_ordering)",
+
+		// Presence is one current row per user, read by position when sync asks what
+		// changed since a token.
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_presence_user ON presence(user_id)",
+		"CREATE INDEX IF NOT EXISTS idx_presence_stream ON presence(stream_ordering)",
 
 		// Room and event lookups. An event ID is globally unique, which is what
 		// turns a repeated event into ErrConflict instead of a second row.
