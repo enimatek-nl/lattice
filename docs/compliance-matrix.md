@@ -94,6 +94,21 @@ Specification: Matrix v1.19 (`docs/specification-version.md`).
 | `depth` validation against `prev_events` | not implemented | M2 |
 | Redaction application rules (power level or same domain) | not implemented; the redacted form has a column to live in | M2 |
 
+### M2 evidence run (2026-11-05, same checkout and image)
+
+Run with `RUN='TestJson|TestPowerLevels|TestRedact|TestEventAuth|TestRoomMessagesLazyLoading|TestFetchMessagesFromNonExistentRoom|TestArchivedRoomsHistory|TestRoomCreate|TestRoomMembers|TestRoomState|TestCannotKick|TestNotPresentUserCannotBanOthers|TestJumpToDateEndpoint'`.
+
+| Result | Tests | Why |
+| --- | --- | --- |
+| Passed | `TestJson`, `TestRoomState`, `TestRoomMembers`, `TestRoomMessagesLazyLoading`, `TestFetchMessagesFromNonExistentRoom`, `TestArchivedRoomsHistory`, `TestCannotKickNonPresentUser`, `TestNotPresentUserCannotBanOthers` | the rooms/events core behaves as the specification describes for a single server |
+| Failed | `TestRedact/Event_content_is_redacted` | `m.room.redaction` is stored but never applied (T-2009) |
+| Failed | `TestPowerLevels/PUT …/m.room.power_levels can set levels` | the test's `SendEventSynced` reads the event back through `GET /rooms/{roomID}/event/{eventID}`, which this server does not implement (404 `M_UNRECOGNIZED`); the power-level step itself answered 200 and the permission step answered 403 (T-2014) |
+| Failed | `TestRoomCreate/creates_a_room_with_the_given_version` | asked for room version 2; refused with `M_UNSUPPORTED_ROOM_VERSION` by design (T-4013) |
+| Failed | `TestJumpToDateEndpoint` | `/messages` pages by stream position, not depth, and `/timestamp` does not exist (T-3001d) |
+| Failed | `TestEventAuth` | needs federation `/make_join` (T-4009) |
+
+Client endpoints the M2 scope named and this server still does not have: `GET /rooms/{roomID}/event/{eventID}`, `GET /rooms/{roomID}/context/{eventID}`, `POST /rooms/{roomID}/redact/{eventID}/{txn}`, `GET /rooms/{roomID}/event_auth/{eventID}`, `GET /rooms/{roomID}/timestamp`, and (federation-side) `GET /rooms/{roomID}/state_ids`.
+
 ### Targeted run after the first federation work (2026-11-05)
 
 | Field | Value |
