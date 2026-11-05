@@ -1321,3 +1321,34 @@ this server does not answer `/backfill` either; the ask travels over `GET /event
 same events. Recorded under T-4009b2 and T-4012 rather than counted as done.
 
 `make verify` clean (`-race`), `golangci-lint` clean.
+
+## 2026-11-05 — chasing a Complement failure, and finding two real defects (DEC-034, DEC-035)
+
+`TestSyncTimelineGap` has been in the failing set for a long time and reads like a sync bug. It is
+not one. Following it produced three findings, two of which are fixed here.
+
+The first was environmental and worth writing down anyway: in Complement's federation tests the
+second homeserver is the host machine at `host.docker.internal`, which resolves to a private or
+link-local address that this server's outbound policy — the SSRF protection — rightly refuses to
+dial. The Complement image now names the ranges the harness lives on instead of switching the policy
+off, which keeps the protection meaningful in a real deployment and the tests runnable.
+
+The second was a real defect. The transport path already verified a peer's certificate against the
+peer's *name* while dialing the address that name resolved to; the key endpoints did not, so they
+verified against the IP. A homeserver with an ordinary certificate naming its domain therefore could
+not have its signing keys fetched at all — and the failure surfaced as `M_UNAUTHORIZED: the request
+is not signed by a server this server trusts`, which is about as far from the truth as an error
+message can get. One helper now hands out name-verifying clients to both paths, and it clones the
+library's default transport when the base client has none: without that the fix would have been a
+no-op in exactly the deployment it was written for.
+
+The third was a protocol judgement. `/make_join` had been refusing any ask whose `ver` differed from
+the room's version. The specification reserves `M_INCOMPATIBLE_ROOM_VERSION` for a version this
+server cannot speak; which version a room uses is the very thing the asker is calling to learn. A
+speakable-but-different ask is now answered with the room's own version, which the response names, so
+the asker signs what the room actually uses.
+
+The test still fails, and honestly so: the join now completes its first half and stops at
+`send_join`, where the harness's version 11 room arrives with no `event_id` — pseudo-IDs (T-4018) are
+not implemented here. Recorded rather than papered over. The rest of the filtered Complement set is
+unchanged, and `make verify` is clean.

@@ -380,14 +380,22 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
 - [ ] T-4011 the address policy is applied when discovery resolves a name, not when the
       socket is opened. A name whose answer changes between the two (DNS rebinding) is not
       covered; the fix is a dialer that re-checks the address it is about to connect to
+- [ ] T-4018 room version 11 event IDs (pseudo-IDs, MSC4014): a `send_join` for a version 11 room
+      arrives with no `event_id` and this server refuses it ("it has no event_id"). In a pseudo-ID
+      room the ID is the hash of the event, so a server that holds the room and the event can compute
+      it rather than require the sender to have supplied it. This is what Complement's
+      `TestSyncTimelineGap` is blocked on now that its join handshake reaches the harness's second
+      homeserver. Blocking a test is not the reason: a peer that follows the version 11 rules is
+      entitled to be understood
 - [ ] T-4017 the three Complement `csapi` failures that remain in the filtered set:
       `TestRoomCreate/creates_a_room_with_the_given_version` (room versions 1 and 2 — T-4013),
       `TestSync/parallel/Device_list_tracking` (device-list EDUs over federation — T-4009c area) and
-      `TestSyncTimelineGap` (a room whose timeline arrives with a gap between `/sync` batches:
-      `limited`, `prev_batch` and what a client is allowed to assume about contiguity). The first
-      two are understood and tracked; `TestSyncTimelineGap` has not been diagnosed against this
-      server and is the one to look at first, because a client that mis-reads a gap shows missing
-      history to a user whatever else is correct
+      `TestSyncTimelineGap`. The first two are understood and tracked. `TestSyncTimelineGap` was
+      diagnosed on 2026-11-05 and is not a sync bug: the harness's second homeserver could not be
+      reached for keys (the image's address policy, then the certificate name rule), and with the
+      handshake working it stops at T-4018. Two real defects came out of that diagnosis and are fixed
+      (DEC-034 name verification on the key endpoints, DEC-035 `/make_join` answering a speakable
+      but different `ver` in the room's own version)
 - [ ] T-4014 audit the remaining federation responses for the same mistake as T-4006a: any
       object that carries a signature must be written as the bytes that signature covers.
       `pdus` are already carried as raw stored bytes; the transaction answer and the error
