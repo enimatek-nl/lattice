@@ -492,11 +492,16 @@ func TestSyncRoomSummary(t *testing.T) {
 	if room == nil {
 		t.Fatalf("the room is missing from the first sync: %v", body["rooms"])
 	}
-	if got := room["joined_member_count"]; got != float64(2) {
-		t.Errorf("joined_member_count = %v, want 2", got)
+	// The counts live inside `summary`, under the dotted keys the specification names.
+	summary, _ := room["summary"].(map[string]any)
+	if summary == nil {
+		t.Fatalf("a joined room must carry a summary: %v", room)
 	}
-	if got := room["invited_member_count"]; got != float64(1) {
-		t.Errorf("invited_member_count = %v, want 1", got)
+	if got := summary["m.joined_member_count"]; got != float64(2) {
+		t.Errorf("m.joined_member_count = %v, want 2", got)
+	}
+	if got := summary["m.invited_member_count"]; got != float64(1) {
+		t.Errorf("m.invited_member_count = %v, want 1", got)
 	}
 }
 
