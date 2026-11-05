@@ -72,6 +72,19 @@ Every failure is a *missing feature*, not a wrong answer, except two worth namin
 Rooms, membership, events, state, sync, E2EE key management and federation therefore remain the
 long tail; their Complement coverage is the measuring stick for M2–M5.
 
+## Filtered run (2026-11-05, room upgrade and push rules)
+
+Filter: `TestPushRuleRoomUpgrade`. All four subtests fail, for two different reasons:
+
+  * `upgrading a room carries over existing push rules for local users` and
+    `manually upgrading a room ... for local users` — there is no
+    `POST /rooms/{roomId}/upgrade` on this server (T-2010). These two need no federation.
+  * `joining a remote upgraded room ...` and `joining a remote manually upgraded room ...` —
+    they join through a second homeserver, so they are T-4005.
+
+This is the reason T-2010 is next in the queue rather than left as a roadmap item: it has
+black-box coverage that fails today without needing federation first.
+
 ## Latest filtered run (2026-11-05, device list tracking)
 
 Filter: presence, push rules and push sync, room directory and summaries, `/messages`,

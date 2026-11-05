@@ -108,7 +108,10 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
 - [x] T-2008 see above (client-side state reads done; `/state_ids` is federation, M4)
 - [ ] T-2009 `m.room.redaction` application: power level or same server name rule, redacted
       form stored, hashes/signatures stay valid
-- [ ] T-2010 room upgrade path (`m.room.create.predecessor`, `POST /rooms/{roomId}/upgrade`)
+- [ ] T-2010 room upgrade path (`m.room.create.predecessor`, `POST /rooms/{roomId}/upgrade`),
+      including carrying the user's push rules over to the new room — Complement
+      `TestPushRuleRoomUpgrade` has two local subtests that fail for nothing else: the
+      endpoint does not exist. The other two subtests of that test need federation
 
 - [x] T-3001 `GET /sync` — done, including stored and inline filters, position tokens,
       `limited`/`prev_batch`, ephemeral and account data, the `leave`
