@@ -190,3 +190,55 @@ REQ-TXN-001 updated to reflect storage-only status.
 No endpoint can create or send an event yet. Still open in M2: authorisation rules
 (T-2004), state resolution (T-2005), `createRoom` (T-2003), `send`/txn endpoint (T-2006),
 membership (T-2007), state reads (T-2008), redaction application (T-2009), upgrades (T-2010).
+
+---
+
+# Iteration 4 — M2 event authorisation (T-2004)
+
+Timestamp: 2026-11-05 (UTC)
+
+## Specification basis
+
+Rules were read from the pinned v1.19 pages rather than inferred: `rooms/v3`, `rooms/v6`,
+`rooms/v9`, `rooms/v10`, `rooms/v11` (full numbered rule lists quoted for v11; rule 1
+verified verbatim for v3, v6, v9, v10) and `server-server-api` §Auth events selection.
+Cross-checks: gomatrixserverlib `eventauth.go` (`allowerContext.allowed`,
+`userPowerLevel`, `NewPowerLevelContentFromAuthEvents`, `aliasEventAllowed`) from the local
+module cache.
+
+## Built: `internal/eventauth`
+
+| Piece | Notes |
+| --- | --- |
+| `Check` | rules 1-10 in specification order for room versions 3-11; room version 1 returns `ErrRulesetUnsupported` instead of borrowing the wrong table |
+| `SelectKeys` / `SelectEventIDs` | the auth events selection algorithm; the sender's and the target's member event are the same event when a user acts on their own membership, so keys are deduplicated (listing twice would make a valid event look like it has duplicate auth events) |
+| rule 2 | duplicate `(type, state_key)`, set equality with the selection, unresolved auth events, rejected auth events, foreign `room_id`, missing create event |
+| rule 4 | the whole membership table: join (public, invite, knock, restricted, knock_restricted), invite (including the third-party invite chain), leave (self-leave and kick), ban, knock, unknown membership |
+| rule 9 | the scalar/maps/users change rules, plus the room version 10 integer validation; versions before 10 keep their lenient behaviour and the test says so |
+| version gating | `knock`, `restricted`, `knock_restricted` are unknown to versions that predate them; `join_authorised_via_users_server` in a version without restricted rooms is refused |
+| `powerLevelsFor` | the creator holds 2^53-1 while the room has no power levels event, otherwise rule 7 would make rule 9.4 unreachable (F-009) |
+| `MayJoinRestricted` | the restricted-room allow list, applied to locally created joins and deliberately **not** inside `Check`: the auth rules are the federation contract, and being stricter than a peer splits history (F-010/REQ-AUTH-023) |
+| `Snapshot` / `MemoryState` | the rules run over an interface, so the same code serves tests, iterative auth checks and (later) the database |
+| `Opts` | signature verification for `join_authorised_via_users_server` and third-party invites, and the cross-room membership lookup. A nil verifier means reject, never trust |
+
+## Evidence
+
+`go test -count=1 ./tests/...`: integration ok, unit ok. `make verify` (`-race`): ok.
+`golangci-lint run ./...`: 0 issues.
+
+`tests/unit/eventauth_test.go`: ~45 named rule cases across membership, knock gating,
+restricted joins (including an unsigned authoriser being refused), create rules and the v11
+creator change, the rule 2 variants, `m.federate: false`, rules 5-9, power-level change
+rules including the version 9 versus 10 integer difference, the aliases exemption and its
+removal, selection algorithm outputs, and the room version 1 refusal.
+
+Three findings became tracked items rather than quiet choices: F-009 (rule 7 blocking rule
+9.4), F-010 (aliases special case divergence between gomatrixserverlib and the spec), and
+REQ-AUTH-023 (restricted-room allow list not evaluated by the auth rules).
+
+## Honest status
+
+Still nothing endpoint-reachable: `createRoom` (T-2003), state resolution (T-2005), the send
+endpoint (T-2006), membership endpoints (T-2007), state reads (T-2008) and redaction
+application (T-2009) remain. Authorisation for room versions 1 and 2 is unimplemented by
+decision, and the restricted-room allow list is only enforced on the local send path.

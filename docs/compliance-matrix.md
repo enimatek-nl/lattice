@@ -69,7 +69,10 @@ Specification: Matrix v1.19 (`docs/specification-version.md`).
 | Content hash, reference hash, event ID derivation | implemented | `tests/unit/redaction_test.go`, `tests/unit/eventseal_test.go` |
 | Hashing + signing an outgoing event (signature over the redacted form) | implemented | `tests/unit/eventseal_test.go` |
 | Cross-implementation agreement on redaction and event IDs | verified against gomatrixserverlib v0.0.0-20260716140101-4fe595dc7f58 by golden test | `TestRedactionAndEventIDsAgainstReferenceImplementation` |
-| Event authorisation rules per room version | not implemented | M2 |
+| Event authorisation rules (rules 1-10) for room versions 3-11, with version-gated join rules and power-level validation | implemented | `tests/unit/eventauth_test.go` |
+| Auth events selection and its validation (duplicates, foreign rooms, rejected auth events) | implemented | `tests/unit/eventauth_test.go` |
+| Restricted-room allow list evaluation | partial: enforced for locally created joins only | `tests/unit/eventauth_test.go` |
+| Event authorisation for room versions 1 and 2 | not implemented (refused with `ErrRulesetUnsupported`) | `tests/unit/eventauth_test.go` |
 | State resolution (v1 / v2 / v2.1) | not implemented | M2 |
 | Event graph storage (events, prev/auth edges, per-event auth context) and the forward-extremities query | implemented | `tests/unit/eventstore_test.go` |
 | Transaction ID store for `/send/{type}/{txn}` idempotency (unique per device) | implemented (storage only; the endpoint does not exist yet) | `tests/unit/eventstore_test.go` |

@@ -63,3 +63,34 @@ while the code, requirements and compliance matrix were already committed. Corre
 iteration. Cause: a docs update script aborted partway (anchor string mismatch) and the
 commit ran anyway. Countermeasure: commit docs updates separately from the script, and check
 `git show --stat` before moving on.
+
+## F-009 — rule 7 blocks rule 9.4: how the first power levels event is ever sent (open, resolved by choice)
+
+The per-version rules reject a state event whose required level (`state_default`, 50) is
+above the sender's level, and with no `m.room.power_levels` event in the room every user is
+at `users_default` (0). Rule 9.4's "the first power levels event is allowed" is therefore
+unreachable as written.
+
+Evidence from other implementations: gomatrixserverlib's
+`NewPowerLevelContentFromAuthEvents` gives the creator `9007199254740991` when the room has
+no power levels event (citing Synapse `api/auth.py`), while its privileged-creator path uses
+`CreatorPowerLevel - 1` (99). Synapse does the equivalent in its auth rules.
+
+Decision (`internal/eventauth.powerLevelsFor`): the room creator holds 2^53-1 while the room
+has no power levels event; a non-creator is still refused by rule 7 (tested).
+Risk: a peer that grants 99 refuses a first event that sets a level above 99.
+Action: check against Complement's power-level and room-creation tests, and against a
+Dendrite room join, before treating it as settled.
+
+## F-010 — `m.room.aliases` authorisation diverges between implementations (open, low risk)
+
+The specification drops the aliases special case in room version 6; Synapse gates it by
+version (`special_case_aliases_auth`), gomatrixserverlib applies it for all room versions
+(`aliasEventAllowed`, state key must equal the sender's server name, exempt from membership
+and power-level checks).
+
+Decision: follow the specification and Synapse — `rules.SpecialCaseAliases` only for versions
+up to 5.
+Risk: in a version 6+ room this server rejects `m.room.aliases` events a peer accepts, so the
+alias list can differ between servers (a missing alias, not a forked room).
+Action: revisit if Complement or an interop test shows alias disagreement.

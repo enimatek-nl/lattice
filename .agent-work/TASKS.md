@@ -72,8 +72,11 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
       `event_auth_context`, `event_txn`; forward-extremities query; dedup via unique
       event id; per-device transaction ids — `tests/unit/eventstore_test.go`
 - [ ] T-2003 `POST /createRoom` + wire `/capabilities` to `roomversion.Available()`
-- [ ] T-2004 `internal/eventauth`: per-version authorisation rules and the auth-events
-      selection algorithm (with the v10+ integer power-level rule)
+- [x] T-2004 `internal/eventauth`: authorisation rules 1-10 for room versions 3-11 (v1/v2
+      refused), auth-events selection and its validation, version-gated knock/restricted/
+      knock_restricted, v10+ integer power-level validation, the historic `m.room.aliases`
+      exemption, creator power bootstrap, and `MayJoinRestricted` for the restricted-room
+      allow list — `tests/unit/eventauth_test.go`
 - [ ] T-2005 `internal/state`: current state, forward extremities, State Resolution 2 for
       v2-v11 (v1 and v2.1 left unimplemented until those versions are offered)
 - [ ] T-2006 `PUT /rooms/{roomId}/send/{eventType}/{txn}` with per-device transaction
