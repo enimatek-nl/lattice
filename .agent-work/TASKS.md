@@ -393,8 +393,10 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
       one, each stored under the ID its content makes and readable by it). Complement's
       `TestSyncTimelineGap` passes now
 - [ ] T-4017 the three Complement `csapi` failures that remain in the filtered set:
-      `TestRoomCreate/creates_a_room_with_the_given_version` (room versions 1 and 2 — T-4013),
-      `TestSync/parallel/Device_list_tracking` (device-list EDUs over federation — T-4009c area) and
+      `TestRoomCreate/creates_a_room_with_the_given_version` (room versions 1 and 2 — T-4013) is the
+      only failure left in the filtered set. `TestSync` and all of its subtests, including
+      `Device_list_tracking`, pass as of 2026-11-05; the device-list case does not need EDUs over
+      federation, and the earlier note claiming it did was a guess. 
       `TestSyncTimelineGap`. The first two are understood and tracked. `TestSyncTimelineGap` was
       diagnosed on 2026-11-05 and is not a sync bug: the harness's second homeserver could not be
       reached for keys (the image's address policy, then the certificate name rule), and with the
