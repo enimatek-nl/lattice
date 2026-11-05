@@ -134,6 +134,13 @@ func Register(r *httpserver.Router, d *Deps, requireAuth func(http.Handler) http
 	versioned("GET", "/rooms/{roomID}/members", d.handleMembers)
 	versioned("GET", "/rooms/{roomID}/joined_members", d.handleJoinedMembers)
 	versioned("GET", "/rooms/{roomID}/messages", d.handleRoomMessages)
+
+	// The room directory: which rooms this server advertises, and who may change that.
+	versioned("GET", "/publicRooms", d.handlePublicRooms)
+	versioned("POST", "/publicRooms", d.handlePublicRooms)
+	versioned("GET", "/publicRooms/{serverName}", d.handlePublicRoomsRemote)
+	versioned("GET", "/directory/list/room/{roomID}", d.handleRoomDirectoryVisibility)
+	versioned("PUT", "/directory/list/room/{roomID}", d.handleRoomDirectoryVisibility)
 	versioned("GET", "/joined_rooms", d.handleJoinedRooms)
 
 	// Synchronisation and the filters that shape it.
@@ -153,5 +160,8 @@ func Register(r *httpserver.Router, d *Deps, requireAuth func(http.Handler) http
 
 	// Capabilities.
 	r.Handle("GET", "/_matrix/client/v1/capabilities", authed(d.handleCapabilities))
+
+	// The room summary is spelled only under v1 in the specification's own path.
+	r.Handle("GET", "/_matrix/client/v1/room_summary/{roomIDOrAlias}", authed(d.handleRoomSummary))
 	versioned("GET", "/capabilities", d.handleCapabilities)
 }

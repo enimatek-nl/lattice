@@ -412,3 +412,40 @@ func TestFormerMemberReadsStopAtLeaving(t *testing.T) {
 		t.Errorf("a current member's roster is missing members: %v", got["chunk"])
 	}
 }
+
+// TestCreatedAliasBecomesTheRoomsName checks that a room created with a name of its own
+// says so in its state, rather than only holding the alias in the directory. A client
+// reading the room, or a room list showing it, asks the room what it is called.
+func TestCreatedAliasBecomesTheRoomsName(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+
+	_, aliceToken, _ := h.register(t, "namedroom", "pw-namedroom", "")
+	roomID := createRoom(t, h, aliceToken, map[string]any{
+		"preset":          "public_chat",
+		"room_alias_name": "selfnamed",
+		"visibility":      "public",
+	})
+	content := h.mustStatus(t, h.get("/_matrix/client/v3/rooms/"+roomID+"/state/m.room.canonical_alias/", aliceToken), http.StatusOK).decoded(t)
+	if content["alias"] != "#selfnamed:hs1" {
+		t.Errorf("canonical alias = %v, want #selfnamed:hs1", content)
+	}
+	// The directory reports the same name.
+	page := h.mustStatus(t, h.get("/_matrix/client/v3/publicRooms", aliceToken), http.StatusOK).decoded(t)
+	var found bool
+	for _, entry := range page["chunk"].([]any) {
+		entry := entry.(map[string]any)
+		if entry["room_id"] == roomID {
+			found = true
+			if entry["canonical_alias"] != "#selfnamed:hs1" {
+				t.Errorf("the directory reports canonical_alias %v", entry["canonical_alias"])
+			}
+			if aliases, _ := entry["aliases"].([]any); len(aliases) != 1 || aliases[0] != "#selfnamed:hs1" {
+				t.Errorf("the directory reports aliases %v", entry["aliases"])
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("the published room is missing from the directory: %v", page["chunk"])
+	}
+}

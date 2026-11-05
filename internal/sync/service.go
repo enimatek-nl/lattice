@@ -120,11 +120,17 @@ type JoinedRoom struct {
 	AccountData         Events              `json:"account_data"`
 	UnreadNotifications UnreadNotifications `json:"unread_notifications"`
 	HighlightCount      int                 `json:"highlight_count"`
-	// JoinedMemberCount and InvitedMemberCount are the room summary a client needs to
-	// show a room without fetching its whole member list.
-	JoinedMemberCount  int `json:"joined_member_count"`
-	InvitedMemberCount int `json:"invited_member_count"`
+	// Summary is the room summary: the counts a client needs to show a room without
+	// fetching its whole member list. The keys are the specification's, dotted and
+	// quoted, and they live inside `summary` rather than beside it.
+	Summary map[string]any `json:"summary,omitempty"`
 }
+
+// Room summary keys, as the specification names them.
+const (
+	summaryJoinedMemberCount  = "m.joined_member_count"
+	summaryInvitedMemberCount = "m.invited_member_count"
+)
 
 // UnreadNotifications counts what the client has not seen. Read receipts are not
 // implemented, so the honest answer is zero, not a guess.
@@ -278,8 +284,10 @@ func (s *Service) build(ctx context.Context, userID string, since Token, filter 
 				AccountData:         Events{Events: []Event{}},
 				UnreadNotifications: UnreadNotifications{},
 				HighlightCount:      0,
-				JoinedMemberCount:   joined,
-				InvitedMemberCount:  invited,
+				Summary: map[string]any{
+					summaryJoinedMemberCount:  joined,
+					summaryInvitedMemberCount: invited,
+				},
 			}
 		case eventauth.MembershipInvite:
 

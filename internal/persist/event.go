@@ -19,8 +19,18 @@ type Room struct {
 	Creator      string `gorm:"column:creator;size:255;not null"`
 	CreatedTS    int64  `gorm:"column:created_ts;not null;default:0"`
 	LatestStream int64  `gorm:"column:latest_stream;not null;default:0"`
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	// Published says whether the room is in this server's public room directory.
+	// Publishing is a decision someone with standing in the room makes; it is not
+	// derived from the join rule, because a room can be joinable by anyone and still
+	// not want to be listed.
+	Published bool `gorm:"column:published;not null;default:false"`
+	// Name and Topic cache the text the room is listed under so the directory can be
+	// searched without loading the state of every published room. They are rewritten
+	// whenever that state is written; the state event stays the authority.
+	Name      string `gorm:"column:name;size:255;not null;default:''"`
+	Topic     string `gorm:"column:topic;size:255;not null;default:''"`
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // Event is a persisted PDU.
@@ -132,6 +142,12 @@ type RoomRepo interface {
 	// SetLatestStream advances the room's read position. It is separate from Create
 	// so a room's identity is written once and its position changes on its own.
 	SetLatestStream(ctx context.Context, roomID string, stream int64) error
+
+	// SetPublished, SetDirectoryText and ListPublished are the room directory: which
+	// rooms this server advertises, and what it advertises about them.
+	SetPublished(ctx context.Context, roomID string, published bool) error
+	SetDirectoryText(ctx context.Context, roomID, name, topic string) error
+	ListPublished(ctx context.Context, search string, offset, limit int) ([]*Room, int64, error)
 }
 
 type roomRepo struct{ db *gorm.DB }

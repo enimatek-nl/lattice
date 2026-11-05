@@ -14,6 +14,7 @@ package rooms
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -62,7 +63,10 @@ type CreateRequest struct {
 	// server's name.
 	RoomAliasName string
 	// Invite lists users to invite as the room is created. Local users only.
-	Invite    []string
+	Invite []string
+	// Published puts the room in this server's public room directory from the start,
+	// which is what `visibility: public` on /createRoom means.
+	Published bool
 	Name      string
 	Topic     string
 	AvatarURL string
@@ -239,7 +243,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (string, error)
 
 	var created string
 	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
-		id, err := s.WithTx(tx).createRoom(ctx, rules, roomID, req.Creator, createContent, initial)
+		id, err := s.WithTx(tx).createRoom(ctx, rules, roomID, req.Creator, createContent, initial, req.Published)
 		if err != nil {
 			return err
 		}
@@ -251,6 +255,18 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (string, error)
 					return matrixerr.Newf(matrixerr.CodeDuplicateAlias, "The alias %q is already in use.", alias)
 				}
 				return fmt.Errorf("rooms: cannot store the room alias: %w", err)
+			}
+			// A room created with a name says so itself. The alias row is written first
+			// because the canonical alias event is checked against it: a room may only
+			// name itself by an alias that resolves to it, and this one does now.
+			if _, err := s.WithTx(tx).send(ctx, SendRequest{
+				RoomID:    id,
+				Sender:    req.Creator,
+				EventType: canonicalAliasEventType,
+				IsState:   true,
+				Content:   map[string]any{"alias": alias},
+			}); err != nil {
+				return fmt.Errorf("rooms: cannot record the room's own alias: %w", err)
 			}
 		}
 		created = id
@@ -265,12 +281,34 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (string, error)
 // createRoom writes the room row and then its initial state, in dependency order.
 // Each initial event cites the one before it, so the room starts as a short chain
 // rather than as several roots.
-func (s *Service) createRoom(ctx context.Context, rules roomversion.Rules, roomID, creator string, createContent map[string]any, initial []StateContent) (string, error) {
+func (s *Service) createRoom(ctx context.Context, rules roomversion.Rules, roomID, creator string, createContent map[string]any, initial []StateContent, published bool) (string, error) {
+	// The directory lists a room by name and topic, so the row starts with the values
+	// the room is created with. Later changes follow the state through
+	// refreshDirectoryText.
+	name, topic := "", ""
+	for _, entry := range initial {
+		if entry.StateKey != "" {
+			continue
+		}
+		switch entry.Type {
+		case "m.room.name":
+			if text, ok := entry.Content["name"].(string); ok {
+				name = text
+			}
+		case "m.room.topic":
+			if text, ok := entry.Content["topic"].(string); ok {
+				topic = text
+			}
+		}
+	}
 	if err := s.rooms.Create(ctx, &persist.Room{
 		RoomID:      roomID,
 		RoomVersion: rules.ID,
 		Creator:     creator,
 		CreatedTS:   s.now().UnixMilli(),
+		Published:   published,
+		Name:        name,
+		Topic:       topic,
 	}); err != nil {
 		return "", fmt.Errorf("rooms: cannot store the room: %w", err)
 	}
@@ -528,6 +566,12 @@ func (s *Service) persistEvent(ctx context.Context, event map[string]any, stream
 		}); err != nil {
 			return fmt.Errorf("rooms: cannot update the room state: %w", err)
 		}
+		// A published room is listed under its name and topic, so those have to follow
+		// the state rather than lag behind it.
+		content, _ := event["content"].(map[string]any)
+		if err := s.refreshDirectoryText(ctx, roomID, eventType, content); err != nil {
+			return fmt.Errorf("rooms: cannot update the room's directory entry: %w", err)
+		}
 	}
 	return nil
 }
@@ -747,6 +791,10 @@ func stringOr(value any) string {
 	return text
 }
 
+// int64Of reads a number out of an event object. Events this server built itself carry
+// Go integers; an event that came off the wire carries json.Number, because the decoder
+// that preserves the canonical form does not turn numbers into floats. Missing that case
+// would quietly store a depth and timestamp of zero.
 func int64Of(value any) int64 {
 	switch typed := value.(type) {
 	case int64:
@@ -755,6 +803,12 @@ func int64Of(value any) int64 {
 		return int64(typed)
 	case float64:
 		return int64(typed)
+	case json.Number:
+		parsed, err := typed.Int64()
+		if err != nil {
+			return 0
+		}
+		return parsed
 	default:
 		return 0
 	}

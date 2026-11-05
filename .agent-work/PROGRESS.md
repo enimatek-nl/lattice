@@ -476,3 +476,52 @@ Local evidence: `make verify` `-race` ok — 156 integration, 169 unit tests; `g
 `golangci-lint run ./...` 0 issues. No Complement assertion was changed.
 
 Health during the run: no HTTP 500, no panics.
+
+---
+
+## 2026-11-05 — history paging, the room directory, room summaries (M3)
+
+Scope: `internal/stream` (pagination positions), `internal/rooms/history.go`,
+`internal/rooms/directory.go`, `internal/persist/directory.go`, `internal/sync` summary
+nesting, four new endpoints.
+
+What is now true:
+
+* `GET /rooms/{id}/messages` pages a room in both directions from a sync token. A page
+  stops promising more events when the timeline ends **or** when what remains is beyond
+  what the requester may read — a departed member asking what came after they left gets an
+  empty chunk and no token.
+* The room directory is a decision rather than a consequence: `visibility: public` on
+  `/createRoom` publishes a room, `PUT /directory/list/room/{id}` changes that, and only a
+  moderator of the room may do it. `GET`/`POST /publicRooms` search, page and describe the
+  published rooms.
+* A room created with `room_alias_name` now also names itself in `m.room.canonical_alias`.
+* `GET /v1/room_summary/{roomIdOrAlias}` describes one room, including `allowed_room_ids`
+  for restricted rooms.
+* `/sync` puts its member counts in `summary` under `m.joined_member_count` and
+  `m.invited_member_count`. They were being emitted beside the room, where no client
+  would find them.
+* A latent number bug: power levels and depth read numbers out of decoded event JSON, and
+  the decoder that preserves canonical JSON yields `json.Number`. A plain `float64` type
+  switch returned zero, which in `powerLevel` meant the creator could not publish their
+  own room. Both readers now handle every form the value arrives in.
+
+Complement (filter: room directory, messages, left/archived rooms, aliases, membership,
+auth, devices, versions, sync filters, summaries): **5 failing top level tests**
+(`TestLeftRoomFixture`, `TestRoomCreate`, `TestSync`, `TestSyncTimelineGap`, and the
+`tests/` package `TestSync`).
+
+| Failing | Cause |
+| --- | --- |
+| `TestLeftRoomFixture` | a former member's *old* state value needs per-event state snapshots (T-3004); its `/messages` window is ordered by stream position where the reference server orders by depth (T-3006) |
+| `TestRoomCreate` | v2 and v6 rooms cannot be created locally (v1-spelled invite, signed remote join) — federation (T-4005) |
+| `TestSync` (csapi) | MSC4222 `state_after`, an unstable extension; deliberately not implemented |
+| `TestSync` (tests) | presence in `/sync` (T-3007) |
+| `TestSyncTimelineGap` | needs two homeservers (T-4005) |
+
+Newly passing since the round before: `TestPublicRooms`, `TestRoomState`,
+`TestRoomSummary`, `TestRoomSummaryAllowedRoomIDs`, `TestSendAndFetchMessage`,
+`TestRoomMessagesLazyLoading*`, `TestFetchMessagesFromNonExistentRoom`.
+
+Local evidence: `make verify` `-race` ok — 170 integration, 169 unit tests; `go vet` and
+`golangci-lint run ./...` 0 issues. No Complement assertion was modified.

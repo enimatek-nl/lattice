@@ -13,9 +13,9 @@ import (
 
 // createRoomBody is the request body of PUT/POST /createRoom.
 //
-// Only the members this server acts on are decoded. `visibility` and
-// `room_upgrade_trap` are part of the API but affect the room directory and upgrade
-// handling, which are not implemented; `room_alias_name` is refused rather than
+// Only the members this server acts on are decoded. `room_upgrade_trap` is part of the
+// API but affects room upgrades, which are not implemented; `visibility` decides whether
+// the room starts out in this server's public room directory; `room_alias_name` is refused rather than
 // ignored, because a room created without the alias the client asked for is a room
 // the client cannot find.
 type createRoomBody struct {
@@ -51,6 +51,7 @@ func (d *Deps) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
 	}
 
 	request := rooms.CreateRequest{
+		Published:          body.Visibility == "public",
 		Creator:            auth.UserID(r),
 		Preset:             rooms.Preset(body.Preset),
 		RoomVersion:        body.RoomVersion,
