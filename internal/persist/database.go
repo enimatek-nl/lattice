@@ -38,6 +38,7 @@ type Database struct {
 	Filters     FilterRepo
 	AccountData AccountDataRepo
 	Presence    PresenceRepo
+	DeviceLists DeviceListRepo
 }
 
 // Open opens (creating if needed) the SQLite database at path.
@@ -82,6 +83,7 @@ func Open(path string, log *slog.Logger) (*Database, error) {
 	d.Filters = NewFilterRepo(gdb)
 	d.AccountData = NewAccountDataRepo(gdb)
 	d.Presence = NewPresenceRepo(gdb)
+	d.DeviceLists = NewDeviceListRepo(gdb)
 	return d, nil
 }
 
@@ -105,7 +107,7 @@ func applyPragmas(gdb *gorm.DB) error {
 // matter for Matrix lookups and are not derived from struct tags.
 func (d *Database) migrate(log *slog.Logger) error {
 	if err := d.db.AutoMigrate(&User{}, &Device{}, &AccessToken{}, &SigningKey{},
-		&Room{}, &Event{}, &EventEdge{}, &RoomState{}, &EventAuthContext{}, &EventTxn{}, &RoomAlias{}, &Filter{}, &AccountData{}, &Presence{}); err != nil {
+		&Room{}, &Event{}, &EventEdge{}, &RoomState{}, &EventAuthContext{}, &EventTxn{}, &RoomAlias{}, &Filter{}, &AccountData{}, &Presence{}, &DeviceListChange{}); err != nil {
 		return fmt.Errorf("persist: migration failed: %w", err)
 	}
 	statements := []string{
@@ -125,6 +127,10 @@ func (d *Database) migrate(log *slog.Logger) error {
 		// changed since a token.
 		"CREATE UNIQUE INDEX IF NOT EXISTS idx_presence_user ON presence(user_id)",
 		"CREATE INDEX IF NOT EXISTS idx_presence_stream ON presence(stream_ordering)",
+
+		// Device list changes are read by room and position: the room decides who may
+		// hear about the change, the position decides who has heard already.
+		"CREATE INDEX IF NOT EXISTS idx_device_list_changes_room_stream ON device_list_changes(room_id, stream_ordering)",
 
 		// Room and event lookups. An event ID is globally unique, which is what
 		// turns a repeated event into ErrConflict instead of a second row.

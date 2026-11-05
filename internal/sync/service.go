@@ -94,9 +94,17 @@ type Result struct {
 	DeviceLists *DeviceLists `json:"device_lists,omitempty"`
 }
 
-// DeviceLists would report whose device lists changed. It is left nil until device keys
-// exist, and that gap is recorded rather than papered over with an empty-but-present
-// object that would look like "nothing changed".
+// DeviceLists names the users whose keys a client should re-fetch, and the users whose
+// keys it should drop.
+//
+// The section is present only when there is something to say, which is what the pointer is
+// for: an empty-but-present object would read as "nothing changed", and that is a different
+// answer from "there is nothing to report here".
+//
+// What this server does *not* do yet is distribute the keys themselves: there is no
+// /keys/upload, /keys/query or /keys/claim, so a client that is told to re-fetch has
+// nowhere to fetch from. That gap is recorded (T-3008b); the lists are still honest about
+// which users changed.
 type DeviceLists struct {
 	Changed []string `json:"changed,omitempty"`
 	Left    []string `json:"left,omitempty"`
@@ -174,6 +182,7 @@ type Service struct {
 	filters  persist.FilterRepo
 	account  persist.AccountDataRepo
 	presence persist.PresenceRepo
+	devLists persist.DeviceListRepo
 	log      *slog.Logger
 	// now is replaced in tests: `last_active_ago` is a difference against the current
 	// clock, and a test cannot assert on a difference it cannot fix.
@@ -189,6 +198,7 @@ func NewService(db *persist.Database, log *slog.Logger) *Service {
 		filters:  db.Filters,
 		account:  db.AccountData,
 		presence: db.Presence,
+		devLists: db.DeviceLists,
 		log:      log,
 		now:      time.Now,
 	}
@@ -268,9 +278,12 @@ func (s *Service) build(ctx context.Context, userID string, since Token, filter 
 	}
 
 	result := &Result{NextBatch: Token(position).String(), Complete: true}
-	// The users whose presence this one is allowed to see: the members of the rooms they
-	// are in. Presence is not room data, but the room is what decides who may see it.
+	// The users whose presence this one is allowed to see, and the rooms that decide it.
+	// Presence is not room data, but the room is what decides who may see it — and for
+	// device list changes the room is the only way to answer, because the member list of
+	// a room no longer contains the user who left.
 	var fellowMembers []string
+	var myRooms []string
 	for _, membership := range memberships {
 		membershipValue := membershipValueOf(membership)
 		// A room the user is out of is only reported up to the point where they left:
@@ -292,6 +305,7 @@ func (s *Service) build(ctx context.Context, userID string, since Token, filter 
 				return nil, false, err
 			}
 			fellowMembers = append(fellowMembers, members...)
+			myRooms = append(myRooms, membership.RoomID)
 			// A joined room is interesting when something happened in it. If nothing
 			// did, reporting it again would make a client re-read a room it already has
 			// and would make "unchanged rooms are omitted" untrue.
@@ -379,6 +393,10 @@ func (s *Service) build(ctx context.Context, userID string, since Token, filter 
 	}
 	result.Presence = Events{Events: presenceEvents}
 
+	if lists := s.deviceListsFor(ctx, myRooms, userID, int64(since), int64(position)); lists != nil {
+		result.DeviceLists = lists
+	}
+
 	changed := result.Rooms.Join != nil || result.Rooms.Invite != nil ||
 		result.Rooms.Leave != nil || result.Rooms.Knock != nil ||
 		len(accountData) > 0 || len(presenceEvents) > 0
@@ -447,6 +465,47 @@ func (s *Service) memberCounts(ctx context.Context, roomID string) (joined, invi
 		}
 	}
 	return joined, invited, members, nil
+}
+
+// deviceListsFor reads whose device lists changed in the user's rooms since their token.
+func (s *Service) deviceListsFor(ctx context.Context, myRooms []string, userID string, since, until int64) *DeviceLists {
+	rows, err := s.devLists.ListInRooms(ctx, myRooms, since, until)
+	if err != nil {
+		// A sync is not worth failing over a bookkeeping table, and the client will ask
+		// again. The gap is logged rather than hidden.
+		s.log.Warn("sync: cannot read the device list changes", "user_id", userID, "error", err)
+		return nil
+	}
+	var changed, left []string
+	seenChanged, seenLeft := map[string]bool{}, map[string]bool{}
+	for _, row := range rows {
+		// A user's own changes are not reported back to them.
+		if row.UserID == userID || row.UserID == "" {
+			continue
+		}
+		switch row.Kind {
+		case persist.DeviceListChanged:
+			if !seenChanged[row.UserID] {
+				seenChanged[row.UserID] = true
+				changed = append(changed, row.UserID)
+			}
+		case persist.DeviceListLeft:
+			if !seenLeft[row.UserID] {
+				seenLeft[row.UserID] = true
+				left = append(left, row.UserID)
+			}
+		default:
+			// A kind this server did not write is a storage fault worth knowing about.
+			s.log.Warn("sync: unknown device list change kind",
+				"room_id", row.RoomID, "user_id", row.UserID, "kind", row.Kind)
+		}
+	}
+	if len(changed) == 0 && len(left) == 0 {
+		return nil
+	}
+	sort.Strings(changed)
+	sort.Strings(left)
+	return &DeviceLists{Changed: changed, Left: left}
 }
 
 // presenceEvents reads the presence of the given users that changed in (since, until].
