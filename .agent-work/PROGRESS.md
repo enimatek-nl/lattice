@@ -1249,7 +1249,7 @@ invite, knock, server ACLs).
 and its filtered set is unchanged; this change touches no Client-Server API surface, only what a
 joined room holds behind it.
 
-## 2026-11-05 — a room can exclude a homeserver, and it is worth something at every door (T-4011, REQ-FED-012)
+## 2026-11-05 — a room can exclude a homeserver, and it is worth something at every door (T-4016, REQ-FED-012)
 
 `m.room.server_acl` had been left as a call site that allowed everything and said so. This is the
 rule behind that call site, read once into `internal/serveracl` and applied where a room is

@@ -314,7 +314,7 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
       its hole, and after the ask both halves are held here and read in the order they happened.
       `GET /get_missing_events` is not implemented — the ask goes over `GET /event`, which is a
       legitimate route to the same events (REQ-FED-016, DEC-033)
-- [x] T-4011 `m.room.server_acl` is enforced (REQ-FED-012, DEC-031): the join template (v1 and v3),
+- [x] T-4016 `m.room.server_acl` is enforced (REQ-FED-012, DEC-031): the join template (v1 and v3),
       `/state_ids`, `/event_auth`, `/event`, and each PDU of a transaction answer an excluded server
       with 403 `M_FORBIDDEN`; a room's events are not relayed to it; events from an excluded server
       are refused where they are accepted, and the refusal is recorded. A malformed ACL is not
@@ -380,6 +380,14 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
 - [ ] T-4011 the address policy is applied when discovery resolves a name, not when the
       socket is opened. A name whose answer changes between the two (DNS rebinding) is not
       covered; the fix is a dialer that re-checks the address it is about to connect to
+- [ ] T-4017 the three Complement `csapi` failures that remain in the filtered set:
+      `TestRoomCreate/creates_a_room_with_the_given_version` (room versions 1 and 2 — T-4013),
+      `TestSync/parallel/Device_list_tracking` (device-list EDUs over federation — T-4009c area) and
+      `TestSyncTimelineGap` (a room whose timeline arrives with a gap between `/sync` batches:
+      `limited`, `prev_batch` and what a client is allowed to assume about contiguity). The first
+      two are understood and tracked; `TestSyncTimelineGap` has not been diagnosed against this
+      server and is the one to look at first, because a client that mis-reads a gap shows missing
+      history to a user whatever else is correct
 - [ ] T-4014 audit the remaining federation responses for the same mistake as T-4006a: any
       object that carries a signature must be written as the bytes that signature covers.
       `pdus` are already carried as raw stored bytes; the transaction answer and the error
