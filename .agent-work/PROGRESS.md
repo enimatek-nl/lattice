@@ -1655,3 +1655,10 @@ Full `./tests` + `./tests/csapi` counts are recorded in the next section.
 Two local test expectations changed, deliberately, because the behaviour they pinned is gone:
 inviting `@someone:elsewhere.example` is now a gateway failure rather than 501, and creating a room
 with a remote invitee is now a created room rather than 501.
+
+Complement counts after the invite handshake, for the record: `RUN=. scripts/complement.sh -v`
+over Complement's whole `./tests/...` tree — every package, including the MSC-specific ones — is
+**67 passing, 152 failing** (`.agent-work/next/full2.log`). The earlier 64/132 figure was a
+narrower scope (`./tests` and `./tests/csapi` only), so the totals are not comparable; what is
+comparable is that nothing previously green went red, and `TestFederationRejectInvite` joined the
+passing set.
