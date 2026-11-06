@@ -541,9 +541,25 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
       be one stored column: serving needs the reader's membership at each event, which is the same
       membership-history lookup T-4033 needs. Presentation still goes through
       `internal/redaction/serve.go`.
-- [ ] T-4033 `/members`: the `membership=` filter and the at-point view return entries they should
-      not — `JSONCheckOff(chunk): unexpected item` at `room_members_test.go:105`, `:177`, `:202`
-      (`TestGetFilteredRoomMembers`, `TestGetRoomMembersAtPoint`).
+- [x] T-4033 (half). `handleMembers` read only `not_membership`; `membership=` was ignored. Fixed
+      in the commit after `7157a39`: `TestGetFilteredRoomMembers` passes all three subtests
+      (`not_membership`, `membership/leave`, `membership/join`).
+- [ ] T-4033a `/members?at=<sync token>` — the roster as it was at that point. What the last commit
+      did was parse and apply it as a cap on the member rows' stream position, which answers
+      "who had joined by then" but returns an *empty* chunk for Complement's case
+      (`room_members_test.go:105`, `.agent-work/next/mem1.log`: `?at=s5` → `{"chunk":[]}`, and the
+      test wants alice). Cause, worked out from our own sync: `/sync` issues
+      `timeline.prev_batch` as the position of the **oldest** event in the batch
+      (`internal/sync/service.go:636-639`), so `at=prev_batch` names the create event, and alice's
+      join sits at a later position than the token that is supposed to see her.
+      The fix is the snapshot lookup, not a wider cap: take the newest event at or before the
+      position (`events.EventsWindow(room, position+1, true, 1)`), read the state group that event
+      was sent against (`groups.GroupOf` + `groups.Entries`), and answer with the
+      `m.room.member` entries in it. The event at `s5` carries alice's join in its snapshot, which
+      is exactly why this is the right mechanism — it is the same state the authorisation rules
+      judged that event by. Worth checking whether `prev_batch` should name the newest end of the
+      batch instead, which is what Synapse issues and what would make `at` and pagination agree;
+      that question touches every passing pagination test, so it is a separate decision.
 - [ ] T-4034 Diagnose why an event a client just sent does not reach its own `/sync` timeline:
       `SendEventSynced waiting for event ID …` at `room_members_test.go:74`, `:88` and
       `room_messages_test.go:127`, `:137`, `:195`, `:412`, plus `TestSync` itself. Probably one
