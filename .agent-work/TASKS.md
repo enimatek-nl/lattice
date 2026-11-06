@@ -523,20 +523,24 @@ T-4009c is split rather than closed: the invite half is done (see PROGRESS 2026-
 Ordered cheapest-verified-win first. Evidence lines are from Complement sources at the checkout in
 `~/complement`.
 
-- [ ] T-4030 `/login` accepts a client-supplied `device_id`. Complement's txnid tests log in with a
+- [x] T-4030 `/login` accepts a client-supplied `device_id`. Complement's txnid tests log in with a
       chosen device ID and we answer `M_INVALID_PARAM "Device ID …"` (`txnid_test.go:147`, `:233`).
       Fails `TestTxnScopeOnLocalEcho`, `TestTxnIdWithRefreshToken`,
       `TestTxnIdempotencyScopedToDevice` at the first step. Validate the shape, reuse the device if
       it already belongs to that user, refuse one that belongs to somebody else.
-- [ ] T-4031 A reused transaction ID with a *different* body is a new event.
+- [x] T-4031 A reused transaction ID with a *different* body is a new event.
       `TestTxnIdempotency` (`txnid_test.go:211`): the fourth send re-used the third's txn ID with
       different content and got the cached event back. Synapse's uniqueness is
       (user, device, txn, body); ours is (device, txn). Same test class: 5 tests.
-- [ ] T-4032 `unsigned.membership` on served events: the sender's room membership as the event was
-      sent (`TestMembershipOnEvents`, `membership_on_events_test.go:65` — "got , want leave/join"
-      on every event in the room). This is the same presentation layer as
-      `redaction.showPrevState`; the fact itself belongs to persistence, like prev_content: record
-      the sender's membership when the event is written.
+- [ ] T-4032 `unsigned.membership` on served events — MSC4115, and it is **the reader's**
+      membership as of each event, not the sender's. Reading the test rather than its title settled
+      this: in `TestMembershipOnEvents` every event before bob's join wants `leave`, including
+      alice's own events, although alice was joined the whole time; the value flips at bob's own
+      member event, which only makes sense from bob's side. `membership_on_events_test.go:53-63`
+      walks the timeline it was served and expects `haveSeenJoin` to decide the value. So it cannot
+      be one stored column: serving needs the reader's membership at each event, which is the same
+      membership-history lookup T-4033 needs. Presentation still goes through
+      `internal/redaction/serve.go`.
 - [ ] T-4033 `/members`: the `membership=` filter and the at-point view return entries they should
       not — `JSONCheckOff(chunk): unexpected item` at `room_members_test.go:105`, `:177`, `:202`
       (`TestGetFilteredRoomMembers`, `TestGetRoomMembersAtPoint`).
@@ -551,3 +555,14 @@ Ledger correction: PLAN.md's M4 note claiming `internal/state.Resolve` is never 
 `rooms.reconcileCurrentState` (`internal/rooms/resolve.go:183`–218) resolves current state across
 forward extremities through `state.Resolve`, and `stateat.go:91` resolves an event's own state.
 That blocker is closed and must not be counted against M4.
+
+- [x] T-4030, T-4031 are done (commit `7157a39`): `/login` reuses a device the account already
+      has, and a transaction ID is scoped to (device, room). Four of the five `txnid_test.go`
+      tests pass; `unsigned.transaction_id` is now served too, which neither of the earlier
+      diagnoses named and both of them needed.
+- [ ] T-4037 Refresh tokens. `POST /login` refuses `refresh_token: true` outright, so
+      `TestTxnIdWithRefreshToken` cannot get past its first step and no token-refresh test can run.
+      The Client-Server API defines the flow (short-lived access tokens, a refresh token,
+      `POST /refresh`, `refresh_token` in the login and refresh responses, `org.matrix.msc21`
+      unstable prefix). It touches token minting, expiry and logout, so it is its own task and not
+      a login tweak.

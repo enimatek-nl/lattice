@@ -1706,3 +1706,41 @@ Local tests: `tests/integration/prev_state_test.go` (three topic writes in the o
 third, second; only per-event recording can report both predecessors, and the room's first topic
 reports no predecessor), `tests/integration/direct_test.go` (the flag on the invitation, the
 mapping extended rather than replaced, and an ordinary room filed nowhere).
+
+## 2026-11-08 — devices can be signed into again; a transaction ID names one send in one room (T-4030, T-4031)
+
+Commit `7157a39`.
+
+Run of the M2 gate family (`txnid_test.go`, `.agent-work/next/txn2.log`): **4 of 5 pass** —
+`TestTxnInEvent`, `TestTxnScopeOnLocalEcho`, `TestTxnIdempotencyScopedToDevice`,
+`TestTxnIdempotency`. Only `TestTxnIdWithRefreshToken` remains, and it stops at the first request
+because this server refuses `refresh_token: true` (T-4037).
+
+Three separate causes, only two of them predicted by the diagnosis:
+
+1. `POST /login` with a `device_id` the account already had created a *second* device under that
+   name, and the unique `(user_id, device_id)` index answered `M_INVALID_PARAM "Device ID is
+   already in use"`. A device ID names a device, not a session, so a login that names one the
+   account holds now reuses it — display name kept when the client does not offer one, last seen
+   moved, a new access token minted, and the sessions that device already had left alone. Device
+   names stay per account: another account naming the same device gets a device of its own, which
+   `TestLoginIntoAnExistingDeviceReusesIt` now asserts in both directions.
+2. A transaction ID was unique per device, so the same name on a send to two rooms answered both
+   with one event and lost a message. The key is `(device_id, room_id, txn_id)`; the migration
+   drops the old index before creating the new one, because `CREATE UNIQUE INDEX IF NOT EXISTS`
+   would otherwise leave a database written before this change constrained by the room-blind index
+   forever.
+3. `unsigned.transaction_id` was never served. It is now stored on the event row at the moment the
+   send persists it and added by the same servicer that adds `prev_content` and
+   `redacted_because`: never in the signed bytes, never to a peer homeserver. `event_txn` remains
+   the uniqueness guarantee that makes a retry idempotent — the column is the copy a client is
+   shown, and the two are deliberately separate.
+
+Correction to the task list, from reading the test instead of its name: MSC4115's
+`unsigned.membership` (T-4032) is the **reader's** membership as of each event, not the sender's —
+see T-4032 for the evidence. It cannot be a stored column, and it belongs with T-4033's
+membership-history lookup.
+
+Local: `tests/integration/devicelogin_test.go` (three tests) and
+`TestTransactionIDsAreScopedToDeviceAndRoom` in `tests/unit/eventstore_test.go`;
+`go vet ./...` clean, `go test -race -count=1 ./tests/...` green.
