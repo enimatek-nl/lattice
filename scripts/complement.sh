@@ -51,6 +51,15 @@ fi
 
 filter="${RUN:-TestVersionStructure|TestUnknownEndpoints|TestRegistration|TestLogin|TestLogout|TestServerCapabilities|TestDeviceManagement|TestCanRegisterAdmin}"
 
-echo "== running Complement (filter: $filter)"
+# Complement's suites run in parallel by default, which on this host creates more
+# short-lived containers than Podman's store has locks for: `ContainerCreate: ...
+# allocation failed; exceeded num_locks (2048)`. That surfaces as a Complement deploy
+# error, and `go test` then counts it as a test failure — over a hundred at once, in tests
+# that pass on their own. Raising num_locks is not available here: the rootless lock set is
+# created once at 2048 and podman refuses to resize it short of a destructive
+# `podman system reset`. So the parallelism is limited instead, and a package-level `-p` can
+# still be given on the command line.
+parallel="${PARALLEL:-2}"
+echo "== running Complement (filter: $filter, packages in parallel: $parallel)"
 cd "$complement_dir"
-COMPLEMENT_BASE_IMAGE="$image" go test ./tests/... -run "$filter" -count=1 "${@:1}"
+COMPLEMENT_BASE_IMAGE="$image" go test ./tests/... -run "$filter" -count=1 -p "$parallel" "${@:1}"
