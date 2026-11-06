@@ -301,32 +301,56 @@ func TestAuthContextIsPerEvent(t *testing.T) {
 	}
 }
 
-// TestTransactionIDsArePerDevice covers the idempotency rule for
-// PUT /rooms/{roomId}/send/{type}/{txn}: the same transaction ID on a different
-// device is a different request.
-func TestTransactionIDsArePerDevice(t *testing.T) {
+// TestTransactionIDsAreScopedToDeviceAndRoom covers the idempotency rule for
+// PUT /rooms/{roomId}/send/{type}/{txn}: a transaction ID names one attempt by one device in
+// one room. Another device, or another room, is another request.
+func TestTransactionIDsAreScopedToDeviceAndRoom(t *testing.T) {
 	t.Parallel()
 	db := openEventStore(t)
 	ctx := context.Background()
 
-	if _, err := db.Events.TxnLookup(ctx, "DEVICEA", "txn1"); !errors.Is(err, persist.ErrNotFound) {
+	if _, err := db.Events.TxnLookup(ctx, "DEVICEA", "!roomA:example.org", "txn1"); !errors.Is(err, persist.ErrNotFound) {
 		t.Errorf("lookup before save = %v, want ErrNotFound", err)
 	}
-	if err := db.Events.TxnSave(ctx, &persist.EventTxn{DeviceID: "DEVICEA", TxnID: "txn1", EventID: "$ev:example.org"}); err != nil {
+	if err := db.Events.TxnSave(ctx, &persist.EventTxn{
+		DeviceID: "DEVICEA", RoomID: "!roomA:example.org", TxnID: "txn1", EventID: "$ev:example.org",
+	}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	found, err := db.Events.TxnLookup(ctx, "DEVICEA", "txn1")
+	found, err := db.Events.TxnLookup(ctx, "DEVICEA", "!roomA:example.org", "txn1")
 	if err != nil {
 		t.Fatalf("lookup: %v", err)
 	}
 	if found.EventID != "$ev:example.org" {
 		t.Errorf("lookup returned %q", found.EventID)
 	}
-	if err := db.Events.TxnSave(ctx, &persist.EventTxn{DeviceID: "DEVICEA", TxnID: "txn1", EventID: "$other:example.org"}); !errors.Is(err, persist.ErrConflict) {
+	if err := db.Events.TxnSave(ctx, &persist.EventTxn{
+		DeviceID: "DEVICEA", RoomID: "!roomA:example.org", TxnID: "txn1", EventID: "$other:example.org",
+	}); !errors.Is(err, persist.ErrConflict) {
 		t.Errorf("repeat transaction id = %v, want ErrConflict", err)
 	}
-	if err := db.Events.TxnSave(ctx, &persist.EventTxn{DeviceID: "DEVICEB", TxnID: "txn1", EventID: "$other:example.org"}); err != nil {
+	if err := db.Events.TxnSave(ctx, &persist.EventTxn{
+		DeviceID: "DEVICEB", RoomID: "!roomA:example.org", TxnID: "txn1", EventID: "$other:example.org",
+	}); err != nil {
 		t.Errorf("same transaction id on another device should be accepted: %v", err)
+	}
+	// The same device naming the same transaction in another room is a second request, not a
+	// retry of the first: a client that sends to two rooms with one name is making two sends,
+	// and a server that answers the second from the first loses a message.
+	if err := db.Events.TxnSave(ctx, &persist.EventTxn{
+		DeviceID: "DEVICEA", RoomID: "!roomB:example.org", TxnID: "txn1", EventID: "$third:example.org",
+	}); err != nil {
+		t.Errorf("same transaction id in another room should be accepted: %v", err)
+	}
+	third, err := db.Events.TxnLookup(ctx, "DEVICEA", "!roomB:example.org", "txn1")
+	if err != nil {
+		t.Fatalf("lookup in the second room: %v", err)
+	}
+	if third.EventID != "$third:example.org" {
+		t.Errorf("the second room returned %q, want its own event", third.EventID)
+	}
+	if again, err := db.Events.TxnLookup(ctx, "DEVICEA", "!roomA:example.org", "txn1"); err != nil || again.EventID != "$ev:example.org" {
+		t.Errorf("the first room's entry was disturbed: %v %v", again, err)
 	}
 }
 

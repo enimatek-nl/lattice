@@ -612,7 +612,7 @@ func (s *Service) Send(ctx context.Context, req SendRequest) (string, error) {
 
 func (s *Service) send(ctx context.Context, req SendRequest) (string, error) {
 	if req.TxnID != "" && req.DeviceID != "" {
-		existing, err := s.events.TxnLookup(ctx, req.DeviceID, req.TxnID)
+		existing, err := s.events.TxnLookup(ctx, req.DeviceID, req.RoomID, req.TxnID)
 		if err != nil && !notFound(err) {
 			return "", fmt.Errorf("rooms: cannot look up the transaction: %w", err)
 		}
@@ -702,14 +702,20 @@ func (s *Service) send(ctx context.Context, req SendRequest) (string, error) {
 		return "", err
 	}
 	if req.TxnID != "" && req.DeviceID != "" {
+		// The name the client gave this send travels with the event, so that the client can
+		// recognise it later in a timeline. The transaction row below is what makes a retry
+		// idempotent; this is the copy the client is shown.
+		if err := s.events.SetTxnID(ctx, eventID, req.TxnID); err != nil {
+			return "", fmt.Errorf("rooms: cannot record the transaction ID of an event: %w", err)
+		}
 		if err := s.events.TxnSave(ctx, &persist.EventTxn{
-			DeviceID: req.DeviceID, TxnID: req.TxnID, EventID: eventID,
+			DeviceID: req.DeviceID, RoomID: req.RoomID, TxnID: req.TxnID, EventID: eventID,
 		}); err != nil {
 			if !errors.Is(err, persist.ErrConflict) {
 				return "", fmt.Errorf("rooms: cannot record the transaction: %w", err)
 			}
 			// A concurrent retry won the race; its event is the answer to this one.
-			existing, lookupErr := s.events.TxnLookup(ctx, req.DeviceID, req.TxnID)
+			existing, lookupErr := s.events.TxnLookup(ctx, req.DeviceID, req.RoomID, req.TxnID)
 			if lookupErr != nil || existing == nil {
 				return "", fmt.Errorf("rooms: a transaction collision left no stored event: %v", err)
 			}
