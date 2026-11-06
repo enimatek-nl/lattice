@@ -60,8 +60,18 @@ type Event struct {
 	// identity, and the reference hash recorded in `hashes` is what lets a peer check the
 	// redacted form against the hash taken before redaction. Keeping the received bytes is
 	// what makes that check possible without trusting this server's word.
-	Redacted         bool   `gorm:"column:redacted;not null;default:false"`
-	RedactedJSON     []byte `gorm:"column:redacted_json"`
+	Redacted     bool   `gorm:"column:redacted;not null;default:false"`
+	RedactedJSON []byte `gorm:"column:redacted_json"`
+	// PrevContent and PrevSender record what this event replaced: the content of the state
+	// event that held this (type, state_key) before it, and who sent that one. A client
+	// answering an invitation needs to know what it was invited as, and a room whose power
+	// levels or topic changed reads differently when the change can be shown. It is a fact
+	// about persistence — what the state was at the moment the event was written — so it is
+	// worked out once here rather than derived on every read. It is never part of the bytes a
+	// signature covers: it reaches a client through `unsigned`, and it does not travel to
+	// other homeservers at all.
+	PrevContent      []byte `gorm:"column:prev_content"`
+	PrevSender       string `gorm:"column:prev_sender;size:255"`
 	Outlier          bool   `gorm:"column:outlier;not null;default:false"`
 	SoftFailed       bool   `gorm:"column:soft_failed;not null;default:false"`
 	StreamOrdering   int64  `gorm:"column:stream_ordering;not null;default:0"`
@@ -329,10 +339,84 @@ func (r *eventRepo) WithTx(tx *gorm.DB) EventRepo { return &eventRepo{db: tx} }
 // federation, or from a retrying client) is not an error at the protocol level but
 // must not create a second row.
 func (r *eventRepo) Insert(ctx context.Context, event *Event) error {
+	if event.IsState() {
+		if err := r.recordPrevState(ctx, event); err != nil {
+			return err
+		}
+	}
 	if err := r.db.WithContext(ctx).Create(event).Error; err != nil {
 		return asConflict(err)
 	}
 	return nil
+}
+
+// recordPrevState notes the state a state event replaces. The current state row is the event
+// being replaced, because every caller records the new state after inserting the event that
+// changes it — which is also why this runs here rather than at authoring time, where the state
+// a peer's event replaces may not be settled yet.
+//
+// A state event that repeats the content already in place records nothing: "the same content
+// again" has no previous content to show, and a client that was told something changed would be
+// misled. A state event whose predecessor this server cannot read records nothing either, which
+// is the honest answer and the one that leaves the event looking like the first of its kind.
+func (r *eventRepo) recordPrevState(ctx context.Context, event *Event) error {
+	stateKey := ""
+	if event.StateKey != nil {
+		stateKey = *event.StateKey
+	}
+	var current RoomState
+	err := r.db.WithContext(ctx).
+		Where("room_id = ? AND type = ? AND state_key = ?", event.RoomID, event.Type, stateKey).
+		First(&current).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	previous, err := r.ByID(ctx, current.EventID)
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	mine, err := contentBytes(event)
+	if err != nil {
+		return nil
+	}
+	theirs, err := contentBytes(previous)
+	if err != nil || len(theirs) == 0 {
+		return nil
+	}
+	if string(mine) == string(theirs) {
+		return nil
+	}
+	event.PrevContent = theirs
+	event.PrevSender = previous.Sender
+	return nil
+}
+
+// contentBytes returns a stored event's content as it stands now: the redacted form when a
+// redaction was applied, because that is the content a client sees and therefore the content a
+// comparison with it means anything about.
+func contentBytes(event *Event) ([]byte, error) {
+	raw := event.JSON
+	if event.Redacted && len(event.RedactedJSON) > 0 {
+		raw = event.RedactedJSON
+	}
+	var body struct {
+		Content map[string]any `json:"content"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return nil, err
+	}
+	if body.Content == nil {
+		return nil, nil
+	}
+	// json.Marshal sorts map keys, so two contents that mean the same thing encode the same
+	// way and the comparison below does not depend on the order bytes arrived in.
+	return json.Marshal(body.Content)
 }
 
 // ByID implements [EventRepo].

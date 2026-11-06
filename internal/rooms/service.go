@@ -63,8 +63,13 @@ type CreateRequest struct {
 	// RoomAliasName is the local part of an alias to create for the room, on this
 	// server's name.
 	RoomAliasName string
-	// Invite lists users to invite as the room is created. Local users only.
+	// Invite lists users to invite as the room is created.
 	Invite []string
+	// IsDirect marks those invitations as private ones, which the specification records in
+	// the member events and in the creator's `m.direct` account data rather than in the room:
+	// being a direct message is a fact about the conversation between two users, not a
+	// property every member of the room is entitled to know.
+	IsDirect bool
 	// Published puts the room in this server's public room directory from the start,
 	// which is what `visibility: public` on /createRoom means.
 	Published bool
@@ -352,10 +357,12 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (string, error)
 			remoteInvites = append(remoteInvites, invited)
 			continue
 		}
+		content := map[string]any{"membership": eventauth.MembershipInvite}
+		if req.IsDirect {
+			content["is_direct"] = true
+		}
 		initial = append(initial, StateContent{
-			Type:     eventauth.TypeMember,
-			StateKey: invited,
-			Content:  map[string]any{"membership": eventauth.MembershipInvite},
+			Type: eventauth.TypeMember, StateKey: invited, Content: content,
 		})
 	}
 
@@ -412,10 +419,14 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (string, error)
 	// announced here. A room whose creator is invisible to nobody is a room where the
 	// first member is told nothing about anybody, including themselves being seen.
 	s.announceArrival(ctx, created, req.Creator)
+	if err := s.markDirect(ctx, req.Creator, created, req.Invite, req.IsDirect); err != nil {
+		s.log.Warn("rooms: the room was created but not recorded as a direct message",
+			"room_id", created, "error", err)
+	}
 	for _, invited := range remoteInvites {
 		if _, err := s.inviteRemote(ctx, MembershipChange{
 			RoomID: created, Target: invited, Sender: req.Creator,
-			Membership: eventauth.MembershipInvite,
+			Membership: eventauth.MembershipInvite, IsDirect: req.IsDirect,
 		}); err != nil {
 			// The room stands. An invite the other server refused is reported in the log and
 			// left for the client to retry through /invite, where the answer is a status it
@@ -426,6 +437,54 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (string, error)
 		}
 	}
 	return created, nil
+}
+
+// markDirect records the room in the creator's `m.direct` account data against each user the room
+// was created to invite.
+//
+// The room itself does not carry this. A room can be a direct message for one pair of users and an
+// ordinary room for another who joins later, and the flag belongs to the person who opened the
+// conversation — which is why the specification puts it in the inviter's account data and in the
+// invitation, and not in the room's state. An existing mapping is kept and extended: account data
+// is a current value, and overwriting it would lose the other conversations the user has.
+func (s *Service) markDirect(ctx context.Context, creator, roomID string, invited []string, direct bool) error {
+	if !direct || len(invited) == 0 {
+		return nil
+	}
+	mapping := map[string][]string{}
+	row, err := s.db.AccountData.Get(ctx, creator, "m.direct")
+	if err != nil {
+		if !notFound(err) {
+			return err
+		}
+	} else if err := json.Unmarshal([]byte(row.Content), &mapping); err != nil {
+		// Account data is written by clients, so it can be anything a client put there. A
+		// mapping this server cannot read is replaced rather than obeyed: the alternative is a
+		// room the creator opened as a direct message and cannot find as one.
+		s.log.Warn("rooms: the existing m.direct account data is not readable and will be replaced",
+			"user_id", creator, "error", err)
+		mapping = map[string][]string{}
+	}
+	for _, user := range invited {
+		seen := false
+		for _, existing := range mapping[user] {
+			if existing == roomID {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			mapping[user] = append(mapping[user], roomID)
+		}
+	}
+	raw, err := json.Marshal(mapping)
+	if err != nil {
+		return fmt.Errorf("rooms: cannot encode the direct message mapping: %w", err)
+	}
+	if _, err := s.db.AccountData.Put(ctx, creator, "m.direct", string(raw)); err != nil {
+		return fmt.Errorf("rooms: cannot record the room as a direct message: %w", err)
+	}
+	return nil
 }
 
 // createRoom writes the room row and then its initial state, in dependency order.
