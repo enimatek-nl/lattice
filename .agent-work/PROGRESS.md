@@ -1,5 +1,41 @@
 # Progress
 
+## 2026-11-11 — who is allowed to look for another server when a restricted join cannot be authorised (`cc7ec65`)
+
+Complement\u2019s `TestRestrictedRoomsRemoteJoinFailOver` and its MSC3787 variant now pass. The rule they
+probe is one this server had backwards, and getting it right meant separating two different questions.
+
+**May a server that cannot authorise a restricted join go asking a neighbour?** Only the client may
+decide that. `M_UNABLE_TO_GRANT_JOIN` says *the user may well be entitled and this server is not the
+one that can say so*, and the Client-Server API\u2019s answer is a second request with another server named.
+Two over-reaches were removed: `Joiner.candidates` appended the room\u2019s origin server to the client\u2019s
+named list (so a join the named servers refused could succeed somewhere else the client never named),
+and `joinThroughNeighbours` fell back to every server readable out of the room\u2019s state. That second one
+is now allowed only while this server still has one of its own users joined in the room — which is what
+makes the list something it knows instead of something it guesses — and even then it uses the servers
+from the request first. A join no named server can authorise fails, which is the answer the client
+needs in order to fail over deliberately.
+
+**When may a server rely on its copy of the room the restriction points at?** A restricted room lets in
+members of another room. A server with no user of its own in that other room is not on its list of
+servers to be told, so the membership it holds may be months old. Granting from that copy answers a
+question it is no longer in a position to hear; refusing on it invents a verdict. `stillTracksRoom`
+decides, and the stale case is `M_UNABLE_TO_GRANT_JOIN`. The auth probe reports a check it could not
+carry out under its own rule name (`eventauth.RuleAllowLookup`) rather than as the room refusing,
+because the caller has to know which answer it is giving.
+
+Two three-server integration tests cover both halves (`federationTrio`, because the shape needs a
+server that cannot authorise, a server that can, and a user whose home server is neither):
+`TestRestrictedJoinAsksOnlyTheServersTheClientNamed` and
+`TestRestrictedJoinIsNotGrantedFromAnAllowRoomThisServerHasLeft`. Both pass repeatedly, and the local
+suite is green including `-race`.
+
+Full Complement run: **86 passing / 133 failing / 1 skipped**, third consecutive full run with nothing
+newly failing (80 \u2192 84 \u2192 86). What the restricted cluster still owes is written up in T-4053: the
+space-summary `allowed_room_ids` (T-4051), the room-version-12 creation policy, and
+`TestRestrictedRoomsRemoteJoinInMSC3787Room`, which passes alone and in the full run but fails under
+the filtered cluster\u2019s load and is reported rather than smoothed over.
+
 ## 2026-11-10 — prompt delivery, and the verdict bugs it exposed (`9ce20d5`)
 
 T-4054 is done. The federation sender no longer sleeps two seconds over an empty queue: queuing work

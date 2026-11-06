@@ -701,26 +701,27 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
       `TestKnockRestrictedRoomsLocalJoinNoCreatorsUsesPowerLevelsV11` moved from failing to passing,
       with no test moving the other way.
 
-- [ ] T-4053 what the restricted-room cluster still owes, from the same run:
-      `TestRestrictedRoomsRemoteJoinLocalUser` (and its MSC3787 variant) — Complement invites a
-      **remote** user into a restricted room and expects 403; we allowed it. The rule to read is
-      MSC3787's, in the pinned specification's Client-Server §Restricted rooms and the
-      `m.room.power_levels` section: for a restricted room the invite power that matters is held **in
-      one of the rooms on the allow list**, so an inviter who can invite in the restricted room but
-      holds no invite power in the gateway room cannot invite. Do not implement this from memory of
-      the MSC: it is a rule about *which room's power levels decide*, and the room version's auth rule
-      4.4 still checks the restricted room's own invite level on top.
-      `TestRestrictedRoomsRemoteJoinFailOver` (and variant) — the resident server's
-      `M_UNABLE_TO_GRANT_JOIN` now means "ask another server", but the fail-over Complement expects is
-      not happening yet; trace which server is asked in which order.
-      `TestRestrictedRoomsSpacesSummaryLocal` / `...Federation` — room summary `allowed_room_ids`, a
-      different endpoint from the join path.
-      `...NoCreatorsUsesPowerLevelsV12` — refused at `createRoom` with
-      `M_UNSUPPORTED_ROOM_VERSION`: room version 12 is implemented in the registry but not offered for
-      creation. Check `roomversion.supported` and the pinned-version policy before changing it.
-      Also note: `TestRestrictedRoomsRemoteJoinInMSC3787Room` passed in the full run and failed in the
-      filtered one, so it is flaky — probably a timing or ordering dependency in the join handshake.
-      Reproduce with `RUN='TestRestrictedRooms.*'` before chasing it.
+- [ ] T-4053 what the restricted-room cluster still owes. After `cc7ec65` the cluster is
+      `LocalJoin`, both MSC3787 variants, `LocalJoinNoCreatorsUsesPowerLevelsV11`, `RemoteJoin`
+      (+MSC3787), `RemoteJoinLocalUser` (+MSC3787) and `RemoteJoinFailOver` (+MSC3787) passing.
+      What is left, in the order worth taking it:
+      * `TestRestrictedRoomsSpacesSummaryLocal` / `...Federation` — the room summary's
+        `allowed_room_ids`. This is the space-summary endpoint, not the join path: a restricted room
+        has to name the rooms its join rule points at so a client can show why a room is joinable.
+        T-4051 is the same work; do them together.
+      * `TestRestrictedRoomsLocalJoinNoCreatorsUsesPowerLevelsV12` — refused at `createRoom` with
+        `M_UNSUPPORTED_ROOM_VERSION`. Room version 12 is in the registry but not offered for
+        creation. That is a policy decision this project has not made: read
+        `roomversion.supported`, the pinned specification's room-version section and what v12 changes
+        about room identifiers before deciding, and record the decision rather than flipping a flag.
+      * `TestRestrictedRoomsRemoteJoinInMSC3787Room` passes on its own (3.6 s) and in the full run,
+        and fails in a filtered run of the cluster (404 "room is not known to this server" for rooms
+        the same deployment created earlier in the test). Reproduce it with `RUN='TestRestrictedRooms.*'`
+        before chasing it; it is load-dependent and is reported as such, not hidden.
+      Note: an earlier version of this task claimed MSC3787 needed the invite power of *the allow
+      room* rather than the restricted room to decide an invitation. That was never checked against
+      the specification, and the tests it was meant to explain (`RemoteJoinLocalUser` and its MSC3787
+      variant) pass on the restricted room's own invite level. Do not implement the claim.
 
 - [x] T-4054 fan-out ordering, then prompt delivery. Done in `9ce20d5`; see PROGRESS for what was
       found. The sender wakes when work is queued; the queue claim is atomic; a neighbour's refusal
