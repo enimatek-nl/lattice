@@ -83,6 +83,16 @@ func AsFailure(err error) (Failure, bool) {
 	return Failure{}, false
 }
 
+// IsUnjudgeable says whether an auth failure is a verdict about the event or an admission that
+// this server could not make one yet. Rule 2.2 — an auth event the event cites cannot be
+// resolved — is the second kind: the missing event may arrive a second later and the same event
+// would then be perfectly good. A server that files a rejection for it turns a gap into a
+// permanent ban, and then refuses every later event that cites it.
+func IsUnjudgeable(err error) bool {
+	failure, ok := AsFailure(err)
+	return ok && failure.Rule == "2.2"
+}
+
 // ErrRulesetUnsupported is returned for a room version whose authorisation table
 // this server does not implement. It is an error rather than a silent fallback:
 // authorising version 1 rooms with the version 3 rules would invent state.

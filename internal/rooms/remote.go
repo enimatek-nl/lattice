@@ -178,6 +178,13 @@ func (s *Service) AcceptRemoteEvent(ctx context.Context, pdu []byte, verify Veri
 	}
 	if err := eventauth.Check(rules, event, snapshot, s.authOpts(ctx, rules)); err != nil {
 		reason := fmt.Sprintf("the event is not authorised by the events it cites: %v", err)
+		if eventauth.IsUnjudgeable(err) {
+			// One of the events this one cites for its authorisation is not here. That is a gap
+			// somebody can still fill, not a judgement about this event. Recording it would refuse
+			// the event forever, and then refuse every event that cites it — which is how a room
+			// whose events arrived out of order turns into a room that can never be joined.
+			return "", &MissingAuthEventsError{EventID: eventID, RoomID: roomID}
+		}
 		return "", s.refuse(ctx, roomID, eventID, reason)
 	}
 
@@ -292,6 +299,19 @@ func (s *Service) adoptRemoteRoom(ctx context.Context, event map[string]any) (bo
 		}
 	}
 	return true, nil
+}
+
+// MissingAuthEventsError says an event could not be judged because events it cites for its
+// authorisation are not held here. It is named rather than folded into a refusal so that a caller
+// can go and ask for them, and so that nothing is recorded against an event this server never
+// actually judged.
+type MissingAuthEventsError struct {
+	EventID string
+	RoomID  string
+}
+
+func (e *MissingAuthEventsError) Error() string {
+	return fmt.Sprintf("rooms: %s cannot be judged: the events it cites for authorisation are not held here", e.EventID)
 }
 
 // citedSnapshot is the state an event's own auth events describe: what the sending

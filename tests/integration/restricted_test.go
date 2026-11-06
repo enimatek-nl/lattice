@@ -3,6 +3,7 @@ package integration
 import (
 	"net/http"
 	"testing"
+	"time"
 )
 
 // TestRestrictedRoomJoinConditions is the local half of restricted rooms: a room that opens its
@@ -199,4 +200,97 @@ func TestLeaveViaStateEndpointInRestrictedRoom(t *testing.T) {
 	if _, stale := content["join_authorised_via_users_server"]; stale {
 		t.Errorf("the leave event kept an authoriser from the join that preceded it: %v", content)
 	}
+}
+
+// TestRestrictedJoinUsesThisServersOwnAuthoriser is the preference a restricted room has to keep when
+// two homeservers could each stand behind a join. This server holds the room and holds a member with
+// the invite power; a neighbour holds the room's creator as well. Relaying the join to the neighbour
+// would work — the user gets in — but the join event would then name and carry the signature of
+// another server's user, and the room's own members would be able to do nothing about who vouched for
+// it. The specification's description of the authoriser is of a user of the resident server, and the
+// join made here is what the room's power levels are actually deciding.
+func TestRestrictedJoinUsesThisServersOwnAuthoriser(t *testing.T) {
+	hs1, hs2 := federationPair(t)
+
+	alice := hs1.registerUser(t, "nalice", "pw-nalice")
+	gateway := fedCreateRoom(t, hs1, alice, map[string]any{"preset": "public_chat", "name": "gateway nc"})
+	restricted := fedCreateRoom(t, hs1, alice, restrictedRoomBody("restricted nc", gateway))
+
+	bob := hs2.registerUser(t, "nbob", "pw-nbob")
+	charlie := hs2.registerUser(t, "ncharlie", "pw-ncharlie")
+	bobID := "@nbob:" + hs2.name
+	aliceID := "@nalice:" + hs1.name
+
+	if status, answer := hs2.clientDo(t, http.MethodPost, "/_matrix/client/v3/join/"+gateway+"?server_name="+hs1.name, map[string]any{}, bob); status != http.StatusOK {
+		t.Fatalf("bob could not join the gateway: %d %v", status, answer)
+	}
+	// bob's join of the restricted room has to go remotely, authorised by alice.
+	if status, answer := hs2.clientDo(t, http.MethodPost, "/_matrix/client/v3/join/"+restricted+"?server_name="+hs1.name, map[string]any{}, bob); status != http.StatusOK {
+		t.Fatalf("bob could not join the restricted room: %d %v", status, answer)
+	}
+	// alice restricts the invite level to moderators and promotes bob.
+	if status, answer := hs1.clientDo(t, http.MethodPut, "/_matrix/client/v3/rooms/"+restricted+"/state/m.room.power_levels",
+		map[string]any{"invite": 50, "users": map[string]any{aliceID: 100, bobID: 50}}, alice); status != http.StatusOK {
+		t.Fatalf("alice could not set the power levels: %d %v", status, answer)
+	}
+	// hs2 has to learn the new power levels before it can be expected to act on them, and it
+	// learns them when the fan-out tells it. The test asks for that state rather than sleeping:
+	// until “%s” appears in the levels hs2 holds, a choice between two authorisers is not a choice
+	// hs2 is in a position to make.
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		if holdsInvitePower(t, hs2, restricted, bob, bobID) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("“%s” never learned that “%s” holds the invite power in “%s”", hs2.name, bobID, restricted)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if status, answer := hs2.clientDo(t, http.MethodPost, "/_matrix/client/v3/join/"+gateway+"?server_name="+hs1.name, map[string]any{}, charlie); status != http.StatusOK {
+		t.Fatalf("charlie could not join the gateway: %d %v", status, answer)
+	}
+	// charlie joins the restricted room through hs2, which holds bob with invite power: the join
+	// should be made here rather than relayed to hs1.
+	if status, answer := hs2.clientDo(t, http.MethodPost, "/_matrix/client/v3/join/"+restricted+"?server_name="+hs2.name, map[string]any{}, charlie); status != http.StatusOK {
+		t.Fatalf("charlie could not join the restricted room via %s: %d %v", hs2.name, status, answer)
+	}
+	var member map[string]any
+	var ok bool
+	for attempt := 0; attempt < 40; attempt++ {
+		member, ok = stateMemberEvent(hs1.roomSnapshot(t, restricted, alice), "@ncharlie:"+hs2.name)
+		if ok {
+			break
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	if !ok {
+		t.Fatalf("charlie's join never reached %s's state", hs1.name)
+	}
+	content, _ := member["content"].(map[string]any)
+	if authoriser, _ := content["join_authorised_via_users_server"].(string); authoriser != bobID {
+		t.Errorf("charlie's join was authorised by %q, wanting %q (hs2 holds a local user with invite power)", authoriser, bobID)
+	}
+}
+
+// holdsInvitePower says whether the state a node holds for a room already gives the user the
+// room's invitation level.
+func holdsInvitePower(t *testing.T, node *fedNode, roomID, token, userID string) bool {
+	t.Helper()
+	for _, event := range node.roomSnapshot(t, roomID, token).State {
+		if event["type"] != "m.room.power_levels" {
+			continue
+		}
+		content, _ := event["content"].(map[string]any)
+		users, _ := content["users"].(map[string]any)
+		if level, ok := users[userID]; ok {
+			switch value := level.(type) {
+			case int64:
+				return value >= 50
+			case float64:
+				return value >= 50
+			}
+		}
+	}
+	return false
 }

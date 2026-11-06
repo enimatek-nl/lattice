@@ -63,6 +63,47 @@ func (s *Service) roomKnown(ctx context.Context, roomID string) (bool, error) {
 // is a room this server should know about; if it does not, it is not somebody else's room, and
 // asking a stranger to hand one over would let that stranger invent a room under this server's
 // name and have this server store it.
+// joinThroughNeighbours carries out over federation a join this server could not authorise in a
+// room it does hold.
+//
+// Holding a room and being able to let someone into it are different things. A restricted room names
+// the rooms whose members may walk in uninvited, and the member who could vouch for the joiner may
+// live on another server — this server's own members are the only ones it can sign for, and none of
+// them has the power to invite. That is what M_UNABLE_TO_GRANT_JOIN means, and the answer is not to
+// tell the client "no": it is to ask a server that does hold a member who can, which is the same
+// handshake a user whose room lives elsewhere goes through.
+func (s *Service) joinThroughNeighbours(ctx context.Context, change MembershipChange, cause error) (string, bool) {
+	if s.remoteJoin == nil {
+		return "", false
+	}
+	if problem, ok := matrixerr.As(cause); !ok || problem.Code != matrixerr.CodeUnableToGrantJoin {
+		return "", false
+	}
+	servers, err := s.ServersInRoom(ctx, change.RoomID)
+	if err != nil {
+		return "", false
+	}
+	others := make([]string, 0, len(servers))
+	for _, server := range servers {
+		if !matrixid.IsLocal(server, s.name) {
+			others = append(others, server)
+		}
+	}
+	if len(others) == 0 {
+		// Nobody else here to ask. The room's answer is this server's answer after all.
+		return "", false
+	}
+	change.Via = others
+	eventID, err := s.joinRemote(ctx, change)
+	if err != nil {
+		s.log.Warn("rooms: a join this server could not authorise failed over and failed there too",
+			slog.String("room_id", change.RoomID), slog.String("user_id", change.Target),
+			slog.Any("error", err))
+		return "", false
+	}
+	return eventID, true
+}
+
 func (s *Service) joinRemote(ctx context.Context, change MembershipChange) (string, error) {
 	if s.remoteJoin == nil {
 		return "", ErrRemoteJoinUnavailable

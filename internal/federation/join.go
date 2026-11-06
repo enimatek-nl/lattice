@@ -90,6 +90,14 @@ func (j *Joiner) Join(ctx context.Context, roomID, userID string, destinations [
 		return rooms.RemoteJoinResult{}, matrixerr.Newf(matrixerr.CodeInvalidParam, "%q is not a valid user ID.", userID)
 	}
 	var lastErr error
+	// A refusal to let the user in is normally the end of the handshake: the server that holds the
+	// room has looked at the user and said no, and asking its neighbours only asks the same
+	// question again. M_UNABLE_TO_GRANT_JOIN is the exception, and it is worth reading as an
+	// instruction — this server is not the one that can authorise the join, though the user may be
+	// entitled to the room, because the member who could vouch for them lives elsewhere. Asking the
+	// next server is the point of that code, and a server that treats it as final loses joins that
+	// the room is willing to grant.
+	var notHere *RemoteRefusal
 	for _, destination := range j.candidates(ctx, roomID, destinations) {
 		result, err := j.joinVia(ctx, destination, roomID, userID)
 		if err == nil {
@@ -97,12 +105,21 @@ func (j *Joiner) Join(ctx context.Context, roomID, userID string, destinations [
 		}
 		var refusal *RemoteRefusal
 		if errors.As(err, &refusal) {
+			if matrixerr.Code(refusal.ErrCode) == matrixerr.CodeUnableToGrantJoin {
+				notHere, lastErr = refusal, refusal
+				j.Log.Info("federation: a server could not authorise a join, so another is being asked",
+					slog.String("destination", destination), slog.String("room_id", roomID))
+				continue
+			}
 			return rooms.RemoteJoinResult{}, refusal.toMatrixError()
 		}
 		lastErr = err
 		j.Log.Warn("federation: a server could not carry a join",
 			slog.String("destination", destination), slog.String("room_id", roomID),
 			slog.Any("error", err))
+	}
+	if notHere != nil {
+		return rooms.RemoteJoinResult{}, notHere.toMatrixError()
 	}
 	if lastErr != nil {
 		return rooms.RemoteJoinResult{}, fmt.Errorf("%w: last attempt: %v", ErrNoJoinTarget, lastErr)
@@ -124,8 +141,11 @@ func (r *RemoteRefusal) Error() string {
 
 func (r *RemoteRefusal) toMatrixError() error {
 	code := matrixerr.CodeForbidden
-	if matrixerr.Code(r.ErrCode) == matrixerr.CodeNotFound {
+	switch matrixerr.Code(r.ErrCode) {
+	case matrixerr.CodeNotFound:
 		code = matrixerr.CodeNotFound
+	case matrixerr.CodeUnableToGrantJoin:
+		code = matrixerr.CodeUnableToGrantJoin
 	}
 	return matrixerr.Newf(code, "The homeserver holding this room did not let %s join: %s",
 		r.Server, r.Message)
