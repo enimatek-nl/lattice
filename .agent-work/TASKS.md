@@ -686,6 +686,18 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
       common cause first (federation outbound and join flows dominate it), and diff against this
       baseline each time.
 
+- [ ] T-4051 work the Complement failure list down by cluster, diffing against
+      `complement-failures-20261106.txt` after each change. The biggest single cluster is
+      **restricted rooms**: `TestRestrictedRoomsLocalJoin`, `...LocalJoinInMSC3787Room`,
+      `...LocalJoinNoCreatorsUsesPowerLevelsV11/V12`, `TestRestrictedRoomsRemoteJoin` with its
+      `FailOver`, `LocalUser` and `MSC3787` variants, plus `TestKnockRestrictedRoomsLocalJoin...` —
+      about ten names resting on one rule (`join_rule: restricted`, its `allow` rooms, and the
+      power-level rules that go with it). `eventauth.MayJoinRestricted` already exists, so this is
+      flow work rather than rule work: accepting `restricted` and `knock_restricted` in a room's
+      join-rule state, choosing the allow rooms when a join is judged, and the remote half of it in
+      `/make_join` and `/send_join`. Then MSC4242 (four tests: rejection cascades across a rejoin) and
+      `TestPartialStateJoin` on their own.
+
 - [ ] T-4047 the visibility decision is applied on one read path only. `get_missing_events` trims;
       `GET /event`, backfill (when it exists) and the outbound fan-out of PDUs do not, and
       `handleGetEvent` additionally serves `stored.JSON` unconditionally instead of the redacted form
