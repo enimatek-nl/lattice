@@ -66,6 +66,11 @@ type Error struct {
 	Code    Code           `json:"errcode"`
 	Message string         `json:"error"`
 	Extra   map[string]any `json:"-"`
+	// Status overrides the status the code alone would carry, and is used for the
+	// refusals whose cause is another server's answer. `M_UNKNOWN` on its own would be
+	// read as a fault of this homeserver, and an operator would look here when the
+	// problem is a peer that refused or did not reply.
+	Status int `json:"-"`
 }
 
 // Error implements the error interface.
@@ -86,6 +91,12 @@ func Newf(code Code, format string, args ...any) *Error {
 // WithExtra attaches additional top-level members to the response body.
 func (e *Error) WithExtra(extra map[string]any) *Error {
 	e.Extra = extra
+	return e
+}
+
+// WithStatus attaches the HTTP status this error should be answered with.
+func (e *Error) WithStatus(status int) *Error {
+	e.Status = status
 	return e
 }
 
@@ -171,6 +182,9 @@ var statusByCode = map[Code]int{
 func Status(e *Error) int {
 	if e == nil {
 		return http.StatusInternalServerError
+	}
+	if e.Status != 0 {
+		return e.Status
 	}
 	if status, ok := statusByCode[e.Code]; ok {
 		return status

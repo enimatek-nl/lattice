@@ -442,13 +442,28 @@ func TestCreateRoomInviteList(t *testing.T) {
 		t.Errorf("the invitation is not in bob's sync: %v", body["rooms"])
 	}
 
-	// Inviting a user on another server is refused outright: creating the room and
-	// quietly dropping the invitation would leave a room that is not the one the client
-	// asked for.
-	remote := h.post(t, "/_matrix/client/v3/createRoom",
-		map[string]any{"invite": []string{"@someone:elsewhere.example"}}, aliceToken)
-	if remote.status != http.StatusNotImplemented {
-		t.Errorf("creating a room with a remote invite: status %d, want 501 (body %s)", remote.status, remote.body)
+	// A room created with a user who lives elsewhere is created. The room is this server's to
+	// make; what it cannot do on its own is invite that user, because the invited user's own
+	// homeserver has to countersign the invite. There is no server at elsewhere.example in this
+	// harness, so the invitation does not land — and it is not written down either, because an
+	// invite only this server signed is not something the room will ever believe. The client is
+	// left a room it can invite through, rather than an error that would have destroyed a room
+	// that now exists. Two homeservers that do answer each other are covered by
+	// Complement's TestFederationRejectInvite, where two homeservers do answer.
+	remote := h.mustStatus(t, h.post(t, "/_matrix/client/v3/createRoom",
+		map[string]any{"invite": []string{"@someone:elsewhere.example"}}, aliceToken), http.StatusOK)
+	remoteRoom, _ := remote.decoded(t)["room_id"].(string)
+	if remoteRoom == "" {
+		t.Fatalf("no room was created: %v", remote.decoded(t))
+	}
+	members = h.mustStatus(t, h.get("/_matrix/client/v3/rooms/"+remoteRoom+"/members", aliceToken), http.StatusOK).decoded(t)
+	chunk, _ = members["chunk"].([]any)
+	for _, entry := range chunk {
+		event, _ := entry.(map[string]any)
+		content, _ := event["content"].(map[string]any)
+		if content["membership"] == "invite" {
+			t.Errorf("a remote invite was stored although the other server never countersigned it: %v", event)
+		}
 	}
 }
 
