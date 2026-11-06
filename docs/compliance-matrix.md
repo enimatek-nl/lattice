@@ -206,21 +206,25 @@ membership, alias and M1-regression subset, and it is reported as such.
    that a version 1 room that disagrees between servers is investigated rather than assumed away.
    Interoperability against Synapse on such a room is not tested.
 
-## Latest full run (2026-11-11)
+## Latest full runs (2026-11-11)
 
-`RUN='.*' COMPLEMENT_LOCAL_MIGRATIONS=true scripts/complement.sh -v`, commit `9535c64`:
-**89 passing, 130 failing, 1 skipped** (was 86 / 133 / 1). Newly passing: the two
-`TestRestrictedRoomsSpacesSummary*` tests, `TestClientSpacesSummaryJoinRules` and
-`TestFederatedClientSpaces` — all four were waiting on the room hierarchy endpoint, which is now
-implemented on both listeners (REQ-SPACE-001..003, `.agent-work/T-4051`).
+`RUN='.*' COMPLEMENT_LOCAL_MIGRATIONS=true scripts/complement.sh -v`.
 
-One entry in the newly-failing list is not a regression: `TestRestrictedRoomsRemoteJoinFailOverInMSC3787Room`
-fails in about half the runs including alone, at a 5 second wait for a relayed member event, with
-auth-chain refusal lines in the log. It is recorded as `.agent-work/T-4056`.
+* On a polluted container network: **89 pass, 130 fail, 1 skip** (commit `9535c64`). Newly passing: the
+  two `TestRestrictedRoomsSpacesSummary*` tests, `TestClientSpacesSummaryJoinRules` and
+  `TestFederatedClientSpaces` — all four were waiting on the room hierarchy endpoint, now implemented on
+  both listeners (REQ-SPACE-001..003, `.agent-work/T-4051`).
+* After fixing the environment (`.agent-work/T-4056`): **90 pass, 129 fail, 1 skip**, nothing newly
+  failing. The difference is `TestRestrictedRoomsRemoteJoinFailOverInMSC3787Room`, which had been flaky
+  because rootless podman kept answering an old network's DNS record: a homeserver container dialled
+  `hs1` at an address from a deleted deployment and was refused for presenting the wrong certificate.
+  `scripts/complement.sh` now reports that condition instead of letting it look like protocol failures.
 
-Operational note, because it invalidates a run silently: leaked podman volumes from earlier Complement
-runs reach the daemon's 2048 volume-lock limit and every deployment then fails with
-`exceeded num_locks (2048)`, which looks like dozens of protocol failures. `docker volume prune -f`
-clears it; a full run that fails in a block of ~0.5 second tests means check the volume count first.
+Two environment conditions can invalidate a run without touching the protocol, and both are now
+reported by the script before it starts: leaked anonymous volumes reaching podman's 2048 volume-lock
+limit, and `aardvark-dns` record files left behind by networks that no longer exist. If a run fails in a
+block of ~0.5 second tests, check the volume count; if federation tests disagree about who is who, check
+the DNS records.
+
 The per-run logs and failure lists live in `.agent-work/COMPLIANCE-MATRIX.md` and
 `.agent-work/complement-failures-*.txt`.
