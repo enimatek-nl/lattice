@@ -1,0 +1,258 @@
+== building complement-lattice:latest
+Emulate Docker CLI using podman. Create /etc/containers/nodocker to quiet msg.
+[1/2] STEP 1/6: FROM docker.io/library/golang:1.26-alpine AS build
+[1/2] STEP 2/6: WORKDIR /src
+--> Using cache 41f8576e376f5a915c0cd6832b08f4051ae37a129db82b3671a7e094432d4207
+--> 41f8576e376f
+[1/2] STEP 3/6: COPY go.mod go.sum ./
+--> Using cache bd7c2a0c59707b6662d00c9867471257f5be93d0ac29d01409bae5efe586c854
+--> bd7c2a0c5970
+[1/2] STEP 4/6: RUN go mod download
+--> Using cache f930c821bfaf6d5986c6d3bd25a3323d5dba266132dfa98a6e80e4f481762d50
+--> f930c821bfaf
+[1/2] STEP 5/6: COPY . .
+--> f6e08d9157e3
+[1/2] STEP 6/6: RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/lattice ./cmd/lattice
+--> bf339b9e746d
+[2/2] STEP 1/10: FROM docker.io/library/alpine:3.20
+[2/2] STEP 2/10: RUN apk add --no-cache ca-certificates && update-ca-certificates
+--> Using cache 03e153230bb2614173f0c22b65ec72ac40d2eceb237ba66bd1c74a192c4ca588
+--> 03e153230bb2
+[2/2] STEP 3/10: COPY --from=build /out/lattice /usr/local/bin/lattice
+--> d2103d9e7d75
+[2/2] STEP 4/10: COPY deploy/complement/entrypoint.sh /entrypoint.sh
+--> 8ea351800bbe
+[2/2] STEP 5/10: RUN chmod 0755 /entrypoint.sh
+--> a45a6805fe9c
+[2/2] STEP 6/10: ENV LATTICE_DATA_DIR=/data
+--> 3127c9ae8e8e
+[2/2] STEP 7/10: VOLUME ["/data"]
+--> 2d3fcffcf804
+[2/2] STEP 8/10: EXPOSE 8008 8448
+--> 615d9a2a869f
+[2/2] STEP 9/10: HEALTHCHECK --interval=5s --timeout=5s --start-period=5s --retries=5 	CMD ["/usr/local/bin/lattice", "healthcheck", "-addr", "127.0.0.1:8008"]
+time="2026-11-06T13:35:03+01:00" level=warning msg="HEALTHCHECK is not supported for OCI image format and will be ignored. Must use `docker` format"
+--> 6603ec937836
+[2/2] STEP 10/10: ENTRYPOINT ["/entrypoint.sh"]
+[2/2] COMMIT complement-lattice:latest
+time="2026-11-06T13:35:03+01:00" level=warning msg="HEALTHCHECK is not supported for OCI image format and will be ignored. Must use `docker` format"
+--> feb32eaba0b3
+Successfully tagged localhost/complement-lattice:latest
+feb32eaba0b3016c556228a52236cf572fbc29d6cfa38d4c4581e1e070c39236
+!! 328 anonymous volumes in the podman store; deploy failures below may be lock exhaustion, not test failures (see the comment above for how to clear them)
+== running Complement (filter: TestInboundCanReturnMissingEvents, packages in parallel: 2)
+2026/11/06 13:35:06 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:fed CACertificate:0x316ba0110c08 CAPrivateKey:0x316ba04f0930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+=== RUN   TestInboundCanReturnMissingEvents
+    federation_room_get_missing_events_test.go:340: Deploy times: 1.496913761s blueprints, 671.264663ms containers
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (1.731257ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (5.713765ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/capabilities => 200 OK (1.080588ms)
+=== RUN   TestInboundCanReturnMissingEvents/Inbound_federation_can_return_missing_events_for_world_readable_visibility
+=== NAME  TestInboundCanReturnMissingEvents
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/createRoom => 200 OK (13.254314ms)
+    client.go:893: [CSAPI] PUT hs1/_matrix/client/v3/rooms/!Gq6HLjsZQ-eRuVEyePziHjLPr79DkA:hs1/state/m.room.history_visibility/ => 200 OK (11.024095ms)
+=== NAME  TestInboundCanReturnMissingEvents/Inbound_federation_can_return_missing_events_for_world_readable_visibility
+    federation_room_get_missing_events_test.go:372: SendEventSynced waiting for event ID $fI_f4yQbdoHYpuDvhylF91k5jtu1STPaUoPD2n-r2Rw
+=== NAME  TestInboundCanReturnMissingEvents
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (6.185438ms)
+    client.go:893: [CSAPI] PUT hs1/_matrix/client/v3/rooms/!Gq6HLjsZQ-eRuVEyePziHjLPr79DkA:hs1/send/m.room.message/2 => 200 OK (6.912175ms)
+=== NAME  TestInboundCanReturnMissingEvents/Inbound_federation_can_return_missing_events_for_world_readable_visibility
+    federation_room_get_missing_events_test.go:380: SendEventSynced waiting for event ID $0_QBZbL1OtE3zpbKE9N0vmCtSU_mD9XrKqV4eYqr6sY
+=== NAME  TestInboundCanReturnMissingEvents
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (10.662167ms)
+=== NAME  TestInboundCanReturnMissingEvents/Inbound_federation_can_return_missing_events_for_world_readable_visibility
+    federation_room_get_missing_events_test.go:389: Server.MustJoinRoom joined room ID !Gq6HLjsZQ-eRuVEyePziHjLPr79DkA:hs1
+=== NAME  TestInboundCanReturnMissingEvents
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (13.947278ms)
+=== NAME  TestInboundCanReturnMissingEvents/Inbound_federation_can_return_missing_events_for_world_readable_visibility
+    server.go:299: [SSAPI] POST hs1/_matrix/federation/v1/get_missing_events/!Gq6HLjsZQ-eRuVEyePziHjLPr79DkA:hs1 => 2xx (5.776603ms)
+    federation_room_get_missing_events_test.go:471: extra events returned: &{eventV1:{redacted:false eventJSON:[123 34 97 117 116 104 95 101 118 101 110 116 115 34 58 91 34 36 67 118 104 83 103 111 49 69 121 45 112 110 83 97 110 121 84 108 53 105 90 74 84 84 51 69 106 54 104 74 112 56 67 78 105 103 51 71 71 116 76 122 99 34 44 34 36 82 79 105 81 57 108 69 102 103 71 70 53 120 85 121 55 70 82 78 69 105 73 87 82 72 73 72 98 102 83 101 77 75 51 100 45 121 118 106 119 78 49 52 34 44 34 36 88 89 108 68 82 65 66 52 68 68 75 99 104 99 52 106 106 86 65 67 118 88 51 98 70 73 87 113 78 83 69 119 75 104 49 108 107 83 87 119 104 56 115 34 93 44 34 99 111 110 116 101 110 116 34 58 123 34 109 101 109 98 101 114 115 104 105 112 34 58 34 106 111 105 110 34 125 44 34 100 101 112 116 104 34 58 56 44 34 104 97 115 104 101 115 34 58 123 34 115 104 97 50 53 54 34 58 34 49 71 82 71 90 112 51 107 71 114 89 122 89 108 115 79 53 83 98 74 80 111 121 73 48 117 117 51 122 104 103 68 43 77 121 51 66 110 111 90 107 104 77 34 125 44 34 111 114 105 103 105 110 34 58 34 104 111 115 116 46 100 111 99 107 101 114 46 105 110 116 101 114 110 97 108 58 49 48 50 52 34 44 34 111 114 105 103 105 110 95 115 101 114 118 101 114 95 116 115 34 58 49 55 57 51 57 54 56 53 49 48 48 54 50 44 34 112 114 101 118 95 101 118 101 110 116 115 34 58 91 34 36 48 95 81 66 90 98 76 49 79 116 69 51 122 112 98 75 69 57 78 48 118 109 67 116 83 85 95 109 68 57 88 114 75 113 86 52 101 89 113 114 54 115 89 34 93 44 34 112 114 101 118 95 115 116 97 116 101 34 58 91 93 44 34 114 111 111 109 95 105 100 34 58 34 33 71 113 54 72 76 106 115 90 81 45 101 82 117 86 69 121 101 80 122 105 72 106 76 80 114 55 57 68 107 65 58 104 115 49 34 44 34 115 101 110 100 101 114 34 58 34 64 99 104 97 114 108 105 101 58 104 111 115 116 46 100 111 99 107 101 114 46 105 110 116 101 114 110 97 108 58 49 48 50 52 34 44 34 115 105 103 110 97 116 117 114 101 115 34 58 123 34 104 111 115 116 46 100 111 99 107 101 114 46 105 110 116 101 114 110 97 108 58 49 48 50 52 34 58 123 34 101 100 50 53 53 49 57 58 99 111 109 112 108 101 109 101 110 116 95 49 55 50 52 57 101 99 51 99 52 55 102 50 100 54 48 98 54 97 48 99 50 52 97 56 102 57 99 56 100 50 99 49 54 52 53 51 102 48 51 56 50 55 97 102 99 53 98 102 55 100 48 99 102 52 99 98 97 54 98 51 56 56 102 34 58 34 72 116 102 103 56 120 52 48 83 74 65 51 88 69 48 107 81 113 74 88 84 107 75 82 83 73 65 111 107 47 57 118 78 72 69 53 113 65 100 122 119 100 108 47 104 87 115 66 82 48 73 99 87 109 114 111 102 74 71 57 110 47 71 113 106 115 48 65 120 108 89 107 87 49 117 111 118 77 56 90 70 43 106 54 68 65 34 125 44 34 104 115 49 34 58 123 34 101 100 50 53 53 49 57 58 118 49 34 58 34 117 87 51 70 88 102 89 49 74 115 76 71 114 77 77 79 114 53 104 77 97 73 114 83 106 72 53 82 120 67 48 100 54 53 48 119 118 56 66 67 67 114 113 70 82 50 117 108 43 106 51 73 51 110 43 54 53 107 74 100 51 113 117 55 89 73 71 121 54 103 66 82 111 81 54 106 50 71 113 109 119 66 88 106 68 103 34 125 125 44 34 115 116 97 116 101 95 107 101 121 34 58 34 64 99 104 97 114 108 105 101 58 104 111 115 116 46 100 111 99 107 101 114 46 105 110 116 101 114 110 97 108 58 49 48 50 52 34 44 34 116 121 112 101 34 58 34 109 46 114 111 111 109 46 109 101 109 98 101 114 34 125] roomVersion:11 eventFields:{RoomID:!Gq6HLjsZQ-eRuVEyePziHjLPr79DkA:hs1 SenderID:@charlie:host.docker.internal:1024 Type:m.room.member StateKey:0x316ba0640b00 Content:[123 34 109 101 109 98 101 114 115 104 105 112 34 58 34 106 111 105 110 34 125] Redacts: Depth:8 Unsigned:[] OriginServerTS:1793968510062} EventIDRaw: PrevEvents:[] AuthEvents:[] UnstableSticky:{DurationMillis:0} StableSticky:{DurationMillis:0}} PrevEvents:[$0_QBZbL1OtE3zpbKE9N0vmCtSU_mD9XrKqV4eYqr6sY] AuthEvents:[$CvhSgo1Ey-pnSanyTl5iZJTT3Ej6hJp8CNig3GGtLzc $ROiQ9lEfgGF5xUy7FRNEiIWRHIHbfSeMK3d-yvjwN14 $XYlDRAB4DDKchc4jjVACvX3bFIWqNSEwKh1lkSWwh8s] PrevStateEvents:[]}
+=== RUN   TestInboundCanReturnMissingEvents/Inbound_federation_can_return_missing_events_for_shared_visibility
+=== NAME  TestInboundCanReturnMissingEvents
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/createRoom => 200 OK (28.576394ms)
+    client.go:893: [CSAPI] PUT hs1/_matrix/client/v3/rooms/!FWE1gqp1D7ZSvAz4QJ1YCn-yP2NH_w:hs1/state/m.room.history_visibility/ => 200 OK (12.862102ms)
+=== NAME  TestInboundCanReturnMissingEvents/Inbound_federation_can_return_missing_events_for_shared_visibility
+    federation_room_get_missing_events_test.go:372: SendEventSynced waiting for event ID $4ekctc4XkgFCT1zcqYmM3fg4SLqOAFhY8kc0JUz49EU
+=== NAME  TestInboundCanReturnMissingEvents
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (20.485118ms)
+    client.go:893: [CSAPI] PUT hs1/_matrix/client/v3/rooms/!FWE1gqp1D7ZSvAz4QJ1YCn-yP2NH_w:hs1/send/m.room.message/4 => 200 OK (9.881569ms)
+=== NAME  TestInboundCanReturnMissingEvents/Inbound_federation_can_return_missing_events_for_shared_visibility
+    federation_room_get_missing_events_test.go:380: SendEventSynced waiting for event ID $VUaXYnfcZsY9Sm6w3zK5LGLKlXK-urFlOEfjZb2xF7s
+=== NAME  TestInboundCanReturnMissingEvents
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (23.410318ms)
+=== NAME  TestInboundCanReturnMissingEvents/Inbound_federation_can_return_missing_events_for_shared_visibility
+    federation_room_get_missing_events_test.go:389: Server.MustJoinRoom joined room ID !FWE1gqp1D7ZSvAz4QJ1YCn-yP2NH_w:hs1
+=== NAME  TestInboundCanReturnMissingEvents
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (22.458519ms)
+=== NAME  TestInboundCanReturnMissingEvents/Inbound_federation_can_return_missing_events_for_shared_visibility
+    server.go:299: [SSAPI] POST hs1/_matrix/federation/v1/get_missing_events/!FWE1gqp1D7ZSvAz4QJ1YCn-yP2NH_w:hs1 => 2xx (5.784397ms)
+    federation_room_get_missing_events_test.go:430: [31mEqual not a message event: got 'm.room.history_visibility' want 'm.room.message'[39m
+    federation_room_get_missing_events_test.go:440: expected 'msgtype' in content, but didn't find it: {"auth_events":["$-z78d-j9F3v3kWBRWiZS6A3zB8uRUr_hUwP-erXJp9U","$CJyhAjwnDzmjXVvhhWhdiA89VUOHv1Sbh2uXNWSQemw","$abe8kzFC9scIYhqT8LWASKkK-noozvB__wUD1f0AkPI"],"content":{"history_visibility":"shared"},"depth":6,"hashes":{"sha256":"qkmwG3o+DqDuTmWFOqbySdo5gj6VOzxTfQIs9c6i5NE"},"origin":"hs1","origin_server_ts":1793968510145,"prev_events":["$Ln_Uv2I-henO9WEWfH2DyZigZVCJoNgazd2UIFFlRrM"],"room_id":"!FWE1gqp1D7ZSvAz4QJ1YCn-yP2NH_w:hs1","sender":"@user-1:hs1","signatures":{"hs1":{"ed25519:v1":"is6XA/Dp3qyhzuutxmI+kPPnTzMwdip5iFOtstxu9Ewu8iqtCJ1V/kJtl92kJuk6HWcYxQtPHhLZDcgbwdPnDQ"}},"state_key":"","type":"m.room.history_visibility"}
+=== RUN   TestInboundCanReturnMissingEvents/Inbound_federation_can_return_missing_events_for_invited_visibility
+=== NAME  TestInboundCanReturnMissingEvents
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/createRoom => 200 OK (30.62517ms)
+    client.go:893: [CSAPI] PUT hs1/_matrix/client/v3/rooms/!7lquB0SELhqZT8UhMLtyiceVTo_O9Q:hs1/state/m.room.history_visibility/ => 200 OK (11.295043ms)
+=== NAME  TestInboundCanReturnMissingEvents/Inbound_federation_can_return_missing_events_for_invited_visibility
+    federation_room_get_missing_events_test.go:372: SendEventSynced waiting for event ID $VebdFJuRP68qBMN9MUTW4Y9D9OvcS2XkI83WrrGlPoc
+=== NAME  TestInboundCanReturnMissingEvents
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (28.182112ms)
+    client.go:893: [CSAPI] PUT hs1/_matrix/client/v3/rooms/!7lquB0SELhqZT8UhMLtyiceVTo_O9Q:hs1/send/m.room.message/6 => 200 OK (10.122085ms)
+=== NAME  TestInboundCanReturnMissingEvents/Inbound_federation_can_return_missing_events_for_invited_visibility
+    federation_room_get_missing_events_test.go:380: SendEventSynced waiting for event ID $8Ehk4TeeZc3uV5T3cPsifTEWh-5AQe1CIIe_Bq7BrLw
+=== NAME  TestInboundCanReturnMissingEvents
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (40.095075ms)
+=== NAME  TestInboundCanReturnMissingEvents/Inbound_federation_can_return_missing_events_for_invited_visibility
+    federation_room_get_missing_events_test.go:389: Server.MustJoinRoom joined room ID !7lquB0SELhqZT8UhMLtyiceVTo_O9Q:hs1
+=== NAME  TestInboundCanReturnMissingEvents
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (36.266261ms)
+=== NAME  TestInboundCanReturnMissingEvents/Inbound_federation_can_return_missing_events_for_invited_visibility
+    server.go:299: [SSAPI] POST hs1/_matrix/federation/v1/get_missing_events/!7lquB0SELhqZT8UhMLtyiceVTo_O9Q:hs1 => 2xx (8.119466ms)
+    federation_room_get_missing_events_test.go:435: Expected event to be redacted
+=== RUN   TestInboundCanReturnMissingEvents/Inbound_federation_can_return_missing_events_for_joined_visibility
+=== NAME  TestInboundCanReturnMissingEvents
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/createRoom => 200 OK (32.942103ms)
+    client.go:893: [CSAPI] PUT hs1/_matrix/client/v3/rooms/!SHD19ve6C0yfG8Ock52cBcTBd4Iwsw:hs1/state/m.room.history_visibility/ => 200 OK (8.550607ms)
+=== NAME  TestInboundCanReturnMissingEvents/Inbound_federation_can_return_missing_events_for_joined_visibility
+    federation_room_get_missing_events_test.go:372: SendEventSynced waiting for event ID $KwUvZj9c3AQWe3M7z1YW7f6DRGd35YkLKVVgAbp0gU4
+=== NAME  TestInboundCanReturnMissingEvents
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (29.122423ms)
+    client.go:893: [CSAPI] PUT hs1/_matrix/client/v3/rooms/!SHD19ve6C0yfG8Ock52cBcTBd4Iwsw:hs1/send/m.room.message/8 => 200 OK (11.436698ms)
+=== NAME  TestInboundCanReturnMissingEvents/Inbound_federation_can_return_missing_events_for_joined_visibility
+    federation_room_get_missing_events_test.go:380: SendEventSynced waiting for event ID $zZsD8RnQf4kOD3Lhb1_-mIKLzGPpd8_yC3nKnnSO0RM
+=== NAME  TestInboundCanReturnMissingEvents
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (43.00825ms)
+=== NAME  TestInboundCanReturnMissingEvents/Inbound_federation_can_return_missing_events_for_joined_visibility
+    federation_room_get_missing_events_test.go:389: Server.MustJoinRoom joined room ID !SHD19ve6C0yfG8Ock52cBcTBd4Iwsw:hs1
+=== NAME  TestInboundCanReturnMissingEvents
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (41.759143ms)
+=== NAME  TestInboundCanReturnMissingEvents/Inbound_federation_can_return_missing_events_for_joined_visibility
+    server.go:299: [SSAPI] POST hs1/_matrix/federation/v1/get_missing_events/!SHD19ve6C0yfG8Ock52cBcTBd4Iwsw:hs1 => 2xx (5.919133ms)
+    federation_room_get_missing_events_test.go:435: Expected event to be redacted
+2026/11/06 13:35:10 ============================================
+
+
+2026/11/06 13:35:10 eb7fc881c35881d7726486276ddb27d53b264391518393cdc289c64ed3bd1c1c : Server logs:
+{"time":"2026-11-06T12:35:08.933698975Z","level":"INFO","msg":"lattice starting","server_name":"hs1","version":"0.1.0-dev","client_addr":"0.0.0.0:8008","federation_addr":"0.0.0.0:8448","registration_mode":"open"}
+{"time":"2026-11-06T12:35:08.95034566Z","level":"INFO","msg":"listening","addr":"0.0.0.0:8448","tls":true}
+{"time":"2026-11-06T12:35:08.950352722Z","level":"INFO","msg":"listening","addr":"0.0.0.0:8008","tls":false}
+{"time":"2026-11-06T12:35:08.981722986Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/versions","status":200,"bytes":181,"duration_ms":0,"request_id":"6G93XPB0pZFb"}
+{"time":"2026-11-06T12:35:08.983562759Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/register","status":401,"bytes":185,"duration_ms":0,"request_id":"OYA3BH9V6sxd"}
+{"time":"2026-11-06T12:35:08.98951204Z","level":"INFO","msg":"account registered","user_id":"@user-1:hs1","device_id":"k5I8GDyiGtQ","admin":false}
+{"time":"2026-11-06T12:35:08.989562087Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/register","status":200,"bytes":113,"duration_ms":5,"request_id":"QE43k3Bs2G-q"}
+{"time":"2026-11-06T12:35:09.94126612Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/capabilities","status":200,"bytes":251,"duration_ms":0,"request_id":"EMGVt12lYn1q"}
+{"time":"2026-11-06T12:35:09.954700023Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/createRoom","status":200,"bytes":50,"duration_ms":12,"request_id":"wEF9jUjMxT5T"}
+{"time":"2026-11-06T12:35:09.965788296Z","level":"INFO","msg":"request","method":"PUT","path":"/_matrix/client/v3/rooms/!Gq6HLjsZQ-eRuVEyePziHjLPr79DkA:hs1/state/m.room.history_visibility/","status":200,"bytes":60,"duration_ms":10,"request_id":"T6d_pRaoJm7H"}
+{"time":"2026-11-06T12:35:09.972269303Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":8477,"duration_ms":5,"request_id":"0xw_eW5suDDj"}
+{"time":"2026-11-06T12:35:09.979489511Z","level":"INFO","msg":"request","method":"PUT","path":"/_matrix/client/v3/rooms/!Gq6HLjsZQ-eRuVEyePziHjLPr79DkA:hs1/send/m.room.message/2","status":200,"bytes":60,"duration_ms":6,"request_id":"TdtyzdCarmR1"}
+{"time":"2026-11-06T12:35:09.990253245Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":9200,"duration_ms":10,"request_id":"Au4NutLseR9u"}
+{"time":"2026-11-06T12:35:10.061707563Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/federation/v1/make_join/!Gq6HLjsZQ-eRuVEyePziHjLPr79DkA:hs1/@charlie:host.docker.internal:1024","status":200,"bytes":508,"duration_ms":65,"request_id":"-JjSKcYxT1jB"}
+{"time":"2026-11-06T12:35:10.089758932Z","level":"INFO","msg":"federation: a remote user joined a room this server holds","room_id":"!Gq6HLjsZQ-eRuVEyePziHjLPr79DkA:hs1","event_id":"$bZD8pKN_NV1XyqMfoXlqayMnIvpDvzBfvgbHd6VdFhM","sender":"@charlie:host.docker.internal:1024"}
+{"time":"2026-11-06T12:35:10.089812084Z","level":"INFO","msg":"request","method":"PUT","path":"/_matrix/federation/v2/send_join/!Gq6HLjsZQ-eRuVEyePziHjLPr79DkA:hs1/$bZD8pKN_NV1XyqMfoXlqayMnIvpDvzBfvgbHd6VdFhM","status":200,"bytes":7511,"duration_ms":25,"request_id":"O0VHhlrvw9r9"}
+{"time":"2026-11-06T12:35:10.105007379Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":10269,"duration_ms":13,"request_id":"jIk7_RNA4WRq"}
+{"time":"2026-11-06T12:35:10.111383863Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/federation/v1/get_missing_events/!Gq6HLjsZQ-eRuVEyePziHjLPr79DkA:hs1","status":200,"bytes":5086,"duration_ms":4,"request_id":"G8Vebj2w7YHj"}
+{"time":"2026-11-06T12:35:10.141252959Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/createRoom","status":200,"bytes":50,"duration_ms":27,"request_id":"u6VuggMaQI9o"}
+{"time":"2026-11-06T12:35:10.154282723Z","level":"INFO","msg":"request","method":"PUT","path":"/_matrix/client/v3/rooms/!FWE1gqp1D7ZSvAz4QJ1YCn-yP2NH_w:hs1/state/m.room.history_visibility/","status":200,"bytes":60,"duration_ms":12,"request_id":"4xr6smCsI66W"}
+{"time":"2026-11-06T12:35:10.175089301Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":14884,"duration_ms":19,"request_id":"0t5WmyAYXKCj"}
+{"time":"2026-11-06T12:35:10.185274343Z","level":"INFO","msg":"request","method":"PUT","path":"/_matrix/client/v3/rooms/!FWE1gqp1D7ZSvAz4QJ1YCn-yP2NH_w:hs1/send/m.room.message/4","status":200,"bytes":60,"duration_ms":9,"request_id":"qIz7PEWVlN2g"}
+{"time":"2026-11-06T12:35:10.209070705Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":15604,"duration_ms":22,"request_id":"nVrErGfJxZUR"}
+{"time":"2026-11-06T12:35:10.214913547Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/federation/v1/make_join/!FWE1gqp1D7ZSvAz4QJ1YCn-yP2NH_w:hs1/@charlie:host.docker.internal:1024","status":200,"bytes":508,"duration_ms":4,"request_id":"qzlBFT-CTnOI"}
+{"time":"2026-11-06T12:35:10.242805756Z","level":"INFO","msg":"federation: a remote user joined a room this server holds","room_id":"!FWE1gqp1D7ZSvAz4QJ1YCn-yP2NH_w:hs1","event_id":"$vslJf65qrKS3yDbo3XhfPMjUlSSryaVWh4KI1gcFN_k","sender":"@charlie:host.docker.internal:1024"}
+{"time":"2026-11-06T12:35:10.242859599Z","level":"INFO","msg":"request","method":"PUT","path":"/_matrix/federation/v2/send_join/!FWE1gqp1D7ZSvAz4QJ1YCn-yP2NH_w:hs1/$vslJf65qrKS3yDbo3XhfPMjUlSSryaVWh4KI1gcFN_k","status":200,"bytes":7495,"duration_ms":25,"request_id":"AL0ha0Ws-ju-"}
+{"time":"2026-11-06T12:35:10.266503886Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":16607,"duration_ms":21,"request_id":"LhLVbSRQkOdF"}
+{"time":"2026-11-06T12:35:10.273107439Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/federation/v1/get_missing_events/!FWE1gqp1D7ZSvAz4QJ1YCn-yP2NH_w:hs1","status":200,"bytes":5078,"duration_ms":5,"request_id":"A3yJkuiEh5Ph"}
+{"time":"2026-11-06T12:35:10.304562261Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/createRoom","status":200,"bytes":50,"duration_ms":29,"request_id":"uUDZQvy7RSOs"}
+{"time":"2026-11-06T12:35:10.31612793Z","level":"INFO","msg":"request","method":"PUT","path":"/_matrix/client/v3/rooms/!7lquB0SELhqZT8UhMLtyiceVTo_O9Q:hs1/state/m.room.history_visibility/","status":200,"bytes":60,"duration_ms":10,"request_id":"c3fBo5yNDwLM"}
+{"time":"2026-11-06T12:35:10.34464407Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":21223,"duration_ms":27,"request_id":"49Yjc4xEfhK4"}
+{"time":"2026-11-06T12:35:10.35519209Z","level":"INFO","msg":"request","method":"PUT","path":"/_matrix/client/v3/rooms/!7lquB0SELhqZT8UhMLtyiceVTo_O9Q:hs1/send/m.room.message/6","status":200,"bytes":60,"duration_ms":9,"request_id":"imtopn3c3jDc"}
+{"time":"2026-11-06T12:35:10.39552918Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":21943,"duration_ms":39,"request_id":"fAWESPlKNlFW"}
+{"time":"2026-11-06T12:35:10.402273662Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/federation/v1/make_join/!7lquB0SELhqZT8UhMLtyiceVTo_O9Q:hs1/@charlie:host.docker.internal:1024","status":200,"bytes":508,"duration_ms":4,"request_id":"whUq4_kRVjsz"}
+{"time":"2026-11-06T12:35:10.43378528Z","level":"INFO","msg":"federation: a remote user joined a room this server holds","room_id":"!7lquB0SELhqZT8UhMLtyiceVTo_O9Q:hs1","event_id":"$uNIucdFeVswUqdgwG5Q7S9yinKFQf_asgG1Y9BogY6s","sender":"@charlie:host.docker.internal:1024"}
+{"time":"2026-11-06T12:35:10.433875753Z","level":"INFO","msg":"request","method":"PUT","path":"/_matrix/federation/v2/send_join/!7lquB0SELhqZT8UhMLtyiceVTo_O9Q:hs1/$uNIucdFeVswUqdgwG5Q7S9yinKFQf_asgG1Y9BogY6s","status":200,"bytes":7497,"duration_ms":29,"request_id":"033FvldhNVVj"}
+{"time":"2026-11-06T12:35:10.471204558Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":22946,"duration_ms":35,"request_id":"UEEnTWzzoiCF"}
+{"time":"2026-11-06T12:35:10.48014182Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/federation/v1/get_missing_events/!7lquB0SELhqZT8UhMLtyiceVTo_O9Q:hs1","status":200,"bytes":5079,"duration_ms":7,"request_id":"Ir-u-sr0hz3q"}
+{"time":"2026-11-06T12:35:10.515782627Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/createRoom","status":200,"bytes":50,"duration_ms":32,"request_id":"RFSOtfcL4UnL"}
+{"time":"2026-11-06T12:35:10.524537283Z","level":"INFO","msg":"request","method":"PUT","path":"/_matrix/client/v3/rooms/!SHD19ve6C0yfG8Ock52cBcTBd4Iwsw:hs1/state/m.room.history_visibility/","status":200,"bytes":60,"duration_ms":7,"request_id":"1bNYUBKmUmJQ"}
+{"time":"2026-11-06T12:35:10.553946827Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":27561,"duration_ms":28,"request_id":"TUrJkBRrAbcf"}
+{"time":"2026-11-06T12:35:10.565772995Z","level":"INFO","msg":"request","method":"PUT","path":"/_matrix/client/v3/rooms/!SHD19ve6C0yfG8Ock52cBcTBd4Iwsw:hs1/send/m.room.message/8","status":200,"bytes":60,"duration_ms":10,"request_id":"4WKHlmYVc5GB"}
+{"time":"2026-11-06T12:35:10.609139506Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":28281,"duration_ms":42,"request_id":"C3J0qKvtugi2"}
+{"time":"2026-11-06T12:35:10.615255569Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/federation/v1/make_join/!SHD19ve6C0yfG8Ock52cBcTBd4Iwsw:hs1/@charlie:host.docker.internal:1024","status":200,"bytes":508,"duration_ms":4,"request_id":"6t8_PUQh3uM2"}
+{"time":"2026-11-06T12:35:10.644176191Z","level":"INFO","msg":"federation: a remote user joined a room this server holds","room_id":"!SHD19ve6C0yfG8Ock52cBcTBd4Iwsw:hs1","event_id":"$PJQTwmJNSrndmCkGJJS6xUZaZEyAEGP8jZhej2T107E","sender":"@charlie:host.docker.internal:1024"}
+{"time":"2026-11-06T12:35:10.644232079Z","level":"INFO","msg":"request","method":"PUT","path":"/_matrix/federation/v2/send_join/!SHD19ve6C0yfG8Ock52cBcTBd4Iwsw:hs1/$PJQTwmJNSrndmCkGJJS6xUZaZEyAEGP8jZhej2T107E","status":200,"bytes":7495,"duration_ms":27,"request_id":"xEKLTVFqLL_P"}
+{"time":"2026-11-06T12:35:10.687088261Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":29284,"duration_ms":41,"request_id":"34n8-y_hAUls"}
+{"time":"2026-11-06T12:35:10.693704787Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/federation/v1/get_missing_events/!SHD19ve6C0yfG8Ock52cBcTBd4Iwsw:hs1","status":200,"bytes":5078,"duration_ms":5,"request_id":"6YjsgT4jAya8"}
+{"time":"2026-11-06T12:35:10.706690842Z","level":"INFO","msg":"lattice stopped"}
+2026/11/06 13:35:10 ============== eb7fc881c35881d7726486276ddb27d53b264391518393cdc289c64ed3bd1c1c : END LOGS ==============
+
+
+--- FAIL: TestInboundCanReturnMissingEvents (4.10s)
+    --- FAIL: TestInboundCanReturnMissingEvents/Inbound_federation_can_return_missing_events_for_world_readable_visibility (0.17s)
+    --- FAIL: TestInboundCanReturnMissingEvents/Inbound_federation_can_return_missing_events_for_shared_visibility (0.16s)
+    --- FAIL: TestInboundCanReturnMissingEvents/Inbound_federation_can_return_missing_events_for_invited_visibility (0.21s)
+    --- FAIL: TestInboundCanReturnMissingEvents/Inbound_federation_can_return_missing_events_for_joined_visibility (0.21s)
+FAIL
+FAIL	github.com/matrix-org/complement/tests	6.330s
+2026/11/06 13:35:06 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:csapi CACertificate:0x1e91a52fac08 CAPrivateKey:0x1e91a56ec930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/csapi	2.059s [no tests to run]
+2026/11/06 13:35:09 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc2836 CACertificate:0x3a64df19ec08 CAPrivateKey:0x3a64df1d0930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc2836	2.284s [no tests to run]
+2026/11/06 13:35:11 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3389 CACertificate:0x1eb7118f4c08 CAPrivateKey:0x1eb711966930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3389	1.433s [no tests to run]
+2026/11/06 13:35:11 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3391 CACertificate:0x2cf60c66ec08 CAPrivateKey:0x2cf60caba930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3391	0.829s [no tests to run]
+2026/11/06 13:35:14 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3757 CACertificate:0x34a76f86ac08 CAPrivateKey:0x34a76f90c930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3757	2.568s [no tests to run]
+2026/11/06 13:35:13 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3874 CACertificate:0x1e3662a6c08 CAPrivateKey:0x1e366572930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3874	1.439s [no tests to run]
+2026/11/06 13:35:16 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3890 CACertificate:0x1ee03ea6c08 CAPrivateKey:0x1ee03f22930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3890	2.403s [no tests to run]
+2026/11/06 13:35:16 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3902 CACertificate:0x3a215748ec08 CAPrivateKey:0x3a2157b34930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3902	2.038s [no tests to run]
+2026/11/06 13:35:19 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3930 CACertificate:0x6a33212ec08 CAPrivateKey:0x6a3327c6930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3930	2.058s [no tests to run]
+2026/11/06 13:35:19 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3967 CACertificate:0x16f958622c08 CAPrivateKey:0x16f95870e930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3967	1.496s [no tests to run]
+2026/11/06 13:35:20 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc4140 CACertificate:0x20e940c24c08 CAPrivateKey:0x20e9410569a0 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc4140	1.019s [no tests to run]
+2026/11/06 13:35:22 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc4155 CACertificate:0xd947b9a6c08 CAPrivateKey:0xd947c0e4930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc4155	2.129s [no tests to run]
+2026/11/06 13:35:23 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc4222 CACertificate:0x1d28a3b0ac08 CAPrivateKey:0x1d28a3b7c930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc4222	2.121s [no tests to run]
+2026/11/06 13:35:24 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc4242 CACertificate:0x28c59801ac08 CAPrivateKey:0x28c598474930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc4242	1.726s [no tests to run]
+2026/11/06 13:35:25 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc4306 CACertificate:0x28691cd30c08 CAPrivateKey:0x28691d05e930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc4306	2.422s [no tests to run]
+2026/11/06 13:35:25 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc4429 CACertificate:0x3b17938a2c08 CAPrivateKey:0x3b1793f10700 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc4429	1.188s [no tests to run]
+FAIL

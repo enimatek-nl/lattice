@@ -933,10 +933,18 @@ func presetState(preset Preset, creator string) []StateContent {
 		levels["invite"] = 0
 	case PresetPrivateChat:
 	}
+	// The power levels come first. These three are siblings in the room's graph — a creation
+	// batch is one event deep, and none of them cites another — so the order is not something
+	// the room's own events record, and it shows up only in the sequence a peer is handed when
+	// it asks to fill a hole in this room's history. Two things still argue for this order:
+	// every state event after it is authorised against the power levels, so the event that
+	// says who may write should be the one this server holds before it writes anything else;
+	// and a peer walking the history oldest-first sees the authority of the room before the
+	// state that authority permitted.
 	return []StateContent{
+		{Type: eventauth.TypePowerLevels, Content: levels},
 		{Type: eventauth.TypeJoinRules, Content: map[string]any{"join_rule": joinRule}},
 		{Type: "m.room.history_visibility", Content: map[string]any{"history_visibility": history}},
-		{Type: eventauth.TypePowerLevels, Content: levels},
 	}
 }
 
