@@ -108,6 +108,10 @@ const (
 // restricted join.
 const JACSKey = "join_authorised_via_users_server"
 
+// AllowConditionRoomMembership is the only allow condition the specification defines for a
+// `restricted` join rule: the joining user must be a *joined* member of the room the condition names.
+const AllowConditionRoomMembership = "m.room_membership"
+
 // Check applies the room version's authorisation rules to an event, given the room
 // state it is being authorised against. A nil return means the event is allowed.
 //
@@ -708,9 +712,13 @@ func MayJoinRestricted(rules roomversion.Rules, event map[string]any, state Snap
 		if !ok {
 			continue
 		}
+		// `m.room_membership` is the whole of the condition vocabulary the protocol has today,
+		// and the exact string matters: an entry of any other type is not a condition this server
+		// is allowed to treat as satisfied, however much it resembles one. A room that grows a
+		// second condition type in a later version must refuse here rather than guess.
 		kind, _ := stringOf(item, "type")
 		target, _ := stringOf(item, "room_id")
-		if kind != "m.room.member" || target == "" || target == roomID {
+		if kind != AllowConditionRoomMembership || target == "" || target == roomID {
 			continue
 		}
 		if opts.JoinedInRoom == nil {

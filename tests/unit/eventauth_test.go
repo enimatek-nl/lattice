@@ -889,7 +889,7 @@ func TestMayJoinRestricted(t *testing.T) {
 	state := baseState(t, "10", "restricted", defaultPL())
 	state.Add(mkEvent("m.room.join_rules", "$joinrules:example.org", "@alice:example.org",
 		map[string]any{"join_rule": "restricted", "allow": []any{
-			map[string]any{"type": "m.room.member", "room_id": "!gateway:example.org"},
+			map[string]any{"type": "m.room_membership", "room_id": "!gateway:example.org"},
 		}}, stateKey("")))
 
 	join := mkEvent("m.room.member", "$join:example.org", "@carol:example.org",
@@ -930,4 +930,137 @@ func sameStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// TestMayJoinRestrictedAllowConditions covers the allow conditions of a `restricted` room: the only
+// condition the specification defines is `m.room_membership`, satisfied by being a *joined* member of
+// the room it names. The type string matters as much as the rule: an entry written `m.room.member` is
+// not a condition this protocol knows, and a server that read it as one would be letting people into
+// rooms the room's owner never opened to them.
+func TestMayJoinRestrictedAllowConditions(t *testing.T) {
+	t.Parallel()
+
+	joinEvent := func(roomID string) map[string]any {
+		return mkEvent("m.room.member", "$join:example.org", "@bob:example.org",
+			map[string]any{"membership": "join"}, stateKey("@bob:example.org"),
+			map[string]any{"room_id": roomID})
+	}
+
+	for _, tc := range []struct {
+		name       string
+		version    string
+		joinRule   string
+		allow      []any
+		joinedIn   map[string]bool
+		wantRefuse bool
+	}{
+		{
+			name:       "joined to the room the condition names",
+			version:    "8",
+			joinRule:   "restricted",
+			allow:      []any{map[string]any{"type": "m.room_membership", "room_id": "!other:example.org"}},
+			joinedIn:   map[string]bool{"!other:example.org": true},
+			wantRefuse: false,
+		},
+		{
+			name:       "not joined to any room the conditions name",
+			version:    "8",
+			joinRule:   "restricted",
+			allow:      []any{map[string]any{"type": "m.room_membership", "room_id": "!other:example.org"}},
+			joinedIn:   map[string]bool{"!other:example.org": false},
+			wantRefuse: true,
+		},
+		{
+			name:       "one of several conditions is satisfied",
+			version:    "8",
+			joinRule:   "restricted",
+			allow:      []any{map[string]any{"type": "m.room_membership", "room_id": "!mods:example.org"}, map[string]any{"type": "m.room_membership", "room_id": "!users:example.org"}},
+			joinedIn:   map[string]bool{"!mods:example.org": false, "!users:example.org": true},
+			wantRefuse: false,
+		},
+		{
+			name:       "a condition of a type the protocol does not define",
+			version:    "8",
+			joinRule:   "restricted",
+			allow:      []any{map[string]any{"type": "m.room.member", "room_id": "!other:example.org"}},
+			joinedIn:   map[string]bool{"!other:example.org": true},
+			wantRefuse: true,
+		},
+		{
+			name:       "restricted with no conditions at all is invite only",
+			version:    "8",
+			joinRule:   "restricted",
+			allow:      nil,
+			joinedIn:   map[string]bool{"!other:example.org": true},
+			wantRefuse: true,
+		},
+		{
+			name:       "a public room asks nothing of the joiner",
+			version:    "8",
+			joinRule:   "public",
+			allow:      nil,
+			joinedIn:   nil,
+			wantRefuse: false,
+		},
+		{
+			// A join rule the room version cannot carry is not this function's to refuse: the
+			// effective rule in a version without `knock_restricted` is not a restricted one, and
+			// the refusal belongs to the authorisation rules, which reject a join the room's rule
+			// does not permit. What matters here is that this function does not treat the room as
+			// an allow-listed one and let people in through a condition the version never had.
+			name:       "a join rule the version cannot carry is not an allow list",
+			version:    "9",
+			joinRule:   "knock_restricted",
+			allow:      []any{map[string]any{"type": "m.room_membership", "room_id": "!other:example.org"}},
+			joinedIn:   map[string]bool{"!other:example.org": true},
+			wantRefuse: false,
+		},
+		{
+			name:       "knock_restricted evaluates the same conditions",
+			version:    "10",
+			joinRule:   "knock_restricted",
+			allow:      []any{map[string]any{"type": "m.room_membership", "room_id": "!other:example.org"}},
+			joinedIn:   map[string]bool{"!other:example.org": true},
+			wantRefuse: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rules, ok := roomversion.Get(tc.version)
+			if !ok {
+				t.Fatalf("room version %s is not known to this server", tc.version)
+			}
+			content := map[string]any{"join_rule": tc.joinRule}
+			if tc.allow != nil {
+				content["allow"] = tc.allow
+			}
+			state := baseState(t, tc.version, tc.joinRule, defaultPL())
+			// baseState writes the join rule without conditions; replace it with the one under
+			// test so the allow list is part of the room's state.
+			state.Add(mkEvent("m.room.join_rules", "$joinrules:example.org", "@alice:example.org",
+				content, stateKey("")))
+
+			var looked []string
+			opts := eventauth.Opts{JoinedInRoom: func(roomID, userID string) (bool, error) {
+				looked = append(looked, roomID+"|"+userID)
+				return tc.joinedIn[roomID], nil
+			}}
+			err := eventauth.MayJoinRestricted(rules, joinEvent("!restricted:example.org"), state, opts)
+			if tc.wantRefuse && err == nil {
+				t.Errorf("MayJoinRestricted allowed a join it should refuse (version %s, join_rule %s)",
+					tc.version, tc.joinRule)
+			}
+			if !tc.wantRefuse && err != nil {
+				t.Errorf("MayJoinRestricted refused a join it should allow: %v", err)
+			}
+			// The lookup is asked for the condition's room and about the user being joined, not
+			// about the sender: a condition is about the person joining.
+			for _, ask := range looked {
+				if ask != "!other:example.org|@bob:example.org" &&
+					ask != "!mods:example.org|@bob:example.org" &&
+					ask != "!users:example.org|@bob:example.org" {
+					t.Errorf("the allow list asked %q, wanting a condition room and @bob:example.org", ask)
+				}
+			}
+		})
+	}
 }
