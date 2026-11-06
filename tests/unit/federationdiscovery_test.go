@@ -265,3 +265,88 @@ func jsonQuoted(value string) string {
 	}
 	return string(encoded)
 }
+
+// TestFederationDiscoveryRetriesALookupFailureSoon checks how long a name this server could not
+// look up stays uncontactable. The specification's hour-long cache is for a well-known delegation
+// document, which a server publishes on purpose; a failed lookup is not that. A resolver hiccup,
+// an upstream SERVFAIL, or a container network that has not finished coming up should cost one
+// attempt, not an hour of silence about a perfectly healthy peer.
+func TestFederationDiscoveryRetriesALookupFailureSoon(t *testing.T) {
+	t.Parallel()
+	policy, _ := federation.NewIPpolicy(nil, nil)
+
+	clock := time.Now()
+	var hostLookups int32
+	d, _ := newDiscovery(policy, http.NotFoundHandler(), dnsAnswers{
+		host: func(name string) ([]string, error) {
+			attempt := atomic.AddInt32(&hostLookups, 1)
+			if attempt == 1 {
+				return nil, notFound(name)
+			}
+			return []string{"203.0.113.44"}, nil
+		},
+		srv: func(name string) ([]*net.SRV, error) { return nil, notFound(name) },
+	})
+	d.Now = func() time.Time { return clock }
+	ctx := context.Background()
+
+	if _, err := d.Resolve(ctx, "flaky.example"); err == nil {
+		t.Fatalf("a name that could not be looked up was reported as resolved")
+	}
+	first := atomic.LoadInt32(&hostLookups)
+
+	// Asked again in the same moment, the answer is the cached one: a room full of traffic to one
+	// bad name must not turn into a DNS storm.
+	if _, err := d.Resolve(ctx, "flaky.example"); err == nil ||
+		!strings.Contains(err.Error(), "recently") {
+		t.Errorf("the second attempt = %v, wanting the cached refusal to be used", err)
+	}
+	if got := atomic.LoadInt32(&hostLookups); got != first {
+		t.Errorf("the second attempt looked the name up again (%d lookups), wanting the cached answer", got)
+	}
+
+	// Once the short window has passed, the name is asked about again. This is the part that
+	// matters operationally: the failure was a moment, and treating it as a fact about the other
+	// server leaves a working peer unreachable for the length of the cache instead.
+	clock = clock.Add(time.Minute)
+	target, err := d.Resolve(ctx, "flaky.example")
+	if err != nil {
+		t.Fatalf("after the window, the retry failed: %v", err)
+	}
+	if target.DialURL != "https://203.0.113.44:8448" {
+		t.Errorf("the retry resolved to %q, wanting the address the lookup now gives", target.DialURL)
+	}
+	if got := atomic.LoadInt32(&hostLookups); got != first+1 {
+		t.Errorf("after a minute there have been %d host lookups, wanting one more than before", got)
+	}
+}
+
+// TestFederationDiscoverySurvivesAnUnreadableSRVRecord checks that a resolver which cannot answer
+// the SRV question at all does not make a server unreachable. The specification's order is: try
+// the service records, then the name itself on the federation port. A resolver that answers SERVFAIL
+// or goes quiet for a record type it does not serve — a container runtime's built-in DNS does this
+// for SRV — is not saying the peer is absent, and treating it as fatal leaves a server that resolves
+// fine and answers on 8448 permanently out of reach.
+func TestFederationDiscoverySurvivesAnUnreadableSRVRecord(t *testing.T) {
+	t.Parallel()
+	policy, _ := federation.NewIPpolicy(nil, nil)
+	d, _ := newDiscovery(policy, http.NotFoundHandler(), dnsAnswers{
+		host: func(name string) ([]string, error) {
+			if name == "quiet.example" {
+				return []string{"203.0.113.60"}, nil
+			}
+			return nil, notFound(name)
+		},
+		srv: func(name string) ([]*net.SRV, error) {
+			// Not "no records" — an answer the resolver cannot give at all.
+			return nil, &net.DNSError{Err: "read udp: i/o timeout", Name: name, IsTimeout: true}
+		},
+	})
+	target, err := d.Resolve(context.Background(), "quiet.example")
+	if err != nil {
+		t.Fatalf("a resolver that cannot read SRV records made the server uncontactable: %v", err)
+	}
+	if target.DialURL != "https://203.0.113.60:8448" {
+		t.Errorf("resolved to %q, wanting the name itself on the federation port", target.DialURL)
+	}
+}
