@@ -124,6 +124,9 @@ func (s *Service) SetMembership(ctx context.Context, change MembershipChange) (s
 	if change.Membership == eventauth.MembershipJoin {
 		var err error
 		if authoriser, err = s.RestrictedJoin(ctx, change.RoomID, change.Target); err != nil {
+			if eventID, ok := s.joinThroughNeighbours(ctx, change, err); ok {
+				return eventID, nil
+			}
 			return "", err
 		}
 	}

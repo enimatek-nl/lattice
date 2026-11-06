@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/enimatek/lattice/internal/matrixid"
@@ -47,7 +48,21 @@ type Sender struct {
 	// events to a server the room has thrown out. It is the room service; nil means no filtering,
 	// which is what a sender without a room service wired to it is.
 	ACLs RoomDenials
+
+	// flushMu serialises the passes this process makes over the queue. See FlushOnce.
+	flushMu sync.Mutex
 }
+
+// defaultSenderIdle is how long the sender waits between passes over an empty queue.
+//
+// Two and a half hundred milliseconds was tried and is not safe yet: with the queue worked that
+// eagerly, this server pushes a room's events at a neighbour while that neighbour is still in the
+// middle of joining the room, and the integration suite starts failing federation tests that
+// assume an event and the state around it arrive in one piece. Shortening this is a delivery
+// improvement the server genuinely wants — a power level change that reaches a neighbour seconds
+// late is a neighbour that answers the next question from stale state — but it has to come with
+// the ordering fix, not ahead of it.
+const defaultSenderIdle = 2 * time.Second
 
 // RoomDenials is the room service's answer to whether a room excludes a homeserver.
 type RoomDenials interface {
@@ -70,7 +85,7 @@ func NewSender(repo persist.FederationRepo, events persist.EventRepo, state pers
 		MaxAge:      24 * time.Hour,
 		MaxAttempts: 30,
 		Batch:       maxPDUsPerTransaction,
-		Idle:        2 * time.Second,
+		Idle:        defaultSenderIdle,
 
 		CleanupInterval:  time.Hour,
 		GivenUpRetention: givenUpRetention,
@@ -140,6 +155,7 @@ func (s *Sender) Relay(ctx context.Context, roomID, eventID string) error {
 			return fmt.Errorf("federation: cannot queue the event for %s: %w", destination, err)
 		}
 	}
+	// WAKE-OFF
 	return nil
 }
 
@@ -151,13 +167,17 @@ func (s *Sender) QueuePDU(ctx context.Context, destination, eventID string, pdu 
 	if destination == "" || len(pdu) == 0 {
 		return nil
 	}
-	return s.repo.Queue(ctx, &persist.FederationQueueItem{
+	if err := s.repo.Queue(ctx, &persist.FederationQueueItem{
 		Destination:   destination,
 		Kind:          persist.QueueKindPDU,
 		Payload:       string(pdu),
 		EventID:       eventID,
 		NextAttemptAt: s.now(),
-	})
+	}); err != nil {
+		return err
+	}
+	// WAKE-OFF
+	return nil
 }
 
 // queuedFor reports whether an event is already waiting for a destination.
@@ -176,17 +196,29 @@ func (s *Sender) EnqueueEDU(ctx context.Context, destination, eduType string, co
 	if err != nil {
 		return fmt.Errorf("federation: cannot encode the %s unit: %w", eduType, err)
 	}
-	return s.repo.Queue(ctx, &persist.FederationQueueItem{
+	if err := s.repo.Queue(ctx, &persist.FederationQueueItem{
 		Destination:   destination,
 		Kind:          persist.QueueKindEDU,
 		Payload:       string(payload),
 		NextAttemptAt: s.now(),
-	})
+	}); err != nil {
+		return err
+	}
+	// WAKE-OFF
+	return nil
 }
 
 // FlushOnce takes what is due, sends it grouped by destination, and puts back what a
 // remote refused. It returns how many items were delivered.
 func (s *Sender) FlushOnce(ctx context.Context) (int, error) {
+	// One pass at a time. The claim is atomic in the database, so two processes cannot take the
+	// same row; this is about the order a room's events leave in. Two passes running at once in
+	// this process can take the earlier event and the later one and deliver them concurrently,
+	// which hands a neighbour a room's state before the event that room's new state sits on. A
+	// neighbour then refuses an event it would have accepted a moment later, and a refusal is
+	// remembered.
+	s.flushMu.Lock()
+	defer s.flushMu.Unlock()
 	now := s.now()
 	items, err := s.repo.ClaimQueueItems(ctx, now, s.batch())
 	if err != nil {
@@ -320,7 +352,7 @@ func (s *Sender) retention() time.Duration {
 func (s *Sender) Run(ctx context.Context) error {
 	idle := s.Idle
 	if idle <= 0 {
-		idle = 2 * time.Second
+		idle = defaultSenderIdle
 	}
 	// The zero value makes the first pass clean up straight away, which is what a
 	// process that was down for a day needs when it comes back.

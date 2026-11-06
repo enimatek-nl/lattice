@@ -376,11 +376,11 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (string, error)
 		}
 	}
 
-	initial := presetState(req.Preset, req.Creator)
+	initial := presetState(req.Preset, req.Creator, req.Invite)
 	if len(req.PowerLevelOverride) > 0 {
 		initial = append(initial, StateContent{
 			Type:    eventauth.TypePowerLevels,
-			Content: MergePowerLevels(presetPowerLevels(req.Creator), req.PowerLevelOverride),
+			Content: MergePowerLevels(presetPowerLevels(req.Preset, req.Creator, req.Invite), req.PowerLevelOverride),
 		})
 	}
 	// The order is the specification's: the preset builds the defaults, `initial_state`
@@ -1012,19 +1012,16 @@ func (s *Service) newRoomID() (string, error) {
 // get wrong is the public row: a public room is joinable without an invitation, which is not the
 // same as its history being readable by people who never joined, and the preset does not make it
 // so. A server that starts a public room `world_readable` has published its history to the world
-// on the strength of a join rule that says nothing of the kind. `trusted_private_chat` differs
-// only in letting every member invite.
-func presetState(preset Preset, creator string) []StateContent {
+// on the strength of a join rule that says nothing of the kind. What the presets do to the power
+// levels — who may invite, and who the invitees turn out to be — is in presetPowerLevels.
+func presetState(preset Preset, creator string, invitees []string) []StateContent {
 	joinRule := "invite"
 	guestAccess := "can_join"
-	levels := presetPowerLevels(creator)
+	levels := presetPowerLevels(preset, creator, invitees)
 	switch preset {
 	case PresetPublicChat:
 		joinRule = "public"
 		guestAccess = "forbidden"
-	case PresetTrustedPrivateChat:
-		levels["invite"] = 0
-	case PresetPrivateChat:
 	}
 	// The power levels come first. These three are siblings in the room's graph — a creation
 	// batch is one event deep, and none of them cites another — so the order is not something
@@ -1043,19 +1040,47 @@ func presetState(preset Preset, creator string) []StateContent {
 }
 
 // presetPowerLevels is the power level layout a new room starts with.
-func presetPowerLevels(creator string) map[string]any {
-	return map[string]any{
-		"users":          map[string]any{creator: 100},
+//
+// The invitation level is the one value here that the specification does not decide for us. The
+// authorisation rule reads `invite` and defaults it to 0 when the event says nothing, but the event
+// we are about to write is ours to write, and what we write changes who can hand out seats: in a room
+// with a restricted join rule an invitation is a door key, because rule 4.3.5.1 lets an invited user
+// in past the restriction — so a room where every member may invite is a room whose restriction every
+// member can lift for a friend. A public room therefore starts at 50, which is what the other servers'
+// public rooms start at and what the interoperability suite expects of a room made with the public
+// preset. The two private presets start at 0, because a room someone built to pull a handful of
+// people into is meant to let those people pull in whoever they came for.
+//
+// `trusted_private_chat` does one more thing, and it is the column of the specification's preset
+// table that is easy to skip because it is not a join rule: every invitee is given the same power
+// level as the creator. A room created as a trusted private chat with three people in it is a room
+// where those three run the room, not a room where one of them can undo everything the other two do.
+func presetPowerLevels(preset Preset, creator string, invitees []string) map[string]any {
+	users := map[string]any{creator: 100}
+	levels := map[string]any{
+		"users":          users,
 		"users_default":  0,
 		"events_default": 0,
 		"state_default":  50,
-		"invite":         0,
+		"invite":         50,
 		"kick":           50,
 		"ban":            50,
 		"redact":         50,
 		"events":         map[string]any{},
 		"notifications":  map[string]any{"room": 50},
 	}
+	switch preset {
+	case PresetPrivateChat, PresetTrustedPrivateChat:
+		levels["invite"] = 0
+	}
+	if preset == PresetTrustedPrivateChat {
+		for _, invitee := range invitees {
+			if invitee != "" {
+				users[invitee] = 100
+			}
+		}
+	}
+	return levels
 }
 
 // MergePowerLevels overlays a client's override on the preset. The nesting is one

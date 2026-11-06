@@ -279,26 +279,37 @@ func (r *federationRepo) ClaimQueueItems(ctx context.Context, now time.Time, lim
 	if limit <= 0 {
 		return nil, nil
 	}
-	var ids []uint64
-	if err := r.db.WithContext(ctx).Model(&FederationQueueItem{}).
-		Where("dropped_at IS NULL AND next_attempt_at <= ?", now).
-		Order("destination ASC, id ASC").
-		Limit(limit).
-		Pluck("id", &ids).Error; err != nil {
-		return nil, err
-	}
-	if len(ids) == 0 {
-		return nil, nil
-	}
-	// Push the attempt time forward before the work starts: a crash mid-send costs a
-	// retry later, not a loop that never stops.
-	if err := r.db.WithContext(ctx).Model(&FederationQueueItem{}).
-		Where("id IN ?", ids).
-		Update("next_attempt_at", now.Add(queueClaimHold)).Error; err != nil {
-		return nil, err
-	}
 	var items []*FederationQueueItem
-	if err := r.db.WithContext(ctx).Where("id IN ?", ids).Order("destination ASC, id ASC").Find(&items).Error; err != nil {
+	// The look and the hold happen in one write transaction. Read the due rows and then push
+	// their attempt time forward in two separate statements and two workers — this process's
+	// worker and a flush asked for by a caller, or two workers in two processes — can read the
+	// same rows before either holds them, and both then send the same events and both settle
+	// the same rows afterwards. That is not a slower delivery; it is the same event reaching a
+	// neighbour twice, and one of the two passes settling a row the other is still working on.
+	// SQLite gives a write transaction the lock it needs to make the pair atomic, which is what
+	// the claim needs to be.
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var ids []uint64
+		if err := tx.Model(&FederationQueueItem{}).
+			Where("dropped_at IS NULL AND next_attempt_at <= ?", now).
+			Order("destination ASC, id ASC").
+			Limit(limit).
+			Pluck("id", &ids).Error; err != nil {
+			return err
+		}
+		if len(ids) == 0 {
+			return nil
+		}
+		// Push the attempt time forward before the work starts: a crash mid-send costs a
+		// retry later, not a loop that never stops.
+		if err := tx.Model(&FederationQueueItem{}).
+			Where("id IN ?", ids).
+			Update("next_attempt_at", now.Add(queueClaimHold)).Error; err != nil {
+			return err
+		}
+		return tx.Where("id IN ?", ids).Order("destination ASC, id ASC").Find(&items).Error
+	})
+	if err != nil {
 		return nil, err
 	}
 	return items, nil
