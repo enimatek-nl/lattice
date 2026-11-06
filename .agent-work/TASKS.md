@@ -722,7 +722,20 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
       filtered one, so it is flaky — probably a timing or ordering dependency in the join handshake.
       Reproduce with `RUN='TestRestrictedRooms.*'` before chasing it.
 
-- [ ] T-4054 fan-out ordering, then prompt delivery. Three findings, from today's runs:
+- [x] T-4054 fan-out ordering, then prompt delivery. Done in `9ce20d5`; see PROGRESS for what was
+      found. The sender wakes when work is queued; the queue claim is atomic; a neighbour's refusal
+      is retried instead of ending an event's journey; a refusal filed against an event ID is dropped
+      when the genuine event arrives; unobtainable signing keys are a question, not a verdict; a
+      failed key fetch is retried in two seconds rather than waited out for a minute. Full run after
+      it: **84 / 135 / 1**, nothing newly failing, and four restricted-room tests newly passing
+      (`NoCreatorsUsesPowerLevelsV11`, its knock variant, `RemoteJoin`, its MSC3787 variant).
+      Still failing in that cluster, in order of what they need: `TestRestrictedRoomsRemoteJoinFailOver`
+      and its MSC3787 variant (hs1 grants a restricted join for a user who has just left the allow
+      room on another server — hs1 has not been told the leave yet, so the answer is stale rather
+      than wrong; the fix is asking the neighbour for the allow room's current state when the
+      membership it needs is absent, or refusing on a known gap, not weakening the failover),
+      `TestRestrictedRoomsLocalJoinNoCreatorsUsesPowerLevelsV12` (we refuse to create version 12
+      rooms: a policy decision that has not been taken), and the two `SpacesSummary` tests (T-4051). Three findings, from today's runs:
       (a) The federation sender polls the queue and sleeps two seconds when it finds nothing, so an
       event this server accepts can sit unsent for two seconds. Complement's restricted-room tests act
       seconds later and read the neighbour's stale state: `TestRestrictedRoomsLocalJoinNoCreatorsUsesPowerLevelsV11`
@@ -742,8 +755,8 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
       restricted-room pair is now flaky rather than passing by accident. Do not fix it by weakening the
       failover.
 
-- [ ] T-4055 what a full run looks like today (2026-11-09, after `3a0cba4`): **80 passing, 139
-      failing, 1 skipped**. Against the previous full run, `TestRestrictedRoomsRemoteJoinLocalUser`
+- [x] T-4055 what a full run looked like on 2026-11-09 after `3a0cba4`: **80 passing, 139
+      failing, 1 skipped**, superseded by the 2026-11-10 run above (84 / 135 / 1). Against the previous full run, `TestRestrictedRoomsRemoteJoinLocalUser`
       and `TestRestrictedRoomsRemoteJoinLocalUserInMSC3787Room` newly pass, and
       `TestRestrictedRoomsRemoteJoin`, its MSC3787 variant and `TestDeviceListUpdates` newly fail — the
       restricted pair for the reason in T-4054(c), and `TestDeviceListUpdates` because it is load-flaky

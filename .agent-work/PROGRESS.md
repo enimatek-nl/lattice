@@ -1,5 +1,45 @@
 # Progress
 
+## 2026-11-10 — prompt delivery, and the verdict bugs it exposed (`9ce20d5`)
+
+T-4054 is done. The federation sender no longer sleeps two seconds over an empty queue: queuing work
+wakes the worker. That alone made our own integration suite fail 4–7 federation tests per run, and
+each failure turned out to be a real defect rather than a test that disliked speed.
+
+1. **The queue claim was not atomic.** SELECT of the due rows and UPDATE of their attempt time were
+   separate statements, so two passes could take the same rows and send the same events twice, then
+   settle the same rows twice. One write transaction now; `FlushOnce` also serialises passes in a
+   process so a room's later state cannot leave before the event that state sits on.
+2. **A neighbour\u2019s refusal ended an event\u2019s life.** Much of what neighbours refuse is "I cannot
+   judge this yet" — room unknown, auth events not held, predecessor missing — and that gap closes a
+   moment later on its own. Dropping over it leaves two servers\u2019 histories different forever. Refusals
+   are retried inside the existing budget; events refused on their merits are still given up on, with
+   the reason kept.
+3. **`InvalidEventError` lost its cause** (the reason was a formatted string), so `errors.Is` was
+   blind and callers had to read prose. It carries and unwraps the failure now.
+4. **"Could not obtain the keys" was reported as "the signature does not match"** and both were filed
+   as refusals. `events.ErrKeysUnavailable` separates a question about this server\u2019s reach from a
+   verdict about an event.
+5. **A refusal is filed against a name, and a name can be pinned to tampered bytes by anybody.** When
+   the genuine event turns up — signing itself, hashing to that name — `clearStaleVerdict` drops the
+   verdict that was about different bytes. The poison chain this removes was the source of
+   `auth rule 2.3: auth event \u2026 was rejected on receipt` on joins: one forged copy arriving first made
+   the room unjoinable, and whoever lied first decided what the room meant. Verdicts about repeated
+   forgeries still stand.
+6. **A failed key fetch cost a minute.** The keyring stamped the attempt before making it, so a
+   connection that never opened left every event from that neighbour unjudgeable for the whole
+   interval \u2014 enough to fail joins outright. An answered ask earns the interval, an unanswered one is
+   retried in two seconds; `TestFederationKeyringTriesAgainAfterAFailedAsk` covers both with an
+   injected clock.
+
+Measurement: 12 integration runs across the work, ending at 0 failures in five consecutive runs, and
+two clean `-race` runs. Complement: **84 passing / 135 failing / 1 skipped**, the best so far
+(previous 80/139/1), with **nothing newly failing** and four newly passing —
+`TestRestrictedRoomsLocalJoinNoCreatorsUsesPowerLevelsV11`, its knock variant,
+`TestRestrictedRoomsRemoteJoin` and its MSC3787 variant. The remaining restricted-cluster failures are
+recorded in T-4054: the `FailOver` pair (a resident server answering from allow-room state it has not
+been told about yet) and version 12 creation, which is a policy decision.
+
 ## 2026-11-09 — who may invite is the creating server\u2019s answer; a join it cannot sign for asks a neighbour
 
 Commit `3a0cba4`. Two Complement tests moved (`TestRestrictedRoomsRemoteJoinLocalUser` and its
