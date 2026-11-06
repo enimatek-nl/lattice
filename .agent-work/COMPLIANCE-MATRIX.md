@@ -179,8 +179,25 @@ served. Re-running it twice on 2026-11-06 (`.agent-work/next/msc4115d.log`,
 `typing1.log`) fails all three of its delivery subtests with `MustSyncUntil: timed out after
 5.0s`, consistently. Task T-4036.
 
-What remains outstanding in this family: the same lookup applied to `/state`-style reads, which
-MSC4115's scope does not clearly cover, so it is deliberately not claimed. And
+What remains outstanding in this family: the same lookup on the read paths that still serve
+events without a reader — `/context`, `/relations`, `/state`, the room directory and alias reads.
+That is in scope, not a grey area: in the merged specification the property is defined on the
+**client event format** itself (`ClientEventWithoutRoomID.unsigned.membership`,
+`x-addedInMatrixVersion: "1.11"`), not endpoint by endpoint, so it applies wherever this server
+hands a client an event. Task T-4038.
+
+Two sentences from that definition settle questions this session had been guessing at, so they are
+quoted rather than paraphrased: the value is the requesting user's `m.room.member` state "at the
+point of the event, **including any changes caused by the event**" — which is why a user's own
+join event carries `join`, which is what Complement's `TestMembershipOnEvents` checks — and "if
+the user had yet to join the room at the time of the event (i.e, they have no `m.room.member`
+state), this property is set to `leave`". The property is a **SHOULD**, with the exemption written
+out: servers "MAY omit it if necessary (for example, if calculating the value is expensive)"; the
+one documented place it is *not* populated is events pushed to application services, where there
+is no requesting user. So this server's choice to answer `leave` for a witnessed snapshot that
+held no member entry, and to answer nothing for an event it never witnessed, is within the
+specification and not a hedge — but T-4040's batching is worth doing all the same, because a
+SHOULD is not a licence to be slow. And
 `SendEventSynced waiting for event ID …` appears in some runs of `room_members_test.go:74`/`:88`
 and not others, which is T-4034 and recorded as intermittent rather than explained.
 

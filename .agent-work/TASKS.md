@@ -565,7 +565,7 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
       Two things it left behind, both tasks rather than footnotes: `ServeChunk` had been pairing
       events with rows by `len(out)`, so after any withheld event every later event in the chunk
       carried the previous event's `unsigned` — fixed by pairing by position, **not yet covered by
-      a test** (T-4037); and `/state`-style reads do not carry the field, which MSC4115's scope
+      a test** (T-4041); and `/state`-style reads do not carry the field, which MSC4115's scope
       does not clearly reach (T-4038).
       The steps below are kept because they record why the lookup is shaped the way it is.
 - [x] T-4033 (half). `handleMembers` read only `not_membership`; `membership=` was ignored. Fixed
@@ -596,7 +596,7 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
       per-room ephemeral store with an expiry (a typing notification is a claim that is true for
       ~30s, not history), feeding `/sync` `ephemeral.events`, `PUT /rooms/{roomID}/typing`, and
       forwarding to joined servers. Receipts (T-?) share that store.
-- [x] T-4037 the `ServeChunk` row/event misalignment is covered (2026-11-06).
+- [x] T-4041 the `ServeChunk` row/event misalignment is covered (2026-11-06).
       `TestServeChunkKeepsEachEventWithItsOwnUnsigned` in `tests/unit/serve_test.go` serves a chunk
       of a message with a transaction ID, a redaction whose target is not stored (withheld), and a
       topic with `PrevContent`; it asserts the surviving events carry their own `unsigned` and only
@@ -616,10 +616,24 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
       sync path before and after rather than assuming it is slow, and note that a chunk is where
       the withholding decision is *also* better made (a client seeing half of a redaction pair in
       one timeline is the failure `Withheld` exists to prevent).
-- [ ] T-4038 does MSC4115 cover `/state`, `/state/{type}/{key}`, `/context` and `/relations`?
-      `/messages` and `/event` now carry `unsigned.membership`; the state-style reads do not.
-      Read the MSC text and the specification section rather than guessing from another server's
-      behaviour, then either extend or record the boundary.
+- [ ] T-4038 put `unsigned.membership` on the read paths that still serve events to no particular
+      reader. Settled by reading the specification instead of another server: the property lives on
+      the **client event format** — `ClientEventWithoutRoomID.unsigned.membership`, added in Matrix
+      1.11, matrix-org/matrix-spec#1847 — so it is not an endpoint list and `/context`,
+      `/relations`, `/state`, `/aliases` and the room-directory reads are inside it. What is
+      outside it, explicitly: events pushed to an application service over
+      `PUT /_matrix/app/v1/transactions/{txnId}`, where there is no requesting user.
+      Mechanically: `rooms.Service.eventJSON` takes no reader and is called from ~12 places
+      (`reads.go` x5, `history.go`, `membership.go`, `aliases.go` x3, `directory.go` x2); some of
+      those already have a `requester` in scope and some do not. Thread it, and where a read
+      genuinely has no requesting user (application-service transaction delivery, server-to-server)
+      keep the reader-free `Serve` and say so in the comment. Two tests to write alongside: the
+      field on a `/context` chunk, and the field on `/relations` — Synapse has a known gap there
+      (element-hq/synapse#17487 omits it in relationship aggregation), so an implementation
+      reference is not a substitute for the spec sentence.
+      Note the permission the spec grants, since it changes what "expensive" costs are acceptable:
+      a server "MAY omit it if necessary (for example, if calculating the value is expensive)".
+      Ours is populated; T-4040 keeps that affordable.
 - [ ] T-4034 intermittent, not constant: `SendEventSynced waiting for event ID …` appears in some
       runs of `room_members_test.go:74`/`:88` and not in others (`.agent-work/next/mem1.log` and
       `mem2.log` show it; `prevbatch1.log` does not, with the same blueprint). So a sent event

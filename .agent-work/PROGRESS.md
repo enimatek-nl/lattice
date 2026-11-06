@@ -34,7 +34,7 @@ two `state_after` subtests as it has before. Local `go test ./tests/...` green.
 Found while in there: `ServeChunk` paired decoded events with stored rows by `len(out)`, so after
 any withheld event every later event in the chunk got the **previous event's** `unsigned` —
 someone's `prev_content` or transaction ID attached to a different event's body. Now paired by
-position. Fixed without a test, which is recorded as T-4037 rather than waved away.
+position. Fixed without a test, which is recorded as T-4041 rather than waved away.
 
 Then the environment, where my earlier conclusion was wrong. The deploy failures that made the
 full-suite tally meaningless are `allocating lock for new **volume**: exceeded num_locks (2048)`:
