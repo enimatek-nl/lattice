@@ -179,6 +179,7 @@ func NewWithOptions(ctx context.Context, cfg *config.Config, log *slog.Logger, o
 		Version:     Version,
 		E2EKeys:     deviceKeys,
 		DeviceLists: deviceKeys,
+		Invites:     roomService,
 	}
 	if cfg.Federation.Enabled {
 		policy, err := federation.NewIPpolicy(cfg.Federation.IPAllow, cfg.Federation.IPDeny)
@@ -235,6 +236,10 @@ func NewWithOptions(ctx context.Context, cfg *config.Config, log *slog.Logger, o
 		// A user joining from here is a new device list to the rest of the room, and only this
 		// server can say so.
 		roomService.SetDeviceListAnnouncer(deviceKeys)
+		// An invite for a user who lives elsewhere has to be countersigned by that user's own
+		// server before the room's other servers will believe it. This server holds the room,
+		// so it can build the event; the signature it cannot make for itself.
+		roomService.SetInviter(&federation.Inviter{Client: client, Name: cfg.ServerName, Log: log})
 		// A local user joining a room held elsewhere is carried by this handshake: ask a
 		// server that holds the room for the shape of the join, sign it here, hand it back.
 		// The room service decides when it is needed; this is the part that reaches out.

@@ -128,6 +128,9 @@ type Service struct {
 	// deviceListAnnouncer tells a user's other servers about their devices; nil until
 	// [Service.SetDeviceListAnnouncer].
 	deviceListAnnouncer DeviceListAnnouncer
+	// inviter carries an invite for a user who lives elsewhere to their own server; nil
+	// until [Service.SetInviter].
+	inviter RemoteInviter
 	// remoteJoin carries a local user into a room this server does not hold. It is nil
 	// until federation is wired up, and a room service without one refuses such a join
 	// rather than pretending the room does not exist.
@@ -328,15 +331,26 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (string, error)
 	initial = deduplicateState(initial)
 
 	// The invitation list is part of creating the room: a room created "with Bob in it"
-	// that Bob was never invited to is a different room from the one the client asked
-	// for. Remote users are refused before anything is written.
+	// that Bob was never invited to is a different room from the one the client asked for.
+	//
+	// Local users are invited as part of the room's first state, because that is one
+	// transaction and there is nobody else whose signature is needed. Remote users cannot be:
+	// their own homeserver has to countersign the invite, and that question can only be asked
+	// once the room exists. They are held for afterwards rather than refused — a room whose
+	// creation fails because one invitee's server was unreachable would tell the client that
+	// nothing happened when a room was in fact created.
+	var remoteInvites []string
 	for _, invited := range req.Invite {
 		if err := matrixid.UserValid(invited); err != nil {
 			return "", matrixerr.Newf(matrixerr.CodeInvalidParam, "%q is not a valid user ID.", invited)
 		}
 		domain, err := matrixid.UserDomain(invited)
-		if err != nil || !matrixid.IsLocal(domain, s.name) {
-			return "", ErrRemoteTarget
+		if err != nil {
+			return "", matrixerr.Newf(matrixerr.CodeInvalidParam, "%q is not a valid user ID.", invited)
+		}
+		if !matrixid.IsLocal(domain, s.name) {
+			remoteInvites = append(remoteInvites, invited)
+			continue
 		}
 		initial = append(initial, StateContent{
 			Type:     eventauth.TypeMember,
@@ -398,6 +412,19 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (string, error)
 	// announced here. A room whose creator is invisible to nobody is a room where the
 	// first member is told nothing about anybody, including themselves being seen.
 	s.announceArrival(ctx, created, req.Creator)
+	for _, invited := range remoteInvites {
+		if _, err := s.inviteRemote(ctx, MembershipChange{
+			RoomID: created, Target: invited, Sender: req.Creator,
+			Membership: eventauth.MembershipInvite,
+		}); err != nil {
+			// The room stands. An invite the other server refused is reported in the log and
+			// left for the client to retry through /invite, where the answer is a status it
+			// can act on; un-creating a room that already exists is not an option, and
+			// pretending the invite worked is worse than leaving it visibly undone.
+			s.log.Warn("rooms: a room was created but a remote invitee was not invited",
+				"room_id", created, "invited", invited, "error", err)
+		}
+	}
 	return created, nil
 }
 

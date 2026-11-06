@@ -302,7 +302,12 @@ func TestMembershipErrors(t *testing.T) {
 	}{
 		{"invite with no user", "/_matrix/client/v3/rooms/" + roomID + "/invite", map[string]any{}, "M_MISSING_PARAMS", http.StatusBadRequest},
 		{"unknown local user", "/_matrix/client/v3/rooms/" + roomID + "/invite", map[string]any{"user_id": "@nobody:hs1"}, "M_NOT_FOUND", http.StatusNotFound},
-		{"remote user", "/_matrix/client/v3/rooms/" + roomID + "/invite", map[string]any{"user_id": "@someone:elsewhere.example"}, "", http.StatusNotImplemented},
+		// An invite for a user who lives elsewhere now travels to that user's server, which
+		// has to countersign it. There is no server at elsewhere.example in this harness, so
+		// the honest answer is a gateway failure rather than "not implemented": this server did
+		// its part and the peer did not answer. Two homeservers that do answer are covered by
+		// Complement's TestFederationRejectInvite, where two homeservers do answer.
+		{"remote user", "/_matrix/client/v3/rooms/" + roomID + "/invite", map[string]any{"user_id": "@someone:elsewhere.example"}, "M_UNKNOWN", http.StatusBadGateway},
 		{"third-party invite", "/_matrix/client/v3/rooms/" + roomID + "/invite",
 			map[string]any{"user_id": "@someone:elsewhere.example", "third_party_signed": map[string]any{"token": "t"}}, "", http.StatusNotImplemented},
 		{"malformed user ID", "/_matrix/client/v3/rooms/" + roomID + "/invite", map[string]any{"user_id": "not-a-user-id"}, "M_INVALID_PARAM", http.StatusBadRequest},

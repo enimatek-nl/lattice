@@ -50,6 +50,9 @@ type Deps struct {
 	// DeviceLists records, for the local users who may care, that a peer says one of its own
 	// users has devices worth re-reading.
 	DeviceLists DeviceListChanges
+	// Invites stores an invite a peer made for one of this server's users, after signing it
+	// here as the peer asked.
+	Invites InviteAcceptor
 }
 
 // DeviceListChanges is the receiving end of a peer's device list announcement.
@@ -82,6 +85,12 @@ func Register(r *httpserver.Router, d *Deps) {
 	r.Handle("POST", "/_matrix/key/v2/query", d.handleKeyQuery)
 	// The device keys of this server's users, for the other homeservers that ask. There is no
 	// point answering that question without the store behind it.
+	// An invite for one of this server's users, which this server signs as well as the
+	// inviting server did. Without the room service behind it there is nothing to store.
+	if d.Invites != nil {
+		r.Handle("PUT", "/_matrix/federation/v2/invite/{roomId}/{eventId}", d.requireCredential(d.handleInvite))
+		r.Handle("PUT", "/_matrix/federation/v1/invite/{roomId}/{eventId}", d.requireCredential(d.handleInvite))
+	}
 	if d.E2EKeys != nil {
 		r.Handle("POST", "/_matrix/federation/v1/user/keys/query", d.requireCredential(d.handleDeviceKeysQuery))
 	}

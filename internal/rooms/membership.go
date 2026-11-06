@@ -76,6 +76,14 @@ func (s *Service) SetMembership(ctx context.Context, change MembershipChange) (s
 		return "", matrixerr.Newf(matrixerr.CodeInvalidParam, "%q is not a valid user ID.", change.Target)
 	}
 	if !matrixid.IsLocal(domain, s.name) {
+		// An invite is the one membership change this server can carry out for a user who
+		// lives elsewhere, because this server holds the room and can build the event; the
+		// invited user's server signs it as well. The other changes belong to the other
+		// server: it is the one that speaks for that user, and a leave or a ban written here
+		// would be this server claiming to be somebody else's homeserver.
+		if change.Membership == eventauth.MembershipInvite {
+			return s.inviteRemote(ctx, change)
+		}
 		return "", ErrRemoteTarget
 	}
 
