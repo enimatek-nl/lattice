@@ -2,8 +2,17 @@
 
 ## 2026-11-08 — one Complement test walked to the end, and the presets turned out to be invented
 
-Commits `206e508`, `5a381a4`. `TestInboundCanReturnMissingEvents`: 0/4 → 3/4, and the default
-Complement suite is green end to end (`.agent-work/next/tally-20261106.log`).
+Commits `206e508`, `5a381a4`. `TestInboundCanReturnMissingEvents`: 0/4 → 3/4.
+
+**A claim in this entry was wrong the moment it was written, and is corrected here rather than in a
+later entry.** It first said "the default Complement suite is green end to end", citing
+`.agent-work/next/tally-20261106.log`. `scripts/complement.sh` without `RUN=` runs a **seven-test
+filter** (the M1 endpoints), not the suite; what was green was that filter. The real run
+(`RUN='.*' scripts/complement.sh -v`, `.agent-work/next/tally-full-20261106.log`) is
+**77 top-level tests passing, 142 failing, 1 skipped** across every package, MSC packages included,
+and that is the first tally at this Complement checkout worth calling a baseline. It is stored as
+`complement-failures-20261106.txt` (142 names) and `complement-passes-20261106.txt` (77) so the next
+change can be diffed against it instead of described.
 
 Four causes, each found by measuring rather than reasoning:
 

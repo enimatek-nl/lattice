@@ -673,15 +673,18 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
       real evidence about *what* was extra and no evidence at all about *why*, and the two-server
       reproduction settled it in one run where reading the log had sent an investigation off to the
       join handshake.
-- [ ] T-4050 the MSC-gated tally has not been re-measured since the preset changes. The **default**
-      Complement suite is now fully green (2026-11-06, `.agent-work/next/tally-20261106.log`:
-      `ok complement/tests`, `ok complement/tests/csapi`, exit 0; 15 MSC packages had no tests to
-      run because `COMPLEMENT_LOCAL_MSCS` was not set). The number the ledger tracks — the run with
-      the MSC suites included, last counted in the hundreds of failures — has not been taken since
-      the preset contents, the room-creation order, `join_rule` in the directory, the guest-access
-      read, the walk's ceiling and the federation visibility rule all moved together. Take that run
-      next and separate "MSC not implemented" from "previously green, now red": a change that is only
-      safe because nothing else was measured is not safe.
+- [x] T-4050 (done 2026-11-06) the full-suite tally, measured. `RUN='.*' scripts/complement.sh -v`
+      at this Complement checkout: **77 top-level passing, 142 failing, 1 skipped**
+      (`TestSendJoinPartialStateResponse`), every package including the MSC ones
+      (`.agent-work/next/tally-full-20261106.log`). The names are in
+      `complement-failures-20261106.txt` and `complement-passes-20261106.txt`, which is what future
+      runs should be diffed against — the earlier numbers in this ledger (a run reported as "136
+      failing" several cycles ago) are not comparable, because the Complement checkout and the
+      package set have moved. Note also what tripped the first attempt: `scripts/complement.sh` with
+      no `RUN=` is a **seven-test filter**, so a green run without `RUN=` means seven tests passed,
+      not the suite. T-4051 is the follow-up that matters: work the failure list down, largest
+      common cause first (federation outbound and join flows dominate it), and diff against this
+      baseline each time.
 
 - [ ] T-4047 the visibility decision is applied on one read path only. `get_missing_events` trims;
       `GET /event`, backfill (when it exists) and the outbound fan-out of PDUs do not, and
