@@ -398,7 +398,7 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
       outstanding: room version 12's revised state resolution and the unstable versions'
       pseudo-identifier format (T-4019); the Synapse divergence on forked version 1 rooms is
       recorded in `docs/compliance-matrix.md` item 5 and is not interoperability-tested
-- [ ] T-4022 device-list changes over federation: send `m.device_list_update` EDUs to the other
+- [x] T-4022 device-list changes over federation: send `m.device_list_update` EDUs to the other
       servers in the rooms a local user shares when that user's devices or keys change, accept them
       from a peer, and surface what they say into `/sync` for the local users watching. The
       transaction transport already carries EDUs and the per-observer device-list record exists
@@ -410,6 +410,19 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
       implemented on 2026-11-08 and those subtests moved from failing in 0.4s to reaching the sync
       step 5s later. `GET /client/v3/keys/changes` (the other way a client can learn) is also absent;
       if the EDU work covers the tests, that stays a client-convenience gap rather than a blocker.
+      Done 2026-11-08: announcements go out on a key upload (the trigger already recorded the local
+      half) and when a local user joins a room held elsewhere, and received announcements are passed
+      to the local observers who share a room with the user named — only when the sender is entitled
+      to speak for that user. `TestDeviceListUpdates` (all ten subtests) and
+      `TestDeviceListsUpdateOverFederationOnRoomJoin` pass; the remaining device-list Complement
+      failure, `TestDeviceListsUpdateOverFederation`, stops at `createRoom` because it invites a
+      remote user, which is the missing outbound invite (T-4009c), not a device-list gap.
+- [ ] T-4023 what is still missing around device lists: announcing a *deleted* device
+      (`deleted: true` — a logout removes a device and its keys, and a peer's clients keep tracking
+      it until told otherwise), cross-signing key changes once cross-signing exists, and
+      `GET /client/v3/keys/changes`, which is how a client can ask directly rather than waiting to
+      be told. Also unanswered: `master_keys`/`self_signing_keys` in the federation key answer,
+      because this server does not store cross-signing keys at all.
 - [ ] T-4011 the address policy is applied when discovery resolves a name, not when the
       socket is opened. A name whose answer changes between the two (DNS rebinding) is not
       covered; the fix is a dialer that re-checks the address it is about to connect to

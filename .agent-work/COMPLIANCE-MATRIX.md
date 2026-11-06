@@ -221,3 +221,25 @@ user is answered by asking that user's server — and they stop later, at a `/sy
 device-list change that no `m.device_list_update` EDU ever delivers. That is T-4022.
 
 No Complement assertion was modified.
+
+## Latest full run (2026-11-08, device-list announcements over federation — T-4022 closed, T-4023 opened)
+
+Same command. **64 top-level tests pass, 132 fail** (was 62 and 134).
+
+Newly passing, none newly failing:
+
+* `TestDeviceListUpdates` — all ten subtests, including the five that need two homeservers. A key
+  upload on one server now reaches the other server's clients: the announcement goes out as an
+  `m.device_list_update` ephemeral unit, the receiving server passes it to the local users who share
+  a room with that user, and the client is told to re-read the key list.
+* `TestDeviceListsUpdateOverFederationOnRoomJoin` — the Complement stub receives an announcement for
+  a user who joined *from* this server into a room this server does not hold. That needed a separate
+  trigger: an adopted bundle does not run the side effects of a locally accepted event, and the
+  joining user is the one fact the other servers have not been told.
+
+Still failing in this area, with the cause checked rather than assumed:
+`TestDeviceListsUpdateOverFederation` stops at `POST /createRoom`, because it invites a user who
+lives on the other homeserver and the outbound invite handshake is missing (T-4009c). It is not a
+device-list gap.
+
+No Complement assertion was modified.

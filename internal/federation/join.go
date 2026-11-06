@@ -43,7 +43,10 @@ type Joiner struct {
 	// and the state handed over with it does not include them. Without this, a joined room is a
 	// room whose history its new member cannot read.
 	Backfill *Backfiller
-	Log      *slog.Logger
+	// Announcer tells a room's other servers about the device list of a user who just joined
+	// from here. See [DeviceListAnnouncer].
+	Announcer DeviceListAnnouncer
+	Log       *slog.Logger
 	// Now is replaced in tests.
 	Now func() time.Time
 }
@@ -57,6 +60,13 @@ type LocalKeyLookup interface {
 // [*rooms.Service].
 type BundleIngestor interface {
 	AcceptRemoteBundle(ctx context.Context, bundle rooms.RemoteBundle, verify rooms.VerifyPDU) (rooms.BundleOutcome, error)
+}
+
+// DeviceListAnnouncer tells the other homeservers in a user's rooms that the user's devices are
+// worth re-reading. It is optional: a joiner without one completes the join quietly, which is what
+// it did before this existed.
+type DeviceListAnnouncer interface {
+	AnnounceDeviceLists(ctx context.Context, userID string)
 }
 
 // ErrNoJoinTarget says no server was willing or able to take the join.
@@ -202,6 +212,11 @@ func (j *Joiner) joinVia(ctx context.Context, destination, roomID, userID string
 		}
 		return rooms.RemoteJoinResult{}, fmt.Errorf("federation: %s accepted the join but this server could not store it: %s",
 			destination, reason)
+	}
+	if j.Announcer != nil {
+		// This server holds the key documents the joining user's devices uploaded; the other
+		// servers in the room cannot be asked to care unless this one says the list changed.
+		j.Announcer.AnnounceDeviceLists(ctx, userID)
 	}
 	for eventID, problem := range outcome.Refused {
 		if eventID == "" {

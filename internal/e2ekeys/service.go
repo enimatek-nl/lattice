@@ -47,6 +47,8 @@ type Service struct {
 	// only ever answers for its own users.
 	serverName string
 	remotes    RemoteKeys
+	// edus carries this server's own device list changes to its peers; see ServeDeviceEDUs.
+	edus DeviceEDUs
 }
 
 // New wires the service to the storage layer.
@@ -460,6 +462,9 @@ func (s *Service) announceChange(ctx context.Context, userID string) {
 			}
 		}
 	}
+	// The servers that hold a room with this user have the same problem in reverse: their
+	// clients ask them, and they know nothing until we say so.
+	s.AnnounceDeviceListsToFederation(ctx, userID)
 }
 
 // isJoined reports whether a stored m.room.member event says the user is in the room.

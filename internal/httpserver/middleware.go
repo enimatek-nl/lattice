@@ -151,13 +151,19 @@ func MaxBody(limit int64) Middleware {
 // running until it observes context cancellation, but its writes are discarded
 // once the deadline passes so the client always receives a well-formed Matrix
 // error instead of a truncated body.
+//
+// The deadline also passes when the client goes away, which is ordinary: a browser or another
+// homeserver that hangs up leaves a handler running here. A late handler and the timeout answer can
+// then reach for the same response at the same moment, which is why [timeoutWriter] keeps the
+// handler's headers to itself. Without that, a handler still working on a request nobody is waiting
+// for writes the header map of a response this middleware has already finished.
 func Timeout(d time.Duration) Middleware {
 	return func(next http.Handler) http.Handler {
 		if d <= 0 {
 			return next
 		}
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			guard := &timeoutWriter{ResponseWriter: w}
+			guard := newTimeoutWriter(w)
 			ctx, cancel := context.WithTimeout(r.Context(), d)
 			defer cancel()
 
@@ -191,10 +197,35 @@ func Timeout(d time.Duration) Middleware {
 
 type timeoutWriter struct {
 	http.ResponseWriter
-	mu        sync.Mutex
+	mu sync.Mutex
+	// header is what the handler reads and writes. The real response's header map is not
+	// offered to it: once the deadline has passed, that map belongs to the timeout answer.
+	header    http.Header
 	wroteHead bool
 	timedOut_ bool
 	panic     any
+}
+
+func newTimeoutWriter(w http.ResponseWriter) *timeoutWriter {
+	return &timeoutWriter{ResponseWriter: w, header: make(http.Header)}
+}
+
+// Header returns the handler's own header map rather than the response's. That is what keeps a
+// handler that outlived its request from writing a response that has already been sent.
+func (t *timeoutWriter) Header() http.Header {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.header
+}
+
+// commit moves what the handler asked for onto the real response. Until now it was private to the
+// handler, which is what lets the timeout goroutine write its answer without touching a map that a
+// handler may still be writing to.
+func (t *timeoutWriter) commit() {
+	real := t.ResponseWriter.Header()
+	for name, values := range t.header {
+		real[name] = values
+	}
 }
 
 func (t *timeoutWriter) WriteHeader(code int) {
@@ -203,6 +234,7 @@ func (t *timeoutWriter) WriteHeader(code int) {
 	if t.timedOut_ {
 		return
 	}
+	t.commit()
 	t.wroteHead = true
 	t.ResponseWriter.WriteHeader(code)
 }
@@ -212,6 +244,9 @@ func (t *timeoutWriter) Write(b []byte) (int, error) {
 	defer t.mu.Unlock()
 	if t.timedOut_ {
 		return len(b), nil
+	}
+	if !t.wroteHead {
+		t.commit()
 	}
 	t.wroteHead = true
 	return t.ResponseWriter.Write(b)

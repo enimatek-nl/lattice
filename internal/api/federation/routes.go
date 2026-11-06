@@ -4,6 +4,7 @@
 package federation
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"time"
@@ -46,6 +47,14 @@ type Deps struct {
 	// own users. It is the same store the Client-Server API reads, so the two listeners cannot
 	// give different answers about who holds which keys.
 	E2EKeys DeviceKeys
+	// DeviceLists records, for the local users who may care, that a peer says one of its own
+	// users has devices worth re-reading.
+	DeviceLists DeviceListChanges
+}
+
+// DeviceListChanges is the receiving end of a peer's device list announcement.
+type DeviceListChanges interface {
+	NoteRemoteDeviceListChange(ctx context.Context, userID string)
 }
 
 // Register installs the Server-Server and key API routes.

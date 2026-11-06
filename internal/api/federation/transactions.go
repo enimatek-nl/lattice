@@ -138,7 +138,11 @@ func (d *Deps) handleSendTransaction(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	for _, edu := range transaction.EDUs {
-		// Ephemeral units are acknowledged, and this server does nothing with them yet:
+		if edu.Type == deviceListUpdateEDU {
+			d.noteDeviceListUpdate(r.Context(), transaction.Origin, edu.Content)
+			continue
+		}
+		// Ephemeral units are acknowledged, and this server does nothing with the others yet:
 		// presence, typing and receipts over federation are their own tasks. Saying so
 		// in the log keeps "we received it" from quietly meaning "we acted on it".
 		d.Log.Debug("federation: received an ephemeral unit this server does not use",
@@ -172,6 +176,44 @@ func (d *Deps) handleSendTransaction(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(encoded)
+}
+
+// deviceListUpdateEDU is the ephemeral unit type that announces a device list change. It is the
+// name the specification gives it.
+const deviceListUpdateEDU = "m.device_list_update"
+
+// noteDeviceListUpdate acts on a peer telling this server that one of the peer's users has
+// devices worth re-reading.
+//
+// The one thing checked is whose users the peer may speak for: the announcement must name a user
+// on the server that sent it. A server that announces changes for somebody else's users is not
+// believed, because the alternative is letting any peer push a user into every local client's key
+// tracking. This is not a signature question — the transaction as a whole is authenticated, and
+// the key document inside is verified by the client that eventually reads it — it is a question of
+// whose statement this is.
+//
+// What arrives is a prompt, not an answer to store: the local users who share a room with that user
+// are told their key list is worth re-reading, and the keys themselves are fetched from the user's
+// own server when somebody actually asks. Keeping a copy here would be a second place for the same
+// signed fact to go stale.
+func (d *Deps) noteDeviceListUpdate(ctx context.Context, origin string, content map[string]any) {
+	userID, _ := content["user_id"].(string)
+	deviceID, _ := content["device_id"].(string)
+	if d.DeviceLists == nil || userID == "" {
+		d.Log.Debug("federation: a device list update was acknowledged but not used",
+			"origin", origin, "user_id", userID, "device_id", deviceID,
+			"reason", "this server is not answering device list questions")
+		return
+	}
+	domain, err := matrixid.UserDomain(userID)
+	if err != nil || !matrixid.IsLocal(domain, origin) {
+		d.Log.Warn("federation: a server announced a device list change for a user it does not carry",
+			"origin", origin, "user_id", userID, "device_id", deviceID)
+		return
+	}
+	d.DeviceLists.NoteRemoteDeviceListChange(ctx, userID)
+	d.Log.Debug("federation: a peer announced a device list change",
+		"origin", origin, "user_id", userID, "device_id", deviceID)
 }
 
 // acceptPDU checks and stores one PDU, returning its event ID and, if it could not be

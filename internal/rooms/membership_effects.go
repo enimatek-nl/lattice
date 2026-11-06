@@ -5,6 +5,7 @@ import (
 
 	"github.com/enimatek/lattice/internal/eventauth"
 	"github.com/enimatek/lattice/internal/events"
+	"github.com/enimatek/lattice/internal/matrixid"
 	"github.com/enimatek/lattice/internal/persist"
 )
 
@@ -149,6 +150,14 @@ func (s *Service) announceUser(ctx context.Context, roomID, userID string) {
 	}
 	for _, member := range members {
 		s.recordDeviceListChange(ctx, roomID, member, userID, persist.DeviceListChanged)
+	}
+
+	// A user who has just joined from here is a new fact for the other servers in the room:
+	// their clients will be told about this user's devices by us, and nothing else prompts
+	// that. The local recording above says nothing to a server on the other side of the room.
+	if domain, err := matrixid.UserDomain(userID); s.deviceListAnnouncer != nil && err == nil &&
+		matrixid.IsLocal(domain, s.name) {
+		s.deviceListAnnouncer.AnnounceDeviceListsToFederation(ctx, userID)
 	}
 }
 

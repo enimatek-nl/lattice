@@ -1541,3 +1541,52 @@ newly green (`TestJoinViaRoomIDAndServerName`,
 The device-list tests still fail, and the cause is now measured rather than assumed: they used to stop
 at the key query (0.4s in) and now stop at a `/sync` wait for a device-list change that nothing
 delivers (5s in). That is `m.device_list_update` EDUs in both directions, opened as T-4022.
+
+## 2026-11-08 — a device list change on one server reaches the clients of another (T-4022), and a timeout middleware stops racing with the handler it timed out
+
+**The channel.** `m.device_list_update` ephemeral units are now sent and acted on. Out: when a local
+user's devices change (the key-upload path already recorded the local half of that, so it was one
+call away) and when a local user joins a room held elsewhere. In: a received announcement is recorded
+for the local users who share a room with the user named, which is the same question the local
+announcement answers, so the same recording is used. The transport was already there — the sender
+queue carries EDUs — so this is the two ends and the trigger, not a new subsystem, which is what the
+architecture note in DEC-017 anticipated.
+
+**The rule that makes receiving it safe.** A peer is believed only about users whose IDs sit in that
+peer's own name. A transaction carrying an announcement for `@mallory:hs3` from `hs2` is still
+accepted — the peer did nothing wrong by sending it, and refusing the transaction would punish the
+other units inside it — but the announcement does not become a fact here. Without that rule any
+server could push a stranger into every local client's key tracking, and a client that tracks a user
+starts trusting that user's keys.
+
+**What is not stored, and why.** The key document inside the announcement is not kept, and the update
+number is not compared against a stored one. Numbers and copies guard state this server does not
+keep: a query about a remote user is answered by asking that user's server, which holds the signed
+original. A duplicate announcement therefore costs a client a key query and nothing else, while a
+stale local copy would be a place for a signed fact to go wrong. The per-user update *number* this
+server announces is kept, in its own table, because a number that restarts with a device count going
+backwards makes later announcements look stale to a peer that already applied a newer one.
+
+**A separate trigger the first run exposed.** Joining a room that another server holds stores the
+join as part of the bundle that server hands over, and an adopted bundle deliberately does not run the
+side effects of a locally accepted event — running a peer's whole handover through the room's effects
+would echo it back into the room. But the user who just joined is exactly the fact the other servers
+have not been told about, so the join handshake announces it directly.
+
+**A race that had been waiting.** `make verify` under `-race` began failing, and the report was not
+in the new code: `httpserver.Timeout` writes a Gateway Timeout from another goroutine when the
+deadline passes, and the deadline also passes when a client hangs up. The handler kept a promoted
+`Header()` pointing at the same response that the timeout goroutine was writing — a data race on a
+map. The guard now keeps the handler's headers private and commits them to the real response at the
+first write, so a handler still working on a request nobody is waiting for cannot write a response
+that has already been sent. This was latent, not new: the new EDU work only made it likely enough to
+be caught.
+
+Evidence: `make verify` clean, with zero `DATA RACE` reports (it had four). New tests:
+`TestDeviceListChangesCrossTheFederationLink` (two homeservers: an upload on one shows up in the
+other's `/sync`; a forged announcement for another server's user does not; the same shape naming the
+sender's own user does — otherwise the forged case would only prove announcements are ignored) and
+`TestDeviceListStreamsIncreasePerUser` (per user, strictly increasing, survives a restart).
+Complement full `./tests` + `./tests/csapi`: **64 passing, 132 failing**, up from 62 and 134, with
+`TestDeviceListUpdates` (all ten subtests) and
+`TestDeviceListsUpdateOverFederationOnRoomJoin` newly green and none newly failing.
