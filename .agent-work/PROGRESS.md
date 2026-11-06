@@ -1,5 +1,47 @@
 # Progress
 
+## 2026-11-08 — restricted rooms work end to end; six Complement tests move, none break
+
+Commit `dd2b096`. `eventauth.MayJoinRestricted` had the allow-list rule right and nothing called it.
+The flow now exists: `rooms.RestrictedJoin` answers whether the joining user satisfies one of the
+room's conditions (a fact about the room, the same on every server — 403 M_FORBIDDEN if not) and who
+stands behind the join (rule 4.2 wants the signature of the homeserver of the user named in
+`join_authorised_via_users_server`, and the specification describes that user as one of the *resident*
+server's own, in the room, who could have invited the joiner — so the authoriser is chosen from this
+server's joined members at or above the invite level, in sorted order, so two attempts agree). A room
+whose conditions pass but which has nobody here able to invite answers 400 `M_UNABLE_TO_GRANT_JOIN`,
+which the joining side now reads as "ask another server" instead of "give up".
+
+Two ordering facts had to change, and each had been silently fatal:
+
+* The event is signed before it is authorised. Until this server has signed there is no signature for
+  4.2 to look at, so authorising first refused every restricted join this server was entitled to make.
+  `/make_join` is where that check genuinely cannot be made — the template is unsigned by design — so
+  `Opts.AllowUnsignedTemplate` skips 4.2 there and the signature is verified where it exists.
+* The joining server stores the event the resident server handed back, not the copy it sent. The
+  resident server signs the join it accepts; keeping our own copy stored an event every other server
+  would reject.
+
+Three underlying bugs came out with them. A client could name its own authoriser — Complement writes a
+join→join transition carrying `"join_authorised_via_users_server": "unused"` and expects it ignored;
+we returned 403 trying to verify a signature by a server called "unused". `m.room.member` was gated at
+`state_default`, so an ordinary user could not write the event saying they left: the specification puts
+that type at zero because the membership rules decide who may change a membership, and 50 on top of
+them stopped nothing but ordinary users. And `WithTx` dropped the services attached after construction,
+so a capability configured on the room service disappeared inside a transaction — a restricted join
+refused in one path and allowed in the other.
+
+**The full Complement run after it: 83 passing, 136 failing, 1 skipped** (was 77/142/1), and
+`comm` against `complement-failures-20261107.txt` shows **nothing newly failing**. Newly passing:
+`TestRestrictedRoomsLocalJoin`, `...LocalJoinInMSC3787Room`,
+`...LocalJoinNoCreatorsUsesPowerLevelsV11`, `TestRestrictedRoomsRemoteJoin`,
+`TestRestrictedRoomsRemoteJoinInMSC3787Room`, and
+`TestKnockRestrictedRoomsLocalJoinNoCreatorsUsesPowerLevelsV11`.
+
+One honesty note: `TestRestrictedRoomsRemoteJoinInMSC3787Room` passed in the full run but failed when
+the same tests were run filtered to `TestRestrictedRooms.*`. It is flaky, not settled, and the ledger
+says so rather than banking the pass.
+
 ## 2026-11-08 — the restricted-room cluster opened, and its condition was wrong at the root
 
 Commit `6e038c9`. `eventauth.MayJoinRestricted` — the function that decides whether a user satisfies a

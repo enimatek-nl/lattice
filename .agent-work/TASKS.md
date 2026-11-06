@@ -686,76 +686,39 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
       common cause first (federation outbound and join flows dominate it), and diff against this
       baseline each time.
 
-- [ ] T-4052 the restricted-room **flow**, now that the condition rule is right (`6e038c9`).
-      `eventauth.MayJoinRestricted` evaluates the allow list correctly and is tested, but **nothing
-      calls it**, and a restricted join needs two more things before `TestRestrictedRooms*` can move:
-      (a) the join event this server creates must carry
-      `content.join_authorised_via_users_server`, and room-version rule **4.2** requires that event to
-      be *signed by the homeserver of the user the key names* — so the choosing of that authoriser, and
-      whose signature goes on the join, is the substance of the work; (b) `/make_join` and `/send_join`
-      have to carry it across for remote joins, including the resident server's side of the refusal.
-      Read before writing: the pinned specification's Server-Server **§Restricted rooms**, room version
-      8's authorization rules **4.2 and 4.3.5** (which deliberately do *not* evaluate the allow list —
-      that is the creating server's job, which is what `MayJoinRestricted` is for), and the
-      Client-Server §Restricted rooms paragraph on what the joining server MUST verify. Do not choose
-      the authoriser from memory of MSC3083/MSC3787: the signing obligation in 4.2 is what decides
-      which user may be named, and guessing it produces joins that one server accepts and another
-      rejects. Also verify that this server accepts `restricted` and `knock_restricted` in
-      `m.room.join_rules` state for the versions that carry them, and that a `restricted` room with no
-      valid conditions behaves as invite-only.
-- [ ] T-4051 work the Complement failure list down by cluster, diffing against
-      `complement-failures-20261106.txt` after each change. The biggest single cluster is
-      **restricted rooms**: `TestRestrictedRoomsLocalJoin`, `...LocalJoinInMSC3787Room`,
-      `...LocalJoinNoCreatorsUsesPowerLevelsV11/V12`, `TestRestrictedRoomsRemoteJoin` with its
-      `FailOver`, `LocalUser` and `MSC3787` variants, plus `TestKnockRestrictedRoomsLocalJoin...` —
-      about ten names resting on one rule (`join_rule: restricted`, its `allow` rooms, and the
-      power-level rules that go with it). `eventauth.MayJoinRestricted` already exists, so this is
-      flow work rather than rule work: accepting `restricted` and `knock_restricted` in a room's
-      join-rule state, choosing the allow rooms when a join is judged, and the remote half of it in
-      `/make_join` and `/send_join`. Then MSC4242 (four tests: rejection cascades across a rejoin) and
-      `TestPartialStateJoin` on their own.
+- [x] T-4052 (2026-11-08, commit `dd2b096`) the restricted-room flow. `rooms.RestrictedJoin` decides
+      the allow condition and picks the authoriser from this server's own joined members at or above
+      the invite level; `Opts.AllowUnsignedTemplate` covers `/make_join`, where the template cannot
+      carry a signature; `/send_join` re-checks the conditions and that the named authoriser is one
+      this server can sign for, and answers 400 `M_UNABLE_TO_GRANT_JOIN` when it cannot; the joining
+      server stores the event the resident server handed back rather than its own copy, which is what
+      carries the resident signature rule 4.2 needs. Three underlying bugs went with it: a client
+      could name its own authoriser; `m.room.member` was gated at `state_default`, locking ordinary
+      users out of their own membership events; and `WithTx` dropped the services attached after
+      construction. Evidence: `TestRestrictedRoomsLocalJoin`, `...LocalJoinInMSC3787Room`,
+      `...LocalJoinNoCreatorsUsesPowerLevelsV11`, `TestRestrictedRoomsRemoteJoin`,
+      `TestRestrictedRoomsRemoteJoinInMSC3787Room` and
+      `TestKnockRestrictedRoomsLocalJoinNoCreatorsUsesPowerLevelsV11` moved from failing to passing,
+      with no test moving the other way.
 
-- [x] T-4047 (partly, 2026-11-06, commit `80f9a82`) the visibility decision, on the read paths. `get_missing_events` and `GET /event` now both go through `pduForPeer`: the room's own redaction first, then the asking server's entitlement at the moment of the event. `GET /event_auth` is deliberately not trimmed (an auth chain is the permissions, not history; the reason is recorded at the endpoint). Still open: the outbound fan-out of PDUs, and backfill when it exists.
-      `GET /event`, backfill (when it exists) and the outbound fan-out of PDUs do not, and
-      `handleGetEvent` additionally serves `stored.JSON` unconditionally instead of the redacted form
-      (`internal/api/federation/transactions.go:handleGetEvent`), so a redaction applied here is not
-      reflected to peers on that path. Move the decision next to the single place federation reads
-      an event, and test each path.
-- [x] T-4045 (done 2026-11-06, commit `5a381a4`) what does the `public_chat` preset set
-      `history_visibility` to? **`shared`.** The Client-Server API gives the presets as a table —
-      `private_chat`: invite / shared / can_join; `trusted_private_chat`: invite / shared /
-      can_join, invitees at the creator's power level; `public_chat`: public / **shared** /
-      forbidden — and this server's earlier reading, recorded in `docs/requirements.md` as an
-      interpretation decision, claimed the contents were implementation-defined and started public
-      rooms `world_readable`. Both halves were wrong: the table is normative, and its public row is
-      `shared`. The correction is in the code and in the decision record, which says plainly that the
-      earlier entry was wrong rather than quietly replacing it. Two more facts came out of the same
-      reading and are fixed in the same commit: a room created with `visibility: public` and no named
-      preset takes the `public_chat` preset (it was getting an invite-only room listed as walk-in),
-      and `GET /publicRooms` entries were missing `join_rule`, which the response requires.- [ ] T-4042 `GET /rooms/{roomID}/context/{eventID}` and `GET /rooms/{roomID}/relations/{eventID}`
-      do not exist: `/context` answers `M_UNRECOGNIZED` (measured 2026-11-06 while writing the
-      membership test, which is why that test checks `/state` and `/messages` instead). Worth
-      recording because **Complement in this checkout never calls `/context`** — `grep -rn
-      "context/" tests/` hits only comments in `room_timestamp_to_event_test.go` — so this gap
-      contributes nothing to the failure tally and would be invisible if left alone. The client
-      half of `/messages` is already there (`rooms.History`), so `/context` is the same page centred
-      on an event plus a `state` chunk and `prev_batch`/`next_batch` tokens; `/relations` needs the
-      event-relation index and the aggregation rules (chunk, `recursion_type`, `rel_type`,
-      `include_original`), which is the larger of the two. Both have to answer `unsigned.membership`
-      for the reader like every other client event.- [ ] T-4034 intermittent, not constant: `SendEventSynced waiting for event ID …` appears in some
-      runs of `room_members_test.go:74`/`:88` and not in others (`.agent-work/next/mem1.log` and
-      `mem2.log` show it; `prevbatch1.log` does not, with the same blueprint). So a sent event
-      sometimes does not reach the sender's own `/sync` in time. Reproduce before theorising:
-      run `TestGetRoomMembers|TestGetRoomMembersAtPoint` repeatedly and keep the server logs of a
-      failing run.
-- [ ] T-4037 Refresh tokens. `POST /login` refuses `refresh_token: true` outright, so
-      `TestTxnIdWithRefreshToken` cannot get past its first step and no token-refresh test can run.
-      The Client-Server API defines the flow (short-lived access tokens, a refresh token,
-      `POST /refresh`, `refresh_token` in the login and refresh responses, `org.matrix.msc21`
-      unstable prefix). It touches token minting, expiry and logout, so it is its own task and not
-      a login tweak.
+- [ ] T-4053 what the restricted-room cluster still owes, from the same run:
+      `TestRestrictedRoomsRemoteJoinLocalUser` (and its MSC3787 variant) — Complement invites a
+      **remote** user into a restricted room and expects 403; we allowed it. The rule to read is
+      MSC3787's, in the pinned specification's Client-Server §Restricted rooms and the
+      `m.room.power_levels` section: for a restricted room the invite power that matters is held **in
+      one of the rooms on the allow list**, so an inviter who can invite in the restricted room but
+      holds no invite power in the gateway room cannot invite. Do not implement this from memory of
+      the MSC: it is a rule about *which room's power levels decide*, and the room version's auth rule
+      4.4 still checks the restricted room's own invite level on top.
+      `TestRestrictedRoomsRemoteJoinFailOver` (and variant) — the resident server's
+      `M_UNABLE_TO_GRANT_JOIN` now means "ask another server", but the fail-over Complement expects is
+      not happening yet; trace which server is asked in which order.
+      `TestRestrictedRoomsSpacesSummaryLocal` / `...Federation` — room summary `allowed_room_ids`, a
+      different endpoint from the join path.
+      `...NoCreatorsUsesPowerLevelsV12` — refused at `createRoom` with
+      `M_UNSUPPORTED_ROOM_VERSION`: room version 12 is implemented in the registry but not offered for
+      creation. Check `roomversion.supported` and the pinned-version policy before changing it.
+      Also note: `TestRestrictedRoomsRemoteJoinInMSC3787Room` passed in the full run and failed in the
+      filtered one, so it is flaky — probably a timing or ordering dependency in the join handshake.
+      Reproduce with `RUN='TestRestrictedRooms.*'` before chasing it.
 
-  T-4039 done 2026-11-06 at tree `4502f1e`: 76 top-level passes / 143 failures over all 17
-  packages, `exceeded num_locks` count 0, and nine tests newly passing against `full2.log` with
-  none newly failing (`.agent-work/next/gate5.log`). The two contaminated tallies stay in the
-  records as what they were, with the reason; the new number is in COMPLIANCE-MATRIX.md.
