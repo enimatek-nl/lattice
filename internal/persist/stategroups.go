@@ -69,6 +69,16 @@ type StateGroupRepo interface {
 	Entries(ctx context.Context, groupID int64) ([]StateGroupEntry, error)
 	// GroupOf returns the group an event was sent against.
 	GroupOf(ctx context.Context, eventID string) (int64, error)
+	// StateEntryAt returns the event that eventType/stateKey held in the state snapshot the
+	// given event was sent against — what the room's view of that key was at the moment the
+	// event was sent, which is not necessarily what it is now. [ErrNotFound] means the
+	// snapshot carried no such event; the protocol reads that absence differently per event
+	// type, so this repository does not decide what it means.
+	//
+	// It is one lookup rather than a read of every entry in the snapshot, because the common
+	// question names the key it wants: "was this reader a member when this event was sent?".
+	// The index on group_id bounds the scan to one snapshot, which is small by construction.
+	StateEntryAt(ctx context.Context, eventID, eventType, stateKey string) (string, error)
 	// Attach records which group an event was sent against. Re-attaching the same event to
 	// the same group is not an error.
 	Attach(ctx context.Context, eventID string, groupID int64) error
@@ -141,6 +151,25 @@ func (r *stateGroupRepo) GroupOf(ctx context.Context, eventID string) (int64, er
 		return 0, err
 	}
 	return row.GroupID, nil
+}
+
+// StateEntryAt implements [StateGroupRepo].
+func (r *stateGroupRepo) StateEntryAt(ctx context.Context, eventID, eventType, stateKey string) (string, error) {
+	// One statement: the snapshot of the event and the entry inside it. Doing it as two reads
+	// would let a concurrent write attach a different snapshot between them and answer about a
+	// moment the caller never asked for.
+	var entry StateGroupEntry
+	err := r.db.WithContext(ctx).
+		Where("group_id = (SELECT group_id FROM event_state_groups WHERE event_id = ?)", eventID).
+		Where("type = ? AND state_key = ?", eventType, stateKey).
+		First(&entry).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", ErrNotFound
+		}
+		return "", err
+	}
+	return entry.EventID, nil
 }
 
 // Attach implements [StateGroupRepo].
