@@ -70,8 +70,14 @@ type Event struct {
 	// worked out once here rather than derived on every read. It is never part of the bytes a
 	// signature covers: it reaches a client through `unsigned`, and it does not travel to
 	// other homeservers at all.
-	PrevContent      []byte `gorm:"column:prev_content"`
-	PrevSender       string `gorm:"column:prev_sender;size:255"`
+	PrevContent []byte `gorm:"column:prev_content"`
+	PrevSender  string `gorm:"column:prev_sender;size:255"`
+	// TxnID is the transaction ID the sending device named this event with, empty for an event
+	// that did not arrive through PUT /send/{type}/{txn}. It is kept beside the event because a
+	// client reading a timeline recognises its own send by it. The uniqueness a retry depends on
+	// is enforced by event_txn, which is the idempotency key; this copy is the one a client is
+	// shown, and it is not part of the bytes the event's signature covers.
+	TxnID            string `gorm:"column:txn_id;size:255;not null;default:''"`
 	Outlier          bool   `gorm:"column:outlier;not null;default:false"`
 	SoftFailed       bool   `gorm:"column:soft_failed;not null;default:false"`
 	StreamOrdering   int64  `gorm:"column:stream_ordering;not null;default:0"`
@@ -134,9 +140,14 @@ type EventAuthContext struct {
 
 // EventTxn maps a client transaction ID to the event it produced, which is what
 // makes `PUT /send/{type}/{txn}` idempotent per device.
+//
+// The room is part of the key. A transaction ID is a client's name for one attempt at one
+// request, and a client that sends to two rooms with the same name is making two requests —
+// a single ID is not a global sequence of a device's sends.
 type EventTxn struct {
 	ID        uint64 `gorm:"primaryKey;autoIncrement"`
 	DeviceID  string `gorm:"column:device_id;size:255;not null"`
+	RoomID    string `gorm:"column:room_id;size:255;not null;default:''"`
 	TxnID     string `gorm:"column:txn_id;size:255;not null"`
 	EventID   string `gorm:"column:event_id;size:255;not null"`
 	CreatedAt time.Time
@@ -262,9 +273,12 @@ type EventRepo interface {
 	// transaction, so concurrent senders cannot take the same number.
 	NextStreamOrdering(ctx context.Context) (int64, error)
 
-	// TxnLookup returns the event a device's transaction ID already produced.
-	TxnLookup(ctx context.Context, deviceID, txnID string) (*EventTxn, error)
+	// TxnLookup returns the event a device's transaction ID already produced in a room.
+	TxnLookup(ctx context.Context, deviceID, roomID, txnID string) (*EventTxn, error)
 	TxnSave(ctx context.Context, txn *EventTxn) error
+	// SetTxnID records the transaction ID a client's send gave an event, which is what the
+	// client is shown under `unsigned`. An empty ID writes nothing.
+	SetTxnID(ctx context.Context, eventID, txnID string) error
 
 	// RecordRejection remembers that this server refused an event, and why. The event is
 	// not stored, but the verdict has to survive it: the authorisation rules refuse an
@@ -555,9 +569,11 @@ func (r *eventRepo) NextStreamOrdering(ctx context.Context) (int64, error) {
 }
 
 // TxnLookup implements [EventRepo].
-func (r *eventRepo) TxnLookup(ctx context.Context, deviceID, txnID string) (*EventTxn, error) {
+func (r *eventRepo) TxnLookup(ctx context.Context, deviceID, roomID, txnID string) (*EventTxn, error) {
 	var txn EventTxn
-	err := r.db.WithContext(ctx).Where("device_id = ? AND txn_id = ?", deviceID, txnID).First(&txn).Error
+	err := r.db.WithContext(ctx).
+		Where("device_id = ? AND room_id = ? AND txn_id = ?", deviceID, roomID, txnID).
+		First(&txn).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, ErrNotFound
 	}
@@ -567,7 +583,17 @@ func (r *eventRepo) TxnLookup(ctx context.Context, deviceID, txnID string) (*Eve
 	return &txn, nil
 }
 
-// TxnSave implements [EventRepo]. A repeat of the same (device, txn) pair is
+// SetTxnID implements [EventRepo].
+func (r *eventRepo) SetTxnID(ctx context.Context, eventID, txnID string) error {
+	if txnID == "" {
+		return nil
+	}
+	return asConflict(r.db.WithContext(ctx).Model(&Event{}).
+		Where("event_id = ?", eventID).
+		Update("txn_id", txnID).Error)
+}
+
+// TxnSave implements [EventRepo]. A repeat of the same (device, room, txn) triple is
 // ErrConflict so the caller can return the original event instead of creating a
 // second one.
 func (r *eventRepo) TxnSave(ctx context.Context, txn *EventTxn) error {

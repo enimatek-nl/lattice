@@ -148,6 +148,7 @@ func (sv *Servicer) decode(ctx context.Context, row *persist.Event) (map[string]
 // how a client learns what happened to an event it had already seen.
 func (sv *Servicer) decorate(ctx context.Context, row *persist.Event, event map[string]any) map[string]any {
 	event = showPrevState(row, event)
+	event = showTransactionID(row, event)
 	if !row.Redacted || row.EventID == "" {
 		return event
 	}
@@ -252,4 +253,24 @@ func decodeStored(row *persist.Event) (map[string]any, error) {
 func roomIDOf(event map[string]any) string {
 	roomID, _ := event["room_id"].(string)
 	return roomID
+}
+
+// showTransactionID attaches the transaction ID the sending device named this event with, which
+// is how a client picks its own send out of a timeline — and, on a device with more than one
+// session, how it tells which of them the request came from.
+//
+// The value is the client's own string, kept from the request that created the event. It is not
+// part of what the signature covers and it does not travel onward: a peer homeserver receives the
+// signed event, and a transaction ID chosen here says nothing about what happened there.
+func showTransactionID(row *persist.Event, event map[string]any) map[string]any {
+	if row.TxnID == "" {
+		return event
+	}
+	unsigned, _ := event["unsigned"].(map[string]any)
+	if unsigned == nil {
+		unsigned = map[string]any{}
+	}
+	unsigned["transaction_id"] = row.TxnID
+	event["unsigned"] = unsigned
+	return event
 }

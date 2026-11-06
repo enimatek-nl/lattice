@@ -1,0 +1,180 @@
+== building complement-lattice:latest
+Emulate Docker CLI using podman. Create /etc/containers/nodocker to quiet msg.
+[1/2] STEP 1/6: FROM docker.io/library/golang:1.26-alpine AS build
+[1/2] STEP 2/6: WORKDIR /src
+--> Using cache 41f8576e376f5a915c0cd6832b08f4051ae37a129db82b3671a7e094432d4207
+--> 41f8576e376f
+[1/2] STEP 3/6: COPY go.mod go.sum ./
+--> Using cache bd7c2a0c59707b6662d00c9867471257f5be93d0ac29d01409bae5efe586c854
+--> bd7c2a0c5970
+[1/2] STEP 4/6: RUN go mod download
+--> Using cache f930c821bfaf6d5986c6d3bd25a3323d5dba266132dfa98a6e80e4f481762d50
+--> f930c821bfaf
+[1/2] STEP 5/6: COPY . .
+--> aa8e0cae696d
+[1/2] STEP 6/6: RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/lattice ./cmd/lattice
+--> 9f2632225668
+[2/2] STEP 1/10: FROM docker.io/library/alpine:3.20
+[2/2] STEP 2/10: RUN apk add --no-cache ca-certificates && update-ca-certificates
+--> Using cache 03e153230bb2614173f0c22b65ec72ac40d2eceb237ba66bd1c74a192c4ca588
+--> 03e153230bb2
+[2/2] STEP 3/10: COPY --from=build /out/lattice /usr/local/bin/lattice
+--> a4a430db45be
+[2/2] STEP 4/10: COPY deploy/complement/entrypoint.sh /entrypoint.sh
+--> a302919f0596
+[2/2] STEP 5/10: RUN chmod 0755 /entrypoint.sh
+--> 681452da337e
+[2/2] STEP 6/10: ENV LATTICE_DATA_DIR=/data
+--> d17b31946a63
+[2/2] STEP 7/10: VOLUME ["/data"]
+--> 69b4d5dd9329
+[2/2] STEP 8/10: EXPOSE 8008 8448
+--> 13eaf49f26ce
+[2/2] STEP 9/10: HEALTHCHECK --interval=5s --timeout=5s --start-period=5s --retries=5 	CMD ["/usr/local/bin/lattice", "healthcheck", "-addr", "127.0.0.1:8008"]
+time="2026-11-06T11:02:00+01:00" level=warning msg="HEALTHCHECK is not supported for OCI image format and will be ignored. Must use `docker` format"
+--> 4a3ad789181c
+[2/2] STEP 10/10: ENTRYPOINT ["/entrypoint.sh"]
+[2/2] COMMIT complement-lattice:latest
+time="2026-11-06T11:02:00+01:00" level=warning msg="HEALTHCHECK is not supported for OCI image format and will be ignored. Must use `docker` format"
+--> 4048a545483c
+Successfully tagged localhost/complement-lattice:latest
+4048a545483c8bac6622dbc0b08972997c7c17ad07f8e35f17e56d427e2f3bab
+== running Complement (filter: TestTxnInEvent|TestTxnScopeOnLocalEcho|TestTxnIdempotencyScopedToDevice|TestTxnIdempotency|TestTxnIdWithRefreshToken)
+2026/11/06 11:02:03 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:fed CACertificate:0x11327ee22c08 CAPrivateKey:0x11327f28c930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests	4.240s [no tests to run]
+2026/11/06 11:02:02 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:csapi CACertificate:0x126d43f30c08 CAPrivateKey:0x126d43fa09a0 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+=== RUN   TestTxnInEvent
+    txnid_test.go:21: WARNING: TestTxnInEvent called runtime.SkipIf([dendrite]) but Complement doesn't know which HS is running as it was run without a *_blacklist tag: executing test.
+    txnid_test.go:23: Deploy times: 2.755170858s blueprints, 605.150523ms containers
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (2.036616ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (5.504591ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/createRoom => 200 OK (26.941569ms)
+    client.go:893: [CSAPI] PUT hs1/_matrix/client/v3/rooms/!p2rHVFH2ViQWjxLDMIkJ1wHHVPIeuQ:hs1/send/m.room.message/abcdefg => 200 OK (12.702945ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/rooms/!p2rHVFH2ViQWjxLDMIkJ1wHHVPIeuQ:hs1/event/$929j_-XvDZr8W4hQjQROPnoOhAoUyR3I5OQl_4FHiFM => 200 OK (3.07342ms)
+--- PASS: TestTxnInEvent (3.58s)
+=== RUN   TestTxnScopeOnLocalEcho
+    txnid_test.go:75: WARNING: TestTxnScopeOnLocalEcho called runtime.SkipIf([dendrite]) but Complement doesn't know which HS is running as it was run without a *_blacklist tag: executing test.
+    txnid_test.go:77: Deploy times: 211.891091ms blueprints, 579.745286ms containers
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (1.963961ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (6.553891ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/login => 200 OK (3.889597ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/createRoom => 200 OK (26.77705ms)
+    client.go:893: [CSAPI] PUT hs1/_matrix/client/v3/rooms/!CGAcknT1LmpGyRq7C8w2Y-eI-o7Xtw:hs1/send/m.room.message/abdefgh => 200 OK (11.828842ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (8.224806ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/login => 200 OK (5.084226ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (8.079665ms)
+--- PASS: TestTxnScopeOnLocalEcho (1.03s)
+=== RUN   TestTxnIdempotencyScopedToDevice
+    txnid_test.go:117: WARNING: TestTxnIdempotencyScopedToDevice called runtime.SkipIf([dendrite]) but Complement doesn't know which HS is running as it was run without a *_blacklist tag: executing test.
+    txnid_test.go:119: Deploy times: 207.975444ms blueprints, 584.451816ms containers
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (2.197985ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (7.071028ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/login => 200 OK (5.540596ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/createRoom => 200 OK (24.389302ms)
+    client.go:893: [CSAPI] PUT hs1/_matrix/client/v3/rooms/!n4Mgo9nHdiYPb-4Wud-KzKdslhmPqQ:hs1/send/m.room.message/abcdef => 200 OK (9.550614ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/login => 200 OK (4.616535ms)
+    client.go:893: [CSAPI] PUT hs1/_matrix/client/v3/rooms/!n4Mgo9nHdiYPb-4Wud-KzKdslhmPqQ:hs1/send/m.room.message/abcdef => 200 OK (2.595498ms)
+--- PASS: TestTxnIdempotencyScopedToDevice (1.02s)
+=== RUN   TestTxnIdempotency
+    txnid_test.go:160: WARNING: TestTxnIdempotency called runtime.SkipIf([conduit]) but Complement doesn't know which HS is running as it was run without a *_blacklist tag: executing test.
+    txnid_test.go:162: Deploy times: 180.401746ms blueprints, 562.86129ms containers
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (1.852016ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (4.603185ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/login => 200 OK (4.526321ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/createRoom => 200 OK (26.628821ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/createRoom => 200 OK (17.695777ms)
+    client.go:893: [CSAPI] PUT hs1/_matrix/client/v3/rooms/!o0infOr7fB1OuDMJWIL7koqFUpVXhg:hs1/send/m.room.message/abc => 200 OK (9.88978ms)
+    client.go:893: [CSAPI] PUT hs1/_matrix/client/v3/rooms/!o0infOr7fB1OuDMJWIL7koqFUpVXhg:hs1/send/m.room.message/abc => 200 OK (2.029846ms)
+    client.go:893: [CSAPI] PUT hs1/_matrix/client/v3/rooms/!o0infOr7fB1OuDMJWIL7koqFUpVXhg:hs1/send/m.room.message/abc => 200 OK (2.669167ms)
+    client.go:893: [CSAPI] PUT hs1/_matrix/client/v3/rooms/!oix1-AN1Z_ZMNm8pl3u7XYpHnOkl4w:hs1/send/m.room.message/abc => 200 OK (9.69573ms)
+--- PASS: TestTxnIdempotency (0.99s)
+=== RUN   TestTxnIdWithRefreshToken
+    txnid_test.go:218: WARNING: TestTxnIdWithRefreshToken called runtime.SkipIf([dendrite conduit venator]) but Complement doesn't know which HS is running as it was run without a *_blacklist tag: executing test.
+    txnid_test.go:220: Deploy times: 231.623691ms blueprints, 574.50312ms containers
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (1.893577ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (7.95962ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/login => 400 Bad Request (824.083µs)
+    txnid_test.go:233: [31mCSAPI.MustDo POST http://127.0.0.1:40535/_matrix/client/v3/login returned non-2xx code: 400 Bad Request - body: {"errcode":"M_INVALID_PARAM","error":"This server does not issue short-lived access tokens with refresh tokens."}
+        [39m
+2026/11/06 11:02:11 ============================================
+
+
+2026/11/06 11:02:11 766bcff3566e855094674771639f33471ecef0ab1e594c5b80427e61bd145f2c : Server logs:
+{"time":"2026-11-06T10:02:10.805165151Z","level":"INFO","msg":"lattice starting","server_name":"hs1","version":"0.1.0-dev","client_addr":"0.0.0.0:8008","federation_addr":"0.0.0.0:8448","registration_mode":"open"}
+{"time":"2026-11-06T10:02:10.82265043Z","level":"INFO","msg":"listening","addr":"0.0.0.0:8448","tls":true}
+{"time":"2026-11-06T10:02:10.822658092Z","level":"INFO","msg":"listening","addr":"0.0.0.0:8008","tls":false}
+{"time":"2026-11-06T10:02:10.853322845Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/versions","status":200,"bytes":181,"duration_ms":0,"request_id":"pZi0dmPXA3CP"}
+{"time":"2026-11-06T10:02:10.855415796Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/register","status":401,"bytes":185,"duration_ms":0,"request_id":"UHXggU2uyCTd"}
+{"time":"2026-11-06T10:02:10.863318868Z","level":"INFO","msg":"account registered","user_id":"@user-1-alice:hs1","device_id":"oZJgF_aTaM8","admin":false}
+{"time":"2026-11-06T10:02:10.863389777Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/register","status":200,"bytes":119,"duration_ms":7,"request_id":"FYhmhZ0NtztD"}
+{"time":"2026-11-06T10:02:10.864498205Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/login","status":400,"bytes":114,"duration_ms":0,"request_id":"urVugITtO_bq"}
+{"time":"2026-11-06T10:02:10.875960044Z","level":"INFO","msg":"lattice stopped"}
+2026/11/06 11:02:11 ============== 766bcff3566e855094674771639f33471ecef0ab1e594c5b80427e61bd145f2c : END LOGS ==============
+
+
+--- FAIL: TestTxnIdWithRefreshToken (0.99s)
+FAIL
+FAIL	github.com/matrix-org/complement/tests/csapi	9.812s
+2026/11/06 11:02:02 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc2836 CACertificate:0x3a18489a6008 CAPrivateKey:0x3a1848968070 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc2836	2.465s [no tests to run]
+2026/11/06 11:02:02 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3389 CACertificate:0x3a3bfc3a2c08 CAPrivateKey:0x3a3bfca96930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3389	2.518s [no tests to run]
+2026/11/06 11:02:03 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3391 CACertificate:0x292239ea6008 CAPrivateKey:0x292239e70070 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3391	3.998s [no tests to run]
+2026/11/06 11:02:03 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3757 CACertificate:0x389ca094e008 CAPrivateKey:0x389ca0918070 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3757	4.228s [no tests to run]
+2026/11/06 11:02:02 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3874 CACertificate:0x2c72ba1f8008 CAPrivateKey:0x2c72ba1c0070 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3874	2.262s [no tests to run]
+2026/11/06 11:02:02 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3890 CACertificate:0x192ca789c008 CAPrivateKey:0x192ca7862070 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3890	1.804s [no tests to run]
+2026/11/06 11:02:03 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3902 CACertificate:0x365a6dfaec08 CAPrivateKey:0x365a6e66e930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3902	4.228s [no tests to run]
+2026/11/06 11:02:04 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3930 CACertificate:0x7fa1f8a6008 CAPrivateKey:0x7fa1f874070 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3930	4.553s [no tests to run]
+2026/11/06 11:02:02 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3967 CACertificate:0x346fa00b4c08 CAPrivateKey:0x346fa0786930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3967	1.089s [no tests to run]
+2026/11/06 11:02:02 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc4140 CACertificate:0x3cb7c95c2008 CAPrivateKey:0x3cb7c9586070 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc4140	1.663s [no tests to run]
+2026/11/06 11:02:02 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc4155 CACertificate:0x29d9f5826c08 CAPrivateKey:0x29d9f58529a0 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc4155	2.228s [no tests to run]
+2026/11/06 11:02:02 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc4222 CACertificate:0x31a0df422c08 CAPrivateKey:0x31a0dfac8930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc4222	2.112s [no tests to run]
+2026/11/06 11:02:03 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc4242 CACertificate:0x30d1ae606008 CAPrivateKey:0x30d1ae5cc070 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc4242	3.981s [no tests to run]
+2026/11/06 11:02:02 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc4306 CACertificate:0x2eb5f9d1a008 CAPrivateKey:0x2eb5f9ce0070 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc4306	1.458s [no tests to run]
+2026/11/06 11:02:02 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc4429 CACertificate:0x1859069a008 CAPrivateKey:0x1859065e070 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc4429	3.830s [no tests to run]
+FAIL

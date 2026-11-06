@@ -281,9 +281,35 @@ func (s *Service) NewSession(ctx context.Context, userID, deviceID, displayName 
 
 	var session Session
 	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
-		allocated, aerr := s.allocateDeviceID(ctx, s.db.Devices.WithTx(tx), user.UserID, deviceID)
+		devices := s.db.Devices.WithTx(tx)
+		allocated, aerr := s.allocateDeviceID(ctx, devices, user.UserID, deviceID)
 		if aerr != nil {
 			return aerr
+		}
+		// A login that names a device this account already has is not a new device: it is the
+		// same one, signed into again. Reusing it keeps the transaction IDs, the device keys and
+		// the other access tokens the user already holds for it meaningful — a second device under
+		// the same ID would either collide in the database or split one device's history across
+		// two. The device ID is scoped to the account, which is why the lookup is by user and ID
+		// together; somebody else's device of the same name is not found here and the create
+		// below refuses it.
+		if existing, derr := devices.ByDeviceID(ctx, user.UserID, allocated); derr == nil {
+			if displayName != "" && displayName != existing.DisplayName {
+				if serr := devices.SetDisplayName(ctx, user.UserID, allocated, displayName); serr != nil {
+					return serr
+				}
+			}
+			if terr := devices.Touch(ctx, user.UserID, allocated, "", time.Now().UTC()); terr != nil {
+				return terr
+			}
+			token, merr := s.tokens.Mint(ctx, tx, user.UserID, allocated)
+			if merr != nil {
+				return merr
+			}
+			session = Session{UserID: user.UserID, DeviceID: allocated, AccessToken: token}
+			return nil
+		} else if !errors.Is(derr, persist.ErrNotFound) {
+			return derr
 		}
 		device := &persist.Device{
 			UserID:      user.UserID,

@@ -171,8 +171,12 @@ func (d *Database) migrate(log *slog.Logger) error {
 		"CREATE INDEX IF NOT EXISTS idx_room_state_event ON room_state(event_id)",
 		"CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_context_unique ON event_auth_context(event_id, state_event_id)",
 		"CREATE INDEX IF NOT EXISTS idx_auth_context_event ON event_auth_context(event_id)",
-		// Idempotency of PUT /send/{type}/{txn}: unique per device, not global.
-		"CREATE UNIQUE INDEX IF NOT EXISTS idx_event_txn ON event_txn(device_id, txn_id)",
+		// Idempotency of PUT /send/{type}/{txn}: unique per device *and room*, not global.
+		// The drop is for databases written before the room was part of the key: they carry an
+		// index that would let a transaction ID used in one room answer a send to another, and
+		// `IF NOT EXISTS` alone would leave that index in place forever.
+		"DROP INDEX IF EXISTS idx_event_txn",
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_event_txn ON event_txn(device_id, room_id, txn_id)",
 		// An alias resolves to exactly one room, and a room's aliases are listed
 		// together.
 		"CREATE UNIQUE INDEX IF NOT EXISTS idx_room_aliases_alias ON room_aliases(alias)",
