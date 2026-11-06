@@ -1,5 +1,46 @@
 # Progress
 
+## 2026-11-08 — MSC4115 lands, the suite tally collapses, and one of my own ledger claims was wrong
+
+Commit `ad8499a`. `unsigned.membership` on served events is the **reader's** membership of the
+room as of the moment the event was sent, read out of the state snapshot that event was sent
+against: `leave` when the snapshot holds no member entry for the reader, **no field** when this
+server has no snapshot of the event at all, and a value already under `unsigned` is left alone
+because that is where a peer records what *it* added around an event. `/sync` (timeline and
+state), `/messages` and `/event` pass the reader; `Serve`/`ServeChunk` stay reader-free for
+callers with no reader to name, and no federation path runs through this code at all.
+
+Complement, `.agent-work/next/msc4115c.log` and `msc4115d.log`: `TestMembershipOnEvents` passes;
+`TestGetRoomMembers`, `TestGetRoomMembersAtPoint`, `TestSendAndFetchMessage`,
+`TestFetchMessagesFromNonExistentRoom`, `TestRoomMessagesLazyLoading(+LocalUser)`,
+`TestSyncFilter` and `tests/csapi` `TestSync` pass unchanged; `tests/msc4222` `TestSync` fails its
+two `state_after` subtests as it has before. Local `go test ./tests/...` green.
+
+Found while in there: `ServeChunk` paired decoded events with stored rows by `len(out)`, so after
+any withheld event every later event in the chunk got the **previous event's** `unsigned` —
+someone's `prev_content` or transaction ID attached to a different event's body. Now paired by
+position. Fixed without a test, which is recorded as T-4037 rather than waved away.
+
+Then the environment, where my earlier conclusion was wrong. The deploy failures that made the
+full-suite tally meaningless are `allocating lock for new **volume**: exceeded num_locks (2048)`:
+**2044** anonymous volumes left behind by removed homeserver containers, most of them from one run
+I interrupted with `pkill`, had eaten Podman's entire lock pool. Cleared only the ones no live
+container mounts (2044 gone, 1 left, both pre-existing containers still up). That also invalidates
+what B-0008 said about the rootless lock set being immovable — that error was an artefact of my
+own `num_locks` edit, which is gone. Consequence for the records: `gate4.log` (59 pass/161 fail)
+and `full2.log` (67/152) are noise; T-4039 is the re-run.
+
+And a correction to the compliance matrix, because the error was mine and it was in the direction
+of looking better: it claimed `TestTyping` was newly passing. It never was — the log I read for it
+was a run of the transaction-ID filter, which contains no typing test. Typing is not implemented
+client-side at all: `/sync` builds `ephemeral` as an empty list by construction
+(`internal/sync/service.go:320-330`), and typing EDUs received over federation are never stored or
+replayed. Re-run twice today it fails all three delivery subtests, consistently (T-4036). The same
+sweep removed a citation to a Complement helper (`assertMembershipEventEventsPresent`) that does
+not exist in this checkout. T-4034's description is also softer than the evidence:
+`SendEventSynced waiting for event ID` appears 16 times in `prevbatch1.log`, so it is routine
+rather than occasional, even though the tests that show it still pass.
+
 ## 2026-11-08 — the MSC4115 lookup lands, and the full-suite tally turns out not to be a tally
 
 `persist.StateGroupRepo.StateEntryAt(eventID, type, stateKey)` (commit `64135dc`) answers what a

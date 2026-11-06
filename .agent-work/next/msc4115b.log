@@ -1,0 +1,121 @@
+== building complement-lattice:latest
+Emulate Docker CLI using podman. Create /etc/containers/nodocker to quiet msg.
+[1/2] STEP 1/6: FROM docker.io/library/golang:1.26-alpine AS build
+[1/2] STEP 2/6: WORKDIR /src
+--> Using cache 41f8576e376f5a915c0cd6832b08f4051ae37a129db82b3671a7e094432d4207
+--> 41f8576e376f
+[1/2] STEP 3/6: COPY go.mod go.sum ./
+--> Using cache bd7c2a0c59707b6662d00c9867471257f5be93d0ac29d01409bae5efe586c854
+--> bd7c2a0c5970
+[1/2] STEP 4/6: RUN go mod download
+--> Using cache f930c821bfaf6d5986c6d3bd25a3323d5dba266132dfa98a6e80e4f481762d50
+--> f930c821bfaf
+[1/2] STEP 5/6: COPY . .
+--> fc18b2051bfb
+[1/2] STEP 6/6: RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/lattice ./cmd/lattice
+--> b27fa649c135
+[2/2] STEP 1/10: FROM docker.io/library/alpine:3.20
+[2/2] STEP 2/10: RUN apk add --no-cache ca-certificates && update-ca-certificates
+--> Using cache 03e153230bb2614173f0c22b65ec72ac40d2eceb237ba66bd1c74a192c4ca588
+--> 03e153230bb2
+[2/2] STEP 3/10: COPY --from=build /out/lattice /usr/local/bin/lattice
+--> Using cache 1c8000f42b9917d289bf354fa87856c2582ca08b5bce04af111015515413a097
+--> 1c8000f42b99
+[2/2] STEP 4/10: COPY deploy/complement/entrypoint.sh /entrypoint.sh
+--> Using cache 8a5c1ccb0129251e7c8d5903e68016c2577e4cb43e423cf7d0480cab5686e1c3
+--> 8a5c1ccb0129
+[2/2] STEP 5/10: RUN chmod 0755 /entrypoint.sh
+--> Using cache 0e494bce28a0eb1a0fb847d525e7632b368fd6ecccde5cf10dd7ec5c01f247ee
+--> 0e494bce28a0
+[2/2] STEP 6/10: ENV LATTICE_DATA_DIR=/data
+--> Using cache 8454586496cad8897324f67714fddf16bc17a70bee25b1d57e267830206705a0
+--> 8454586496ca
+[2/2] STEP 7/10: VOLUME ["/data"]
+--> Using cache e5c5a8ebcd1f66c5f1ffa87129bc22468c40ea95f1c312a46bfd50c50193fe9e
+--> e5c5a8ebcd1f
+[2/2] STEP 8/10: EXPOSE 8008 8448
+--> Using cache 65e43dd310c7ecae1d125efc71477008afb5c04be1e8aae0096ef13a75cbb8b1
+--> 65e43dd310c7
+[2/2] STEP 9/10: HEALTHCHECK --interval=5s --timeout=5s --start-period=5s --retries=5 	CMD ["/usr/local/bin/lattice", "healthcheck", "-addr", "127.0.0.1:8008"]
+--> Using cache 880baed56c420a912c4041bf5dce4e5c30582b6b09a431cc03d3089cf0c651be
+--> 880baed56c42
+[2/2] STEP 10/10: ENTRYPOINT ["/entrypoint.sh"]
+--> Using cache 120d18ba3ef8b66932b52079c7b08597b0f6205549f672ff257eaf918894ca42
+[2/2] COMMIT complement-lattice:latest
+--> 120d18ba3ef8
+Successfully tagged localhost/complement-lattice:latest
+120d18ba3ef8b66932b52079c7b08597b0f6205549f672ff257eaf918894ca42
+== running Complement (filter: TestMembershipOnEvents, packages in parallel: 2)
+2026/11/06 12:35:19 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:fed CACertificate:0x318c41952c08 CAPrivateKey:0x318c41d1e930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests	2.233s [no tests to run]
+2026/11/06 12:35:18 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:csapi CACertificate:0x15da21e20c08 CAPrivateKey:0x15da21e92930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+=== RUN   TestMembershipOnEvents
+    membership_on_events_test.go:20: WARNING: TestMembershipOnEvents called runtime.SkipIf([dendrite]) but Complement doesn't know which HS is running as it was run without a *_blacklist tag: executing test.
+2026/11/06 12:35:19 csapi.1_servers.hs1 : failed to deployBaseImage: ContainerCreate: Error response from daemon: container create: creating named volume "62f7eff9ccc7f2f39939cccbae5b053bc0f34ab14b04c52cba2aedd2b3e9651f": allocating lock for new volume: allocation failed; exceeded num_locks (2048)
+    membership_on_events_test.go:22: [31mDeploy: Failed to construct blueprint: ConstructBlueprintIfNotExist(1_servers): failed to ConstructBlueprint: errors whilst constructing blueprint 1_servers: [ContainerCreate: Error response from daemon: container create: creating named volume "62f7eff9ccc7f2f39939cccbae5b053bc0f34ab14b04c52cba2aedd2b3e9651f": allocating lock for new volume: allocation failed; exceeded num_locks (2048)][39m
+--- FAIL: TestMembershipOnEvents (0.47s)
+FAIL
+FAIL	github.com/matrix-org/complement/tests/csapi	2.179s
+2026/11/06 12:35:23 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc2836 CACertificate:0xe402645e008 CAPrivateKey:0xe402695e070 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc2836	3.443s [no tests to run]
+2026/11/06 12:35:22 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3389 CACertificate:0x13e8561b8c08 CAPrivateKey:0x13e8568d0930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3389	1.524s [no tests to run]
+2026/11/06 12:35:24 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3391 CACertificate:0x3d7c0b852c08 CAPrivateKey:0x3d7c0b806930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3391	2.803s [no tests to run]
+2026/11/06 12:35:24 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3757 CACertificate:0x375cae44ec08 CAPrivateKey:0x375cae7ba930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3757	1.051s [no tests to run]
+2026/11/06 12:35:26 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3874 CACertificate:0x2d5b98ea0c08 CAPrivateKey:0x2d5b991e4930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3874	0.791s [no tests to run]
+2026/11/06 12:35:27 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3890 CACertificate:0x1616c3eaac08 CAPrivateKey:0x1616c4598930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3890	1.525s [no tests to run]
+2026/11/06 12:35:28 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3902 CACertificate:0x43ac51d2c08 CAPrivateKey:0x43ac5204930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3902	1.354s [no tests to run]
+2026/11/06 12:35:29 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3930 CACertificate:0xc081150ec08 CAPrivateKey:0xc0811ba0930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3930	1.267s [no tests to run]
+2026/11/06 12:35:30 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3967 CACertificate:0x35e069bbec08 CAPrivateKey:0x35e069bf0930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3967	1.774s [no tests to run]
+2026/11/06 12:35:30 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc4140 CACertificate:0x152c31ffec08 CAPrivateKey:0x152c32072930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc4140	1.317s [no tests to run]
+2026/11/06 12:35:32 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc4155 CACertificate:0x2b5b0da7ec08 CAPrivateKey:0x2b5b0dd28930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc4155	1.005s [no tests to run]
+2026/11/06 12:35:32 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc4222 CACertificate:0x23f635e2ec08 CAPrivateKey:0x23f6365f8930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc4222	1.306s [no tests to run]
+2026/11/06 12:35:33 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc4242 CACertificate:0x15f9ce424c08 CAPrivateKey:0x15f9ceb0c930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc4242	1.366s [no tests to run]
+2026/11/06 12:35:34 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc4306 CACertificate:0x1ffdc89b0c08 CAPrivateKey:0x1ffdc907c930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc4306	1.035s [no tests to run]
+2026/11/06 12:35:35 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc4429 CACertificate:0x37886b032c08 CAPrivateKey:0x37886b516700 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc4429	1.097s [no tests to run]
+FAIL

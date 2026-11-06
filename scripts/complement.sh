@@ -51,15 +51,26 @@ fi
 
 filter="${RUN:-TestVersionStructure|TestUnknownEndpoints|TestRegistration|TestLogin|TestLogout|TestServerCapabilities|TestDeviceManagement|TestCanRegisterAdmin}"
 
-# Complement's suites run in parallel by default, which on this host creates more
-# short-lived containers than Podman's store has locks for: `ContainerCreate: ...
-# allocation failed; exceeded num_locks (2048)`. That surfaces as a Complement deploy
-# error, and `go test` then counts it as a test failure — over a hundred at once, in tests
-# that pass on their own. Raising num_locks is not available here: the rootless lock set is
-# created once at 2048 and podman refuses to resize it short of a destructive
-# `podman system reset`. So the parallelism is limited instead, and a package-level `-p` can
-# still be given on the command line.
+# A Complement run creates a container and an anonymous volume per homeserver, and volumes
+# of removed containers are left behind. Past a few hundred of them Podman refuses new work —
+# `allocating lock for new volume: allocation failed; exceeded num_locks (2048)` — and Complement
+# reports that as test failures at deploy time, with sub-second durations. On 2026-11-06 a full
+# suite showed 59 passes and 161 failures, and 15+ sampled failures were that error; 2044 leaked
+# anonymous volumes were the whole of it, most of them from one run interrupted with pkill.
+# So: the count is reported, and the way to clear it is named rather than run automatically,
+# because deleting volumes on someone else's machine is not this script's call:
+#
+#   keep=$(for c in $(podman ps -aq); do podman inspect "$c" --format '{{range .Mounts}}{{.Name}} {{end}}'; done)
+#   for v in $(podman volume ls -q); do case "$v" in *[!0-9a-f]*|"") continue;; esac
+#     [ ${#v} -eq 64 ] || continue; case "$keep" in *"$v"*) continue;; esac
+#     podman volume rm "$v" >/dev/null; done
+#
+# Packages are also run a few at a time, which keeps a single run from creating hundreds at once.
 parallel="${PARALLEL:-2}"
+if command -v podman >/dev/null 2>&1; then
+	volumes="$(podman volume ls --format '{{.Name}}' 2>/dev/null | grep -cE '^[0-9a-f]{64}$' || true)"
+	[[ "${volumes:-0}" -gt 300 ]] && echo "!! $volumes anonymous volumes in the podman store; deploy failures below may be lock exhaustion, not test failures (see the comment above for how to clear them)"
+fi
 echo "== running Complement (filter: $filter, packages in parallel: $parallel)"
 cd "$complement_dir"
 COMPLEMENT_BASE_IMAGE="$image" go test ./tests/... -run "$filter" -count=1 -p "$parallel" "${@:1}"

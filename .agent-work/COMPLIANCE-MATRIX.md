@@ -132,7 +132,11 @@ assertion weakened). Newly passing, all verified in this session:
   * `TestClientNoEncryption` — the whole package, including `TestSendEventSynced`, which had been
     failing on a `PUT /send` whose body could not be decoded at all: `msgtype`/`body` were looked
     for at the top level instead of inside `content`.
-  * `TestTyping` — including "Typing notifications are sent to other users".
+  * `TestMembershipOnEvents` — MSC4115. Every event a client is served now carries
+    `unsigned.membership`: that reader's own membership of the room as of the moment the event
+    was sent, read from the state snapshot the event was sent against. Absence of a member entry
+    in that snapshot is `leave`; an event this server has no snapshot of gets no field, because
+    "nobody was there" and "we were not there to see it" are different answers.
   * `TestGetFilteredRoomMembers` — all three subtests. `handleMembers` read only `not_membership`,
     so `membership=` was ignored.
   * `TestGetRoomMembers`, `TestGetRoomMembersAtPoint` — the roster, and the roster as it was at a
@@ -145,11 +149,17 @@ assertion weakened). Newly passing, all verified in this session:
     from before these changes, i.e. no regression.
   * The M1 gate set (`gate2.log`): every package `ok`.
 
-Still red in the same families, with causes named rather than inferred: `TestMembershipOnEvents`
-(`room_members_test.go:193`, failing in the full run of 2026-11-06 09:39 as well as in this
-session's filtered runs) wants `unsigned.membership` on every served event, which is **the
-reader's** membership as of each event (MSC4115), not the sender's; the mechanism to answer it now
-exists and the plan is T-4032. And
+Correction to this section as first written: it listed `TestTyping` as newly passing. It is not,
+and it was never observed passing in this session — the log I read for it was a run of the
+transaction-ID filter, which contains no typing test. Typing is not implemented on the
+client-facing side: `/sync` builds `ephemeral` as an empty list by construction
+(`internal/sync/service.go:320-330`), and typing EDUs received over federation are not stored or
+served. Re-running it twice on 2026-11-06 (`.agent-work/next/msc4115d.log`,
+`typing1.log`) fails all three of its delivery subtests with `MustSyncUntil: timed out after
+5.0s`, consistently. Task T-4036.
+
+What remains outstanding in this family: the same lookup applied to `/state`-style reads, which
+MSC4115's scope does not clearly cover, so it is deliberately not claimed. And
 `SendEventSynced waiting for event ID …` appears in some runs of `room_members_test.go:74`/`:88`
 and not others, which is T-4034 and recorded as intermittent rather than explained.
 

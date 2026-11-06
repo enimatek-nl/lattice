@@ -532,59 +532,42 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
       `TestTxnIdempotency` (`txnid_test.go:211`): the fourth send re-used the third's txn ID with
       different content and got the cached event back. Synapse's uniqueness is
       (user, device, txn, body); ours is (device, txn). Same test class: 5 tests.
-- [ ] T-4035 full Complement suite runs are unmeasurable on this host (Podman `num_locks`, B-0008).
+- [x] T-4035 the full-suite contamination was leaked Podman **volumes**, not an immovable lock
+      ceiling (B-0008, 2026-11-06). 2044 anonymous volumes from removed containers had eaten the
+      whole 2048-lock pool; clearing the ones no live container mounts restored Complement to
+      working, and `TestMembershipOnEvents` then ran in 3.6s. `scripts/complement.sh` now reports
+      the anonymous-volume count and names the cleanup instead of running it, and defaults to
+      `-p 2`. Until a full suite is re-run on a clean store, `gate4.log` (59/161) and `full2.log`
+      (67/152) are both to be treated as noise, not tallies.
+- [ ] T-4039 re-run the full suite with a clean volume store and record the tally as a number with
+      a date, replacing the two contaminated ones. Expect it to take tens of minutes; expect
+      `msc3902` (`TestPartialStateJoin`) to fail rather than hang, and separate unimplemented MSCs
+      from real regressions by family, not by count.
       Do not read `.agent-work/next/gate4.log` (59 pass / 161 fail) as a compliance picture: 15+ of
       those failures are `ContainerCreate … exceeded num_locks (2048)` at deploy time, on tests that
       pass in filtered runs. Reliable until then: filtered family runs. Possible fixes, none tried
       blind: a non-destructive way to grow the rootless lock set; running the suite package by
       package with `podman container prune -f` between packages; or a Docker-backed host. Do not run
       `podman system reset` on this machine without asking — it has unrelated containers on it.
-- [ ] T-4032 `unsigned.membership` on served events — MSC4115, and it is **the reader's**
-      membership as of each event, not the sender's. Reading the test rather than its title settled
-      this: in `TestMembershipOnEvents` every event before bob's join wants `leave`, including
-      alice's own events, although alice was joined the whole time; the value flips at bob's own
-      member event, which only makes sense from bob's side. `membership_on_events_test.go:53-63`
-      walks the timeline it was served and expects `haveSeenJoin` to decide the value. So it cannot
-      be one stored column: serving needs the reader's membership at each event, which is the same
-      membership-history lookup T-4033 needs. Presentation still goes through
-      `internal/redaction/serve.go`.
-      Mechanism now available, and this is the plan rather than a guess: T-4033a built the "state
-      at a stream position" lookup (`EventsWindow` → `groups.GroupOf` → `groups.Entries`). The same
-      lookup answers MSC4115 per event: for each event served to a user, read that event's own
-      snapshot (`GroupOf(eventID)` → its `m.room.member/<reader>` entry → that event's content
-      membership). No such entry means `leave`, which is what the create event wants, and a user's
-      own join event resolves to `join`, because `recordStateAt` attaches the snapshot *including*
-      the state event itself (`internal/rooms/stateat.go:28-56`). It is per reader, so
-      `redaction.Servicer` needs the reader passed in — it already takes the room rules and does the
-      client-side adjustment, so that is a parameter and a lookup, not a redesign. Cost to watch: one
-      entry lookup per served event, so either a per-request cache of (group, state_key) →
-      membership, or one SQL join (`event_state_groups` → `state_group_entries` → `events`) behind a
-      repo method such as `MembershipAt(ctx, eventID, stateKey)` — now added as
-      `persist.StateGroupRepo.StateEntryAt(ctx, eventID, eventType, stateKey)` (commit `64135dc`,
-      tested by `TestStateEntryAtAnswersAboutTheMomentNotTheMomentAfter`: a message sent while bob
-      was joined still answers `join` after he has left). What is left is the presentation half,
-      and the steps are these:
-        1. `redaction.Servicer` gains the group repository — `NewServicer(events, rooms)` becomes
-           `NewServicer(events, rooms, groups)`; the call sites are the sync service, `/messages`,
-           `/event`, `/context` and `/relations`, all of which already hold a `persist.Database`.
-        2. Add reader-aware entry points, `ServeAs(ctx, row, reader)` and
-           `ServeChunkAs(ctx, rows, reader)`, and keep the reader-free `Serve`/`ServeChunk` for the
-           federation paths, where inventing our own `unsigned` would be a claim about state a peer
-           never saw. `decorate` takes the reader.
-        3. In `decorate`: only when the reader is non-empty, the stored event carries no
-           `unsigned.membership` of its own, and this server has a snapshot for the event
-           (`groups.StateEntryAt(row.EventID, "m.room.member", reader)`): write that member event's
-           `content.membership`; [persist.ErrNotFound] from the snapshot means `leave`, which is
-           what the create event wants and what the Complement test asserts. ErrNotFound from the
-           *event* (no snapshot recorded) means do not write the field at all — see 549-552.
-        4. Then `TestMembershipOnEvents` is the check, and `TestGetRoomMembers`'s
-           `assertMembershipEventEventsPresent` walks the whole timeline, so a partially applied
-           version will not pass. Cost check with `-race` before calling it done: one snapshot
-           lookup per served event, and `/sync` serves a batch per joined room, so measure it on the
-           sync benchmark rather than assuming.
-      Scope it to events this server
-      authored: a peer's event arrives with that server's own `unsigned`, and writing our values
-      over them would be a claim about a room we did not witness.
+- [x] T-4032 (done 2026-11-06, commit `ad8499a`). `unsigned.membership` is the **reader's**
+      membership of the room as of the moment each event was sent, read from the snapshot that
+      event was sent against; `leave` when the snapshot holds no member entry, no field when this
+      server has no snapshot for the event at all, and a value already under `unsigned` is left
+      alone because that is where a peer records what it added. `redaction.Servicer` gained the
+      state-group repository and the reader-aware entry points `ServeAs`/`ServeChunkAs`; `/sync`
+      timeline and state, `/messages` and `/event` pass the reader, and the reader-free
+      `Serve`/`ServeChunk` remain for callers with no reader to name. Complement
+      `TestMembershipOnEvents` passes (`.agent-work/next/msc4115c.log`), with
+      `TestGetRoomMembers`, `TestGetRoomMembersAtPoint`, `TestSendAndFetchMessage`,
+      `TestRoomMessagesLazyLoading(+LocalUser)`, `TestFetchMessagesFromNonExistentRoom`,
+      `TestSyncFilter` and `tests/csapi` `TestSync` unchanged and green
+      (`.agent-work/next/msc4115d.log`).
+      Two things it left behind, both tasks rather than footnotes: `ServeChunk` had been pairing
+      events with rows by `len(out)`, so after any withheld event every later event in the chunk
+      carried the previous event's `unsigned` — fixed by pairing by position, **not yet covered by
+      a test** (T-4037); and `/state`-style reads do not carry the field, which MSC4115's scope
+      does not clearly reach (T-4038).
+      The steps below are kept because they record why the lookup is shaped the way it is.
 - [x] T-4033 (half). `handleMembers` read only `not_membership`; `membership=` was ignored. Fixed
       in the commit after `7157a39`: `TestGetFilteredRoomMembers` passes all three subtests
       (`not_membership`, `membership/leave`, `membership/join`).
@@ -604,6 +587,24 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
       Follow-on worth its own look, not assumed: the `at` resolution and MSC4115's
       `unsigned.membership` (T-4032) need the same "state at a stream position" mechanism; the
       snapshot lookup now exists and should be reused rather than rewritten.
+- [ ] T-4036 typing is not implemented on the client-facing side, and the ledger claimed
+      otherwise until 2026-11-06. `/sync` builds `ephemeral` as an empty list by construction
+      (`internal/sync/service.go:320-330`); typing EDUs arrive over federation
+      (`internal/api/federation/transactions.go`) but nothing stores or replays them. Complement
+      `TestTyping` fails all three delivery subtests, consistently, twice on 2026-11-06
+      (`msc4115d.log`, `typing1.log`): `MustSyncUntil: timed out after 5.0s`. The work is a
+      per-room ephemeral store with an expiry (a typing notification is a claim that is true for
+      ~30s, not history), feeding `/sync` `ephemeral.events`, `PUT /rooms/{roomID}/typing`, and
+      forwarding to joined servers. Receipts (T-?) share that store.
+- [ ] T-4037 the `ServeChunk` row/event misalignment is fixed but untested. Write the test in
+      `tests/unit/serve_test.go`: a chunk of a withheld redaction, a state event with
+      `PrevContent`, and a message with a transaction ID; assert the surviving events carry their
+      own `unsigned`, and that the withheld one is gone. The bug only appears when something is
+      withheld, which is why it survived.
+- [ ] T-4038 does MSC4115 cover `/state`, `/state/{type}/{key}`, `/context` and `/relations`?
+      `/messages` and `/event` now carry `unsigned.membership`; the state-style reads do not.
+      Read the MSC text and the specification section rather than guessing from another server's
+      behaviour, then either extend or record the boundary.
 - [ ] T-4034 intermittent, not constant: `SendEventSynced waiting for event ID …` appears in some
       runs of `room_members_test.go:74`/`:88` and not in others (`.agent-work/next/mem1.log` and
       `mem2.log` show it; `prevbatch1.log` does not, with the same blueprint). So a sent event

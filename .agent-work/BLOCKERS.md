@@ -182,3 +182,22 @@ recreated at a larger size *without* `podman system reset` (which is destructive
 then a full-suite run needs either a host with Docker rather than rootless Podman, or the suite run
 package-by-package with a lock-releasing step between packages. Ask the user before touching the
 storage of a machine that has other containers on it.
+
+### B-0008 resolved on 2026-11-06 — it was leaked anonymous volumes, and the diagnosis above was wrong
+
+The error names it when it is caught fresh: `allocating lock for new **volume**: allocation
+failed; exceeded num_locks (2048)`. A Complement run makes a container *and* an anonymous volume
+per homeserver, and the volumes of removed containers stay behind. This host had accumulated
+**2044** of them, most from one run interrupted with `pkill`, which is Podman's whole pool.
+
+Cleared without touching anything alive: keep the volume names that existing containers mount,
+remove only 64-hex anonymous volumes not in that set (the commands are now in the comment in
+`scripts/complement.sh`, and the script warns when the count passes 300). 2044 removed, one left —
+the one `goofy_dubinsky` mounts — and both pre-existing containers still running.
+
+What that means for the records: the `gate4.log` tally of 59 passes / 161 failures was not a
+measurement of anything, and neither was `full2.log`'s (67/152). Any full-suite number taken on
+this host has to be taken with a clean volume store or it means nothing. The claim in this entry
+that the rootless lock set cannot be enlarged was a wrong inference from a failure I caused by
+setting `num_locks` above what the existing set allowed; the config file was removed and Podman is
+back to its default.
