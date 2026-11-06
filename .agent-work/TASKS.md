@@ -468,3 +468,33 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
       bodies are unsigned, so they are unaffected today
 - [ ] T-4012 `Sender.MaxAge`/`MaxAttempts` and the queue depth are configured but not exposed
       to an operator: no admin endpoint and no metric reports a queue that will never drain
+
+## Opened by the invite handshake (2026-11-08)
+
+T-4009c is split rather than closed: the invite half is done (see PROGRESS 2026-11-08, commit
+`fb11648`), the other halves below are not.
+
+- [ ] T-4023 `unsigned.prev_content` and `unsigned.prev_sender` on state events. A client answering
+      an invitation needs to know what it was invited *as*, and a room that has changed hands needs
+      to show the change: Complement's `TestFederationRoomsInvite` ("Invited user has 'is_direct'
+      flag in prev_content after joining") reads `unsigned.prev_content.membership` and
+      `unsigned.prev_sender`. Design: the previous content is a fact about persistence, so compute it
+      when a state event is written (the current state row for the same type and state_key, before
+      the new one lands), store it beside the event, and inject it into `unsigned` when the event is
+      served to a client. It must not enter the stored bytes a signature covers, and it is not a
+      federation field.
+- [ ] T-4024 `is_direct` on invites and the `m.direct` account data. `createRoom` ignores the flag
+      today, so a room created as a direct message is not recorded as one anywhere. Needed by the
+      same Complement case, and by any client that groups DMs.
+- [ ] T-4025 Ban, kick and leave for a user who lives on another homeserver. Still refused with 501
+      (`rooms.ErrRemoteTarget`). This is the rest of T-4009c: the event has to be authored by the
+      server that holds the room and carried to the other side, or authored by the other side and
+      brought here, depending on the change. Blocks `TestUnbanViaInvite` and the kick cases in
+      `TestFederationRoomsInvite`.
+- [ ] T-4026 Find out why a peer refused to re-verify our `invite_room_state`. Before invites were
+      let through, hs2 answered `M_INVALID_PARAM: A state event sent along with the invite does not
+      carry the signature its origin owes`. Those events are signed by our own server in a room whose
+      keys the peer had just fetched, so the likely causes are the ref-pair form of `prev_events` and
+      `auth_events` in a re-served PDU, or redaction handling in `events.Verify`. The invite path now
+      skips such events instead of refusing, which keeps interoperability but hides the fault; the
+      log line names each event that fails.
