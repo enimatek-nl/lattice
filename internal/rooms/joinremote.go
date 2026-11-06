@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/enimatek/lattice/internal/eventauth"
 	"github.com/enimatek/lattice/internal/matrixerr"
@@ -63,15 +64,21 @@ func (s *Service) roomKnown(ctx context.Context, roomID string) (bool, error) {
 // is a room this server should know about; if it does not, it is not somebody else's room, and
 // asking a stranger to hand one over would let that stranger invent a room under this server's
 // name and have this server store it.
-// joinThroughNeighbours carries out over federation a join this server could not authorise in a
-// room it does hold.
+// joinThroughNeighbours carries out over federation a join this server could not authorise in a room
+// it does hold.
 //
-// Holding a room and being able to let someone into it are different things. A restricted room names
+// Holding a room and being able to let somebody into it are different things. A restricted room names
 // the rooms whose members may walk in uninvited, and the member who could vouch for the joiner may
-// live on another server — this server's own members are the only ones it can sign for, and none of
-// them has the power to invite. That is what M_UNABLE_TO_GRANT_JOIN means, and the answer is not to
-// tell the client "no": it is to ask a server that does hold a member who can, which is the same
-// handshake a user whose room lives elsewhere goes through.
+// live on another server: this server can sign only for its own members, and none of them holds the
+// invitation power. That is what M_UNABLE_TO_GRANT_JOIN reports, and the Client-Server API\u2019s answer is
+// that the client asks again with a different server named. Going out on this server\u2019s own to find a
+// neighbour would answer the client\u2019s question with another server\u2019s judgement the client never asked
+// for — and it would be another server\u2019s idea of who is still in the allow room, which can be a moment
+// out of date and turn a refusal the room means into a grant the room does not. So the servers asked
+// here are the ones the client named plus the ones this server knows hold the room — which it knows
+// precisely because it holds the room itself. A server that does *not* hold the room does not get that
+// licence: it asks what it was told to ask, and a join its candidate list cannot authorise fails so
+// that the client can ask again elsewhere. See [Joiner.candidates].
 func (s *Service) joinThroughNeighbours(ctx context.Context, change MembershipChange, cause error) (string, bool) {
 	if s.remoteJoin == nil {
 		return "", false
@@ -79,14 +86,29 @@ func (s *Service) joinThroughNeighbours(ctx context.Context, change MembershipCh
 	if problem, ok := matrixerr.As(cause); !ok || problem.Code != matrixerr.CodeUnableToGrantJoin {
 		return "", false
 	}
-	servers, err := s.ServersInRoom(ctx, change.RoomID)
-	if err != nil {
-		return "", false
+	others := make([]string, 0, len(change.Via)+4)
+	seen := map[string]bool{}
+	add := func(server string) {
+		if server == "" || matrixid.IsLocal(server, s.name) || seen[server] {
+			return
+		}
+		seen[server] = true
+		others = append(others, server)
 	}
-	others := make([]string, 0, len(servers))
-	for _, server := range servers {
-		if !matrixid.IsLocal(server, s.name) {
-			others = append(others, server)
+	for _, server := range change.Via {
+		add(strings.TrimSpace(server))
+	}
+	// The room's own member servers are candidates only while this server is still *in* the room —
+	// a user of ours is joined there. That is what makes the room's server list something this server
+	// knows rather than something it guesses, and it is also the difference between carrying out a
+	// join on behalf of a member of the room and pushing a join at a room that has moved on without
+	// us. A server with nobody joined in the room asks the servers it was told to ask and no others,
+	// which is how the refusal the room means reaches the client.
+	if inRoom, err := s.stillTracksRoom(ctx, change.RoomID); err == nil && inRoom {
+		if servers, err := s.ServersInRoom(ctx, change.RoomID); err == nil {
+			for _, server := range servers {
+				add(server)
+			}
 		}
 	}
 	if len(others) == 0 {

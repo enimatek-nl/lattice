@@ -151,10 +151,18 @@ func (r *RemoteRefusal) toMatrixError() error {
 		r.Server, r.Message)
 }
 
-// candidates are the servers to ask, in the order worth asking them: the client's hints first,
-// because a client choosing a server usually knows something the room ID does not say, then the
-// server the room's ID names. This server's own name is dropped — it asked because it does not
-// hold the room.
+// candidates are the servers to ask, in the order worth asking them.
+//
+// When the client named servers, those are the list and nothing else — including the room's own
+// origin server, which is *not* quietly appended. A server that does not hold the room knows nothing
+// about it beyond what it is told, and appending the origin behind the client's back is how a join the
+// room refused becomes a join somebody else granted: Complement's fail-over test asks a room through a
+// server that cannot authorise it precisely to check that the answer is a refusal, and that the same
+// join named at a server that can authorise it is what succeeds. The client fail over; this server
+// must not invent the fail over.
+//
+// With no hints at all, the server the room's ID names is the one worth asking. This server's own name
+// is dropped either way: it asked because it does not hold the room.
 func (j *Joiner) candidates(ctx context.Context, roomID string, destinations []string) []string {
 	seen := map[string]bool{}
 	out := make([]string, 0, len(destinations)+1)
@@ -165,11 +173,21 @@ func (j *Joiner) candidates(ctx context.Context, roomID string, destinations []s
 		seen[candidate] = true
 		out = append(out, candidate)
 	}
+	named := 0
 	for _, candidate := range destinations {
-		add(strings.TrimSpace(candidate))
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		add(candidate)
+		if candidate != j.Name {
+			named++
+		}
 	}
-	if _, domain, err := matrixid.SplitID(matrixid.SigilRoom, roomID); err == nil {
-		add(domain)
+	if named == 0 {
+		if _, domain, err := matrixid.SplitID(matrixid.SigilRoom, roomID); err == nil {
+			add(domain)
+		}
 	}
 	return out
 }

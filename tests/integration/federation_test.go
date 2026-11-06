@@ -234,6 +234,21 @@ func federationPair(t *testing.T) (*fedNode, *fedNode) {
 	return first, second
 }
 
+// federationTrio returns three homeservers that can reach each other. Some joins need all three:
+// a server that holds the room and cannot authorise the join, a server that can, and a user whose
+// own server is neither of them — which is the only shape in which it can be seen whether a server
+// asks the neighbours it was told to ask or the ones it thought of itself.
+func federationTrio(t *testing.T) (*fedNode, *fedNode, *fedNode) {
+	t.Helper()
+	dir := t.TempDir()
+	ca := newTestCA(t, dir)
+	dial := &testDial{target: map[string]string{}}
+	first := newFederationNode(t, "hs1", ca, dial)
+	second := newFederationNode(t, "hs2", ca, dial)
+	third := newFederationNode(t, "hs3", ca, dial)
+	return first, second, third
+}
+
 // signedRequest sends an authenticated federation request from one node to the other,
 // signed by the sending node's own current signing key.
 func (n *fedNode) signedRequest(t *testing.T, to *fedNode, method, target string, body []byte) (int, []byte) {

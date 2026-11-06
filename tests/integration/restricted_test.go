@@ -294,3 +294,188 @@ func holdsInvitePower(t *testing.T, node *fedNode, roomID, token, userID string)
 	}
 	return false
 }
+
+// TestRestrictedJoinAsksOnlyTheServersTheClientNamed is the shape a restricted join takes when the
+// server the client asks cannot authorise it. That server's answer is M_UNABLE_TO_GRANT_JOIN — the
+// user may well be entitled to the room, and this server is simply not the one that can say so — and
+// the client is then expected to ask again with another server named. What the asked server must not
+// do is go looking for a neighbour on the client's behalf: a join that quietly travels to whichever
+// server happens to be able to authorise it is a join the client never asked for, granted on state the
+// client never pointed at. So the join named only at hs2 fails, and the same join naming hs1 as well
+// goes through — with hs1's own member standing behind it, which is the other half of the check.
+func TestRestrictedJoinAsksOnlyTheServersTheClientNamed(t *testing.T) {
+	t.Parallel()
+	hs1, hs2, hs3 := federationTrio(t)
+
+	alice := hs1.registerUser(t, "talice", "pw-talice")
+	aliceID := "@talice:hs1"
+	gateway := fedCreateRoom(t, hs1, alice, map[string]any{"preset": "public_chat", "name": "gateway trio"})
+	restricted := fedCreateRoom(t, hs1, alice, restrictedRoomBody("restricted trio", gateway))
+	if status, answer := hs1.clientDo(t, http.MethodPut, "/_matrix/client/v3/rooms/"+restricted+"/state/m.room.power_levels",
+		map[string]any{"invite": 100, "users": map[string]any{aliceID: 100}}, alice); status != http.StatusOK {
+		t.Fatalf("alice could not restrict invitations: %d %v", status, answer)
+	}
+
+	bob := hs2.registerUser(t, "tbob", "pw-tbob")
+	charlie := hs3.registerUser(t, "tcharlie", "pw-tcharlie")
+	charlieID := "@tcharlie:hs3"
+
+	for _, roomID := range []string{gateway, restricted} {
+		if status, answer := hs2.clientDo(t, http.MethodPost, "/_matrix/client/v3/join/"+roomID+"?server_name="+hs1.name,
+			map[string]any{}, bob); status != http.StatusOK {
+			t.Fatalf("%s could not join %s on %s: %d %v", bob, roomID, hs1.name, status, answer)
+		}
+	}
+	if status, answer := hs3.clientDo(t, http.MethodPost, "/_matrix/client/v3/join/"+gateway+"?server_name="+hs1.name,
+		map[string]any{}, charlie); status != http.StatusOK {
+		t.Fatalf("%s could not join the gateway room: %d %v", charlieID, status, answer)
+	}
+
+	// hs2 holds the restricted room by way of bob and holds nobody who could authorise a join: the
+	// one member with the invitation power lives on hs1. Asked about its own user through hs2, the
+	// answer has to be a refusal, not a join arranged somewhere else.
+	if status, answer := hs3.clientDo(t, http.MethodPost,
+		"/_matrix/client/v3/join/"+restricted+"?server_name="+hs2.name, map[string]any{}, charlie); status == http.StatusOK {
+		t.Fatalf("the restricted join went through %s, which cannot authorise it: %v", hs2.name, answer)
+	}
+
+	// Named at hs1 as well, the same join is the client's own fail over, and it succeeds.
+	if status, answer := hs3.clientDo(t, http.MethodPost,
+		"/_matrix/client/v3/join/"+restricted+"?server_name="+hs2.name+"&server_name="+hs1.name,
+		map[string]any{}, charlie); status != http.StatusOK {
+		t.Fatalf("%s could not join through {%s,%s}: %d %v", charlieID, hs2.name, hs1.name, status, answer)
+	}
+
+	// And the join says who stood behind it: a user of the server that could authorise it, which is
+	// the room's answer and not whichever server the request happened to reach first.
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		member, ok := stateMemberEvent(hs1.roomSnapshot(t, restricted, alice), charlieID)
+		if ok {
+			content, _ := member["content"].(map[string]any)
+			if authoriser, _ := content["join_authorised_via_users_server"].(string); authoriser != aliceID {
+				t.Errorf("%s's join of %s names %q as its authoriser, want %s",
+					charlieID, restricted, authoriser, aliceID)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s never appeared as a member of %s on %s", charlieID, restricted, hs1.name)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// TestRestrictedJoinIsNotGrantedFromAnAllowRoomThisServerHasLeft is the second half of the same
+// honesty. A restricted room lets in the members of another room, and a homeserver that has nobody of
+// its own in that other room is not told about its changes: it keeps a copy nobody is obliged to
+// update. Reading "joined" out of that copy and granting the join would be answering a question this
+// server is no longer in a position to hear, and refusing on it would be the same invention the other
+// way. The answer is M_UNABLE_TO_GRANT_JOIN — this server cannot confirm it, and a server that is
+// still in that room can.
+func TestRestrictedJoinIsNotGrantedFromAnAllowRoomThisServerHasLeft(t *testing.T) {
+	t.Parallel()
+	hs1, hs2, hs3 := federationTrio(t)
+
+	alice := hs1.registerUser(t, "salice", "pw-salice")
+	aliceID := "@salice:hs1"
+	gateway := fedCreateRoom(t, hs1, alice, map[string]any{"preset": "public_chat", "name": "gateway stale"})
+	restricted := fedCreateRoom(t, hs1, alice, restrictedRoomBody("restricted stale", gateway))
+
+	bob := hs2.registerUser(t, "sbob", "pw-sbob")
+	bobID := "@sbob:hs2"
+	charlie := hs3.registerUser(t, "scharlie", "pw-scharlie")
+	charlieID := "@scharlie:hs3"
+
+	for _, roomID := range []string{gateway, restricted} {
+		if status, answer := hs2.clientDo(t, http.MethodPost, "/_matrix/client/v3/join/"+roomID+"?server_name="+hs1.name,
+			map[string]any{}, bob); status != http.StatusOK {
+			t.Fatalf("%s could not join %s on %s: %d %v", bobID, roomID, hs1.name, status, answer)
+		}
+	}
+	if status, answer := hs3.clientDo(t, http.MethodPost, "/_matrix/client/v3/join/"+gateway+"?server_name="+hs1.name,
+		map[string]any{}, charlie); status != http.StatusOK {
+		t.Fatalf("%s could not join the gateway room: %d %v", charlieID, status, answer)
+	}
+	if status, answer := hs3.clientDo(t, http.MethodPost, "/_matrix/client/v3/join/"+restricted+"?server_name="+hs1.name,
+		map[string]any{}, charlie); status != http.StatusOK {
+		t.Fatalf("%s could not join the restricted room: %d %v", charlieID, status, answer)
+	}
+
+	// bob is given the invitation power in the restricted room, so hs2 has everything it needs to
+	// authorise a join — the only thing it can lose is the ability to check the gateway room.
+	if status, answer := hs1.clientDo(t, http.MethodPut, "/_matrix/client/v3/rooms/"+restricted+"/state/m.room.power_levels",
+		map[string]any{"invite": 50, "users": map[string]any{aliceID: 100, bobID: 50}}, alice); status != http.StatusOK {
+		t.Fatalf("alice could not raise %s's power level: %d %v", bobID, status, answer)
+	}
+	if !waitsForInvitePower(t, hs2, restricted, bob, bobID) {
+		t.Fatalf("%s never learned that %s may invite in %s", hs2.name, bobID, restricted)
+	}
+
+	// charlie leaves the restricted room so that a fresh join is possible, and bob leaves the gateway
+	// room so that hs2 has no user of its own left in it.
+	if status, answer := hs3.clientDo(t, http.MethodPost, "/_matrix/client/v3/rooms/"+restricted+"/leave",
+		map[string]any{}, charlie); status != http.StatusOK {
+		t.Fatalf("%s could not leave the restricted room: %d %v", charlieID, status, answer)
+	}
+	if status, answer := hs2.clientDo(t, http.MethodPost, "/_matrix/client/v3/rooms/"+gateway+"/leave",
+		map[string]any{}, bob); status != http.StatusOK {
+		t.Fatalf("%s could not leave the gateway room: %d %v", bobID, status, answer)
+	}
+	// hs1 has to have seen both leaves before it is asked anything about them, or the test would be
+	// measuring a race rather than a rule.
+	if !waitsForMembership(t, hs1, restricted, alice, charlieID, "leave") {
+		t.Fatalf("%s never saw %s leave the restricted room", hs1.name, charlieID)
+	}
+	if !waitsForMembership(t, hs1, gateway, alice, bobID, "leave") {
+		t.Fatalf("%s never saw %s leave the gateway room", hs1.name, bobID)
+	}
+
+	// hs2 still holds a gateway-room copy that says charlie joined, and no longer has anybody of its
+	// own there to be told otherwise. It must not grant the join from that copy.
+	if status, answer := hs3.clientDo(t, http.MethodPost,
+		"/_matrix/client/v3/join/"+restricted+"?server_name="+hs2.name, map[string]any{}, charlie); status == http.StatusOK {
+		t.Fatalf("%s granted a join it cannot confirm: %s is not in %s any more, and %s has no user there to be told (it answered %v)",
+			hs2.name, bobID, gateway, hs2.name, answer)
+	}
+	// hs1 hosts the gateway room and can answer, so asking there is what a client does next.
+	if status, answer := hs3.clientDo(t, http.MethodPost,
+		"/_matrix/client/v3/join/"+restricted+"?server_name="+hs1.name, map[string]any{}, charlie); status != http.StatusOK {
+		t.Fatalf("%s could not rejoin through the server that can confirm it: %d %v", charlieID, status, answer)
+	}
+}
+
+// waitsForInvitePower says whether the state a node holds for a room gives the user the room's
+// invitation level, polling because a server learns of a power level change when it is told.
+func waitsForInvitePower(t *testing.T, node *fedNode, roomID, token, userID string) bool {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		if holdsInvitePower(t, node, roomID, token, userID) {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// waitsForMembership polls a room's state until the user's member event says what the test needs it to
+// say, so that a test of a rule is not a test of how fast two servers happened to talk.
+func waitsForMembership(t *testing.T, node *fedNode, roomID, token, userID, membership string) bool {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		if member, ok := stateMemberEvent(node.roomSnapshot(t, roomID, token), userID); ok {
+			content, _ := member["content"].(map[string]any)
+			if got, _ := content["membership"].(string); got == membership {
+				return true
+			}
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
