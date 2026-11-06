@@ -3,6 +3,7 @@ package federation
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -49,6 +50,11 @@ type Sender struct {
 	// which is what a sender without a room service wired to it is.
 	ACLs RoomDenials
 
+	// wake holds at most one notice that the queue has something in it. The paths that queue
+	// work post it and the worker's idle wait reads it, so an event a local user just sent
+	// leaves this server with the next pass rather than at the end of the idle interval.
+	wake chan struct{}
+
 	// flushMu serialises the passes this process makes over the queue. See FlushOnce.
 	flushMu sync.Mutex
 }
@@ -86,9 +92,22 @@ func NewSender(repo persist.FederationRepo, events persist.EventRepo, state pers
 		MaxAttempts: 30,
 		Batch:       maxPDUsPerTransaction,
 		Idle:        defaultSenderIdle,
+		wake:        make(chan struct{}, 1),
 
 		CleanupInterval:  time.Hour,
 		GivenUpRetention: givenUpRetention,
+	}
+}
+
+// Wake notices the worker that the queue has work. It never blocks, and one notice covers any
+// number of events queued behind it: the worker looks at the whole queue when it wakes.
+func (s *Sender) Wake() {
+	if s.wake == nil {
+		return
+	}
+	select {
+	case s.wake <- struct{}{}:
+	default:
 	}
 }
 
@@ -155,7 +174,7 @@ func (s *Sender) Relay(ctx context.Context, roomID, eventID string) error {
 			return fmt.Errorf("federation: cannot queue the event for %s: %w", destination, err)
 		}
 	}
-	// WAKE-OFF
+	s.Wake()
 	return nil
 }
 
@@ -176,7 +195,7 @@ func (s *Sender) QueuePDU(ctx context.Context, destination, eventID string, pdu 
 	}); err != nil {
 		return err
 	}
-	// WAKE-OFF
+	s.Wake()
 	return nil
 }
 
@@ -204,7 +223,7 @@ func (s *Sender) EnqueueEDU(ctx context.Context, destination, eduType string, co
 	}); err != nil {
 		return err
 	}
-	// WAKE-OFF
+	s.Wake()
 	return nil
 }
 
@@ -286,9 +305,15 @@ func (s *Sender) sendBatch(ctx context.Context, destination string, items []*per
 	var rejected []*persist.FederationQueueItem
 	for _, item := range pduItems {
 		if problem, ok := failed[item.EventID]; ok {
-			// The remote server refused this event. That is an answer, not a network
-			// fault: retrying it will get the same answer, and pretending otherwise
-			// would keep this room's history different on the two servers forever.
+			// The neighbour refused this event, and it is asked again. That looks wrong — a
+			// refusal is an answer, and an answer that is asked again wastes both servers'
+			// time — but a large share of refusals are the neighbour saying it cannot judge
+			// yet rather than that the event is bad: it does not hold the room, or the auth
+			// events, or the predecessor this event hangs off. Those gaps are usually the
+			// neighbour's to fill a moment later, and an event dropped over one is a room whose
+			// history differs on the two servers forever, which is the outcome a refusal was
+			// meant to avoid. The retry budget is the bound: an event refused on its merits is
+			// asked a few times and then given up on with the reason kept.
 			s.log.Warn("federation: a remote server refused an event",
 				"destination", destination, "event_id", item.EventID, "reason", problem)
 			rejected = append(rejected, item)
@@ -300,7 +325,9 @@ func (s *Sender) sendBatch(ctx context.Context, destination string, items []*per
 	if err := s.repo.QueueDone(ctx, idsOf(done)); err != nil {
 		return 0, fmt.Errorf("federation: cannot clear the delivered items: %w", err)
 	}
-	s.dropItems(ctx, rejected, "the destination refused the event")
+	if len(rejected) > 0 {
+		s.retryItems(ctx, rejected, now, errors.New("the destination refused the event"))
+	}
 	return len(done), nil
 }
 
@@ -377,6 +404,7 @@ func (s *Sender) Run(ctx context.Context) error {
 			select {
 			case <-ctx.Done():
 				return nil
+			case <-s.wake:
 			case <-time.After(idle):
 			}
 			continue

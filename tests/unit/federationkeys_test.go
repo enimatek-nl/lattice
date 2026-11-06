@@ -296,3 +296,60 @@ func TestFederationKeyringAsksANotaryWhenTheServerDoesNotAnswer(t *testing.T) {
 		t.Errorf("the key obtained through the notary is not the published key")
 	}
 }
+
+// TestFederationKeyringTriesAgainAfterAFailedAsk is the difference between a server that answered
+// "I publish nothing" and a request that never got through. Both leave this server without keys and
+// therefore unable to judge anything that server sent; only the first is a reason to wait. Charging
+// a failed connection the same minute-long interval as an answered ask leaves every event from that
+// neighbour unjudgeable for a minute — long enough for a join to fail outright and for the room's
+// events to be refused and retried the whole time.
+func TestFederationKeyringTriesAgainAfterAFailedAsk(t *testing.T) {
+	t.Parallel()
+
+	fixture := newKeyPublisher(t, "flaky.example", "ed25519:one", time.Now().Add(24*time.Hour), nil)
+	var failures int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&fixture.hits, 1)
+		if atomic.AddInt32(&failures, 1) == 1 {
+			http.Error(w, "not now", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(fixture.document)
+	}))
+	t.Cleanup(server.Close)
+
+	// The clock is the test's, because the thing under test is how long the keyring makes a
+	// caller wait — and waiting a real two seconds here would only prove the sleep works.
+	clk := time.Now()
+	clock := func() time.Time { return clk }
+	keyring, _ := keyringOn(t, map[string]string{"flaky.example": server.URL}, nil, clock)
+	if _, err := keyring.Lookup(context.Background(), "flaky.example", "ed25519:one"); err == nil {
+		t.Fatalf("the keyring answered while the server was refusing to answer")
+	}
+	clk = clk.Add(2 * time.Second)
+	key, err := keyring.Lookup(context.Background(), "flaky.example", "ed25519:one")
+	if err != nil {
+		t.Fatalf("the second ask was refused without being made, after an ask that never got an answer: %v", err)
+	}
+	if !key.Equal(fixture.public) {
+		t.Errorf("the key returned is not the one the document published")
+	}
+	if made := atomic.LoadInt32(&failures); made != 2 {
+		t.Errorf("the server was asked %d times; the failed ask was meant to be retried, not waited out", made)
+	}
+
+	// An answered ask is the one that earns the wait: asking again on the next event would be
+	// this server hammering a neighbour over a document that does not change minute to minute.
+	if _, err := keyring.Lookup(context.Background(), "flaky.example", "ed25519:absent"); err == nil {
+		t.Fatalf("a key the document does not publish was reported as present")
+	}
+	asked := atomic.LoadInt32(&failures)
+	clk = clk.Add(time.Second)
+	if _, err := keyring.Lookup(context.Background(), "flaky.example", "ed25519:absent"); err == nil {
+		t.Fatalf("a key the document does not publish was reported as present")
+	}
+	if again := atomic.LoadInt32(&failures); again != asked {
+		t.Errorf("the server was asked again (%d → %d) although it had answered a moment ago", asked, again)
+	}
+}

@@ -157,10 +157,22 @@ func (k *Keyring) keys(ctx context.Context, serverName string, enforceExpiry boo
 	}
 	document, keys, err := k.fetch(ctx, serverName)
 	if err != nil {
+		// A failed attempt is not as lasting as an answered one. The interval between asks is long
+		// because a server's key document does not change minute to minute; a connection that did
+		// not open, or a reply that never came, says nothing about the keys and waiting a minute
+		// for the next try would leave every event this server is sent from there unjudgeable for
+		// a minute — long enough for a join to fail and for the room's events to be refused and
+		// retried over and over. The next ask comes round soon instead, still bounded so that a
+		// server which genuinely publishes nothing is not hammered once per event.
+		k.noteFailedFetch(serverName, k.now())
 		k.log.Warn("federation: could not fetch a server's keys",
 			"server_name", serverName, "error", err)
 		return nil, err
 	}
+	// An answered ask is worth the full interval before another: the document the server gave
+	// does not change minute to minute, and asking again on every event would be a denial of
+	// service this server hands itself.
+	k.noteFetch(serverName, k.now())
 	_ = document
 	if err := k.repo.SaveServerKeys(ctx, document, keys); err != nil {
 		return nil, fmt.Errorf("federation: cannot record the keys fetched for %s: %w", serverName, err)
@@ -168,15 +180,33 @@ func (k *Keyring) keys(ctx context.Context, serverName string, enforceExpiry boo
 	return keys, nil
 }
 
-// shouldFetch gates repeated fetch attempts per server.
+// shouldFetch says whether this server may be asked for its keys again yet. It does not record the
+// ask: whether the attempt is worth the full interval is only known once it has been answered, and
+// charging a failed attempt the same as an answered one is what makes a transient connection
+// problem cost a minute of unjudgeable events. See noteFailedFetch.
 func (k *Keyring) shouldFetch(serverName string, now time.Time) bool {
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	if last, ok := k.lastFetch[serverName]; ok && now.Sub(last) < keyFetchInterval {
-		return false
-	}
+	last, ok := k.lastFetch[serverName]
+	return !ok || now.Sub(last) >= keyFetchInterval
+}
+
+// noteFetch records an answered ask.
+func (k *Keyring) noteFetch(serverName string, now time.Time) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
 	k.lastFetch[serverName] = now
-	return true
+}
+
+// keyFetchRetry is how soon a server is asked again after an attempt that never got an answer.
+const keyFetchRetry = 2 * time.Second
+
+// noteFailedFetch moves the next ask for a server close enough to retry that a busy network does
+// not stand between this server and a room's events for a full interval.
+func (k *Keyring) noteFailedFetch(serverName string, now time.Time) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.lastFetch[serverName] = now.Add(-(keyFetchInterval - keyFetchRetry))
 }
 
 // fetchedKeys is a validated key document and the keys it publishes.

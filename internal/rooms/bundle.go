@@ -2,6 +2,7 @@ package rooms
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -158,6 +159,14 @@ func (s *Service) AcceptRemoteBundle(ctx context.Context, bundle RemoteBundle, v
 		}
 		entry.eventID = id
 		if err := verify(entry.event, rules); err != nil {
+			if errors.Is(err, events.ErrKeysUnavailable) {
+				// The keys to check this one were not obtainable, which is a gap and not a
+				// verdict: it goes to the unresolved pile, where a later attempt can judge it,
+				// rather than to the refusals, where the room's later events would be refused for
+				// citing it.
+				outcome.Unresolved = append(outcome.Unresolved, entry.eventID)
+				continue
+			}
 			reason := fmt.Sprintf("the event failed its signature and hash checks: %v", err)
 			if err := s.refuse(ctx, entry.roomID, entry.eventID, reason); err != nil {
 				reason = err.Error()
@@ -165,6 +174,7 @@ func (s *Service) AcceptRemoteBundle(ctx context.Context, bundle RemoteBundle, v
 			outcome.Refused[entry.eventID] = reason
 			continue
 		}
+		s.clearStaleVerdict(ctx, entry.eventID)
 		verified = append(verified, entry)
 	}
 
@@ -263,6 +273,7 @@ func (s *Service) storeBundleEvent(ctx context.Context, event map[string]any, ru
 	if err != nil {
 		return "", false, false, fmt.Errorf("rooms: cannot read the refusals recorded for a handed-over event: %w", err)
 	}
+	dropStoredRefusals(refusals, stored)
 	snapshot := &citedSnapshot{byID: map[string]map[string]any{},
 		byKey: map[eventauth.Key]map[string]any{}, refusals: refusals}
 	for _, entry := range stored {
