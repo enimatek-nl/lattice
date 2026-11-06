@@ -877,3 +877,81 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
       `TestUserDirectorySearchLimited`…). The room-specific display name they check is *already* carried by
       the member events this server writes, so the user directory is a search index over state this server
       can already see, not a new kind of data — worth taking after T-4057 rather than before.
+
+- [x] T-4059 the content repository: storing files, serving them, and asking a stranger for its own.
+      Eleven endpoints on two doors. The Client-Server door: `POST /media/v3/upload` (+ `v1`, `r0`),
+      `POST /media/v1/create`, `PUT /media/v3/upload/{serverName}/{mediaId}` (+ `v1`), `GET
+      /media/v3/download/{serverName}/{mediaId}` (+ `v1`, `r0`, and the `/download/…/{fileName}` form
+      that lets a browser write the name it was given), the same three for `/thumbnail`, and
+      `GET /media/v3/config`. The authenticated door the specification added later: `GET
+      /client/v1/media/download`, `/download/…/{fileName}`, `/thumbnail`. The server-server door: `GET
+      /_matrix/federation/v1/media/download/{mediaId}` and `/thumbnail/{mediaId}`, both behind the
+      `X-Matrix` credential check.
+      Why it is a module and not a handler: three different things have to agree — what is on disk, what
+      the database says it is, and what the two doors tell different kinds of caller. `internal/media`
+      owns the rules (identifier whitelist, origin validation, size bounds applied *before* the bytes are
+      read or decoded, the pending-reservation state machine and its sweep, thumbnails, and the multipart
+      answer in both directions); `internal/persist/media.go` holds the metadata; `internal/api/media` and
+      `internal/api/federation` are transport; `internal/federation/media.go` is the outbound half.
+      The decisions that were not obvious, written up as DEC-040…DEC-044: the identifier whitelist is
+      applied before any path is built; remote content is fetched from its origin once and kept under a
+      directory named for that origin, and this server refuses to serve *another server's* content from
+      its own federation endpoint; a peer's `Location` pointer is not followed; a thumbnail of remote
+      content is made here from the bytes here; the fallback to the deprecated endpoint is taken on any
+      unsuccessful answer (DEC-043, because Complement's own fixture answers 400 for its authenticated
+      media route).
+      Correction found by Complement after the first commit: uploading over an address that already has
+      content is answered `409 M_CANNOT_OVERWRITE_MEDIA`, which is the code the specification names for it;
+      this server was answering `M_FORBIDDEN`, which describes a different fact. `TestAsyncUpload` is green.
+      Evidence: `tests/unit/media_test.go`, `tests/unit/media_multipart_test.go`,
+      `tests/integration/media_test.go` (including a two-homeserver fetch that proves the second request
+      is answered from the copy held here — the origin's file is deleted before it). Complement media
+      cluster (`RUN='TestFederation|TestUpload|TestDownload|TestThumbnail|TestMedia|TestUrlPreview|TestConfig'`):
+      **51 passing, 9 failing**; the failing names — `TestUrlPreview`, `TestFederationRoomsInvite`,
+      `TestFederationKeyUploadQuery`, `TestFederationRedactSendsWithoutEvent` — are all in
+      `.agent-work/complement-failures-20261113d.txt`, i.e. already red before this work. Full suite after:
+      **104 passing, 115 failing, 1 skipped** (was 95/124/1), nothing newly failing, and the names that moved
+      green include the media families (`TestContentMediaV1`, `TestContentCSAPIMediaV1`, `TestMediaFilenames`,
+      `TestMediaWithoutFileName`, `TestMediaWithoutFileNameCSMediaV1`, `TestFederationThumbnail`,
+      `TestLocalPngThumbnail`, `TestRemotePngThumbnail`, `TestMediaConfig`) plus federation tests that the
+      T-4060 race was reaching: `TestFetchEvent`, `TestFetchEventWorldReadable`, `TestFetchHistoricalSharedEvent`,
+      `TestDeviceListsUpdateOverFederationOnRoomJoin`, `TestCumulativeJoinLeaveJoinSync`,
+      `TestFederationRejectInvite` (red again in a later run — it is flaky, see T-4034's observation).
+      Lists: `.agent-work/complement-failures-20261113e.txt`,
+      `.agent-work/complement-passes-20261113e.txt`.
+      Found on the way, and the reason two of those media tests were red: T-4060.
+
+- [x] T-4060 a federation request refused as unauthenticated because a *database write* failed.
+      Symptom in Complement, twice in three runs: `GET /_matrix/federation/v1/media/download/…` refused
+      with "the credential from hs2 is not signed by a key that server published under ed25519:v1", and
+      the caller's own log saying `no verification key for ed25519:v1`. Cause, once the refusal carried
+      the lookup's own words (DEC-046): `cannot record the keys fetched for hs2: UNIQUE constraint failed:
+      server_signing_keys.server_name, server_signing_keys.key_id`. Two requests needed hs2's keys at the
+      same moment, both fetched, and each ran a *replacement* of the key set as separate statements:
+      delete, then insert. Interleaved, the second insert collided; the keyring then had nothing to answer
+      with, and a correctly signed request looked like a forgery.
+      Fixed by making replacement one transaction in both places that replace rather than append
+      (`SaveServerKeys`, `RememberAuthContext` — an event handed over by two peers at once hits the same
+      shape). The diagnostics are kept, because they are what turned a two-day hunt into a one-line read.
+      Regression test: `tests/unit/fedkeyrace_test.go`. Verified against Complement: three consecutive
+      clean runs of `TestMediaFilenames|TestMediaWithoutFileName` with zero credential-check refusals,
+      after two of three runs had failed before the fix.
+
+- [ ] T-4061 the media gaps T-4059 left, recorded rather than left implicit.
+      (a) URL previews (`GET /media/v3/preview_url`, `GET /client/v1/media/preview_url`): answered
+      `M_UNRECOGNIZED`, not implemented. Complement's `TestUrlPreview` is red. This is a fetch of a
+      client-supplied URL, so it needs the resolver/address policy federation already has, a text/html
+      parser that does not execute anything, an image-only `thumbnail_url`, and a cache with a bound —
+      do not implement it by handing a caller's URL to `http.Get`.
+      (b) A peer's `Location` part (DEC-042) is refused. If it is ever followed, it needs its own
+      resolution with the federation IP policy applied, a same-origin check against the peer it came from,
+      and the same size bound. Until then a server that answers with a pointer is reported, not served.
+      (c) `TestFederationKeyUploadQuery`, `TestFederationRoomsInvite`,
+      `TestFederationRedactSendsWithoutEvent` and the flaky `TestFederationRejectInvite` remain red; none is a
+      media
+      problem. Key query/claim across federation and invite rescission over federation keep their own
+      tasks in the federation sections above.
+      (d) Media storage is the filesystem plus the metadata row. It has no quarantine directory, no
+      per-room or per-user quota (only the pending-upload budget and the upload size limit), and no
+      deletion endpoint — which the specification does not offer either. Record before any deployment
+      claim, per AGENTS §10.

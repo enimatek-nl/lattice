@@ -390,3 +390,31 @@ T-4058a), and `TestRoomSpecificUsernameAtJoin`/`...Change`, which stop at the us
 (`POST /user_directory/search` unimplemented, T-4058c).
 
 No Complement assertion was modified.
+
+## Full run (2026-11-06 host clock, content repository — T-4059 and T-4060 closed, T-4061 opened)
+
+`RUN='.' PARALLEL=2 scripts/complement.sh -v` against Complement `7b38a63c9db3`, image
+`complement-lattice:latest` built from `deploy/complement/Dockerfile` at commit `69d2378`.
+**104 pass, 115 fail, 1 skip** (was 95 / 124 / 1; same 220-test universe). Lists
+`.agent-work/complement-passes-20261113e.txt`, `.agent-work/complement-failures-20261113e.txt`;
+log `/tmp/complement-full-20261113e.log` (host temp, not committed).
+
+Nothing newly failing. The names that moved from red to green:
+
+- the media families, which are this run's subject: `TestContentMediaV1`, `TestContentCSAPIMediaV1`,
+  `TestMediaFilenames`, `TestMediaWithoutFileName`, `TestMediaWithoutFileNameCSMediaV1`,
+  `TestFederationThumbnail`, `TestLocalPngThumbnail`, `TestRemotePngThumbnail`, `TestMediaConfig`, and
+  (after the `M_CANNOT_OVERWRITE_MEDIA` correction, run separately) `TestAsyncUpload`.
+- federation tests that the T-4060 race was reaching: `TestFetchEvent`, `TestFetchEventWorldReadable`,
+  `TestFetchHistoricalSharedEvent`, `TestFetchHistoricalInvitedEventFromBetweenInvite`,
+  `TestDeviceListsUpdateOverFederationOnRoomJoin`, `TestCumulativeJoinLeaveJoinSync`,
+  `TestGappedSyncLeaveSection`. Two peers needing one server's signing keys at the same moment used to
+  collide in the database and the request was then refused as unauthenticated; the collision is gone, so
+  the tests that had been losing events to it are green.
+
+Still red in the media area, and not media's fault: `TestUrlPreview` (URL previews unimplemented, answered
+`M_UNRECOGNIZED`, T-4061a). `TestFederationRejectInvite` was green in this run and red in a later one —
+it is flaky for the reason already recorded under T-4034, not a media regression.
+
+Sanity for the numbers: `grep -c 'exceeded num_locks'` = 0 on the log, the script reported no leaked-volume
+or stale-DNS warning, and no Complement assertion was modified.

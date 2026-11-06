@@ -1,5 +1,66 @@
 # Progress
 
+## 2026-11-06 — a content repository, and the federation refusal that was a database write (`not yet committed`)
+
+T-4059 and T-4060, closed. `internal/media` plus the two doors that serve it: eleven Client-Server
+endpoints (upload, create-then-upload, download, thumbnail, config — and the authenticated
+`/_matrix/client/v1/media/…` forms) and the two server-server ones
+(`/_matrix/federation/v1/media/download|thumbnail/{mediaId}`, behind the `X-Matrix` check).
+
+The parts that are protocol rather than file serving, and why they are shaped as they are. A media
+identifier is used as a file name, so the specification's character whitelist is applied *before* a path
+is built, and the origin server in the URI is validated as a server name; that is the whole of the
+path-traversal story, and the tests ask for `..`, `%2f`, backslashes and UTF-8. Content that belongs to
+another server is fetched from the server named in the URI, once, and kept under a directory named for
+that origin — so a second request does not put a stranger in the path of each of this server's users,
+which is also what makes the origin a target for amplification if you get it wrong. This server refuses
+to serve another server's content from *its own* federation endpoint: the caller was told to ask the
+origin, and a server that speaks for content whose owner it cannot name is a proxy with a good reputation.
+A peer's `Location` pointer is reported, not fetched (DEC-042) — following a URL a stranger named is the
+SSRF shape the federation address policy exists to prevent. Thumbnails are never enlarged, a source
+smaller than the request is returned untouched, and the size bound is applied before the bytes are
+decoded, because decoding is where the memory goes. A JPEG stays a JPEG.
+
+The multipart answer is in `internal/media` for **both** directions on purpose: the answer this server
+gives a peer and the answer this server reads from one. A writer and a reader that disagree would pass a
+test of either alone and fail every download in the field. The fetcher also falls back to the deprecated
+unauthenticated endpoint when the authenticated one gives any unsuccessful answer (DEC-043) — Complement's
+own fixture answers 400 for its authenticated media route, because that fixture requires an `origin` path
+variable its authenticated route does not carry. Getting a file across is worth one extra request;
+insisting on one error shape is how a server ends up unable to read the network.
+
+Then the part worth more than the feature. Two of Complement's federation media tests failed *twice in
+three runs* with `M_UNAUTHORIZED` — "the credential from hs2 is not signed by a key that server published
+under ed25519:v1". The message was a dead end, so the refusal was made to carry the reason it refused
+(`matrixjson.VerifyJSON` now keeps the lookup's words instead of collapsing them to "no verification key";
+the keyring names the key IDs it actually holds). The next run said what had really happened:
+
+    cannot record the keys fetched for hs2: sqlite3: constraint failed:
+    UNIQUE constraint failed: server_signing_keys.server_name, server_signing_keys.key_id
+
+Recording a peer's keys is a *replacement* — delete that server's rows, insert the new ones — and it was
+two statements. Two requests that needed hs2's keys at the same moment both fetched them, and the two
+replacements interleaved. The second insert collided, the keyring had nothing to answer with, and a
+correctly signed request from a peer was refused as a forgery. Any deployment where two rooms talk to the
+same peer at once was exposed to this; it is the kind of fault that reads as a security event and is a
+transaction that was never written. Fixed in both places that replace rather than append
+(`SaveServerKeys`, `RememberAuthContext`), regression-tested in `tests/unit/fedkeyrace_test.go`, and
+verified where it was found: three consecutive Complement runs of `TestMediaFilenames` and
+`TestMediaWithoutFileName` with zero credential-check refusals, after two of three had failed.
+
+Evidence. Local: `go test ./tests/...` green (unit + integration, including a two-homeserver media fetch
+that deletes the origin's file before the second request, so "answered from the copy held here" is
+demonstrated rather than asserted). Complement media cluster: **51 passing / 9 failing**; the failing
+names — `TestUrlPreview`, `TestFederationRoomsInvite`, `TestFederationKeyUploadQuery`,
+`TestFederationRedactSendsWithoutEvent` — are already in `.agent-work/complement-failures-20261113d.txt`,
+so nothing newly red. The full-suite tally after this change is recorded below the line once the run
+finishes.
+
+Open, written down rather than left implicit (T-4061): URL previews are refused honestly and not
+implemented; a peer's `Location` is refused; media storage has no quarantine, no per-room quota and no
+deletion endpoint. `TestUrlPreview` stays red until previews exist.
+
+
 ## 2026-11-11 — a profile is only useful if the rooms hear about it (`192c3dc`)
 
 T-4057, closed. `GET /_matrix/client/v3/profile/{userId}`,

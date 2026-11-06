@@ -234,8 +234,27 @@ The per-run logs and failure lists live in `.agent-work/COMPLIANCE-MATRIX.md` an
 | Filter | `RUN='TestFederation\|TestUpload\|TestDownload\|TestThumbnail\|TestMedia\|TestUrlPreview\|TestConfig'`, packages `-p 2`, Complement at `7b38a63c9db3` |
 | Result | **51 passing, 9 failing** (top-level plus subtests) |
 | Failing names | `TestUrlPreview` (URL previews not implemented), `TestFederationRoomsInvite`, `TestFederationKeyUploadQuery`, `TestFederationRedactSendsWithoutEvent` — all four already in `.agent-work/complement-failures-20261113d.txt`, so none newly red |
-| Newly passing because of this work | the `TestMediaFilenames`, `TestMediaWithoutFileName`, `TestThumbnail*`, `TestUpload*`, `TestDownload*` families, and the federation media subtests within them |
+| Newly passing because of this work | the `TestMediaFilenames`, `TestMediaWithoutFileName`, `TestThumbnail*`, `TestUpload*`, `TestDownload*` families, and the federation media subtests within them. A follow-up correction — `409 M_CANNOT_OVERWRITE_MEDIA` for an upload over an address that already has content, which this server was answering `M_FORBIDDEN` — turned `TestAsyncUpload` green too |
 | Bug fixed on the way | federation credential refusals caused by two concurrent `SaveServerKeys` replacements colliding on `(server_name, key_id)`; see T-4060, DEC-045 |
 | Verification of that fix | `TestMediaFilenames\|TestMediaWithoutFileName`: 2 of 3 runs red before (each with one credential-check refusal), 3 of 3 runs green after, 0 refusals |
 | Server faults observed | 0 panics; the only 500s in the cluster were the media fetch failing while the bug above was present |
 | Complement assertions changed | none |
+
+## Latest full run (content repository and the keyring race — T-4059, T-4060 closed, T-4061 opened)
+
+`RUN='.' PARALLEL=2 scripts/complement.sh -v`, Complement `7b38a63c9db3`, image from
+`deploy/complement/Dockerfile` at `69d2378`.
+
+| Field | Value |
+| --- | --- |
+| Tally | **104 passing, 115 failing, 1 skipped** (previously 95 / 124 / 1; the same 220-test universe) |
+| Newly failing | none |
+| Newly passing (media) | `TestContentMediaV1`, `TestContentCSAPIMediaV1`, `TestMediaFilenames`, `TestMediaWithoutFileName`, `TestMediaWithoutFileNameCSMediaV1`, `TestFederationThumbnail`, `TestLocalPngThumbnail`, `TestRemotePngThumbnail`, `TestMediaConfig`, `TestAsyncUpload` |
+| Newly passing (federation, from the same fix) | `TestFetchEvent`, `TestFetchEventWorldReadable`, `TestFetchHistoricalSharedEvent`, `TestFetchHistoricalInvitedEventFromBetweenInvite`, `TestDeviceListsUpdateOverFederationOnRoomJoin`, `TestCumulativeJoinLeaveJoinSync`, `TestGappedSyncLeaveSection` |
+| Cause of those federation failures | two concurrent fetches of the same peer's signing keys each replaced that server's key rows as separate statements, collided on `(server_name, key_id)`, left the keyring with nothing to answer with, and a correctly signed request was refused as unauthenticated |
+| Still red in this area | `TestUrlPreview` (URL previews not implemented — answered `M_UNRECOGNIZED`); `TestFederationKeyUploadQuery`, `TestFederationRoomsInvite`, `TestFederationRedactSendsWithoutEvent` (unrelated, already red) |
+| Flaky, recorded not fixed | `TestFederationRejectInvite` green in this run, red in another; same intermittent send-to-own-sync observation as T-4034 |
+| Environment checks | `exceeded num_locks` 0 occurrences; no leaked-volume or stale-DNS warning |
+| Complement assertions changed | none |
+
+Lists: `.agent-work/complement-passes-20261113e.txt`, `.agent-work/complement-failures-20261113e.txt`.

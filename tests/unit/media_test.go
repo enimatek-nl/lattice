@@ -189,14 +189,20 @@ func TestMediaCreateThenUploadToURI(t *testing.T) {
 	// A reservation that has been filled cannot be filled again: two bodies for one URI is the second
 	// one's problem, not the first one's to answer for.
 	if _, err := service.UploadToURI(ctx, "@alice:hs1", "hs1", mediaID, "again.txt", "text/plain",
-		strings.NewReader("again")); err == nil {
-		t.Errorf("a filled reservation was filled a second time")
+		strings.NewReader("again")); !isCannotOverwrite(err) {
+		t.Errorf("a filled reservation was filled a second time: %v", err)
 	}
 }
 
 func isNotYetUploaded(err error) bool {
 	failure, ok := matrixerr.As(err)
 	return ok && failure.Code == matrixerr.CodeNotYetUploaded
+}
+
+// isCannotOverwrite is the specification's answer for an upload to an address that already has content.
+func isCannotOverwrite(err error) bool {
+	failure, ok := matrixerr.As(err)
+	return ok && failure.Code == matrixerr.CodeCannotOverwriteMedia
 }
 
 func isNotFound(err error) bool {
