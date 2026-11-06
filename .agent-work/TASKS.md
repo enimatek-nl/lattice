@@ -509,3 +509,11 @@ T-4009c is split rather than closed: the invite half is done (see PROGRESS 2026-
 - [ ] T-4028 `DELETE /user/{userID}/account_data/{type}`. Complement deletes account data both
       ways — with DELETE and with an empty PUT — and only the PUT half exists. The empty PUT
       already erases the content; the DELETE verb should do the same and answer `{}`.
+
+- [ ] T-4029 MSC3391's other half: a removal has to reach sync. `DELETE
+      /user/{userID}/account_data/{type}` is implemented (commit after `fcc4dae`), but a deleted
+      row vanishes from the store, so an incremental sync says nothing and the client keeps what
+      it had. The specification shows the removed type in the account data array with an empty
+      content object, so the store needs a removal that is itself positionable in the stream —
+      a row marked removed, whose reads report M_NOT_FOUND and whose sync entry carries `{}`.
+      Complement: `TestRemovingAccountData` in `tests/msc3391`.
