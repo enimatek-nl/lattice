@@ -35,8 +35,14 @@ func TestRegisterFlow(t *testing.T) {
 
 	whoami := h.get("/_matrix/client/v3/account/whoami", token)
 	h.mustStatus(t, whoami, http.StatusOK)
-	if got := whoami.decoded(t)["user_id"]; got != userID {
+	decoded := whoami.decoded(t)
+	if got := decoded["user_id"]; got != userID {
 		t.Errorf("whoami user_id = %v, want %q", got, userID)
+	}
+	// The token belongs to a device, and the client needs to know which one: keys, push rules
+	// and the device list are all per-device things.
+	if got := decoded["device_id"]; got != deviceID {
+		t.Errorf("whoami device_id = %v, want %q", got, deviceID)
 	}
 }
 

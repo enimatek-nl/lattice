@@ -359,6 +359,39 @@ func (n *fedNode) registerUser(t *testing.T, localpart, password string) string 
 	return token
 }
 
+// registerUserDevice registers a user and returns the token together with the device that token
+// belongs to. The device identifier is what a device's own key document has to name, so a test that
+// uploads keys needs it as well as the token.
+func (n *fedNode) registerUserDevice(t *testing.T, localpart, password string) (token, deviceID string) {
+	t.Helper()
+	status, challenge := n.clientDo(t, http.MethodPost, "/_matrix/client/v3/register", map[string]any{
+		"username": localpart,
+		"password": password,
+	}, "")
+	if status != http.StatusUnauthorized {
+		t.Fatalf("registering %s on %s: registration did not ask to be authenticated: %d %v", localpart, n.name, status, challenge)
+	}
+	session, _ := challenge["session"].(string)
+	auth := map[string]any{"type": "m.login.dummy"}
+	if session != "" {
+		auth["session"] = session
+	}
+	status, body := n.clientDo(t, http.MethodPost, "/_matrix/client/v3/register", map[string]any{
+		"username": localpart,
+		"password": password,
+		"auth":     auth,
+	}, "")
+	if status != http.StatusOK {
+		t.Fatalf("registering %s on %s: %v", localpart, n.name, body)
+	}
+	token, _ = body["access_token"].(string)
+	deviceID, _ = body["device_id"].(string)
+	if token == "" || deviceID == "" {
+		t.Fatalf("registration on %s returned no token or device: %v", n.name, body)
+	}
+	return token, deviceID
+}
+
 // roomEvents is the state and timeline this server holds for a room, as the events
 // actually stored — which is what a PDU has to be for another server to accept it.
 type roomEvents struct {

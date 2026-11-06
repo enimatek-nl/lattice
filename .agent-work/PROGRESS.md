@@ -1490,3 +1490,54 @@ now answers that question once, the upgrade path uses it, and the refusal is the
 `make verify` clean. Tests: `TestRoomUpgradeErrors` asks for `new_version: "12"`; `roomversion_test.go`
 asserts that the advertised set and `IsOffered` agree, and that a known version is not automatically
 an offered one.
+
+## 2026-11-08 — a homeserver answers for its own users' keys, and discovery stops treating a broken resolver as an absent server
+
+Three things, all found by following Complement failures instead of guessing at them.
+
+**The Complement image was refusing to dial the peer container.** The federation address policy
+denies private ranges on purpose — that is the SSRF protection — and the image's exception list named
+`127.0.0.0/8, 172.16.0.0/12, 169.254.0.0/16`. On this machine the runtime is podman, whose created
+networks are `10.89.0.0/16`, so every hs-to-hs dial in the suite was refused with "no allowed network
+covers", and the failure looked like a protocol bug. Naming every runtime's pool would break the next
+time somebody runs the suite somewhere else, so the entrypoint now allows the networks the container
+is *attached to*, which is exactly where a peer homeserver in these tests can be, and nothing else
+private.
+
+**A resolver that cannot read SRV records is not an absent server.** `Resolve` treated any SRV lookup
+error as fatal. Container DNS answers `_matrix-fed._tcp.hs1` with a timeout, while the name itself
+resolves and the server is listening on 8448 — so a perfectly reachable peer was uncontactable. The
+specification's own order is service records, then the name on the federation port, and an unreadable
+record now leads to the second step. Separately, a name that could not be looked up at all was cached
+for `wellKnownErrorTTL` — an hour, which is the specification's cache time for a *well-known
+delegation document*, a thing a server publishes deliberately. A failed lookup is not that kind of
+fact: one resolver hiccup made a healthy peer unreachable for an hour, with an error message ("was
+resolved recently and could not be found") that reads like a durable fact about the other server. The
+lookup failure now has its own 30-second window: long enough that a burst of traffic to one bad name
+does not hammer DNS, short enough that the next attempt happens in the same shift.
+
+**A homeserver answers for the key documents of its own users, and asks its peers for the rest.**
+`POST /_matrix/federation/v1/user/keys/query` is served, and `POST /client/v3/keys/query` for a user
+who lives elsewhere now reaches out instead of answering "no keys" — which is not a neutral answer,
+because a client reads it as "this user has no devices". What is checked is the shape of the answer:
+only the users that were asked about, only those whose IDs sit in the namespace of the server that
+answered, and the documents themselves untouched, because the device signed them in that shape and
+the client is the one entitled to check that. One unreachable peer leaves that user's entry empty
+rather than failing the whole query, per the rule that a dead remote must not block local work. The
+inbound half refuses to answer for users that are not its own, which the new test checks directly by
+asking a server for somebody else's user. While at it, `GET /account/whoami` now names the device the
+token belongs to: keys, push rules and the device list are per-device things, and a client that
+cannot tell which of its own sessions it is in cannot manage them.
+
+Evidence: `make verify` clean. New tests — `TestFederationDiscoveryRetriesALookupFailureSoon` and
+`TestFederationDiscoverySurvivesAnUnreadableSRVRecord` (unit),
+`TestRemoteDeviceKeysComeFromTheirOwnServer` (integration, two homeservers: the key document arrives
+byte-for-byte, and a server asked for another server's user answers with nothing), and the existing
+`whoami` assertion extended to the device identifier. Complement's full `./tests` + `./tests/csapi`
+suite: **62 top-level passing, 134 failing**, up from 60 and 136 earlier the same day, with two tests
+newly green (`TestJoinViaRoomIDAndServerName`,
+`TestUserAppearsInChangedDeviceListOnJoinOverFederation`) and none newly failing.
+
+The device-list tests still fail, and the cause is now measured rather than assumed: they used to stop
+at the key query (0.4s in) and now stop at a `/sync` wait for a device-list change that nothing
+delivers (5s in). That is `m.device_list_update` EDUs in both directions, opened as T-4022.

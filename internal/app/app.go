@@ -177,6 +177,7 @@ func NewWithOptions(ctx context.Context, cfg *config.Config, log *slog.Logger, o
 		Log:     log,
 		Keys:    signingKeys,
 		Version: Version,
+		E2EKeys: deviceKeys,
 	}
 	if cfg.Federation.Enabled {
 		policy, err := federation.NewIPpolicy(cfg.Federation.IPAllow, cfg.Federation.IPDeny)
@@ -208,6 +209,10 @@ func NewWithOptions(ctx context.Context, cfg *config.Config, log *slog.Logger, o
 		a.Keyring = federation.NewKeyring(db.Federation, resolver, dialer, cfg.ServerName,
 			cfg.Federation.NotaryServers, log)
 		client := federation.NewClient(resolver, dialer, cfg.ServerName, signingKeys, log)
+		// A key query for a user who lives elsewhere is answered by asking that user's
+		// homeserver, because it holds the documents their devices uploaded. Without this the
+		// query for a remote user is simply empty, which a client reads as "no keys".
+		deviceKeys.ServeRemotes(cfg.ServerName, client)
 		a.Sender = federation.NewSender(db.Federation, db.Events, db.State, client, cfg.ServerName, log)
 		// A room's exclusion of servers is read from room state, so both the endpoints that answer
 		// a server and the relay that decides which servers to tell read it from the room service.

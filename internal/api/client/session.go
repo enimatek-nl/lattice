@@ -11,8 +11,16 @@ import (
 )
 
 // handleWhoAmI implements GET /account/whoami.
+//
+// The device is named as well as the user. This server issues a device for every session it hands
+// out, and a client that cannot tell which of its own sessions it is speaking through cannot manage
+// its own keys, its push rules or its device list: those are per-device things.
 func (d *Deps) handleWhoAmI(w http.ResponseWriter, r *http.Request) {
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"user_id": auth.UserID(r)})
+	answer := map[string]any{"user_id": auth.UserID(r)}
+	if deviceID := auth.DeviceID(r); deviceID != "" {
+		answer["device_id"] = deviceID
+	}
+	httpx.WriteJSON(w, http.StatusOK, answer)
 }
 
 // handleLogout implements POST /logout: the current device only.

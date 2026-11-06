@@ -198,3 +198,26 @@ A room version 1 or 2 room is otherwise covered by this project's own tests rath
 Complement: `tests/integration/roomversionlegacy_test.go` creates such rooms, checks the
 origin-server identifier on the wire, fetches the events over federation and recomputes every
 reference hash, and runs a join handshake into a version 2 room.
+
+## Latest full run (2026-11-08, federation key query and discovery robustness — T-4022 opened)
+
+Same command as the previous section. **62 top-level tests pass, 134 fail** (was 60 and 136).
+
+Newly passing, with no newly failing test:
+
+* `TestJoinViaRoomIDAndServerName` — a local user joining a room held by the other homeserver in
+  the suite. It had two causes. The Complement image's address policy did not cover the network the
+  peer container actually lives on (podman puts created networks in `10.89.0.0/16`, Docker in a
+  172.x pool), so the dial was refused as though it were SSRF; the entrypoint now allows the
+  networks the container is attached to. And an SRV lookup that fails outright — a resolver that
+  does not serve the record type answers SERVFAIL or goes quiet — ended resolution instead of
+  falling through to the name on the federation port.
+* `TestUserAppearsInChangedDeviceListOnJoinOverFederation` — the same join being the precondition.
+
+Still failing, with the cause narrowed rather than assumed: `TestDeviceListUpdates` (the five
+subtests that need two homeservers) and `TestDeviceListsUpdateOverFederationOnRoomJoin`. The device
+key query those subtests used to stop at now succeeds — `GET /client/v3/keys/query` for a remote
+user is answered by asking that user's server — and they stop later, at a `/sync` wait for a
+device-list change that no `m.device_list_update` EDU ever delivers. That is T-4022.
+
+No Complement assertion was modified.

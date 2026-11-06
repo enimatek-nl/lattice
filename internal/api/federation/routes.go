@@ -42,6 +42,10 @@ type Deps struct {
 	// Backfill asks another server for the events this room's events cite and this server does
 	// not hold. It is what makes a refusal for missing predecessors a step rather than an ending.
 	Backfill GapFiller
+	// E2EKeys answers another homeserver's question about the device keys of this server's
+	// own users. It is the same store the Client-Server API reads, so the two listeners cannot
+	// give different answers about who holds which keys.
+	E2EKeys DeviceKeys
 }
 
 // Register installs the Server-Server and key API routes.
@@ -67,6 +71,11 @@ func Register(r *httpserver.Router, d *Deps) {
 	r.Handle("GET", "/_matrix/federation/v1/version", d.handleVersion)
 	r.Handle("GET", "/_matrix/key/v2/server", d.handleServerKeys)
 	r.Handle("POST", "/_matrix/key/v2/query", d.handleKeyQuery)
+	// The device keys of this server's users, for the other homeservers that ask. There is no
+	// point answering that question without the store behind it.
+	if d.E2EKeys != nil {
+		r.Handle("POST", "/_matrix/federation/v1/user/keys/query", d.requireCredential(d.handleDeviceKeysQuery))
+	}
 }
 
 // serverResponse is the shape of a Server-Server API response body.

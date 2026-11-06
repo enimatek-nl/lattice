@@ -67,6 +67,15 @@ const (
 	wellKnownDefaultTTL = 24 * time.Hour
 	wellKnownMaxTTL     = 48 * time.Hour
 	wellKnownErrorTTL   = time.Hour
+	// resolutionFailureTTL is how long a name that could not be looked up at all is left alone.
+	// The specification's hour-long cache is about a well-known delegation document — something a
+	// server publishes deliberately and changes rarely — and that is what the hour is for. A
+	// lookup that failed is a different kind of fact: a resolver hiccup, an upstream SERVFAIL, a
+	// container network still coming up. Holding it for an hour makes one bad moment turn into an
+	// hour during which a perfectly healthy peer cannot be contacted at all, and the message the
+	// operator sees ("resolved recently and could not be found") reads like a durable fact about
+	// the other server rather than a memory of this one.
+	resolutionFailureTTL = 30 * time.Second
 	// srvService is the registered service name; srvLegacy is the unregistered one
 	// that the specification still asks servers to try before giving up.
 	srvService = "_matrix-fed._tcp."
@@ -167,18 +176,27 @@ func (d *Discovery) Resolve(ctx context.Context, serverName string) (Target, err
 	}
 
 	// No delegation: SRV records, then the name itself on the federation port.
+	//
+	// An SRV lookup that cannot be read at all does not end the attempt. A resolver that does not
+	// serve the record type answers SERVFAIL or goes quiet — the built-in DNS of a container
+	// runtime does exactly this for SRV — at the same time as the name itself resolves perfectly
+	// well and the peer is listening on the federation port. Treating the unreadable record as
+	// fatal makes a reachable server uncontactable, and leaves the operator reading a DNS error
+	// instead of a working join. What is refused is a name that cannot be resolved at all, which
+	// is the step below.
 	for _, service := range []string{srvService, srvLegacy} {
-		if target, ok, err := d.srv(ctx, serverName, host, service); err != nil {
-			d.rememberFailure(serverName)
-			return Target{}, err
-		} else if ok {
+		target, ok, err := d.srv(ctx, serverName, host, service)
+		if err != nil {
+			continue
+		}
+		if ok {
 			d.remember(serverName, target, wellKnownErrorTTL)
 			return target, nil
 		}
 	}
 	target, err := d.resolveHost(ctx, serverName, host, defaultFederationPort, host)
 	if err != nil {
-		d.rememberFailure(serverName)
+		d.rememberResolutionFailure(serverName)
 		return Target{}, err
 	}
 	d.remember(serverName, target, wellKnownErrorTTL)
@@ -378,8 +396,17 @@ func (d *Discovery) remember(serverName string, target Target, ttl time.Duration
 	d.cache.entries[serverName] = cacheEntry{target: target, expiry: d.now().Add(ttl), resolved: true}
 }
 
+// rememberFailure records that a name's well-known delegation could not be trusted or
+// fetched, for the hour the specification allows.
 func (d *Discovery) rememberFailure(serverName string) {
 	d.rememberFailureFor(serverName, wellKnownErrorTTL)
+}
+
+// rememberResolutionFailure records that a name could not be looked up, for long enough to
+// stop a burst of traffic to one bad name from hammering DNS, and no longer. See
+// [resolutionFailureTTL].
+func (d *Discovery) rememberResolutionFailure(serverName string) {
+	d.rememberFailureFor(serverName, resolutionFailureTTL)
 }
 
 func (d *Discovery) rememberFailureFor(serverName string, ttl time.Duration) {

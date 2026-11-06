@@ -398,6 +398,18 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
       outstanding: room version 12's revised state resolution and the unstable versions'
       pseudo-identifier format (T-4019); the Synapse divergence on forked version 1 rooms is
       recorded in `docs/compliance-matrix.md` item 5 and is not interoperability-tested
+- [ ] T-4022 device-list changes over federation: send `m.device_list_update` EDUs to the other
+      servers in the rooms a local user shares when that user's devices or keys change, accept them
+      from a peer, and surface what they say into `/sync` for the local users watching. The
+      transaction transport already carries EDUs and the per-observer device-list record exists
+      (DEC-017), so this is the two ends and the trigger, not a new subsystem.
+      This is now the single remaining cause of the device-list Complement failures:
+      `TestDeviceListUpdates`'s five two-server subtests and
+      `TestDeviceListsUpdateOverFederationOnRoomJoin` all reach a `/sync` wait that nothing answers.
+      The piece in front of them — fetching a remote user's device keys from their own server — was
+      implemented on 2026-11-08 and those subtests moved from failing in 0.4s to reaching the sync
+      step 5s later. `GET /client/v3/keys/changes` (the other way a client can learn) is also absent;
+      if the EDU work covers the tests, that stays a client-convenience gap rather than a blocker.
 - [ ] T-4011 the address policy is applied when discovery resolves a name, not when the
       socket is opened. A name whose answer changes between the two (DNS rebinding) is not
       covered; the fix is a dialer that re-checks the address it is about to connect to

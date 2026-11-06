@@ -28,6 +28,7 @@ import (
 	"github.com/enimatek/lattice/internal/eventauth"
 	"github.com/enimatek/lattice/internal/events"
 	"github.com/enimatek/lattice/internal/matrixerr"
+	"github.com/enimatek/lattice/internal/matrixid"
 	"github.com/enimatek/lattice/internal/matrixjson"
 	"github.com/enimatek/lattice/internal/persist"
 	"golang.org/x/crypto/ed25519"
@@ -42,6 +43,10 @@ type Service struct {
 	state   persist.StateRepo
 	log     *slog.Logger
 	now     func() time.Time
+	// serverName and remotes are set by [Service.ServeRemotes]; without them this server
+	// only ever answers for its own users.
+	serverName string
+	remotes    RemoteKeys
 }
 
 // New wires the service to the storage layer.
@@ -248,12 +253,78 @@ func (s *Service) storeOneTimeKeys(ctx context.Context, userID, deviceID string,
 	return nil
 }
 
+// RemoteKeys asks another homeserver for the device keys of the users it carries. It is
+// satisfied by the federation client.
+type RemoteKeys interface {
+	QueryDeviceKeys(ctx context.Context, destination string, users map[string][]string) (map[string]map[string]any, error)
+}
+
+// ServeRemotes tells the service which server it is, and how to ask other servers about
+// their users. Without it — which is how it is in a unit test or a server with federation
+// switched off — a query for a user who lives elsewhere is answered with nothing, as it was
+// before federation could answer it at all.
+func (s *Service) ServeRemotes(serverName string, remotes RemoteKeys) {
+	s.serverName = serverName
+	s.remotes = remotes
+}
+
 // Query answers "which devices of these users have keys I should use".
 //
 // A user with nothing to report still appears, with an empty object: a client that asked
 // about a user and gets nothing back cannot tell whether this server does not know them or
 // never understood the question.
+//
+// A user who lives on another homeserver is answered by asking that homeserver, because it
+// is the one that holds the key documents that user's devices uploaded. One unreachable peer
+// does not fail the query: the users it was asked about come back empty, the rest of the
+// answer is still given, and the failure is logged. A client starting sessions in a room with
+// a dead server should still be able to start them with everyone else.
 func (s *Service) Query(ctx context.Context, users map[string][]string, since int64) (map[string]map[string]any, error) {
+	local := make(map[string][]string, len(users))
+	remote := map[string]map[string][]string{}
+	for userID := range users {
+		// A user ID this server cannot parse is not somebody else's to look up either; it
+		// goes to the local answer, which is the empty one.
+		_, domain, err := matrixid.SplitID(matrixid.SigilUser, userID)
+		if s.remotes == nil || err != nil || matrixid.IsLocal(domain, s.serverName) {
+			local[userID] = users[userID]
+			continue
+		}
+		if remote[domain] == nil {
+			remote[domain] = map[string][]string{}
+		}
+		remote[domain][userID] = users[userID]
+	}
+
+	out, err := s.QueryLocal(ctx, local, since)
+	if err != nil {
+		return nil, err
+	}
+	for destination, asked := range remote {
+		devices, err := s.remotes.QueryDeviceKeys(ctx, destination, asked)
+		if err != nil {
+			// The peer is not answering. Its users come back as "nothing to report",
+			// which is what a client can do something with; the query still completes.
+			s.log.Warn("e2ekeys: a remote homeserver did not answer a device key query",
+				"destination", destination, "users", len(asked), "error", err)
+			for userID := range asked {
+				if _, ok := out[userID]; !ok {
+					out[userID] = map[string]any{}
+				}
+			}
+			continue
+		}
+		for userID, devicesOfUser := range devices {
+			out[userID] = devicesOfUser
+		}
+	}
+	return out, nil
+}
+
+// QueryLocal reads the keys this server holds for its own users. The Server-Server endpoint
+// that answers another homeserver's question calls this, because a homeserver answering for
+// somebody else's users would be inventing them.
+func (s *Service) QueryLocal(ctx context.Context, users map[string][]string, since int64) (map[string]map[string]any, error) {
 	out := make(map[string]map[string]any, len(users))
 	for userID, deviceIDs := range users {
 		devices := map[string]any{}

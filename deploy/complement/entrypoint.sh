@@ -35,7 +35,22 @@ export LATTICE_BCRYPT_COST="${LATTICE_BCRYPT_COST:-4}"
 # names the ranges the harness lives on instead of switching the policy off. The link-local range
 # is there because Docker's embedded DNS answers host.docker.internal with a link-local address on
 # some networks, which is the second homeserver these tests talk to.
-export LATTICE_FEDERATION_IP_ALLOW="${LATTICE_FEDERATION_IP_ALLOW:-127.0.0.0/8,172.16.0.0/12,169.254.0.0/16}"
+LATTICE_FEDERATION_IP_ALLOW="${LATTICE_FEDERATION_IP_ALLOW:-127.0.0.0/8,172.16.0.0/12,169.254.0.0/16}"
+
+# The peer homeserver in these tests is another container, and which network that is depends on
+# the runtime rather than on anything this image could know in advance: Docker puts a user-defined
+# bridge network in a 172.x pool, podman puts its created networks in 10.89.0.0/16, and a rootless
+# setup may use something else again. Naming every runtime's pool would be a list that breaks the
+# first time someone runs the suite on a machine with different defaults, and widening the policy
+# to all of RFC1918 would throw away the protection the policy exists for. So the image allows the
+# networks this container is actually attached to, which is exactly where a peer homeserver in
+# these tests can be, and nothing else private.
+if command -v ip >/dev/null 2>&1; then
+	for attached in $(ip -4 -o route show scope link 2>/dev/null | awk '$1 ~ /\// {print $1}'); do
+		LATTICE_FEDERATION_IP_ALLOW="${LATTICE_FEDERATION_IP_ALLOW},${attached}"
+	done
+fi
+export LATTICE_FEDERATION_IP_ALLOW
 
 TLS_DIR="${LATTICE_TLS_DIR:-$LATTICE_DATA_DIR/tls}"
 export LATTICE_TLS_CERT_FILE="${LATTICE_TLS_CERT_FILE:-$TLS_DIR/$SERVER_NAME.crt}"
