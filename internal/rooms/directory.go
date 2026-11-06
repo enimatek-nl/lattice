@@ -36,15 +36,19 @@ type DirectoryRequest struct {
 
 // ListedRoom is one entry in the directory.
 type ListedRoom struct {
-	RoomID           string   `json:"room_id"`
-	NumJoinedMembers int      `json:"num_joined_members"`
-	WorldReadable    bool     `json:"world_readable"`
-	GuestCanJoin     bool     `json:"guest_can_join"`
-	Name             string   `json:"name,omitempty"`
-	Topic            string   `json:"topic,omitempty"`
-	CanonicalAlias   string   `json:"canonical_alias,omitempty"`
-	Aliases          []string `json:"aliases,omitempty"`
-	RoomType         string   `json:"room_type,omitempty"`
+	RoomID           string `json:"room_id"`
+	NumJoinedMembers int    `json:"num_joined_members"`
+	WorldReadable    bool   `json:"world_readable"`
+	GuestCanJoin     bool   `json:"guest_can_join"`
+	// JoinRule is required on a directory entry: someone choosing a room from a list has to be
+	// able to tell a room they can walk into from one they have to be let into, and a room shown
+	// as public that turns out to be invite-only is a dead end found by clicking.
+	JoinRule       string   `json:"join_rule"`
+	Name           string   `json:"name,omitempty"`
+	Topic          string   `json:"topic,omitempty"`
+	CanonicalAlias string   `json:"canonical_alias,omitempty"`
+	Aliases        []string `json:"aliases,omitempty"`
+	RoomType       string   `json:"room_type,omitempty"`
 }
 
 // DirectoryPage is the response.
@@ -128,8 +132,7 @@ func (s *Service) listRoom(ctx context.Context, room *persist.Room) (ListedRoom,
 	if err != nil {
 		return entry, err
 	}
-	// A guest may join when the room is open to anyone and has not said otherwise with
-	// m.room.guest_join, whose absence means the default of allowing guests.
+	entry.JoinRule = joinRule
 	entry.GuestCanJoin = joinRule == "public" && s.guestsAllowed(ctx, room.RoomID)
 
 	if entry.CanonicalAlias, err = s.canonicalAliasOf(ctx, room.RoomID); err != nil {
@@ -187,10 +190,13 @@ func (s *Service) joinRule(ctx context.Context, roomID string) (string, error) {
 	return rule, nil
 }
 
-// guestsAllowed reads m.room.guest_join. A room without that event allows guests, which
-// is the room version default rather than a choice this server is making.
+// guestsAllowed reads m.room.guest_access. The room's answer is a string — `can_join` or
+// `forbidden` — and a room without that event, or with a value this server does not know, allows
+// guests: that is the default the protocol states, not a decision this server is free to make. A
+// public room made with the `public_chat` preset does say `forbidden`, so reading the wrong event
+// here would advertise guest access to a room that refused it.
 func (s *Service) guestsAllowed(ctx context.Context, roomID string) bool {
-	entry, err := s.state.Get(ctx, roomID, "m.room.guest_join", "")
+	entry, err := s.state.Get(ctx, roomID, "m.room.guest_access", "")
 	if err != nil {
 		return true
 	}
@@ -199,8 +205,8 @@ func (s *Service) guestsAllowed(ctx context.Context, roomID string) bool {
 		return true
 	}
 	content, _ := event["content"].(map[string]any)
-	allowed, ok := content["guest_can_join"].(bool)
-	return !ok || allowed
+	access, _ := content["guest_access"].(string)
+	return access != "forbidden"
 }
 
 // canonicalAliasOf reads the alias the room calls itself by.

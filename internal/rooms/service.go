@@ -277,8 +277,17 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (string, error)
 			"This server cannot create a room in that room version.").
 			WithExtra(map[string]any{"room_version": req.RoomVersion})
 	}
+	// A client that names no preset but asks for a public room is asking for the public preset,
+	// not for a private room that happens to be listed in the directory: the specification says
+	// the visibility determines the preset when the preset is unspecified, and the preset is what
+	// decides the join rule. A room published as public and created invite-only is a room a
+	// passer-by can see in the directory and cannot enter.
 	if req.Preset == "" {
-		req.Preset = PresetPrivateChat
+		if req.Published {
+			req.Preset = PresetPublicChat
+		} else {
+			req.Preset = PresetPrivateChat
+		}
 	}
 	if !knownPreset(req.Preset) {
 		return "", matrixerr.Newf(matrixerr.CodeInvalidParam,
@@ -916,19 +925,23 @@ func (s *Service) newRoomID() (string, error) {
 
 // presetState returns the initial state for a preset.
 //
-// The specification names the three presets but leaves their contents to the
-// implementation, so these are our choices and they follow Synapse where the effect
-// is observable: a public room is world readable and open to joins; private rooms
-// are invite-only with history shared with members; the trusted variant lets every
-// member invite. docs/requirements.md records this as an interpretation decision.
+// The specification gives a table for the three presets — join rule, history visibility and
+// guest access — and this is that table, not a taste: `private_chat` and `trusted_private_chat`
+// are invite-only with history shared with members and guests able to join; `public_chat` is
+// open to joins with history shared with members and guests kept out. The one that is easy to
+// get wrong is the public row: a public room is joinable without an invitation, which is not the
+// same as its history being readable by people who never joined, and the preset does not make it
+// so. A server that starts a public room `world_readable` has published its history to the world
+// on the strength of a join rule that says nothing of the kind. `trusted_private_chat` differs
+// only in letting every member invite.
 func presetState(preset Preset, creator string) []StateContent {
 	joinRule := "invite"
-	history := "shared"
+	guestAccess := "can_join"
 	levels := presetPowerLevels(creator)
 	switch preset {
 	case PresetPublicChat:
 		joinRule = "public"
-		history = "world_readable"
+		guestAccess = "forbidden"
 	case PresetTrustedPrivateChat:
 		levels["invite"] = 0
 	case PresetPrivateChat:
@@ -944,7 +957,8 @@ func presetState(preset Preset, creator string) []StateContent {
 	return []StateContent{
 		{Type: eventauth.TypePowerLevels, Content: levels},
 		{Type: eventauth.TypeJoinRules, Content: map[string]any{"join_rule": joinRule}},
-		{Type: "m.room.history_visibility", Content: map[string]any{"history_visibility": history}},
+		{Type: "m.room.history_visibility", Content: map[string]any{"history_visibility": "shared"}},
+		{Type: "m.room.guest_access", Content: map[string]any{"guest_access": guestAccess}},
 	}
 }
 

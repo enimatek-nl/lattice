@@ -136,7 +136,9 @@ func (s *Service) ResolveOutliers(ctx context.Context, roomID string) (int, erro
 // makes `GET /event` return it.
 //
 // The answer is oldest first. A peer filling a hole wants to lay events down in the order they
-// happened; newest-first would make it rebuild the graph backwards for no reason.
+// happened; newest-first would make it rebuild the graph backwards for no reason. And the answer
+// is what lies between: the events the peer named as its ceiling are descended from but not
+// returned, because the question it asked was about their predecessors.
 func (s *Service) EventsBetween(ctx context.Context, roomID string, earliest, latest []string, limit int, minDepth int64) ([]*persist.Event, error) {
 	if limit <= 0 {
 		limit = missingEventsDefaultLimit
@@ -147,6 +149,11 @@ func (s *Service) EventsBetween(ctx context.Context, roomID string, earliest, la
 	// A seed that has already been seen is never queued, so the floor set does double duty:
 	// it is excluded from the answer and it blocks the walk underneath it.
 	seen := make(map[string]bool, len(earliest)+len(latest))
+	// The events the peer named as its ceiling are where the walk starts, not part of what it
+	// asked for: the question is "what are the previous events of these". Handing the ceiling
+	// back is answering a question that was not asked, and a peer counting on the answer to be
+	// the hole it is missing gets one event too many.
+	ceiling := make(map[string]bool, len(latest))
 	queue := make([]string, 0, len(latest))
 	for _, eventID := range earliest {
 		seen[eventID] = true
@@ -156,6 +163,7 @@ func (s *Service) EventsBetween(ctx context.Context, roomID string, earliest, la
 			continue
 		}
 		seen[eventID] = true
+		ceiling[eventID] = true
 		queue = append(queue, eventID)
 	}
 	found := make([]*persist.Event, 0, limit)
@@ -180,7 +188,9 @@ func (s *Service) EventsBetween(ctx context.Context, roomID string, earliest, la
 		if event.Depth < minDepth {
 			continue
 		}
-		found = append(found, event)
+		if !ceiling[eventID] {
+			found = append(found, event)
+		}
 		predecessors, err := s.events.References(ctx, eventID, persist.EdgePrev)
 		if err != nil {
 			return nil, fmt.Errorf("rooms: cannot read what an event cites while filling a peer's gap: %w", err)

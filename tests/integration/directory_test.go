@@ -14,11 +14,20 @@ func TestPublicRoomsListsPublishedRooms(t *testing.T) {
 	h := newHarness(t)
 
 	_, aliceToken, _ := h.register(t, "dirhost", "pw-dirhost", "")
+	// A world-readable room, and the world-readability is said explicitly: the `public_chat`
+	// preset makes a room joinable without an invitation and keeps its history to members, so a
+	// room that is genuinely open to readers who never joined has to be made that way.
 	open := createRoom(t, h, aliceToken, map[string]any{
 		"visibility": "public",
 		"preset":     "public_chat",
 		"name":       "Open Room",
 		"topic":      "everything is readable here",
+		"initial_state": []map[string]any{
+			{"type": "m.room.history_visibility", "state_key": "",
+				"content": map[string]any{"history_visibility": "world_readable"}},
+			{"type": "m.room.guest_access", "state_key": "",
+				"content": map[string]any{"guest_access": "can_join"}},
+		},
 	})
 	quiet := createRoom(t, h, aliceToken, map[string]any{"name": "Quiet Room"})
 	published := createRoom(t, h, aliceToken, map[string]any{"visibility": "public", "name": "Joinable by invitation"})
@@ -50,6 +59,23 @@ func TestPublicRoomsListsPublishedRooms(t *testing.T) {
 	}
 	if openEntry["world_readable"] != true {
 		t.Errorf("world_readable = %v, want true for a world readable room", openEntry["world_readable"])
+	}
+	// The other published room asked for a public room without naming a preset, which the
+	// specification reads as the public_chat preset: joinable by anybody, history kept to
+	// members, guests kept out. A room listed as public is not therefore a room whose history is
+	// public, and a directory that says otherwise is advertising something the room refused.
+	publishedEntry := entryFor(t, entries, published)
+	if publishedEntry["world_readable"] != false {
+		t.Errorf("world_readable = %v, want false: a public_chat room's history is shared with"+
+			" members, not with the world", publishedEntry["world_readable"])
+	}
+	if publishedEntry["join_rule"] != "public" {
+		t.Errorf("join_rule = %v, want public: a room created with visibility public but no named"+
+			" preset takes the public_chat preset", publishedEntry["join_rule"])
+	}
+	if publishedEntry["guest_can_join"] != false {
+		t.Errorf("guest_can_join = %v, want false: the public_chat preset sets m.room.guest_access"+
+			" to forbidden", publishedEntry["guest_can_join"])
 	}
 	if openEntry["guest_can_join"] != true {
 		t.Errorf("guest_can_join = %v, want true for an open room", openEntry["guest_can_join"])
@@ -305,4 +331,16 @@ func TestRoomSummaryReportsTheRoom(t *testing.T) {
 	if byAlias["room_id"] != space {
 		t.Errorf("the summary by alias names %v, want %s", byAlias["room_id"], space)
 	}
+}
+
+// entryFor picks one room's entry out of a directory page.
+func entryFor(t *testing.T, entries []map[string]any, roomID string) map[string]any {
+	t.Helper()
+	for _, entry := range entries {
+		if entry["room_id"] == roomID {
+			return entry
+		}
+	}
+	t.Fatalf("the directory page does not list %s: %v", roomID, entries)
+	return nil
 }
