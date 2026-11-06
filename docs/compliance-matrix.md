@@ -226,3 +226,16 @@ check the DNS records.
 
 The per-run logs and failure lists live in `.agent-work/COMPLIANCE-MATRIX.md` and
 `.agent-work/complement-failures-*.txt`.
+
+## Media cluster after the content repository (2026-11-06, T-4059/T-4060 closed)
+
+| Field | Value |
+| --- | --- |
+| Filter | `RUN='TestFederation\|TestUpload\|TestDownload\|TestThumbnail\|TestMedia\|TestUrlPreview\|TestConfig'`, packages `-p 2`, Complement at `7b38a63c9db3` |
+| Result | **51 passing, 9 failing** (top-level plus subtests) |
+| Failing names | `TestUrlPreview` (URL previews not implemented), `TestFederationRoomsInvite`, `TestFederationKeyUploadQuery`, `TestFederationRedactSendsWithoutEvent` — all four already in `.agent-work/complement-failures-20261113d.txt`, so none newly red |
+| Newly passing because of this work | the `TestMediaFilenames`, `TestMediaWithoutFileName`, `TestThumbnail*`, `TestUpload*`, `TestDownload*` families, and the federation media subtests within them |
+| Bug fixed on the way | federation credential refusals caused by two concurrent `SaveServerKeys` replacements colliding on `(server_name, key_id)`; see T-4060, DEC-045 |
+| Verification of that fix | `TestMediaFilenames\|TestMediaWithoutFileName`: 2 of 3 runs red before (each with one credential-check refusal), 3 of 3 runs green after, 0 refusals |
+| Server faults observed | 0 panics; the only 500s in the cluster were the media fetch failing while the bug above was present |
+| Complement assertions changed | none |

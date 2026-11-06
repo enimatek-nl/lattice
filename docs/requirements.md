@@ -270,3 +270,25 @@ including what the first attempt got wrong, is in `.agent-work/TASKS.md` (T-4051
 | REQ-OPS-003 | Complement image contract | `SERVER_NAME` honoured; ports 8008/8448; healthcheck; entrypoint re-runnable | MUST | implemented | `deploy/complement/*`, Complement deployment succeeds in every run above |
 | REQ-OPS-004 | AGENTS §10 | Storage migrations run at startup; SQLite via gormlite; transactions for multi-row invariants | MUST | implemented | `tests/unit/storage_test.go` |
 | REQ-OPS-005 | AGENTS §10 | Single-process storage: SQLite is documented as the M1 storage, not the final answer | MUST NOT (assume) | partial | one writer connection; scalability limits recorded in `ARCHITECTURE.md` |
+
+## 8. Content repository (media)
+
+| ID | Source | Requirement | Level | Status | Tests |
+| --- | --- | --- | --- | --- | --- |
+| REQ-MEDIA-001 | CS v1.11 | `POST /media/v3/upload` stores bytes under a fresh `mxc://` URI, keeping the declared content type and `?filename=`; upload needs an access token | MUST | implemented+tested | `internal/media`, `internal/api/media`, `tests/integration/media_test.go`, Complement `TestMediaWithoutFileName`, `TestMediaFilenames`, `TestUploadSizeLimits` |
+| REQ-MEDIA-002 | CS v1.11 | Download is open on the deprecated endpoints and authenticated on `/_matrix/client/v1/media/*`; the answer carries `Content-Type`, a `Content-Disposition` chosen from the type, CSP `default-src 'none'`, sandbox and `Cross-Origin-Resource-Policy` | MUST | implemented+tested | `internal/media/serving.go`, Complement `TestMediaAuthCSAPIUploadDownload`, `TestRemoteMediaAuthenticated` |
+| REQ-MEDIA-003 | CS v1.11 | A media identifier is used as a file name, so only the specification's whitelist `A-Za-z0-9_-=`, checked before any path is built; the origin is validated as a server name | MUST | implemented+tested | `tests/unit/media_test.go`, `tests/integration/media_test.go` |
+| REQ-MEDIA-004 | CS v1.11 | Content from another server is fetched from the origin named in the URI, once, and kept; `allow_remote=false` is refused rather than fetched | MUST | implemented+tested | `tests/unit/media_test.go`, `tests/integration/media_test.go`, Complement `TestUrlSlugDownloads` |
+| REQ-MEDIA-005 | CS v1.11 | Thumbnails fit the asked box (`scale`/`crop`), never enlarge, and return a smaller source untouched | MUST, MUST NOT | implemented+tested | `internal/media/thumbnail.go`, Complement `TestThumbnailSize`, `TestThumbnailRemote` |
+| REQ-MEDIA-006 | CS v1.11 | A source too large to thumbnail is refused `M_TOO_LARGE` before it is decoded | MUST | implemented+tested | `internal/media/thumbnail.go` |
+| REQ-MEDIA-007 | CS v1.11 | `GET /media/v3/config` advertises `m.upload.size`, and that is the limit enforced (413 `M_TOO_LARGE`) | MUST | implemented+tested | `tests/integration/media_test.go` |
+| REQ-MEDIA-008 | CS v1.11 | Async uploads: `POST /media/v1/create` reserves a URI with `unused_expires_at`; unfilled content answers 504 `M_NOT_YET_UPLOADED`; only the creating user may fill it (else 403 `M_FORBIDDEN`; unreserved identifier 404); abandoned reservations are swept, pending budget bounded | MUST | implemented+tested | `tests/unit/media_test.go`, Complement `TestAsyncUpload` |
+| REQ-MEDIA-009 | SS v1.11 | `GET /_matrix/federation/v1/media/download|thumbnail/{mediaId}` answer a signed request for this server's own content with `multipart/mixed`: JSON metadata, then content | MUST | implemented+tested | `internal/api/federation/media.go`, `internal/media/multipart.go`, `tests/unit/media_multipart_test.go` |
+| REQ-MEDIA-010 | SS v1.11 | The authenticated federation endpoint is tried first; the deprecated endpoint with `allow_remote=false` is the fallback. A peer's `Location` is reported, not followed | MUST | implemented+tested (the `Location` refusal is a recorded decision) | `internal/federation/media.go`, `tests/unit/media_multipart_test.go` |
+| REQ-MEDIA-011 | CS v1.11 | URL previews: 404 `M_UNRECOGNIZED` — not implemented, refused as the specification defines | MUST (the refusal) | not implemented | `internal/api/media/routes.go`; Complement `TestUrlPreview` red |
+
+The decisions behind these — why the identifier whitelist is checked before path construction, why remote
+content is fetched once from its origin and never served here under another origin, why a peer's
+`Location` is not fetched, why a thumbnail of remote content is generated here, and why the deprecated
+endpoint fallback accepts any unsuccessful answer — are recorded as DEC-040…DEC-044 in
+`.agent-work/REQUIREMENTS.md`.
