@@ -212,5 +212,9 @@ func Register(r *httpserver.Router, d *Deps, requireAuth func(http.Handler) http
 
 	// The room summary is spelled only under v1 in the specification's own path.
 	r.Handle("GET", "/_matrix/client/v1/room_summary/{roomIDOrAlias}", authed(d.handleRoomSummary))
+
+	// The space tree, likewise v1-only. A client drawing a space asks one question rather than
+	// peeking into every child, and the server answers only with the rooms this user may see.
+	r.Handle("GET", "/_matrix/client/v1/rooms/{roomID}/hierarchy", authed(d.handleRoomHierarchy))
 	versioned("GET", "/capabilities", d.handleCapabilities)
 }

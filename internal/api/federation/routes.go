@@ -46,6 +46,10 @@ type Deps struct {
 	// Backfill asks another server for the events this room's events cite and this server does
 	// not hold. It is what makes a refusal for missing predecessors a step rather than an ending.
 	Backfill GapFiller
+	// Hierarchies answers a peer's question about a room this server holds and the children of it that
+	// the peer could see. It is the room service: the answer is room state, and the two listeners
+	// cannot be allowed to describe the same room differently.
+	Hierarchies HierarchyReader
 	// E2EKeys answers another homeserver's question about the device keys of this server's
 	// own users. It is the same store the Client-Server API reads, so the two listeners cannot
 	// give different answers about who holds which keys.
@@ -84,6 +88,13 @@ func Register(r *httpserver.Router, d *Deps) {
 	r.Handle("GET", "/_matrix/federation/v1/state_ids/{roomId}", d.requireCredential(d.handleStateIDs))
 	r.Handle("GET", "/_matrix/federation/v1/event_auth/{roomId}/{eventId}", d.requireCredential(d.handleEventAuth))
 	r.Handle("POST", "/_matrix/federation/v1/get_missing_events/{roomId}", d.requireCredential(d.handleGetMissingEvents))
+
+	// What a room is, and which of a space's children the asking server could see. A server holding the
+	// middle of a space cannot summarise a child that lives elsewhere, and this is how it learns that
+	// the child is not its to describe.
+	if d.Hierarchies != nil {
+		r.Handle("GET", "/_matrix/federation/v1/hierarchy/{roomId}", d.requireCredential(d.handleHierarchy))
+	}
 	r.Handle("GET", "/_matrix/federation/v1/version", d.handleVersion)
 	r.Handle("GET", "/_matrix/key/v2/server", d.handleServerKeys)
 	r.Handle("POST", "/_matrix/key/v2/query", d.handleKeyQuery)
