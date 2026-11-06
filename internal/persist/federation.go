@@ -171,23 +171,31 @@ func (r *federationRepo) SaveServerKeys(ctx context.Context, document *ServerKey
 	if document == nil || document.ServerName == "" {
 		return nil
 	}
-	if err := r.db.WithContext(ctx).Where("server_name = ?", document.ServerName).
-		Delete(&ServerSigningKey{}).Error; err != nil {
-		return err
-	}
-	if len(keys) > 0 {
-		if err := r.db.WithContext(ctx).CreateInBatches(&keys, 100).Error; err != nil {
+	// One transaction, because this replaces a server's whole key set: delete then insert. Left as
+	// separate statements, two goroutines that fetched the same server's keys at the same moment
+	// interleave — both delete, both insert, and the second insert trips the unique index on
+	// (server_name, key_id). What that looked like in the field on 2026-11-13 was a federation request
+	// refused at the credential check with "no verification key", because the keyring's attempt to
+	// record the keys it had just fetched failed and the lookup had nothing to answer with. A server
+	// whose keys are asked for by two rooms at once hit it; a busy deployment hit it often.
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("server_name = ?", document.ServerName).Delete(&ServerSigningKey{}).Error; err != nil {
 			return err
 		}
-	}
-	return r.db.WithContext(ctx).
-		Where("server_name = ?", document.ServerName).
-		Assign(ServerKeyDocument{
-			Document:     document.Document,
-			ValidUntilTS: document.ValidUntilTS,
-			FetchedAt:    document.FetchedAt,
-		}).
-		FirstOrCreate(document).Error
+		if len(keys) > 0 {
+			if err := tx.CreateInBatches(&keys, 100).Error; err != nil {
+				return err
+			}
+		}
+		return tx.
+			Where("server_name = ?", document.ServerName).
+			Assign(ServerKeyDocument{
+				Document:     document.Document,
+				ValidUntilTS: document.ValidUntilTS,
+				FetchedAt:    document.FetchedAt,
+			}).
+			FirstOrCreate(document).Error
+	})
 }
 
 // ServerKeys implements [FederationRepo].

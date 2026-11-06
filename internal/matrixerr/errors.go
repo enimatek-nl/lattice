@@ -44,8 +44,12 @@ const (
 	CodeLimitExceeded         Code = "M_LIMIT_EXCEEDED"
 	CodeResourceLimitExceeded Code = "M_RESOURCE_LIMIT_EXCEEDED"
 	CodeTooLarge              Code = "M_TOO_LARGE"
-	CodeInvalidToken          Code = "M_INVALID_TOKEN"
-	CodeInvalidSTS            Code = "M_INVALID_STK" //nolint:gocritic // Matrix code name
+	// CodeNotYetUploaded belongs to the content repository: an `mxc://` URI that was created ahead of its
+	// bytes (POST /_matrix/media/v1/create) and asked for before they arrive. It is not M_NOT_FOUND,
+	// because the address exists and is waiting, which is a different answer for a client.
+	CodeNotYetUploaded Code = "M_NOT_YET_UPLOADED"
+	CodeInvalidToken   Code = "M_INVALID_TOKEN"
+	CodeInvalidSTS     Code = "M_INVALID_STK" //nolint:gocritic // Matrix code name
 
 	// Room and event errors from the Client-Server API.
 
@@ -172,6 +176,7 @@ var statusByCode = map[Code]int{
 	CodeLimitExceeded:           http.StatusTooManyRequests,
 	CodeResourceLimitExceeded:   http.StatusServiceUnavailable,
 	CodeTooLarge:                http.StatusRequestEntityTooLarge,
+	CodeNotYetUploaded:          http.StatusGatewayTimeout,
 	CodeUnrecognized:            http.StatusBadRequest,
 	CodeUnableToGrantJoin:       http.StatusBadRequest,
 	CodeUnsupportedRoomVersion:  http.StatusBadRequest,

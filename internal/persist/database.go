@@ -44,6 +44,9 @@ type Database struct {
 	DeviceLists DeviceListRepo
 	DeviceKeys  DeviceKeysRepo
 	Federation  FederationRepo
+	// Media holds what this server knows about content it stores or has cached, in the content
+	// repository. The bytes themselves are files under the repository's directory.
+	Media MediaRepo
 }
 
 // Open opens (creating if needed) the SQLite database at path.
@@ -92,6 +95,7 @@ func Open(path string, log *slog.Logger) (*Database, error) {
 	d.DeviceLists = NewDeviceListRepo(gdb)
 	d.Federation = NewFederationRepo(gdb)
 	d.DeviceKeys = NewDeviceKeysRepo(gdb)
+	d.Media = NewMediaRepo(gdb)
 	return d, nil
 }
 
@@ -118,6 +122,7 @@ func (d *Database) migrate(log *slog.Logger) error {
 		&Room{}, &Event{}, &EventEdge{}, &RoomState{}, &EventAuthContext{}, &EventTxn{}, &RoomAlias{}, &Filter{}, &AccountData{}, &Presence{}, &DeviceListChange{}, &DeviceKeyDoc{}, &OneTimeKey{},
 		&DeviceListStream{},
 		&ServerSigningKey{}, &ServerKeyDocument{}, &FederationTransaction{}, &FederationQueueItem{},
+		&MediaMetadata{},
 		&EventRejection{}, &Redaction{},
 		&StateGroup{}, &StateGroupEntry{}, &EventStateGroup{}); err != nil {
 		return fmt.Errorf("persist: migration failed: %w", err)

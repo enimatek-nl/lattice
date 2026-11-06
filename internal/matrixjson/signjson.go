@@ -163,7 +163,11 @@ func VerifyJSON(obj map[string]any, lookup VerifyKeyFunc) (VerifyResult, error) 
 			}
 			key, err := lookup(origin, keyID)
 			if err != nil {
-				failure = fmt.Sprintf("no verification key for %s", keyID)
+				// The lookup's own words are kept. "No verification key" could mean the key was never
+				// published, that the published document has expired, or that the server holding it could not
+				// be reached, and those are different things for anyone working out why a room will not
+				// federate.
+				failure = fmt.Sprintf("no verification key for %s: %v", keyID, err)
 				continue
 			}
 			if len(key) != ed25519.PublicKeySize {

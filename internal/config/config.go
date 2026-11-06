@@ -137,6 +137,31 @@ type FederationConfig struct {
 	QueueMaxAttempts int      `json:"queue_max_attempts"`
 }
 
+// MediaConfig is the content repository: where the bytes live, and how big things are allowed to be.
+//
+// The limits are not decoration. The specification's content-repository security section says a server
+// should refuse an upload that is too large rather than store it and refuse to serve it, and should not
+// decode an oversized image for a thumbnail. Thumbnailing in particular turns a small request into a large
+// allocation inside this process, which is why the thumbnail bound is separate from the upload bound.
+type MediaConfig struct {
+	// Path is the directory content is stored under. Defaults to <data_dir>/media.
+	Path string `json:"path"`
+	// MaxUploadBytes refuses a larger upload with 413 M_TOO_LARGE.
+	MaxUploadBytes int64 `json:"max_upload_bytes"`
+	// MaxRemoteBytes bounds content fetched from another server; beyond it the answer is 502 M_TOO_LARGE,
+	// because the oversized thing arrived from a third party rather than from the client.
+	MaxRemoteBytes int64 `json:"max_remote_bytes"`
+	// MaxThumbnailSourceBytes bounds what this server will decode to make a thumbnail.
+	MaxThumbnailSourceBytes int64 `json:"max_thumbnail_source_bytes"`
+	// MaxPendingUploadsPerUser bounds how many `mxc://` URIs one user may have created and not yet
+	// filled, so that creating and abandoning URIs cannot become the way to fill a repository.
+	MaxPendingUploadsPerUser int64 `json:"max_pending_uploads_per_user"`
+	// PendingUploadTTL is how long a created-but-unfilled URI stays reserved.
+	PendingUploadTTL Duration `json:"pending_upload_ttl"`
+	// FetchTimeout bounds one request to another server's content repository.
+	FetchTimeout Duration `json:"fetch_timeout"`
+}
+
 // Config is the full server configuration.
 type Config struct {
 	ServerName   string             `json:"server_name"`
@@ -148,6 +173,7 @@ type Config struct {
 	Registration RegistrationConfig `json:"registration"`
 	WellKnown    WellKnownConfig    `json:"well_known"`
 	Federation   FederationConfig   `json:"federation"`
+	Media        MediaConfig        `json:"media"`
 	Log          LogConfig          `json:"log"`
 }
 
@@ -181,9 +207,18 @@ func Default() *Config {
 			BcryptCost:        10,
 		},
 		Log: LogConfig{Level: "info", Format: "json"},
+		Media: MediaConfig{
+			MaxUploadBytes:           10 << 20,
+			MaxRemoteBytes:           10 << 20,
+			MaxThumbnailSourceBytes:  25 << 20,
+			MaxPendingUploadsPerUser: 100,
+			PendingUploadTTL:         Duration(24 * time.Hour),
+			FetchTimeout:             Duration(20 * time.Second),
+		},
 	}
 	c.Store.Path = filepath.Join(c.DataDir, "lattice.db")
 	c.Signing.Path = filepath.Join(c.DataDir, "signing.key")
+	c.Media.Path = filepath.Join(c.DataDir, "media")
 	return c
 }
 
@@ -233,6 +268,11 @@ func (c *Config) ApplyEnv() {
 	setStr(&c.TLS.CAKeyFile, "LATTICE_TLS_CA_KEY_FILE")
 	setInt(&c.HTTP.MaxBodyBytes, "LATTICE_MAX_BODY_BYTES")
 	setInt(&c.HTTP.FederationMaxBodyBytes, "LATTICE_FEDERATION_MAX_BODY_BYTES")
+	setStr(&c.Media.Path, "LATTICE_MEDIA_PATH")
+	setInt(&c.Media.MaxUploadBytes, "LATTICE_MEDIA_MAX_UPLOAD_BYTES")
+	setInt(&c.Media.MaxRemoteBytes, "LATTICE_MEDIA_MAX_REMOTE_BYTES")
+	setInt(&c.Media.MaxThumbnailSourceBytes, "LATTICE_MEDIA_MAX_THUMBNAIL_SOURCE_BYTES")
+	setInt(&c.Media.MaxPendingUploadsPerUser, "LATTICE_MEDIA_MAX_PENDING_UPLOADS")
 	setBool(&c.Federation.Enabled, "LATTICE_FEDERATION_ENABLED")
 	setList(&c.Federation.IPAllow, "LATTICE_FEDERATION_IP_ALLOW")
 	setList(&c.Federation.IPDeny, "LATTICE_FEDERATION_IP_DENY")
@@ -299,6 +339,9 @@ func (c *Config) applyDerivedDefaults() error {
 	if c.TLS.KeyFile == "" && c.TLS.AutoGenerate {
 		c.TLS.KeyFile = filepath.Join(c.DataDir, "tls", c.ServerName+".key")
 	}
+	if c.Media.Path == "" || c.Media.Path == filepath.Join("data", "media") {
+		c.Media.Path = filepath.Join(c.DataDir, "media")
+	}
 	return nil
 }
 
@@ -331,6 +374,12 @@ func (c *Config) Validate() error {
 	}
 	if c.Registration.MinPasswordLength < 1 {
 		return fmt.Errorf("config: registration.min_password_length must be at least 1")
+	}
+	if c.Media.MaxUploadBytes <= 0 || c.Media.MaxRemoteBytes <= 0 || c.Media.MaxThumbnailSourceBytes <= 0 {
+		return fmt.Errorf("config: the media size limits must be positive numbers of bytes")
+	}
+	if c.Media.MaxPendingUploadsPerUser < 1 {
+		return fmt.Errorf("config: media.max_pending_uploads_per_user must be at least 1")
 	}
 	if c.HTTP.MaxBodyBytes <= 0 || c.HTTP.FederationMaxBodyBytes <= 0 {
 		return fmt.Errorf("config: body size limits must be positive")

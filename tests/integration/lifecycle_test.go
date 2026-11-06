@@ -392,6 +392,7 @@ func testConfig(dir string) *config.Config {
 	cfg.ServerName = "hs1"
 	cfg.DataDir = dir
 	cfg.Store.Path = filepath.Join(dir, "lattice.db")
+	cfg.Media.Path = filepath.Join(dir, "media")
 	cfg.TLS.CertFile = filepath.Join(dir, "tls", "hs1.crt")
 	cfg.TLS.KeyFile = filepath.Join(dir, "tls", "hs1.key")
 	cfg.TLS.AutoGenerate = true
