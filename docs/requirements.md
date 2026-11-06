@@ -233,6 +233,18 @@ the parts that must be byte-exact before any room is created.
    specification states this in the receiving behaviour rather than in the hash
    definition.
 
+### 6.5 Profiles (added during M3)
+
+| ID | Source | Requirement | Level | Status | Tests |
+| --- | --- | --- | --- | --- | --- |
+| REQ-PROFILE-001 | CS v1.19 `GET`/`PUT`/`DELETE /profile/{userId}[/{keyName}]` | Public reads; a write needs a token for that user; the body carries exactly one property, named as the path names; unknown `keyName`s refused when `m.profile_fields` is not advertised. | MUST | implemented+tested | `tests/integration/profile_test.go`, Complement `TestProfileDisplayName`, `TestProfileAvatarURL` |
+| REQ-PROFILE-002 | Implementation convention, tested by Complement | After a profile change the homeserver restates the user's `m.room.member` event in every room they are joined to. | Convention | implemented+tested | `tests/integration/profile_test.go`, Complement `TestDisplayNameUpdate`, `TestAvatarUrlUpdate` |
+
+`avatar_url` is stored as given: the specification makes the client responsible for a content URI, marks
+server-side validation MAY, and Complement stores a bare string as an avatar while testing something else.
+The identifier is parsed where it is acted on (a media fetch). The length bound is this server's own and is
+refused `M_TOO_LARGE`. Full wording in `.agent-work/REQUIREMENTS.md`.
+
 ### 6.4 Spaces: a room pointing at rooms (added during M3)
 
 | ID | Source | Requirement | Level | Status | Tests |

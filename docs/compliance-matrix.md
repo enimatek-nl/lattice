@@ -206,25 +206,23 @@ membership, alias and M1-regression subset, and it is reported as such.
    that a version 1 room that disagrees between servers is investigated rather than assumed away.
    Interoperability against Synapse on such a room is not tested.
 
-## Latest full runs (2026-11-11)
+## Latest full run (2026-11-11, profiles — T-4057 closed, T-4058 opened)
 
-`RUN='.*' COMPLEMENT_LOCAL_MIGRATIONS=true scripts/complement.sh -v`.
+`RUN='.*' COMPLEMENT_LOCAL_MIGRATIONS=true scripts/complement.sh -v`, commit `192c3dc`:
+**95 pass, 124 fail, 1 skip** (was 90 / 129 / 1). Newly passing: `TestProfileDisplayName`,
+`TestProfileAvatarURL`, `TestDisplayNameUpdate`, `TestAvatarUrlUpdate` (the profile endpoints and the
+member-event restatement that follows a profile change) and `TestPushRuleRoomUpgrade`, which had been
+flaky. Nothing newly failing, which matters because join events now carry `displayname`/`avatar_url`.
 
-* On a polluted container network: **89 pass, 130 fail, 1 skip** (commit `9535c64`). Newly passing: the
-  two `TestRestrictedRoomsSpacesSummary*` tests, `TestClientSpacesSummaryJoinRules` and
-  `TestFederatedClientSpaces` — all four were waiting on the room hierarchy endpoint, now implemented on
-  both listeners (REQ-SPACE-001..003, `.agent-work/T-4051`).
-* After fixing the environment (`.agent-work/T-4056`): **90 pass, 129 fail, 1 skip**, nothing newly
-  failing. The difference is `TestRestrictedRoomsRemoteJoinFailOverInMSC3787Room`, which had been flaky
-  because rootless podman kept answering an old network's DNS record: a homeserver container dialled
-  `hs1` at an address from a deleted deployment and was refused for presenting the wrong certificate.
-  `scripts/complement.sh` now reports that condition instead of letting it look like protocol failures.
+Still red in that area for reasons already recorded: the federation `/profile` query (a remote user cannot
+be asked about except through rooms already shared) and the user directory, where the two
+room-specific-username tests stop (T-4058).
 
-Two environment conditions can invalidate a run without touching the protocol, and both are now
-reported by the script before it starts: leaked anonymous volumes reaching podman's 2048 volume-lock
-limit, and `aardvark-dns` record files left behind by networks that no longer exist. If a run fails in a
-block of ~0.5 second tests, check the volume count; if federation tests disagree about who is who, check
-the DNS records.
+Two environment conditions can invalidate a run without touching the protocol, and both are reported by
+`scripts/complement.sh` before it starts: leaked anonymous volumes reaching podman's 2048 volume-lock
+limit, and `aardvark-dns` record files left behind by networks that no longer exist (T-4056). A block of
+~0.5 second failures means check the volume count; federation tests disagreeing about who is who means
+check the DNS records.
 
 The per-run logs and failure lists live in `.agent-work/COMPLIANCE-MATRIX.md` and
 `.agent-work/complement-failures-*.txt`.
