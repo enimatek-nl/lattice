@@ -206,8 +206,15 @@ func (d *Deps) changeMembershipOfOther(w http.ResponseWriter, r *http.Request, m
 //
 // `not_membership` excludes one membership rather than selecting one, which is what
 // clients ask for: the useful list is "everyone here, or everyone who was invited".
+// `membership` selects one instead, and `at` asks for the roster as it was at a
+// synchronisation token the client already holds.
 func (d *Deps) handleMembers(w http.ResponseWriter, r *http.Request) {
-	filter := rooms.MemberFilter{Exclude: r.URL.Query().Get("not_membership")}
+	query := r.URL.Query()
+	filter := rooms.MemberFilter{
+		Include: query.Get("membership"),
+		Exclude: query.Get("not_membership"),
+		At:      query.Get("at"),
+	}
 	members, err := d.Rooms.Members(r.Context(), r.PathValue("roomID"), auth.UserID(r), filter)
 	if err != nil {
 		d.serviceError(w, err)
