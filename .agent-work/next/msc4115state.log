@@ -1,0 +1,385 @@
+== building complement-lattice:latest
+Emulate Docker CLI using podman. Create /etc/containers/nodocker to quiet msg.
+[1/2] STEP 1/6: FROM docker.io/library/golang:1.26-alpine AS build
+[1/2] STEP 2/6: WORKDIR /src
+--> Using cache 41f8576e376f5a915c0cd6832b08f4051ae37a129db82b3671a7e094432d4207
+--> 41f8576e376f
+[1/2] STEP 3/6: COPY go.mod go.sum ./
+--> Using cache bd7c2a0c59707b6662d00c9867471257f5be93d0ac29d01409bae5efe586c854
+--> bd7c2a0c5970
+[1/2] STEP 4/6: RUN go mod download
+--> Using cache f930c821bfaf6d5986c6d3bd25a3323d5dba266132dfa98a6e80e4f481762d50
+--> f930c821bfaf
+[1/2] STEP 5/6: COPY . .
+--> 1677265e43de
+[1/2] STEP 6/6: RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/lattice ./cmd/lattice
+--> ef150ee4a93e
+[2/2] STEP 1/10: FROM docker.io/library/alpine:3.20
+[2/2] STEP 2/10: RUN apk add --no-cache ca-certificates && update-ca-certificates
+--> Using cache 03e153230bb2614173f0c22b65ec72ac40d2eceb237ba66bd1c74a192c4ca588
+--> 03e153230bb2
+[2/2] STEP 3/10: COPY --from=build /out/lattice /usr/local/bin/lattice
+--> 66184ac8b576
+[2/2] STEP 4/10: COPY deploy/complement/entrypoint.sh /entrypoint.sh
+--> e252d78ada29
+[2/2] STEP 5/10: RUN chmod 0755 /entrypoint.sh
+--> ded2bd057bd7
+[2/2] STEP 6/10: ENV LATTICE_DATA_DIR=/data
+--> c06ec748fffc
+[2/2] STEP 7/10: VOLUME ["/data"]
+--> 889dc41efc06
+[2/2] STEP 8/10: EXPOSE 8008 8448
+--> 126078cda400
+[2/2] STEP 9/10: HEALTHCHECK --interval=5s --timeout=5s --start-period=5s --retries=5 	CMD ["/usr/local/bin/lattice", "healthcheck", "-addr", "127.0.0.1:8008"]
+time="2026-11-06T13:10:23+01:00" level=warning msg="HEALTHCHECK is not supported for OCI image format and will be ignored. Must use `docker` format"
+--> 730bfbc4b5df
+[2/2] STEP 10/10: ENTRYPOINT ["/entrypoint.sh"]
+[2/2] COMMIT complement-lattice:latest
+time="2026-11-06T13:10:23+01:00" level=warning msg="HEALTHCHECK is not supported for OCI image format and will be ignored. Must use `docker` format"
+--> 82519083140b
+Successfully tagged localhost/complement-lattice:latest
+82519083140b3ab98a3d0d76cc48dfe54f493971d21cf2d65d085d9571a0dd68
+!! 317 anonymous volumes in the podman store; deploy failures below may be lock exhaustion, not test failures (see the comment above for how to clear them)
+== running Complement (filter: TestMembershipOnEvents|TestGetRoomMembers|TestSync$|TestRedactEvent|TestRoomInitialState|TestRoomMembershipState, packages in parallel: 2)
+2026/11/06 13:10:26 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:fed CACertificate:0x9bd6aaac08 CAPrivateKey:0x9bd6b1c930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests	1.950s [no tests to run]
+2026/11/06 13:10:28 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:csapi CACertificate:0x5a074696008 CAPrivateKey:0x5a074d86070 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+=== RUN   TestMembershipOnEvents
+    membership_on_events_test.go:20: WARNING: TestMembershipOnEvents called runtime.SkipIf([dendrite]) but Complement doesn't know which HS is running as it was run without a *_blacklist tag: executing test.
+    membership_on_events_test.go:22: Deploy times: 2.407536145s blueprints, 636.628343ms containers
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (1.593297ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (4.324032ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (551.904µs)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (4.13644ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/createRoom => 200 OK (15.574418ms)
+    client.go:893: [CSAPI] PUT hs1/_matrix/client/v3/rooms/!SAU7cDIBwzbqtEg6JWimf7lcE2cGSg:hs1/send/m.room.message/1 => 200 OK (8.001912ms)
+    membership_on_events_test.go:29: SendEventSynced waiting for event ID $BKVfTvA2hBjPX59RyXH7IMgEQoX9VIE8cKhP7LgR5ng
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (10.100656ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/join/!SAU7cDIBwzbqtEg6JWimf7lcE2cGSg:hs1 => 200 OK (17.423627ms)
+    client.go:893: [CSAPI] PUT hs1/_matrix/client/v3/rooms/!SAU7cDIBwzbqtEg6JWimf7lcE2cGSg:hs1/send/m.room.message/2 => 200 OK (9.375215ms)
+    membership_on_events_test.go:37: SendEventSynced waiting for event ID $a3f_QK66DGLbnxwVuUtEeaiGuHk0cW7FY9QYUdrEkuE
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (13.562818ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (12.120443ms)
+--- PASS: TestMembershipOnEvents (3.31s)
+=== RUN   TestGetRoomMembers
+    room_members_test.go:25: Deploy times: 470.108848ms blueprints, 820.449723ms containers
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (1.385999ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (6.212716ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (513.024µs)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (6.169417ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/createRoom => 200 OK (19.983349ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/join/!qskCCH8PGPnEk5fdbhwkVvCvCMQTcQ:hs1 => 200 OK (11.517767ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (7.144498ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/rooms/!qskCCH8PGPnEk5fdbhwkVvCvCMQTcQ:hs1/members => 200 OK (3.125627ms)
+--- PASS: TestGetRoomMembers (1.53s)
+=== RUN   TestGetRoomMembersAtPoint
+    room_members_test.go:64: Deploy times: 288.28883ms blueprints, 660.936724ms containers
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (1.576794ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (4.173436ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (623.116µs)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (3.936822ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/createRoom => 200 OK (19.560097ms)
+    client.go:893: [CSAPI] PUT hs1/_matrix/client/v3/rooms/!eoyFbnIrgWC0pDQ7HmANuQEILn239A:hs1/send/m.room.message/1 => 200 OK (9.296241ms)
+    room_members_test.go:74: SendEventSynced waiting for event ID $ato43bs1ca-EjwMHF1RGI6CY-qPRgxW8C7n5Rbc1xDU
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (10.605849ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (10.035503ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/join/!eoyFbnIrgWC0pDQ7HmANuQEILn239A:hs1 => 200 OK (19.956001ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (11.996875ms)
+    client.go:893: [CSAPI] PUT hs1/_matrix/client/v3/rooms/!eoyFbnIrgWC0pDQ7HmANuQEILn239A:hs1/send/m.room.message/1 => 200 OK (9.979924ms)
+    room_members_test.go:88: SendEventSynced waiting for event ID $vgL3Vj3YcCy8MNBzxBvhj9zrvEgpcSaorD4hX1iKHHA
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (11.912461ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/rooms/!eoyFbnIrgWC0pDQ7HmANuQEILn239A:hs1/members => 200 OK (6.505672ms)
+--- PASS: TestGetRoomMembersAtPoint (1.25s)
+=== RUN   TestSync
+    sync_test.go:112: WARNING: TestSync called runtime.SkipIf([dendrite]) but Complement doesn't know which HS is running as it was run without a *_blacklist tag: executing test.
+    sync_test.go:114: Deploy times: 279.000628ms blueprints, 611.127646ms containers
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (1.384358ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (7.012141ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (627.99µs)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (4.684117ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/user/@user-1:hs1/filter => 200 OK (1.115405ms)
+=== RUN   TestSync/parallel
+=== RUN   TestSync/parallel/Can_sync_a_joined_room
+=== PAUSE TestSync/parallel/Can_sync_a_joined_room
+=== RUN   TestSync/parallel/Full_state_sync_includes_joined_rooms
+=== PAUSE TestSync/parallel/Full_state_sync_includes_joined_rooms
+=== RUN   TestSync/parallel/Newly_joined_room_is_included_in_an_incremental_sync
+=== PAUSE TestSync/parallel/Newly_joined_room_is_included_in_an_incremental_sync
+=== RUN   TestSync/parallel/Newly_joined_room_has_correct_timeline_in_incremental_sync
+    sync_test.go:167: WARNING: TestSync/parallel/Newly_joined_room_has_correct_timeline_in_incremental_sync called runtime.SkipIf([dendrite]) but Complement doesn't know which HS is running as it was run without a *_blacklist tag: executing test.
+=== PAUSE TestSync/parallel/Newly_joined_room_has_correct_timeline_in_incremental_sync
+=== RUN   TestSync/parallel/Newly_joined_room_includes_presence_in_incremental_sync
+    sync_test.go:212: WARNING: TestSync/parallel/Newly_joined_room_includes_presence_in_incremental_sync called runtime.SkipIf([dendrite]) but Complement doesn't know which HS is running as it was run without a *_blacklist tag: executing test.
+    sync_test.go:214: WARNING: TestSync/parallel/Newly_joined_room_includes_presence_in_incremental_sync called runtime.SkipIf([venator]) but Complement doesn't know which HS is running as it was run without a *_blacklist tag: executing test.
+=== NAME  TestSync
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/createRoom => 200 OK (18.851847ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (9.011726ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (2.798087ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/join/!poYzdpYnzkdA3buGYLx5JUO93BCUxw:hs1 => 200 OK (15.208405ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (10.514228ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (6.914954ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (1.007403813s)
+=== RUN   TestSync/parallel/Get_presence_for_newly_joined_members_in_incremental_sync
+    sync_test.go:234: WARNING: TestSync/parallel/Get_presence_for_newly_joined_members_in_incremental_sync called runtime.SkipIf([dendrite]) but Complement doesn't know which HS is running as it was run without a *_blacklist tag: executing test.
+    sync_test.go:236: WARNING: TestSync/parallel/Get_presence_for_newly_joined_members_in_incremental_sync called runtime.SkipIf([venator]) but Complement doesn't know which HS is running as it was run without a *_blacklist tag: executing test.
+=== NAME  TestSync
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/createRoom => 200 OK (21.576832ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (17.191948ms)
+    client.go:893: [CSAPI] PUT hs1/_matrix/client/v3/rooms/!gPoZpdpKKDqYgcPCcDa_Be9eePucGw:hs1/send/m.room.message/1 => 200 OK (9.835085ms)
+=== NAME  TestSync/parallel/Get_presence_for_newly_joined_members_in_incremental_sync
+    sync_test.go:239: SendEventSynced waiting for event ID $_wAWbwQKd5YefXE4qmcs_bDCymWSWNjYWLk16twmGHk
+=== NAME  TestSync
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (20.82313ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (7.015023ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/join/!gPoZpdpKKDqYgcPCcDa_Be9eePucGw:hs1 => 200 OK (20.73517ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (19.424252ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (8.918845ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (1.008801807s)
+=== RUN   TestSync/parallel/sync_should_succeed_even_if_the_sync_token_points_to_a_redaction_of_an_unknown_event
+    sync_test.go:284: WARNING: TestSync/parallel/sync_should_succeed_even_if_the_sync_token_points_to_a_redaction_of_an_unknown_event called runtime.SkipIf([venator]) but Complement doesn't know which HS is running as it was run without a *_blacklist tag: executing test.
+=== PAUSE TestSync/parallel/sync_should_succeed_even_if_the_sync_token_points_to_a_redaction_of_an_unknown_event
+=== RUN   TestSync/parallel/Device_list_tracking
+=== RUN   TestSync/parallel/Device_list_tracking/User_is_correctly_listed_when_they_leave,_even_when_lazy_loading_is_enabled
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (970.066µs)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (7.493098ms)
+=== NAME  TestSync
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/createRoom => 200 OK (28.740264ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (26.946229ms)
+=== NAME  TestSync/parallel/Device_list_tracking/User_is_correctly_listed_when_they_leave,_even_when_lazy_loading_is_enabled
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/join/!ucR5bbO8agNTDcZPcAulRB1OFW7nqQ:hs1 => 200 OK (19.25611ms)
+=== NAME  TestSync
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (12.16328ms)
+=== NAME  TestSync/parallel/Device_list_tracking/User_is_correctly_listed_when_they_leave,_even_when_lazy_loading_is_enabled
+    client.go:893: [CSAPI] PUT hs1/_matrix/client/v3/rooms/!ucR5bbO8agNTDcZPcAulRB1OFW7nqQ:hs1/send/m.room.message/1 => 200 OK (10.119457ms)
+    sync_test.go:430: SendEventSynced waiting for event ID $P-TbWXEmEyGBrFkMeUUkIf2Dq3clLpoUzHp2wZpWDiU
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (11.144787ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/rooms/!ucR5bbO8agNTDcZPcAulRB1OFW7nqQ:hs1/leave => 200 OK (13.321383ms)
+=== NAME  TestSync
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (12.896837ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (11.842451ms)
+=== CONT  TestSync/parallel/Can_sync_a_joined_room
+=== CONT  TestSync/parallel/Newly_joined_room_has_correct_timeline_in_incremental_sync
+=== CONT  TestSync/parallel/sync_should_succeed_even_if_the_sync_token_points_to_a_redaction_of_an_unknown_event
+=== CONT  TestSync/parallel/Newly_joined_room_is_included_in_an_incremental_sync
+=== CONT  TestSync/parallel/Full_state_sync_includes_joined_rooms
+=== NAME  TestSync
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/user/@user-2:hs1/filter => 200 OK (28.336251ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/createRoom => 200 OK (34.097362ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/createRoom => 200 OK (39.351823ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/createRoom => 200 OK (50.023105ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (216.307009ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/createRoom => 200 OK (46.278225ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (249.579679ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (265.54424ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (219.392017ms)
+    client.go:893: [CSAPI] PUT hs1/_matrix/client/v3/rooms/!k2yapDzFCwUxQ7fwfmKNJWwIgpDKhA:hs1/send/m.room.message/2 => 200 OK (15.967612ms)
+=== NAME  TestSync/parallel/Newly_joined_room_has_correct_timeline_in_incremental_sync
+    sync_test.go:185: SendEventSynced waiting for event ID $EQMt5M6Pnoy5rkFC5TOtqwiq_JFeNryd_d1biyR6Cc0
+=== NAME  TestSync
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (263.265513ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/createRoom => 200 OK (56.46024ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (272.19801ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (288.719163ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (313.254534ms)
+    client.go:893: [CSAPI] PUT hs1/_matrix/client/v3/rooms/!k2yapDzFCwUxQ7fwfmKNJWwIgpDKhA:hs1/send/m.room.message/3 => 200 OK (16.975988ms)
+=== NAME  TestSync/parallel/Newly_joined_room_has_correct_timeline_in_incremental_sync
+    sync_test.go:185: SendEventSynced waiting for event ID $uCov6LqJSyWzFM3Zpbj08mGn-huet1jFGhalLtjPyzQ
+=== NAME  TestSync
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (138.793554ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (196.473969ms)
+=== NAME  TestSync/parallel/sync_should_succeed_even_if_the_sync_token_points_to_a_redaction_of_an_unknown_event
+    sync_test.go:298: Server.MustJoinRoom joined room ID !MuSxxBXbXN5zNbCfxEb1SlmWaVZ-Vg:hs1
+=== NAME  TestSync
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/createRoom => 200 OK (53.094555ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (111.664904ms)
+=== NAME  TestSync/parallel/sync_should_succeed_even_if_the_sync_token_points_to_a_redaction_of_an_unknown_event
+    sync_test.go:301: Server.MustJoinRoom joined room ID !LIyGNQfVyoinnNyt0rw58MYiJqK0Rg:hs1
+    sync_test.go:313: Created redaction event $UW6cjuqJ87EaH_ZOr4CLGwrHwGw0o1-vxWlCEGsIJOY
+=== NAME  TestSync
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (273.269152ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (287.117955ms)
+=== NAME  TestSync/parallel/sync_should_succeed_even_if_the_sync_token_points_to_a_redaction_of_an_unknown_event
+    sync_test.go:322: Created sentinel event $g5N7CxlAQobJB7anIxBkEqHM8olaqiZGTdVq1vJJR8k
+=== NAME  TestSync
+    client.go:893: [CSAPI] PUT hs1/_matrix/client/v3/rooms/!k2yapDzFCwUxQ7fwfmKNJWwIgpDKhA:hs1/send/m.room.message/4 => 200 OK (10.523384ms)
+=== NAME  TestSync/parallel/Newly_joined_room_has_correct_timeline_in_incremental_sync
+    sync_test.go:185: SendEventSynced waiting for event ID $ubUoyOlOrECh5-putUcrAxn7E_KTKjtDnZnFjsGKoW8
+=== NAME  TestSync
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (152.80359ms)
+    client.go:893: [CSAPI] PUT hs1/_matrix/client/v3/rooms/!k2yapDzFCwUxQ7fwfmKNJWwIgpDKhA:hs1/send/m.room.message/5 => 200 OK (13.471676ms)
+=== NAME  TestSync/parallel/Newly_joined_room_has_correct_timeline_in_incremental_sync
+    sync_test.go:185: SendEventSynced waiting for event ID $zkR9KDzU0DiBGtN6OdsjyFGjPZ6xVv0mXss9VhJunmk
+=== NAME  TestSync
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (158.758768ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (174.266706ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (23.854275ms)
+    client.go:893: [CSAPI] PUT hs1/_matrix/client/v3/rooms/!k2yapDzFCwUxQ7fwfmKNJWwIgpDKhA:hs1/send/m.room.message/6 => 200 OK (19.861781ms)
+=== NAME  TestSync/parallel/Newly_joined_room_has_correct_timeline_in_incremental_sync
+    sync_test.go:187: SendEventSynced waiting for event ID $ok9J0aaFR0-wiypDfQVPNZDIL4Nuzie9_Z5qjCY3fn8
+=== NAME  TestSync/parallel/sync_should_succeed_even_if_the_sync_token_points_to_a_redaction_of_an_unknown_event
+    sync_test.go:343: Sent filler events, with final event $hDhEIl87pKhXiEnBqmGuEmjE7W0abUraFAL7h21uygo
+    sync_test.go:350: Will sync with since=s98
+=== NAME  TestSync
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (72.919729ms)
+=== NAME  TestSync/parallel/sync_should_succeed_even_if_the_sync_token_points_to_a_redaction_of_an_unknown_event
+    sync_test.go:368: Iteration 1: /sync returned 10 events, with final event $hDhEIl87pKhXiEnBqmGuEmjE7W0abUraFAL7h21uygo
+=== NAME  TestSync
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (160.764019ms)
+    client.go:893: [CSAPI] PUT hs1/_matrix/client/v3/rooms/!k2yapDzFCwUxQ7fwfmKNJWwIgpDKhA:hs1/send/m.room.message/7 => 200 OK (12.222198ms)
+=== NAME  TestSync/parallel/Newly_joined_room_has_correct_timeline_in_incremental_sync
+    sync_test.go:187: SendEventSynced waiting for event ID $Htom9xaNf68NttOIs9q_GBdYDV1bii9TT32uHMSLXx4
+=== NAME  TestSync
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (93.104812ms)
+    client.go:893: [CSAPI] PUT hs1/_matrix/client/v3/rooms/!k2yapDzFCwUxQ7fwfmKNJWwIgpDKhA:hs1/send/m.room.message/8 => 200 OK (14.509043ms)
+=== NAME  TestSync/parallel/Newly_joined_room_has_correct_timeline_in_incremental_sync
+    sync_test.go:187: SendEventSynced waiting for event ID $ZjkAVvUVPkuCUi98jzNBooAgT9Vp1RjFSuqXUC4vVd8
+=== NAME  TestSync
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (106.073211ms)
+    client.go:893: [CSAPI] PUT hs1/_matrix/client/v3/rooms/!k2yapDzFCwUxQ7fwfmKNJWwIgpDKhA:hs1/send/m.room.message/9 => 200 OK (11.223497ms)
+=== NAME  TestSync/parallel/Newly_joined_room_has_correct_timeline_in_incremental_sync
+    sync_test.go:187: SendEventSynced waiting for event ID $SG5EQ67fIvUUbZWwcEXKcNIRifiegaol0IkRCGJfTIA
+=== NAME  TestSync
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (80.589039ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/join/!k2yapDzFCwUxQ7fwfmKNJWwIgpDKhA:hs1 => 200 OK (26.501299ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (99.035613ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (13.475007ms)
+--- PASS: TestSync (5.44s)
+    --- PASS: TestSync/parallel (2.37s)
+        --- PASS: TestSync/parallel/Newly_joined_room_includes_presence_in_incremental_sync (1.07s)
+        --- PASS: TestSync/parallel/Get_presence_for_newly_joined_members_in_incremental_sync (1.14s)
+        --- PASS: TestSync/parallel/Device_list_tracking (0.16s)
+            --- PASS: TestSync/parallel/Device_list_tracking/User_is_correctly_listed_when_they_leave,_even_when_lazy_loading_is_enabled (0.16s)
+        --- PASS: TestSync/parallel/Can_sync_a_joined_room (0.70s)
+        --- PASS: TestSync/parallel/Newly_joined_room_is_included_in_an_incremental_sync (0.84s)
+        --- PASS: TestSync/parallel/Full_state_sync_includes_joined_rooms (0.94s)
+        --- PASS: TestSync/parallel/sync_should_succeed_even_if_the_sync_token_points_to_a_redaction_of_an_unknown_event (1.46s)
+        --- PASS: TestSync/parallel/Newly_joined_room_has_correct_timeline_in_incremental_sync (1.96s)
+PASS
+ok  	github.com/matrix-org/complement/tests/csapi	16.381s
+2026/11/06 13:10:27 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc2836 CACertificate:0x31b8ce06c08 CAPrivateKey:0x31b8d47c930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc2836	1.006s [no tests to run]
+2026/11/06 13:10:30 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3389 CACertificate:0x345a5ed02c08 CAPrivateKey:0x345a5f406930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3389	2.470s [no tests to run]
+2026/11/06 13:10:32 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3391 CACertificate:0x1440ec086c08 CAPrivateKey:0x1440ec1ea930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3391	1.464s [no tests to run]
+2026/11/06 13:10:36 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3757 CACertificate:0x2762bd4b0c08 CAPrivateKey:0x2762bd7d8930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3757	2.755s [no tests to run]
+2026/11/06 13:10:38 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3874 CACertificate:0xa64c38acc08 CAPrivateKey:0xa64c3fc2930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3874	2.121s [no tests to run]
+2026/11/06 13:10:40 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3890 CACertificate:0x2f1c16a5cc08 CAPrivateKey:0x2f1c16a1a9a0 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3890	1.647s [no tests to run]
+2026/11/06 13:10:42 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3902 CACertificate:0x2e04efd16c08 CAPrivateKey:0x2e04f0464930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3902	1.780s [no tests to run]
+2026/11/06 13:10:43 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3930 CACertificate:0x200e14798c08 CAPrivateKey:0x200e147c8930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3930	2.174s [no tests to run]
+2026/11/06 13:10:47 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3967 CACertificate:0x9f39ec6c008 CAPrivateKey:0x9f39ec86070 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3967	3.487s [no tests to run]
+2026/11/06 13:10:47 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc4140 CACertificate:0xd6f8d19ec08 CAPrivateKey:0xd6f8d8ca930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc4140	3.127s [no tests to run]
+2026/11/06 13:10:48 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc4155 CACertificate:0x1a3564e2c08 CAPrivateKey:0x1a35655c930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc4155	1.136s [no tests to run]
+2026/11/06 13:10:50 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc4222 CACertificate:0x4642db2ec08 CAPrivateKey:0x4642e1ca930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+=== RUN   TestSync
+    msc4222_test.go:16: Deploy times: 1.333811428s blueprints, 787.380511ms containers
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (1.75177ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (4.439718ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (822.003µs)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (4.613994ms)
+=== RUN   TestSync/parallel
+=== RUN   TestSync/parallel/Initial_sync_with_lazy-loading_room_members_->_public_room_`state_after`_includes_all_members_from_timeline
+=== PAUSE TestSync/parallel/Initial_sync_with_lazy-loading_room_members_->_public_room_`state_after`_includes_all_members_from_timeline
+=== RUN   TestSync/parallel/Initial_sync_with_lazy-loading_room_members_->_private_room_`state_after`_includes_all_members_from_timeline
+=== PAUSE TestSync/parallel/Initial_sync_with_lazy-loading_room_members_->_private_room_`state_after`_includes_all_members_from_timeline
+=== CONT  TestSync/parallel/Initial_sync_with_lazy-loading_room_members_->_public_room_`state_after`_includes_all_members_from_timeline
+=== CONT  TestSync/parallel/Initial_sync_with_lazy-loading_room_members_->_private_room_`state_after`_includes_all_members_from_timeline
+=== NAME  TestSync
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/createRoom => 200 OK (26.601866ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/createRoom => 200 OK (33.231803ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (51.842833ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (39.621135ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/rooms/!E3oo7kxVzMdNryegRrTC-aD7UEkoSw:hs1/invite => 200 OK (13.563726ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/join/!LWwvQlriKwgJ9qjJpXs5mWRxGEKIAA:hs1 => 200 OK (40.027891ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (41.310513ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (46.39549ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/join/!E3oo7kxVzMdNryegRrTC-aD7UEkoSw:hs1 => 200 OK (26.591147ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (37.684062ms)
+=== NAME  TestSync/parallel/Initial_sync_with_lazy-loading_room_members_->_public_room_`state_after`_includes_all_members_from_timeline
+    msc4222_test.go:49: state_after events is not an array (found Null) {"next_batch":"s25","rooms":{"join":{"!E3oo7kxVzMdNryegRrTC-aD7UEkoSw:hs1":{"timeline":{"events":[{"auth_events":[],"content":{"creator":"@user-1-alice:hs1","room_version":"11"},"depth":1,"event_id":"$CFsPBBMNbH76h7Zi5ZakhdnGn6qpVKBx-wvBdBvPgBA","hashes":{"sha256":"UDOREkzadzgA9jYktowSoBUZEWicJeVQzSv6C/1fY10"},"origin":"hs1","origin_server_ts":1793967052440,"prev_events":[],"room_id":"!E3oo7kxVzMdNryegRrTC-aD7UEkoSw:hs1","sender":"@user-1-alice:hs1","signatures":{"hs1":{"ed25519:v1":"C2F/0dS1mJSGA6pyvEvWygKWRwcOKg8+19yKXM7qj1Pl3zTwG4LeYq+R2Qj2Pio1s7hHG0GFJhWQ/ZcQKHntDw"}},"state_key":"","type":"m.room.create","unsigned":{"membership":"leave"}},{"auth_events":["$CFsPBBMNbH76h7Zi5ZakhdnGn6qpVKBx-wvBdBvPgBA"],"content":{"membership":"join"},"depth":2,"event_id":"$l6ueXpkpoAKADfZJdxaqQIF3KXXjuW_X-kb_0b5bEPs","hashes":{"sha256":"iOqhQrevH6YgxxejinWV/wf3VFqgHZwHrEBYLeztTrE"},"origin":"hs1","origin_server_ts":1793967052440,"prev_events":["$CFsPBBMNbH76h7Zi5ZakhdnGn6qpVKBx-wvBdBvPgBA"],"room_id":"!E3oo7kxVzMdNryegRrTC-aD7UEkoSw:hs1","sender":"@user-1-alice:hs1","signatures":{"hs1":{"ed25519:v1":"zJzCuHH9me0ulZgErQW61nBcvIj+oEVrSNbEodFuQ4T2fOHv6oq9/fZpRJmnshWtZFR0z6/H34N0atF+OPHxCA"}},"state_key":"@user-1-alice:hs1","type":"m.room.member","unsigned":{"membership":"join"}},{"auth_events":["$CFsPBBMNbH76h7Zi5ZakhdnGn6qpVKBx-wvBdBvPgBA","$l6ueXpkpoAKADfZJdxaqQIF3KXXjuW_X-kb_0b5bEPs"],"content":{"join_rule":"invite"},"depth":3,"event_id":"$JEQiWIl2RsnkxRm_jmvZx3Xh7I0sd0_g3Z5_24jxRYE","hashes":{"sha256":"iXnxLWE7OpXiQgnK4AyGho540b1suSpajNRYK0x9OAc"},"origin":"hs1","origin_server_ts":1793967052440,"prev_events":["$l6ueXpkpoAKADfZJdxaqQIF3KXXjuW_X-kb_0b5bEPs"],"room_id":"!E3oo7kxVzMdNryegRrTC-aD7UEkoSw:hs1","sender":"@user-1-alice:hs1","signatures":{"hs1":{"ed25519:v1":"jwzJ7aHUHZRqXojiBfuKDk2Ln5zOsrxavPjwYMSkDUInLDHSEXJRBKP9hHKNCoWSPviWFonhLIqnoF0RSN4eCg"}},"state_key":"","type":"m.room.join_rules","unsigned":{"membership":"join"}},{"auth_events":["$CFsPBBMNbH76h7Zi5ZakhdnGn6qpVKBx-wvBdBvPgBA","$l6ueXpkpoAKADfZJdxaqQIF3KXXjuW_X-kb_0b5bEPs"],"content":{"history_visibility":"shared"},"depth":4,"event_id":"$acP-q5TWhiw-KrZsLtxERns31gNyxTwQBY4BXjz0g54","hashes":{"sha256":"8CMo5uB0htYGoPVHMsUEaHVIMPC5Sesh2uCKUcH27R4"},"origin":"hs1","origin_server_ts":1793967052440,"prev_events":["$JEQiWIl2RsnkxRm_jmvZx3Xh7I0sd0_g3Z5_24jxRYE"],"room_id":"!E3oo7kxVzMdNryegRrTC-aD7UEkoSw:hs1","sender":"@user-1-alice:hs1","signatures":{"hs1":{"ed25519:v1":"6j7QjxYty19FmUIUNUkxwS4RTX//gMfmbqoKRHqptCyI7IjV1VXIRv/C/JM3zqZMdCj6c8CGeTvcj+nlJJGJCg"}},"state_key":"","type":"m.room.history_visibility","unsigned":{"membership":"join"}},{"auth_events":["$CFsPBBMNbH76h7Zi5ZakhdnGn6qpVKBx-wvBdBvPgBA","$l6ueXpkpoAKADfZJdxaqQIF3KXXjuW_X-kb_0b5bEPs"],"content":{"ban":50,"events":{},"events_default":0,"invite":0,"kick":50,"notifications":{"room":50},"redact":50,"state_default":50,"users":{"@user-1-alice:hs1":100},"users_default":0},"depth":5,"event_id":"$g12mqne1DbKRylD7UieYqHI7dYmSUtXpwY523_bNV9o","hashes":{"sha256":"nQlf/+NCyH1poGLq3B3CmfkwbSaY8KuuOaggUwgYdm8"},"origin":"hs1","origin_server_ts":1793967052440,"prev_events":["$acP-q5TWhiw-KrZsLtxERns31gNyxTwQBY4BXjz0g54"],"room_id":"!E3oo7kxVzMdNryegRrTC-aD7UEkoSw:hs1","sender":"@user-1-alice:hs1","signatures":{"hs1":{"ed25519:v1":"dxWQx1vauEbI6m5dZr4GVbXZeskR7iUOxI9cBZ2vglqN7Nf+C0UfM01NY6g84/lfRGzc0xIiZYnMwUsjXBo2Dg"}},"state_key":"","type":"m.room.power_levels","unsigned":{"membership":"join"}},{"auth_events":["$CFsPBBMNbH76h7Zi5ZakhdnGn6qpVKBx-wvBdBvPgBA","$JEQiWIl2RsnkxRm_jmvZx3Xh7I0sd0_g3Z5_24jxRYE","$g12mqne1DbKRylD7UieYqHI7dYmSUtXpwY523_bNV9o","$l6ueXpkpoAKADfZJdxaqQIF3KXXjuW_X-kb_0b5bEPs"],"content":{"membership":"invite"},"depth":6,"event_id":"$2NRgd_rAGBPv6L1y1aRA4bwbhZuoiYrvqUpCLIrucVw","hashes":{"sha256":"A6amQJxwpjoilXhXxmBTHGZV1IADjh5DnVvrELUyYEo"},"origin":"hs1","origin_server_ts":1793967052515,"prev_events":["$g12mqne1DbKRylD7UieYqHI7dYmSUtXpwY523_bNV9o"],"room_id":"!E3oo7kxVzMdNryegRrTC-aD7UEkoSw:hs1","sender":"@user-1-alice:hs1","signatures":{"hs1":{"ed25519:v1":"QSDaJp2euJRCJAhyXPYj/FP7qK0B4CFYyARTKlU1G66e25rIG/xA24MIyn41rqHNnYpVKs7A+6EzKckuJjjdDg"}},"state_key":"@user-2-bob:hs1","type":"m.room.member","unsigned":{"membership":"join"}},{"auth_events":["$2NRgd_rAGBPv6L1y1aRA4bwbhZuoiYrvqUpCLIrucVw","$CFsPBBMNbH76h7Zi5ZakhdnGn6qpVKBx-wvBdBvPgBA","$JEQiWIl2RsnkxRm_jmvZx3Xh7I0sd0_g3Z5_24jxRYE","$g12mqne1DbKRylD7UieYqHI7dYmSUtXpwY523_bNV9o"],"content":{"membership":"join"},"depth":7,"event_id":"$jGFHNld784WFE2mz72fbyM5HbwG0tVqJbH84Zyj6ACw","hashes":{"sha256":"yfeIG8uyVCqJYrOEKuYB97OI4qkVkXj82jN2dK4HNcQ"},"origin":"hs1","origin_server_ts":1793967052568,"prev_events":["$2NRgd_rAGBPv6L1y1aRA4bwbhZuoiYrvqUpCLIrucVw"],"room_id":"!E3oo7kxVzMdNryegRrTC-aD7UEkoSw:hs1","sender":"@user-2-bob:hs1","signatures":{"hs1":{"ed25519:v1":"UpGb+vUPtmFQCjiQlgJ7hsdl3SgMiySepwkQ0IyXZZ26mrToHjJR6x0yWa8KwLJYGUUWMYCD2SyeC4oJQKkrCg"}},"state_key":"@user-2-bob:hs1","type":"m.room.member","unsigned":{"membership":"join","prev_content":{"membership":"invite"},"prev_sender":"@user-1-alice:hs1"}}],"prev_batch":"s24","limited":false},"state":{"events":[],"prev_batch":"s25","limited":false},"ephemeral":{"events":[],"limited":false},"account_data":{"events":[],"limited":false},"unread_notifications":{"notification_count":0,"highlight_count":0},"highlight_count":0,"summary":{"m.invited_member_count":0,"m.joined_member_count":2}},"!LWwvQlriKwgJ9qjJpXs5mWRxGEKIAA:hs1":{"timeline":{"events":[{"auth_events":[],"content":{"creator":"@user-1-alice:hs1","room_version":"11"},"depth":1,"event_id":"$7KDTCJJtEIrM3U30wvGD9x0sjq2wUUFbmPkKBfQFERk","hashes":{"sha256":"4UZJFIFa4F5kB4HkpQfxDphZvoOzrQMajpDK96I3mtY"},"origin":"hs1","origin_server_ts":1793967052410,"prev_events":[],"room_id":"!LWwvQlriKwgJ9qjJpXs5mWRxGEKIAA:hs1","sender":"@user-1-alice:hs1","signatures":{"hs1":{"ed25519:v1":"iJQWR9F0Yfs60NrRkb586KMFQHMKayu2i4lzs3lfeKvClKgCYKuU1M6MW4rP9DaSRm7UqH7p8vRc3ub5499ZAw"}},"state_key":"","type":"m.room.create","unsigned":{"membership":"leave"}},{"auth_events":["$7KDTCJJtEIrM3U30wvGD9x0sjq2wUUFbmPkKBfQFERk"],"content":{"membership":"join"},"depth":2,"event_id":"$1qSrnIC5KhTeDlN8kUwIuJi9Rh2ku4kXPHoeyecDWb4","hashes":{"sha256":"RODxCdmaHHypfPI8oIx6Hy+FWSkQRTeoZJiYoO0rEAc"},"origin":"hs1","origin_server_ts":1793967052410,"prev_events":["$7KDTCJJtEIrM3U30wvGD9x0sjq2wUUFbmPkKBfQFERk"],"room_id":"!LWwvQlriKwgJ9qjJpXs5mWRxGEKIAA:hs1","sender":"@user-1-alice:hs1","signatures":{"hs1":{"ed25519:v1":"OGQGZicafj/z0hjac4pSRtyZjw4Lsv1r7KVVIbc8Vpk87Ry57lzSJUTNx1mXtgZAQU8JIXkPlNgQvCVejMXPAw"}},"state_key":"@user-1-alice:hs1","type":"m.room.member","unsigned":{"membership":"join"}},{"auth_events":["$1qSrnIC5KhTeDlN8kUwIuJi9Rh2ku4kXPHoeyecDWb4","$7KDTCJJtEIrM3U30wvGD9x0sjq2wUUFbmPkKBfQFERk"],"content":{"join_rule":"public"},"depth":3,"event_id":"$ZeOZD1bOxrBYDdd5-Ai4EiMxh1fGn2fBobTyur5Rxbg","hashes":{"sha256":"MZmuk3ESWnef7HfZsJuDxCqDa+Wy74N9raeMvdwKH9k"},"origin":"hs1","origin_server_ts":1793967052410,"prev_events":["$1qSrnIC5KhTeDlN8kUwIuJi9Rh2ku4kXPHoeyecDWb4"],"room_id":"!LWwvQlriKwgJ9qjJpXs5mWRxGEKIAA:hs1","sender":"@user-1-alice:hs1","signatures":{"hs1":{"ed25519:v1":"NnXFZZMhtLyMUUhFutlRFyVzjAmUxXKIixi6InWMBXlHNUMJOXSYnsPvXufvBp8dTthic2kW1CXtZh6S96l9Cw"}},"state_key":"","type":"m.room.join_rules","unsigned":{"membership":"join"}},{"auth_events":["$1qSrnIC5KhTeDlN8kUwIuJi9Rh2ku4kXPHoeyecDWb4","$7KDTCJJtEIrM3U30wvGD9x0sjq2wUUFbmPkKBfQFERk"],"content":{"history_visibility":"world_readable"},"depth":4,"event_id":"$s_scEOZYVcci6rfP5cpULQ-Ly8RsHOqCc7HQKGIxFr0","hashes":{"sha256":"/lDuzXM+HtKrXCLn8xEKkoRgksPjLN3o8takWg2IHJ0"},"origin":"hs1","origin_server_ts":1793967052410,"prev_events":["$ZeOZD1bOxrBYDdd5-Ai4EiMxh1fGn2fBobTyur5Rxbg"],"room_id":"!LWwvQlriKwgJ9qjJpXs5mWRxGEKIAA:hs1","sender":"@user-1-alice:hs1","signatures":{"hs1":{"ed25519:v1":"Lyhn6LeC7IfNV4+oehMZfhhiiEb98ZfQdZZX5WN2ojIUv3bIxhjNJq7ta37D1lH6SROsuKrjKS7qYees3hFWBg"}},"state_key":"","type":"m.room.history_visibility","unsigned":{"membership":"join"}},{"auth_events":["$1qSrnIC5KhTeDlN8kUwIuJi9Rh2ku4kXPHoeyecDWb4","$7KDTCJJtEIrM3U30wvGD9x0sjq2wUUFbmPkKBfQFERk"],"content":{"ban":50,"events":{},"events_default":0,"invite":0,"kick":50,"notifications":{"room":50},"redact":50,"state_default":50,"users":{"@user-1-alice:hs1":100},"users_default":0},"depth":5,"event_id":"$kEPEApa04EAy8JpDnvAUKV-FM8IaNyC1piDjdiYRYcM","hashes":{"sha256":"+bjM2Z3dQDUZuwc3KJ2puAoilPTtNmoi0dgnPjKQGzs"},"origin":"hs1","origin_server_ts":1793967052410,"prev_events":["$s_scEOZYVcci6rfP5cpULQ-Ly8RsHOqCc7HQKGIxFr0"],"room_id":"!LWwvQlriKwgJ9qjJpXs5mWRxGEKIAA:hs1","sender":"@user-1-alice:hs1","signatures":{"hs1":{"ed25519:v1":"2ETvV5cJ5WrUKiF0c+ZarCTqqwM4DClGNt9znagJ3I4DqjEn94W3if/C2SiJKrmKBPy0OUlA8+evgipiiyHdBA"}},"state_key":"","type":"m.room.power_levels","unsigned":{"membership":"join"}},{"auth_events":["$7KDTCJJtEIrM3U30wvGD9x0sjq2wUUFbmPkKBfQFERk","$ZeOZD1bOxrBYDdd5-Ai4EiMxh1fGn2fBobTyur5Rxbg","$kEPEApa04EAy8JpDnvAUKV-FM8IaNyC1piDjdiYRYcM"],"content":{"membership":"join"},"depth":6,"event_id":"$zISWZnXAjWbbXUGMb3OnE1neo3qpwmzS_xN87nIuVaU","hashes":{"sha256":"3FZ/7GkopvOEoXEjACy7KCH4dI0VF4y2AQK3gZb5vaQ"},"origin":"hs1","origin_server_ts":1793967052494,"prev_events":["$kEPEApa04EAy8JpDnvAUKV-FM8IaNyC1piDjdiYRYcM"],"room_id":"!LWwvQlriKwgJ9qjJpXs5mWRxGEKIAA:hs1","sender":"@user-2-bob:hs1","signatures":{"hs1":{"ed25519:v1":"MYQSjqo8aFrA7bzrbPkMCLf5g95AyrEGqtUm7wS44yf7GHEAJSAzvB8PyYOVdw9ANnnwzk2PDmzEiJF5NiqeDQ"}},"state_key":"@user-2-bob:hs1","type":"m.room.member","unsigned":{"membership":"join"}}],"prev_batch":"s17","limited":false},"state":{"events":[],"prev_batch":"s25","limited":false},"ephemeral":{"events":[],"limited":false},"account_data":{"events":[],"limited":false},"unread_notifications":{"notification_count":0,"highlight_count":0},"highlight_count":0,"summary":{"m.invited_member_count":0,"m.joined_member_count":2}}}},"account_data":{"events":[{"content":{"global":{"content":[{"actions":["notify",{"set_tweak":"sound","value":"default"},{"set_tweak":"highlight"}],"default":true,"enabled":true,"pattern":"user-1-alice","rule_id":".m.rule.contains_user_name"}],"override":[{"actions":[],"default":true,"enabled":false,"rule_id":".m.rule.master"},{"actions":[],"conditions":[{"key":"content.msgtype","kind":"event_match","pattern":"m.notice"}],"default":true,"enabled":true,"rule_id":".m.rule.suppress_notices"},{"actions":["notify",{"set_tweak":"sound","value":"default"}],"conditions":[{"key":"type","kind":"event_match","pattern":"m.room.member"},{"key":"content.membership","kind":"event_match","pattern":"invite"},{"key":"state_key","kind":"event_match","pattern":"@user-1-alice:hs1"}],"default":true,"enabled":true,"rule_id":".m.rule.invite_for_me"},{"actions":[],"conditions":[{"key":"type","kind":"event_match","pattern":"m.room.member"}],"default":true,"enabled":true,"rule_id":".m.rule.member_event"},{"actions":["notify",{"set_tweak":"sound","value":"default"},{"set_tweak":"highlight"}],"conditions":[{"key":"content.m\\.mentions.user_ids","kind":"event_property_contains","value":"@user-1-alice:hs1"}],"default":true,"enabled":true,"rule_id":".m.rule.is_user_mention"},{"actions":["notify",{"set_tweak":"sound","value":"default"},{"set_tweak":"highlight"}],"conditions":[{"kind":"contains_display_name"}],"default":true,"enabled":true,"rule_id":".m.rule.contains_display_name"},{"actions":["notify",{"set_tweak":"highlight"}],"conditions":[{"key":"content.m\\.mentions.room","kind":"event_property_is","value":true},{"key":"room","kind":"sender_notification_permission"}],"default":true,"enabled":true,"rule_id":".m.rule.is_room_mention"},{"actions":["notify",{"set_tweak":"highlight"}],"conditions":[{"key":"content.body","kind":"event_match","pattern":"@room"},{"key":"room","kind":"sender_notification_permission"}],"default":true,"enabled":true,"rule_id":".m.rule.roomnotif"},{"actions":["notify",{"set_tweak":"highlight"}],"conditions":[{"key":"type","kind":"event_match","pattern":"m.room.tombstone"},{"key":"state_key","kind":"event_match","pattern":""}],"default":true,"enabled":true,"rule_id":".m.rule.tombstone"},{"actions":[],"conditions":[{"key":"type","kind":"event_match","pattern":"m.reaction"}],"default":true,"enabled":true,"rule_id":".m.rule.reaction"},{"actions":[],"conditions":[{"key":"type","kind":"event_match","pattern":"m.room.server_acl"},{"key":"state_key","kind":"event_match","pattern":""}],"default":true,"enabled":true,"rule_id":".m.rule.room.server_acl"},{"actions":[],"conditions":[{"key":"content.m\\.relates_to.rel_type","kind":"event_property_is","value":"m.replace"}],"default":true,"enabled":true,"rule_id":".m.rule.suppress_edits"}],"room":[],"sender":[],"underride":[{"actions":["notify",{"set_tweak":"sound","value":"ring"}],"conditions":[{"key":"type","kind":"event_match","pattern":"m.call.invite"}],"default":true,"enabled":true,"rule_id":".m.rule.call"},{"actions":["notify",{"set_tweak":"sound","value":"default"}],"conditions":[{"is":"2","kind":"room_member_count"},{"key":"type","kind":"event_match","pattern":"m.room.encrypted"}],"default":true,"enabled":true,"rule_id":".m.rule.encrypted_room_one_to_one"},{"actions":["notify",{"set_tweak":"sound","value":"default"}],"conditions":[{"is":"2","kind":"room_member_count"},{"key":"type","kind":"event_match","pattern":"m.room.message"}],"default":true,"enabled":true,"rule_id":".m.rule.room_one_to_one"},{"actions":["notify"],"conditions":[{"key":"type","kind":"event_match","pattern":"m.room.message"}],"default":true,"enabled":true,"rule_id":".m.rule.message"},{"actions":["notify"],"conditions":[{"key":"type","kind":"event_match","pattern":"m.room.encrypted"}],"default":true,"enabled":true,"rule_id":".m.rule.encrypted"}]}},"type":"m.push_rules"}],"limited":false},"presence":{"events":[],"limited":false},"complete":true,"device_lists":{"changed":["@user-2-bob:hs1"]}}
+=== NAME  TestSync
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (29.829389ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (22.888513ms)
+=== NAME  TestSync/parallel/Initial_sync_with_lazy-loading_room_members_->_private_room_`state_after`_includes_all_members_from_timeline
+    msc4222_test.go:85: state_after events is not an array (found Null) {"next_batch":"s29","rooms":{"join":{"!E3oo7kxVzMdNryegRrTC-aD7UEkoSw:hs1":{"timeline":{"events":[{"auth_events":[],"content":{"creator":"@user-1-alice:hs1","room_version":"11"},"depth":1,"event_id":"$CFsPBBMNbH76h7Zi5ZakhdnGn6qpVKBx-wvBdBvPgBA","hashes":{"sha256":"UDOREkzadzgA9jYktowSoBUZEWicJeVQzSv6C/1fY10"},"origin":"hs1","origin_server_ts":1793967052440,"prev_events":[],"room_id":"!E3oo7kxVzMdNryegRrTC-aD7UEkoSw:hs1","sender":"@user-1-alice:hs1","signatures":{"hs1":{"ed25519:v1":"C2F/0dS1mJSGA6pyvEvWygKWRwcOKg8+19yKXM7qj1Pl3zTwG4LeYq+R2Qj2Pio1s7hHG0GFJhWQ/ZcQKHntDw"}},"state_key":"","type":"m.room.create","unsigned":{"membership":"leave"}},{"auth_events":["$CFsPBBMNbH76h7Zi5ZakhdnGn6qpVKBx-wvBdBvPgBA"],"content":{"membership":"join"},"depth":2,"event_id":"$l6ueXpkpoAKADfZJdxaqQIF3KXXjuW_X-kb_0b5bEPs","hashes":{"sha256":"iOqhQrevH6YgxxejinWV/wf3VFqgHZwHrEBYLeztTrE"},"origin":"hs1","origin_server_ts":1793967052440,"prev_events":["$CFsPBBMNbH76h7Zi5ZakhdnGn6qpVKBx-wvBdBvPgBA"],"room_id":"!E3oo7kxVzMdNryegRrTC-aD7UEkoSw:hs1","sender":"@user-1-alice:hs1","signatures":{"hs1":{"ed25519:v1":"zJzCuHH9me0ulZgErQW61nBcvIj+oEVrSNbEodFuQ4T2fOHv6oq9/fZpRJmnshWtZFR0z6/H34N0atF+OPHxCA"}},"state_key":"@user-1-alice:hs1","type":"m.room.member","unsigned":{"membership":"join"}},{"auth_events":["$CFsPBBMNbH76h7Zi5ZakhdnGn6qpVKBx-wvBdBvPgBA","$l6ueXpkpoAKADfZJdxaqQIF3KXXjuW_X-kb_0b5bEPs"],"content":{"join_rule":"invite"},"depth":3,"event_id":"$JEQiWIl2RsnkxRm_jmvZx3Xh7I0sd0_g3Z5_24jxRYE","hashes":{"sha256":"iXnxLWE7OpXiQgnK4AyGho540b1suSpajNRYK0x9OAc"},"origin":"hs1","origin_server_ts":1793967052440,"prev_events":["$l6ueXpkpoAKADfZJdxaqQIF3KXXjuW_X-kb_0b5bEPs"],"room_id":"!E3oo7kxVzMdNryegRrTC-aD7UEkoSw:hs1","sender":"@user-1-alice:hs1","signatures":{"hs1":{"ed25519:v1":"jwzJ7aHUHZRqXojiBfuKDk2Ln5zOsrxavPjwYMSkDUInLDHSEXJRBKP9hHKNCoWSPviWFonhLIqnoF0RSN4eCg"}},"state_key":"","type":"m.room.join_rules","unsigned":{"membership":"join"}},{"auth_events":["$CFsPBBMNbH76h7Zi5ZakhdnGn6qpVKBx-wvBdBvPgBA","$l6ueXpkpoAKADfZJdxaqQIF3KXXjuW_X-kb_0b5bEPs"],"content":{"history_visibility":"shared"},"depth":4,"event_id":"$acP-q5TWhiw-KrZsLtxERns31gNyxTwQBY4BXjz0g54","hashes":{"sha256":"8CMo5uB0htYGoPVHMsUEaHVIMPC5Sesh2uCKUcH27R4"},"origin":"hs1","origin_server_ts":1793967052440,"prev_events":["$JEQiWIl2RsnkxRm_jmvZx3Xh7I0sd0_g3Z5_24jxRYE"],"room_id":"!E3oo7kxVzMdNryegRrTC-aD7UEkoSw:hs1","sender":"@user-1-alice:hs1","signatures":{"hs1":{"ed25519:v1":"6j7QjxYty19FmUIUNUkxwS4RTX//gMfmbqoKRHqptCyI7IjV1VXIRv/C/JM3zqZMdCj6c8CGeTvcj+nlJJGJCg"}},"state_key":"","type":"m.room.history_visibility","unsigned":{"membership":"join"}},{"auth_events":["$CFsPBBMNbH76h7Zi5ZakhdnGn6qpVKBx-wvBdBvPgBA","$l6ueXpkpoAKADfZJdxaqQIF3KXXjuW_X-kb_0b5bEPs"],"content":{"ban":50,"events":{},"events_default":0,"invite":0,"kick":50,"notifications":{"room":50},"redact":50,"state_default":50,"users":{"@user-1-alice:hs1":100},"users_default":0},"depth":5,"event_id":"$g12mqne1DbKRylD7UieYqHI7dYmSUtXpwY523_bNV9o","hashes":{"sha256":"nQlf/+NCyH1poGLq3B3CmfkwbSaY8KuuOaggUwgYdm8"},"origin":"hs1","origin_server_ts":1793967052440,"prev_events":["$acP-q5TWhiw-KrZsLtxERns31gNyxTwQBY4BXjz0g54"],"room_id":"!E3oo7kxVzMdNryegRrTC-aD7UEkoSw:hs1","sender":"@user-1-alice:hs1","signatures":{"hs1":{"ed25519:v1":"dxWQx1vauEbI6m5dZr4GVbXZeskR7iUOxI9cBZ2vglqN7Nf+C0UfM01NY6g84/lfRGzc0xIiZYnMwUsjXBo2Dg"}},"state_key":"","type":"m.room.power_levels","unsigned":{"membership":"join"}},{"auth_events":["$CFsPBBMNbH76h7Zi5ZakhdnGn6qpVKBx-wvBdBvPgBA","$JEQiWIl2RsnkxRm_jmvZx3Xh7I0sd0_g3Z5_24jxRYE","$g12mqne1DbKRylD7UieYqHI7dYmSUtXpwY523_bNV9o","$l6ueXpkpoAKADfZJdxaqQIF3KXXjuW_X-kb_0b5bEPs"],"content":{"membership":"invite"},"depth":6,"event_id":"$2NRgd_rAGBPv6L1y1aRA4bwbhZuoiYrvqUpCLIrucVw","hashes":{"sha256":"A6amQJxwpjoilXhXxmBTHGZV1IADjh5DnVvrELUyYEo"},"origin":"hs1","origin_server_ts":1793967052515,"prev_events":["$g12mqne1DbKRylD7UieYqHI7dYmSUtXpwY523_bNV9o"],"room_id":"!E3oo7kxVzMdNryegRrTC-aD7UEkoSw:hs1","sender":"@user-1-alice:hs1","signatures":{"hs1":{"ed25519:v1":"QSDaJp2euJRCJAhyXPYj/FP7qK0B4CFYyARTKlU1G66e25rIG/xA24MIyn41rqHNnYpVKs7A+6EzKckuJjjdDg"}},"state_key":"@user-2-bob:hs1","type":"m.room.member","unsigned":{"membership":"join"}},{"auth_events":["$2NRgd_rAGBPv6L1y1aRA4bwbhZuoiYrvqUpCLIrucVw","$CFsPBBMNbH76h7Zi5ZakhdnGn6qpVKBx-wvBdBvPgBA","$JEQiWIl2RsnkxRm_jmvZx3Xh7I0sd0_g3Z5_24jxRYE","$g12mqne1DbKRylD7UieYqHI7dYmSUtXpwY523_bNV9o"],"content":{"membership":"join"},"depth":7,"event_id":"$jGFHNld784WFE2mz72fbyM5HbwG0tVqJbH84Zyj6ACw","hashes":{"sha256":"yfeIG8uyVCqJYrOEKuYB97OI4qkVkXj82jN2dK4HNcQ"},"origin":"hs1","origin_server_ts":1793967052568,"prev_events":["$2NRgd_rAGBPv6L1y1aRA4bwbhZuoiYrvqUpCLIrucVw"],"room_id":"!E3oo7kxVzMdNryegRrTC-aD7UEkoSw:hs1","sender":"@user-2-bob:hs1","signatures":{"hs1":{"ed25519:v1":"UpGb+vUPtmFQCjiQlgJ7hsdl3SgMiySepwkQ0IyXZZ26mrToHjJR6x0yWa8KwLJYGUUWMYCD2SyeC4oJQKkrCg"}},"state_key":"@user-2-bob:hs1","type":"m.room.member","unsigned":{"membership":"join","prev_content":{"membership":"invite"},"prev_sender":"@user-1-alice:hs1"}}],"prev_batch":"s24","limited":false},"state":{"events":[],"prev_batch":"s29","limited":false},"ephemeral":{"events":[],"limited":false},"account_data":{"events":[],"limited":false},"unread_notifications":{"notification_count":0,"highlight_count":0},"highlight_count":0,"summary":{"m.invited_member_count":0,"m.joined_member_count":2}},"!LWwvQlriKwgJ9qjJpXs5mWRxGEKIAA:hs1":{"timeline":{"events":[{"auth_events":[],"content":{"creator":"@user-1-alice:hs1","room_version":"11"},"depth":1,"event_id":"$7KDTCJJtEIrM3U30wvGD9x0sjq2wUUFbmPkKBfQFERk","hashes":{"sha256":"4UZJFIFa4F5kB4HkpQfxDphZvoOzrQMajpDK96I3mtY"},"origin":"hs1","origin_server_ts":1793967052410,"prev_events":[],"room_id":"!LWwvQlriKwgJ9qjJpXs5mWRxGEKIAA:hs1","sender":"@user-1-alice:hs1","signatures":{"hs1":{"ed25519:v1":"iJQWR9F0Yfs60NrRkb586KMFQHMKayu2i4lzs3lfeKvClKgCYKuU1M6MW4rP9DaSRm7UqH7p8vRc3ub5499ZAw"}},"state_key":"","type":"m.room.create","unsigned":{"membership":"leave"}},{"auth_events":["$7KDTCJJtEIrM3U30wvGD9x0sjq2wUUFbmPkKBfQFERk"],"content":{"membership":"join"},"depth":2,"event_id":"$1qSrnIC5KhTeDlN8kUwIuJi9Rh2ku4kXPHoeyecDWb4","hashes":{"sha256":"RODxCdmaHHypfPI8oIx6Hy+FWSkQRTeoZJiYoO0rEAc"},"origin":"hs1","origin_server_ts":1793967052410,"prev_events":["$7KDTCJJtEIrM3U30wvGD9x0sjq2wUUFbmPkKBfQFERk"],"room_id":"!LWwvQlriKwgJ9qjJpXs5mWRxGEKIAA:hs1","sender":"@user-1-alice:hs1","signatures":{"hs1":{"ed25519:v1":"OGQGZicafj/z0hjac4pSRtyZjw4Lsv1r7KVVIbc8Vpk87Ry57lzSJUTNx1mXtgZAQU8JIXkPlNgQvCVejMXPAw"}},"state_key":"@user-1-alice:hs1","type":"m.room.member","unsigned":{"membership":"join"}},{"auth_events":["$1qSrnIC5KhTeDlN8kUwIuJi9Rh2ku4kXPHoeyecDWb4","$7KDTCJJtEIrM3U30wvGD9x0sjq2wUUFbmPkKBfQFERk"],"content":{"join_rule":"public"},"depth":3,"event_id":"$ZeOZD1bOxrBYDdd5-Ai4EiMxh1fGn2fBobTyur5Rxbg","hashes":{"sha256":"MZmuk3ESWnef7HfZsJuDxCqDa+Wy74N9raeMvdwKH9k"},"origin":"hs1","origin_server_ts":1793967052410,"prev_events":["$1qSrnIC5KhTeDlN8kUwIuJi9Rh2ku4kXPHoeyecDWb4"],"room_id":"!LWwvQlriKwgJ9qjJpXs5mWRxGEKIAA:hs1","sender":"@user-1-alice:hs1","signatures":{"hs1":{"ed25519:v1":"NnXFZZMhtLyMUUhFutlRFyVzjAmUxXKIixi6InWMBXlHNUMJOXSYnsPvXufvBp8dTthic2kW1CXtZh6S96l9Cw"}},"state_key":"","type":"m.room.join_rules","unsigned":{"membership":"join"}},{"auth_events":["$1qSrnIC5KhTeDlN8kUwIuJi9Rh2ku4kXPHoeyecDWb4","$7KDTCJJtEIrM3U30wvGD9x0sjq2wUUFbmPkKBfQFERk"],"content":{"history_visibility":"world_readable"},"depth":4,"event_id":"$s_scEOZYVcci6rfP5cpULQ-Ly8RsHOqCc7HQKGIxFr0","hashes":{"sha256":"/lDuzXM+HtKrXCLn8xEKkoRgksPjLN3o8takWg2IHJ0"},"origin":"hs1","origin_server_ts":1793967052410,"prev_events":["$ZeOZD1bOxrBYDdd5-Ai4EiMxh1fGn2fBobTyur5Rxbg"],"room_id":"!LWwvQlriKwgJ9qjJpXs5mWRxGEKIAA:hs1","sender":"@user-1-alice:hs1","signatures":{"hs1":{"ed25519:v1":"Lyhn6LeC7IfNV4+oehMZfhhiiEb98ZfQdZZX5WN2ojIUv3bIxhjNJq7ta37D1lH6SROsuKrjKS7qYees3hFWBg"}},"state_key":"","type":"m.room.history_visibility","unsigned":{"membership":"join"}},{"auth_events":["$1qSrnIC5KhTeDlN8kUwIuJi9Rh2ku4kXPHoeyecDWb4","$7KDTCJJtEIrM3U30wvGD9x0sjq2wUUFbmPkKBfQFERk"],"content":{"ban":50,"events":{},"events_default":0,"invite":0,"kick":50,"notifications":{"room":50},"redact":50,"state_default":50,"users":{"@user-1-alice:hs1":100},"users_default":0},"depth":5,"event_id":"$kEPEApa04EAy8JpDnvAUKV-FM8IaNyC1piDjdiYRYcM","hashes":{"sha256":"+bjM2Z3dQDUZuwc3KJ2puAoilPTtNmoi0dgnPjKQGzs"},"origin":"hs1","origin_server_ts":1793967052410,"prev_events":["$s_scEOZYVcci6rfP5cpULQ-Ly8RsHOqCc7HQKGIxFr0"],"room_id":"!LWwvQlriKwgJ9qjJpXs5mWRxGEKIAA:hs1","sender":"@user-1-alice:hs1","signatures":{"hs1":{"ed25519:v1":"2ETvV5cJ5WrUKiF0c+ZarCTqqwM4DClGNt9znagJ3I4DqjEn94W3if/C2SiJKrmKBPy0OUlA8+evgipiiyHdBA"}},"state_key":"","type":"m.room.power_levels","unsigned":{"membership":"join"}},{"auth_events":["$7KDTCJJtEIrM3U30wvGD9x0sjq2wUUFbmPkKBfQFERk","$ZeOZD1bOxrBYDdd5-Ai4EiMxh1fGn2fBobTyur5Rxbg","$kEPEApa04EAy8JpDnvAUKV-FM8IaNyC1piDjdiYRYcM"],"content":{"membership":"join"},"depth":6,"event_id":"$zISWZnXAjWbbXUGMb3OnE1neo3qpwmzS_xN87nIuVaU","hashes":{"sha256":"3FZ/7GkopvOEoXEjACy7KCH4dI0VF4y2AQK3gZb5vaQ"},"origin":"hs1","origin_server_ts":1793967052494,"prev_events":["$kEPEApa04EAy8JpDnvAUKV-FM8IaNyC1piDjdiYRYcM"],"room_id":"!LWwvQlriKwgJ9qjJpXs5mWRxGEKIAA:hs1","sender":"@user-2-bob:hs1","signatures":{"hs1":{"ed25519:v1":"MYQSjqo8aFrA7bzrbPkMCLf5g95AyrEGqtUm7wS44yf7GHEAJSAzvB8PyYOVdw9ANnnwzk2PDmzEiJF5NiqeDQ"}},"state_key":"@user-2-bob:hs1","type":"m.room.member","unsigned":{"membership":"join"}}],"prev_batch":"s17","limited":false},"state":{"events":[],"prev_batch":"s29","limited":false},"ephemeral":{"events":[],"limited":false},"account_data":{"events":[],"limited":false},"unread_notifications":{"notification_count":0,"highlight_count":0},"highlight_count":0,"summary":{"m.invited_member_count":0,"m.joined_member_count":2}}}},"account_data":{"events":[{"content":{"global":{"content":[{"actions":["notify",{"set_tweak":"sound","value":"default"},{"set_tweak":"highlight"}],"default":true,"enabled":true,"pattern":"user-1-alice","rule_id":".m.rule.contains_user_name"}],"override":[{"actions":[],"default":true,"enabled":false,"rule_id":".m.rule.master"},{"actions":[],"conditions":[{"key":"content.msgtype","kind":"event_match","pattern":"m.notice"}],"default":true,"enabled":true,"rule_id":".m.rule.suppress_notices"},{"actions":["notify",{"set_tweak":"sound","value":"default"}],"conditions":[{"key":"type","kind":"event_match","pattern":"m.room.member"},{"key":"content.membership","kind":"event_match","pattern":"invite"},{"key":"state_key","kind":"event_match","pattern":"@user-1-alice:hs1"}],"default":true,"enabled":true,"rule_id":".m.rule.invite_for_me"},{"actions":[],"conditions":[{"key":"type","kind":"event_match","pattern":"m.room.member"}],"default":true,"enabled":true,"rule_id":".m.rule.member_event"},{"actions":["notify",{"set_tweak":"sound","value":"default"},{"set_tweak":"highlight"}],"conditions":[{"key":"content.m\\.mentions.user_ids","kind":"event_property_contains","value":"@user-1-alice:hs1"}],"default":true,"enabled":true,"rule_id":".m.rule.is_user_mention"},{"actions":["notify",{"set_tweak":"sound","value":"default"},{"set_tweak":"highlight"}],"conditions":[{"kind":"contains_display_name"}],"default":true,"enabled":true,"rule_id":".m.rule.contains_display_name"},{"actions":["notify",{"set_tweak":"highlight"}],"conditions":[{"key":"content.m\\.mentions.room","kind":"event_property_is","value":true},{"key":"room","kind":"sender_notification_permission"}],"default":true,"enabled":true,"rule_id":".m.rule.is_room_mention"},{"actions":["notify",{"set_tweak":"highlight"}],"conditions":[{"key":"content.body","kind":"event_match","pattern":"@room"},{"key":"room","kind":"sender_notification_permission"}],"default":true,"enabled":true,"rule_id":".m.rule.roomnotif"},{"actions":["notify",{"set_tweak":"highlight"}],"conditions":[{"key":"type","kind":"event_match","pattern":"m.room.tombstone"},{"key":"state_key","kind":"event_match","pattern":""}],"default":true,"enabled":true,"rule_id":".m.rule.tombstone"},{"actions":[],"conditions":[{"key":"type","kind":"event_match","pattern":"m.reaction"}],"default":true,"enabled":true,"rule_id":".m.rule.reaction"},{"actions":[],"conditions":[{"key":"type","kind":"event_match","pattern":"m.room.server_acl"},{"key":"state_key","kind":"event_match","pattern":""}],"default":true,"enabled":true,"rule_id":".m.rule.room.server_acl"},{"actions":[],"conditions":[{"key":"content.m\\.relates_to.rel_type","kind":"event_property_is","value":"m.replace"}],"default":true,"enabled":true,"rule_id":".m.rule.suppress_edits"}],"room":[],"sender":[],"underride":[{"actions":["notify",{"set_tweak":"sound","value":"ring"}],"conditions":[{"key":"type","kind":"event_match","pattern":"m.call.invite"}],"default":true,"enabled":true,"rule_id":".m.rule.call"},{"actions":["notify",{"set_tweak":"sound","value":"default"}],"conditions":[{"is":"2","kind":"room_member_count"},{"key":"type","kind":"event_match","pattern":"m.room.encrypted"}],"default":true,"enabled":true,"rule_id":".m.rule.encrypted_room_one_to_one"},{"actions":["notify",{"set_tweak":"sound","value":"default"}],"conditions":[{"is":"2","kind":"room_member_count"},{"key":"type","kind":"event_match","pattern":"m.room.message"}],"default":true,"enabled":true,"rule_id":".m.rule.room_one_to_one"},{"actions":["notify"],"conditions":[{"key":"type","kind":"event_match","pattern":"m.room.message"}],"default":true,"enabled":true,"rule_id":".m.rule.message"},{"actions":["notify"],"conditions":[{"key":"type","kind":"event_match","pattern":"m.room.encrypted"}],"default":true,"enabled":true,"rule_id":".m.rule.encrypted"}]}},"type":"m.push_rules"}],"limited":false},"presence":{"events":[{"content":{"currently_active":true,"last_active_ago":58,"presence":"online"},"sender":"@user-2-bob:hs1","type":"m.presence"}],"limited":false},"complete":true,"device_lists":{"changed":["@user-2-bob:hs1"]}}
+2026/11/06 13:10:52 ============================================
+
+
+2026/11/06 13:10:52 0ba2407e7ed42c97b067e168112c926bd62187123165dafd6cff391ab1ba025b : Server logs:
+{"time":"2026-11-06T12:10:52.377639883Z","level":"INFO","msg":"lattice starting","server_name":"hs1","version":"0.1.0-dev","client_addr":"0.0.0.0:8008","federation_addr":"0.0.0.0:8448","registration_mode":"open"}
+{"time":"2026-11-06T12:10:52.394391122Z","level":"INFO","msg":"listening","addr":"0.0.0.0:8448","tls":true}
+{"time":"2026-11-06T12:10:52.394392983Z","level":"INFO","msg":"listening","addr":"0.0.0.0:8008","tls":false}
+{"time":"2026-11-06T12:10:52.395698418Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/versions","status":200,"bytes":181,"duration_ms":0,"request_id":"_8FgP6vkcVI3"}
+{"time":"2026-11-06T12:10:52.397758648Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/register","status":401,"bytes":185,"duration_ms":0,"request_id":"-B4py4UFHRKG"}
+{"time":"2026-11-06T12:10:52.402515724Z","level":"INFO","msg":"account registered","user_id":"@user-1-alice:hs1","device_id":"z8po-aLmtIA","admin":false}
+{"time":"2026-11-06T12:10:52.402557685Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/register","status":200,"bytes":119,"duration_ms":4,"request_id":"NX1XfcD7fDRo"}
+{"time":"2026-11-06T12:10:52.403530631Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/register","status":401,"bytes":185,"duration_ms":0,"request_id":"JIUrrDmAuSm4"}
+{"time":"2026-11-06T12:10:52.408175578Z","level":"INFO","msg":"account registered","user_id":"@user-2-bob:hs1","device_id":"_qdDNU75boM","admin":false}
+{"time":"2026-11-06T12:10:52.408232202Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/register","status":200,"bytes":117,"duration_ms":4,"request_id":"aBRBKIoiCb7W"}
+{"time":"2026-11-06T12:10:52.435171632Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/createRoom","status":200,"bytes":50,"duration_ms":26,"request_id":"xQtcSHu0FuRj"}
+{"time":"2026-11-06T12:10:52.468447819Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/createRoom","status":200,"bytes":50,"duration_ms":31,"request_id":"63jheGt6MQ6w"}
+{"time":"2026-11-06T12:10:52.487212565Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":11471,"duration_ms":51,"request_id":"Cnmad70UdwZf"}
+{"time":"2026-11-06T12:10:52.508518813Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":11471,"duration_ms":39,"request_id":"TXP6oHsg2nRs"}
+{"time":"2026-11-06T12:10:52.522233221Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/rooms/!E3oo7kxVzMdNryegRrTC-aD7UEkoSw:hs1/invite","status":200,"bytes":3,"duration_ms":12,"request_id":"x8138W1kldLn"}
+{"time":"2026-11-06T12:10:52.527595597Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/join/!LWwvQlriKwgJ9qjJpXs5mWRxGEKIAA:hs1","status":200,"bytes":50,"duration_ms":39,"request_id":"meCjVQa667z4"}
+{"time":"2026-11-06T12:10:52.563912783Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":10142,"duration_ms":40,"request_id":"3A8Po1hWIbyi"}
+{"time":"2026-11-06T12:10:52.574248587Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":13139,"duration_ms":45,"request_id":"RbwbcjKWid2x"}
+{"time":"2026-11-06T12:10:52.590662853Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/join/!E3oo7kxVzMdNryegRrTC-aD7UEkoSw:hs1","status":200,"bytes":50,"duration_ms":26,"request_id":"MpVlJe0CVQhB"}
+{"time":"2026-11-06T12:10:52.612271172Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":13856,"duration_ms":37,"request_id":"SLzFkGP4eX45"}
+{"time":"2026-11-06T12:10:52.620653921Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":13981,"duration_ms":29,"request_id":"mdW0LRvviyPz"}
+{"time":"2026-11-06T12:10:52.643948662Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":13981,"duration_ms":22,"request_id":"POdlUw705Oh6"}
+{"time":"2026-11-06T12:10:52.657039179Z","level":"INFO","msg":"lattice stopped"}
+2026/11/06 13:10:52 ============== 0ba2407e7ed42c97b067e168112c926bd62187123165dafd6cff391ab1ba025b : END LOGS ==============
+
+
+--- FAIL: TestSync (2.55s)
+    --- FAIL: TestSync/parallel (0.00s)
+        --- FAIL: TestSync/parallel/Initial_sync_with_lazy-loading_room_members_->_public_room_`state_after`_includes_all_members_from_timeline (0.20s)
+        --- FAIL: TestSync/parallel/Initial_sync_with_lazy-loading_room_members_->_private_room_`state_after`_includes_all_members_from_timeline (0.24s)
+FAIL
+FAIL	github.com/matrix-org/complement/tests/msc4222	4.622s
+2026/11/06 13:10:51 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc4242 CACertificate:0x2b198c8aec08 CAPrivateKey:0x2b198cd12930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc4242	1.922s [no tests to run]
+2026/11/06 13:10:53 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc4306 CACertificate:0x19e6b3390c08 CAPrivateKey:0x19e6b340a930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc4306	1.511s [no tests to run]
+2026/11/06 13:10:55 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc4429 CACertificate:0x1fd677126c08 CAPrivateKey:0x1fd6778e4700 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc4429	2.063s [no tests to run]
+FAIL

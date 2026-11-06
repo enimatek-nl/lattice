@@ -2,11 +2,13 @@ package rooms
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/enimatek/lattice/internal/eventauth"
 	"github.com/enimatek/lattice/internal/matrixerr"
 	"github.com/enimatek/lattice/internal/persist"
+	"github.com/enimatek/lattice/internal/redaction"
 	"github.com/enimatek/lattice/internal/stream"
 )
 
@@ -38,7 +40,7 @@ func (s *Service) CurrentState(ctx context.Context, roomID, requester string) ([
 				continue
 			}
 		}
-		event, err := s.eventJSON(ctx, row.EventID)
+		event, err := s.eventJSONFor(ctx, row.EventID, requester)
 		if err != nil {
 			return nil, err
 		}
@@ -76,7 +78,7 @@ func (s *Service) CurrentStateEvent(ctx context.Context, roomID, eventType, stat
 			return nil, false, nil
 		}
 	}
-	event, err := s.eventJSON(ctx, row.EventID)
+	event, err := s.eventJSONFor(ctx, row.EventID, requester)
 	if err != nil {
 		return nil, false, err
 	}
@@ -194,7 +196,7 @@ func (s *Service) Members(ctx context.Context, roomID, requester string, filter 
 				continue
 			}
 		}
-		event, err := s.eventJSON(ctx, row.EventID)
+		event, err := s.eventJSONFor(ctx, row.EventID, requester)
 		if err != nil {
 			return nil, err
 		}
@@ -259,7 +261,7 @@ func (s *Service) membersAt(ctx context.Context, roomID, requester string, posit
 		if asOf > 0 && stored.StreamOrdering > asOf && entry.EventID != boundary[0].EventID {
 			continue
 		}
-		event, err := s.eventJSON(ctx, entry.EventID)
+		event, err := s.eventJSONFor(ctx, entry.EventID, requester)
 		if err != nil {
 			return nil, err
 		}
@@ -413,6 +415,14 @@ func (s *Service) requireRoom(ctx context.Context, roomID string) (*persist.Room
 // the place the client's room version expects, and — for a redacted event — a copy of the
 // redaction that did it under `unsigned.redacted_because`, which is how a client learns
 // why an event it once read is now empty.
+//
+// This is the reader-free form, and most callers want it: they are asking the event a question
+// for themselves — what is this room's join rule, who counted as a member, what did the canonical
+// alias point at — and are not handing the event to anyone. Those reads carry no
+// `unsigned.membership`, which the specification allows (it defines the field as the requesting
+// user's membership, and lets a server omit it), and keeps a room-directory scan from paying for
+// a snapshot lookup per event it only wanted one field from. A read that does hand the event to a
+// named user goes through eventJSONFor instead.
 func (s *Service) eventJSON(ctx context.Context, eventID string) (map[string]any, error) {
 	row, err := s.events.ByID(ctx, eventID)
 	if err != nil {
@@ -424,9 +434,32 @@ func (s *Service) eventJSON(ctx context.Context, eventID string) (map[string]any
 	return s.serveEvent(ctx, row)
 }
 
-// serveEvent is eventJSON over a row already in hand. The decision about what a client may
-// see is the redaction servicer's, not this package's: `/messages`, `/event` and `/sync` all
-// go through the same one.
+// eventJSONFor is eventJSON for an event that is going to a particular user, which is what makes
+// `unsigned.membership` answerable: the field is that user's membership of the room as of the
+// moment of the event, so it needs a reader to exist. `/state`, `/state/{type}/{key}` and
+// `/members` come through here; `/messages` and `/event` call the servicer directly because they
+// already hold the rows. `/context` and `/relations` are not endpoints this server has yet.
+func (s *Service) eventJSONFor(ctx context.Context, eventID, requester string) (map[string]any, error) {
+	row, err := s.events.ByID(ctx, eventID)
+	if err != nil {
+		if notFound(err) {
+			return nil, fmt.Errorf("rooms: state points at event %s, which is not stored", eventID)
+		}
+		return nil, err
+	}
+	body, err := s.serve.ServeAs(ctx, row, requester)
+	if err != nil {
+		if errors.Is(err, redaction.ErrWithheld) {
+			return nil, matrixerr.Newf(matrixerr.CodeNotFound, "Event %q is not known to this server.", eventID)
+		}
+		return nil, err
+	}
+	return body, nil
+}
+
+// serveEvent is eventJSON over a row already in hand, reader-free. The decision about what a
+// client may see is the redaction servicer's, not this package's: every read path and `/sync` go
+// through the same one, differing only in whether they can name the reader.
 func (s *Service) serveEvent(ctx context.Context, row *persist.Event) (map[string]any, error) {
 	return s.serve.Serve(ctx, row)
 }
