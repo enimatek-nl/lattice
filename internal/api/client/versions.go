@@ -58,6 +58,12 @@ func (d *Deps) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 			// honest: internal/roomversion lists only versions this server can create
 			// rooms in.
 			"m.change_password": map[string]any{"enabled": false},
+			// Both profile fields are the account's own to change here, so both are true. The
+			// specification deprecates these in favour of `m.profile_fields`, which this server does
+			// not advertise because it holds only the two standard fields; it still requires them to
+			// agree with what the profile endpoints actually do.
+			"m.set_displayname": map[string]any{"enabled": true},
+			"m.set_avatar_url":  map[string]any{"enabled": true},
 		},
 	})
 }

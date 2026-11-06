@@ -17,8 +17,13 @@ type User struct {
 	PasswordHash string `gorm:"column:password_hash;size:255;not null"`
 	Admin        bool   `gorm:"not null;default:false"`
 	Deactivated  bool   `gorm:"not null;default:false"`
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	// Displayname and AvatarURL are the profile this server states about the account. They live
+	// on the account row rather than in a table of their own because there is exactly one per
+	// account, it is read on nearly every membership read, and nothing else refers to it.
+	Displayname string `gorm:"column:displayname;size:255;not null;default:''"`
+	AvatarURL   string `gorm:"column:avatar_url;size:255;not null;default:''"`
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 // UserRepo is the account store contract.
@@ -30,6 +35,9 @@ type UserRepo interface {
 	ByUserID(ctx context.Context, userID string) (*User, error)
 	ByLocalpart(ctx context.Context, localpart string) (*User, error)
 	SetDeactivated(ctx context.Context, userID string, deactivated bool) error
+	// SetProfile writes the display name and avatar URL, replacing both: a caller that wants to
+	// change one of them reads the other first. An empty value clears it.
+	SetProfile(ctx context.Context, userID, displayname, avatarURL string) error
 	Count(ctx context.Context) (int64, error)
 	// ListUserIDs returns every account on this server in a stable order. It exists
 	// for work that has to visit each user exactly once, such as giving accounts that
@@ -82,6 +90,19 @@ func (u *UserRepoImpl) ByLocalpart(ctx context.Context, localpart string) (*User
 func (u *UserRepoImpl) SetDeactivated(ctx context.Context, userID string, deactivated bool) error {
 	res := u.db.WithContext(ctx).Model(&User{}).Where("user_id = ?", userID).
 		Update("deactivated", deactivated)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetProfile implements [UserRepo].
+func (u *UserRepoImpl) SetProfile(ctx context.Context, userID, displayname, avatarURL string) error {
+	res := u.db.WithContext(ctx).Model(&User{}).Where("user_id = ?", userID).
+		Updates(map[string]any{"displayname": displayname, "avatar_url": avatarURL})
 	if res.Error != nil {
 		return res.Error
 	}

@@ -491,3 +491,36 @@ func GenerateRandomString(random io.Reader, n int) (string, error) {
 	}
 	return base64.RawURLEncoding.EncodeToString(buf), nil
 }
+
+// SplitMXC splits a Matrix content identifier into the server that holds the content and the
+// opaque ID the server gave it.
+//
+// The shape is `mxc://<server-name>/<media-id>`. The server-name half is checked as a server name,
+// because an avatar or thumbnail URL is read by every server in a room and later fetched over
+// federation: an "mxc" that names no server is not a pointer anyone can follow. The media ID is not
+// interpreted — it is whatever the owning server chose, and Synapse, Dendrite and conduwuit disagree
+// about its alphabet — so only the empty and the obviously-unusable forms are refused.
+func SplitMXC(id string) (server, mediaID string, err error) {
+	const scheme = "mxc://"
+	if len(id) <= len(scheme) || id[:len(scheme)] != scheme {
+		return "", "", fmt.Errorf("%w: a content identifier starts with %s", ErrInvalidID, scheme)
+	}
+	rest := id[len(scheme):]
+	separator := strings.IndexByte(rest, '/')
+	if separator <= 0 || separator == len(rest)-1 {
+		return "", "", fmt.Errorf("%w: %q has no media ID after the server name", ErrInvalidID, id)
+	}
+	server, mediaID = rest[:separator], rest[separator+1:]
+	if err := ServerNameValid(server); err != nil {
+		return "", "", fmt.Errorf("%w: %q names no usable server: %v", ErrInvalidID, id, err)
+	}
+	for _, c := range mediaID {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case c == '_' || c == '-' || c == '=' || c == '+' || c == '.' || c == '!':
+		default:
+			return "", "", fmt.Errorf("%w: a media ID contains %q", ErrInvalidID, string(c))
+		}
+	}
+	return server, mediaID, nil
+}

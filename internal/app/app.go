@@ -116,6 +116,14 @@ func NewWithOptions(ctx context.Context, cfg *config.Config, log *slog.Logger, o
 		return nil, err
 	}
 
+	// A profile is more than an endpoint's pair of fields. A room's members see each other through
+	// the `m.room.member` events the room holds, and those events carried a copy of the profile from
+	// the moment they were written — so the account layer has to be able to tell the room layer that
+	// a user is now presented differently, and the room layer has to be able to ask how a user it is
+	// about to write about is presented. Each side holds the interface the other implements.
+	userService.SetProfileBroadcaster(roomService)
+	roomService.SetProfileReader(userService)
+
 	// What a user owns from the moment they exist: their push rules, and a presence
 	// entry so that the first question about them is answered with something this server
 	// knows rather than with a guess. Accounts that predate this code are covered by the

@@ -207,6 +207,16 @@ func Register(r *httpserver.Router, d *Deps, requireAuth func(http.Handler) http
 	r.Handle("POST", "/_matrix/client/v3/keys/query", authed(d.handleKeysQuery))
 	r.Handle("POST", "/_matrix/client/v3/keys/claim", authed(d.handleKeysClaim))
 
+	// Profiles. The reads carry no token: a room's members ask them about each other. The writes are
+	// the account's alone, and the account layer also pushes the change out as fresh member events so
+	// that a room does not go on showing a name the person stopped using.
+	r.Handle("GET", "/_matrix/client/v3/profile/{userID}", d.handleProfileGet)
+	r.Handle("GET", "/_matrix/client/r0/profile/{userID}", d.handleProfileGet)
+	r.Handle("GET", "/_matrix/client/v3/profile/{userID}/{keyName}", d.handleProfileFieldGet)
+	r.Handle("GET", "/_matrix/client/r0/profile/{userID}/{keyName}", d.handleProfileFieldGet)
+	versioned("PUT", "/profile/{userID}/{keyName}", d.handleProfileFieldPut)
+	versioned("DELETE", "/profile/{userID}/{keyName}", d.handleProfileFieldDelete)
+
 	r.Handle("GET", "/_matrix/client/v3/presence/{userID}/status", authed(d.handlePresenceGet))
 	r.Handle("PUT", "/_matrix/client/v3/presence/{userID}/status", authed(d.handlePresencePut))
 

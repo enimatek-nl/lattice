@@ -157,8 +157,12 @@ type Service struct {
 	// not about room state. It is nil until federation is wired up, and a room service without one
 	// refuses a restricted join rather than waving it through unchecked.
 	keyRing KeyRingFor
-	name    string
-	log     *slog.Logger
+	// profiles answers what this server states about one of its own users, so that a member event
+	// can carry the name and picture the room's members are meant to see. Nil until the account
+	// layer is attached.
+	profiles ProfileReader
+	name     string
+	log      *slog.Logger
 	// now is replaced in tests. A homeserver's timestamps must come from the server,
 	// but a test has to control them to make ordering assertions.
 	now func() time.Time
