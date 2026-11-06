@@ -30,6 +30,12 @@ type createRoomBody struct {
 	PowerLevelContentOverride map[string]any   `json:"power_level_content_override"`
 	RoomAliasName             *string          `json:"room_alias_name"`
 	Invite                    []string         `json:"invite"`
+	// IsDirect says the room is being created as a private conversation with the people it
+	// invites. It is not a label on the room: the specification records it in the invitations
+	// themselves and in the creator's own account data, so that the invited user's other
+	// devices, and their homeserver when they live elsewhere, see the same thing the inviter
+	// meant.
+	IsDirect bool `json:"is_direct"`
 }
 
 type initialStateIn struct {
@@ -65,6 +71,7 @@ func (d *Deps) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
 		request.RoomAliasName = *body.RoomAliasName
 	}
 	request.Invite = body.Invite
+	request.IsDirect = body.IsDirect
 	for _, entry := range body.InitialState {
 		if err := matrixid.EventTypeValid(entry.Type); err != nil {
 			matrixerr.Write(w, http.StatusBadRequest, matrixerr.Newf(matrixerr.CodeInvalidParam,

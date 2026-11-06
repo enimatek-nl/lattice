@@ -24,20 +24,23 @@ import (
 
 // Deps are the services the Client-Server API needs.
 type Deps struct {
-	Cfg       *config.Config
-	Log       *slog.Logger
-	Users     *users.Service
-	Tokens    *auth.TokenService
-	UIA       *auth.UIAService
-	Keys      *keys.Service
-	Rooms     *rooms.Service
-	PushRules *pushrules.Service
-	Presence  *presence.Service
-	E2EKeys   *e2ekeys.Service
-	Sync      *sync.Service
-	DB        *persist.Database
-	Version   string
-	Started   time.Time
+	Cfg   *config.Config
+	Log   *slog.Logger
+	Users *users.Service
+	// AccountData is the user's own documents — `m.direct` among them — which only the user
+	// reads and writes.
+	AccountData *users.AccountDataService
+	Tokens      *auth.TokenService
+	UIA         *auth.UIAService
+	Keys        *keys.Service
+	Rooms       *rooms.Service
+	PushRules   *pushrules.Service
+	Presence    *presence.Service
+	E2EKeys     *e2ekeys.Service
+	Sync        *sync.Service
+	DB          *persist.Database
+	Version     string
+	Started     time.Time
 }
 
 // serviceError writes a service-layer failure with the status the protocol prescribes
@@ -167,6 +170,11 @@ func Register(r *httpserver.Router, d *Deps, requireAuth func(http.Handler) http
 	versioned("GET", "/sync", d.handleSync)
 	versioned("POST", "/user/{userID}/filter", d.handleFilterCreate)
 	versioned("GET", "/user/{userID}/filter/{filterID}", d.handleFilterGet)
+
+	// A user's account data: their own documents, read and written by them alone. `m.direct`
+	// lives here, and so does everything the server stores without interpreting.
+	versioned("GET", "/user/{userID}/account_data/{type}", d.handleAccountDataGet)
+	versioned("PUT", "/user/{userID}/account_data/{type}", d.handleAccountDataPut)
 
 	// Room aliases.
 	versioned("PUT", "/directory/room/{roomAlias}", d.handleAliasPut)

@@ -44,6 +44,10 @@ type MembershipChange struct {
 	// `reason` are set by the server afterwards, so a body cannot forge a membership.
 	// Join and knock only: the other membership endpoints define a fixed body.
 	Extra map[string]any
+	// IsDirect marks an invitation as one opened as a private conversation, which the
+	// specification records in the member event so that the invited user's server and devices
+	// see what the inviter meant. Only an invitation uses it.
+	IsDirect bool
 }
 
 // SetMembership writes an m.room.member event and returns its event ID.
@@ -113,6 +117,9 @@ func (s *Service) SetMembership(ctx context.Context, change MembershipChange) (s
 		content[key] = value
 	}
 	content["membership"] = change.Membership
+	if change.IsDirect && change.Membership == eventauth.MembershipInvite {
+		content["is_direct"] = true
+	}
 	if change.Reason != "" {
 		content["reason"] = change.Reason
 	}

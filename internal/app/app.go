@@ -153,20 +153,21 @@ func NewWithOptions(ctx context.Context, cfg *config.Config, log *slog.Logger, o
 
 	requireAuth := auth.RequireAuth(tokens, userService)
 	client.Register(a.clientRouter, &client.Deps{
-		Cfg:       cfg,
-		Log:       log,
-		Users:     userService,
-		Tokens:    tokens,
-		UIA:       uia,
-		Keys:      signingKeys,
-		Rooms:     roomService,
-		PushRules: pushRules,
-		Presence:  presenceService,
-		E2EKeys:   deviceKeys,
-		Sync:      sync.NewService(db, log),
-		DB:        db,
-		Version:   Version,
-		Started:   a.Started,
+		Cfg:         cfg,
+		Log:         log,
+		Users:       userService,
+		AccountData: users.NewAccountDataService(db.AccountData),
+		Tokens:      tokens,
+		UIA:         uia,
+		Keys:        signingKeys,
+		Rooms:       roomService,
+		PushRules:   pushRules,
+		Presence:    presenceService,
+		E2EKeys:     deviceKeys,
+		Sync:        sync.NewService(db, log),
+		DB:          db,
+		Version:     Version,
+		Started:     a.Started,
 	}, requireAuth)
 	media.Register(a.clientRouter, &media.Deps{Cfg: cfg}, requireAuth)
 	// Method negotiation must be consistent across listeners: a federation path

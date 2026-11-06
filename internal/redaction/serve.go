@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 
+	"encoding/json"
+
 	"github.com/enimatek/lattice/internal/matrixjson"
 	"github.com/enimatek/lattice/internal/persist"
 	"github.com/enimatek/lattice/internal/roomversion"
@@ -145,6 +147,7 @@ func (sv *Servicer) decode(ctx context.Context, row *persist.Event) (map[string]
 // decorate attaches `unsigned.redacted_because` for an event this server redacted, which is
 // how a client learns what happened to an event it had already seen.
 func (sv *Servicer) decorate(ctx context.Context, row *persist.Event, event map[string]any) map[string]any {
+	event = showPrevState(row, event)
 	if !row.Redacted || row.EventID == "" {
 		return event
 	}
@@ -179,6 +182,37 @@ func (sv *Servicer) decorate(ctx context.Context, row *persist.Event, event map[
 		event["unsigned"] = unsigned
 		return event
 	}
+	return event
+}
+
+// showPrevState attaches what a state event replaced to `unsigned`, which is where the
+// specification puts the things a server adds around an event rather than things the event's
+// sender wrote: what the topic was before this one, what the power levels said before the change,
+// and what an invited user was invited as — the last of these is how a client knows that the
+// invitation it is answering was offered as a direct message, and by whom.
+//
+// Only the server that wrote the event can answer this, and only from the moment it wrote it, so
+// the values come from persistence rather than from anything in the event itself. They stay on
+// this server's side of the wire: other homeservers receive the signed bytes, and an `unsigned`
+// field added here would be a claim about our own state that they had no part in.
+func showPrevState(row *persist.Event, event map[string]any) map[string]any {
+	if len(row.PrevContent) == 0 && row.PrevSender == "" {
+		return event
+	}
+	unsigned, _ := event["unsigned"].(map[string]any)
+	if unsigned == nil {
+		unsigned = map[string]any{}
+	}
+	if len(row.PrevContent) > 0 {
+		var content map[string]any
+		if err := json.Unmarshal(row.PrevContent, &content); err == nil {
+			unsigned["prev_content"] = content
+		}
+	}
+	if row.PrevSender != "" {
+		unsigned["prev_sender"] = row.PrevSender
+	}
+	event["unsigned"] = unsigned
 	return event
 }
 

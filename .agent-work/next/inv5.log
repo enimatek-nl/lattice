@@ -1,0 +1,626 @@
+== building complement-lattice:latest
+Emulate Docker CLI using podman. Create /etc/containers/nodocker to quiet msg.
+[1/2] STEP 1/6: FROM docker.io/library/golang:1.26-alpine AS build
+[1/2] STEP 2/6: WORKDIR /src
+--> Using cache 41f8576e376f5a915c0cd6832b08f4051ae37a129db82b3671a7e094432d4207
+--> 41f8576e376f
+[1/2] STEP 3/6: COPY go.mod go.sum ./
+--> Using cache bd7c2a0c59707b6662d00c9867471257f5be93d0ac29d01409bae5efe586c854
+--> bd7c2a0c5970
+[1/2] STEP 4/6: RUN go mod download
+--> Using cache f930c821bfaf6d5986c6d3bd25a3323d5dba266132dfa98a6e80e4f481762d50
+--> f930c821bfaf
+[1/2] STEP 5/6: COPY . .
+--> be12b4135080
+[1/2] STEP 6/6: RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/lattice ./cmd/lattice
+--> 0344cd4c4cb5
+[2/2] STEP 1/10: FROM docker.io/library/alpine:3.20
+[2/2] STEP 2/10: RUN apk add --no-cache ca-certificates && update-ca-certificates
+--> Using cache 03e153230bb2614173f0c22b65ec72ac40d2eceb237ba66bd1c74a192c4ca588
+--> 03e153230bb2
+[2/2] STEP 3/10: COPY --from=build /out/lattice /usr/local/bin/lattice
+--> cb1d952225c7
+[2/2] STEP 4/10: COPY deploy/complement/entrypoint.sh /entrypoint.sh
+--> 292ee6fe9829
+[2/2] STEP 5/10: RUN chmod 0755 /entrypoint.sh
+--> f08094dab9c3
+[2/2] STEP 6/10: ENV LATTICE_DATA_DIR=/data
+--> 81edd1b3607b
+[2/2] STEP 7/10: VOLUME ["/data"]
+--> fc6667dfae7d
+[2/2] STEP 8/10: EXPOSE 8008 8448
+--> 10692ece1038
+[2/2] STEP 9/10: HEALTHCHECK --interval=5s --timeout=5s --start-period=5s --retries=5 	CMD ["/usr/local/bin/lattice", "healthcheck", "-addr", "127.0.0.1:8008"]
+time="2026-11-06T09:47:38+01:00" level=warning msg="HEALTHCHECK is not supported for OCI image format and will be ignored. Must use `docker` format"
+--> 235890f3f52c
+[2/2] STEP 10/10: ENTRYPOINT ["/entrypoint.sh"]
+[2/2] COMMIT complement-lattice:latest
+time="2026-11-06T09:47:39+01:00" level=warning msg="HEALTHCHECK is not supported for OCI image format and will be ignored. Must use `docker` format"
+--> e0dbccd725b2
+Successfully tagged localhost/complement-lattice:latest
+e0dbccd725b200037b2275238ccf2bd9a41520a0d230d12c674ab5ca3bad1af6
+== running Complement (filter: TestFederationRoomsInvite|TestUnbanViaInvite|TestFederationRejectInvite|AccountData)
+2026/11/06 09:47:42 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:fed CACertificate:0x166665738008 CAPrivateKey:0x166665702070 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+=== RUN   TestWriteMDirectAccountData
+    direct_messaging_test.go:25: Deploy times: 1.485859306s blueprints, 673.696272ms containers
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (1.198885ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (6.23361ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (436.25µs)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (6.020453ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/createRoom => 200 OK (21.231095ms)
+    client.go:893: [CSAPI] PUT hs1/_matrix/client/v3/user/@user-1:hs1/account_data/m.direct => 200 OK (1.267003ms)
+    direct_messaging_test.go:49: 2026-11-06 09:47:45.526227991 +0100 CET m=+5.055876588: global account data set; syncing until it arrives
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (4.322357ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/createRoom => 200 OK (24.376805ms)
+    client.go:893: [CSAPI] PUT hs1/_matrix/client/v3/user/@user-1:hs1/account_data/m.direct => 200 OK (1.947409ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (9.327125ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/user/@user-1:hs1/account_data/m.direct => 200 OK (895.519µs)
+    direct_messaging_test.go:28: 2026-11-06 09:47:45.568300068 +0100 CET m=+5.097948675: TestWriteMDirectAccountData complete: destroying HS deployment
+--- PASS: TestWriteMDirectAccountData (2.44s)
+=== RUN   TestUnbanViaInvite
+    federation_room_ban_test.go:20: Deploy times: 1.558197945s blueprints, 645.339168ms containers
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (1.943221ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (5.971482ms)
+    client.go:893: [CSAPI] POST hs2/_matrix/client/v3/register => 401 Unauthorized (1.78233ms)
+    client.go:893: [CSAPI] POST hs2/_matrix/client/v3/register => 200 OK (4.456824ms)
+    client.go:893: [CSAPI] POST hs2/_matrix/client/v3/createRoom => 200 OK (21.323626ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/join/!hrBJQYIZuAxCQWoujOk_PV5-2XWYGw:hs2 => 200 OK (207.099386ms)
+    client.go:893: [CSAPI] POST hs2/_matrix/client/v3/rooms/!hrBJQYIZuAxCQWoujOk_PV5-2XWYGw:hs2/ban => 501 Not Implemented (1.471171ms)
+    federation_room_ban_test.go:34: [31mCSAPI.MustDo POST http://127.0.0.1:40657/_matrix/client/v3/rooms/%21hrBJQYIZuAxCQWoujOk_PV5-2XWYGw:hs2/ban returned non-2xx code: 501 Not Implemented - body: {"errcode":"M_UNKNOWN","error":"Changing the membership of a user who lives on another homeserver has to be carried out by that server, and this server does not implement that part of federation yet."}
+        [39m
+2026/11/06 09:47:48 ============================================
+
+
+2026/11/06 09:47:48 79d4fca6ff539e098e0b15552f20e50cb6545401e5a8a090b205c1bda79ca4d7 : Server logs:
+{"time":"2026-11-06T08:47:47.863958796Z","level":"INFO","msg":"lattice starting","server_name":"hs2","version":"0.1.0-dev","client_addr":"0.0.0.0:8008","federation_addr":"0.0.0.0:8448","registration_mode":"open"}
+{"time":"2026-11-06T08:47:47.88056244Z","level":"INFO","msg":"listening","addr":"0.0.0.0:8448","tls":true}
+{"time":"2026-11-06T08:47:47.88056899Z","level":"INFO","msg":"listening","addr":"0.0.0.0:8008","tls":false}
+{"time":"2026-11-06T08:47:47.886064103Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/versions","status":200,"bytes":181,"duration_ms":0,"request_id":"9sDQep6UeXvA"}
+{"time":"2026-11-06T08:47:47.980792209Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/register","status":401,"bytes":185,"duration_ms":0,"request_id":"oScNZp1CDC1q"}
+{"time":"2026-11-06T08:47:47.985367609Z","level":"INFO","msg":"account registered","user_id":"@user-2:hs2","device_id":"s65yhnMvbig","admin":false}
+{"time":"2026-11-06T08:47:47.985410722Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/register","status":200,"bytes":113,"duration_ms":4,"request_id":"8pePZnrSFqr-"}
+{"time":"2026-11-06T08:47:48.006799107Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/createRoom","status":200,"bytes":50,"duration_ms":20,"request_id":"LdPw5IhB02MX"}
+{"time":"2026-11-06T08:47:48.03814047Z","level":"INFO","msg":"request","method":"GET","path":"/.well-known/matrix/server","status":404,"bytes":89,"duration_ms":0,"request_id":"SaxYk_lJxbt2"}
+{"time":"2026-11-06T08:47:48.108296498Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/federation/v1/make_join/!hrBJQYIZuAxCQWoujOk_PV5-2XWYGw:hs2/@user-1:hs1","status":200,"bytes":462,"duration_ms":55,"request_id":"SkDgfzyonpg5"}
+{"time":"2026-11-06T08:47:48.141250753Z","level":"INFO","msg":"federation: a remote user joined a room this server holds","room_id":"!hrBJQYIZuAxCQWoujOk_PV5-2XWYGw:hs2","event_id":"$74ZCSI27B9wkN8qGWcnx3NceIoiTPkzw1d9YU1COWYE","sender":"@user-1:hs1"}
+{"time":"2026-11-06T08:47:48.141321171Z","level":"INFO","msg":"request","method":"PUT","path":"/_matrix/federation/v2/send_join/!hrBJQYIZuAxCQWoujOk_PV5-2XWYGw:hs2/$74ZCSI27B9wkN8qGWcnx3NceIoiTPkzw1d9YU1COWYE","status":200,"bytes":7202,"duration_ms":31,"request_id":"ITH2IbY5jl_l"}
+{"time":"2026-11-06T08:47:48.152855492Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/key/v2/server","status":200,"bytes":305,"duration_ms":0,"request_id":"CD96MLr6-o-0"}
+{"time":"2026-11-06T08:47:48.215698526Z","level":"WARN","msg":"an operation was refused because it needs federation","error":"M_UNKNOWN: Changing the membership of a user who lives on another homeserver has to be carried out by that server, and this server does not implement that part of federation yet."}
+{"time":"2026-11-06T08:47:48.215775288Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/rooms/!hrBJQYIZuAxCQWoujOk_PV5-2XWYGw:hs2/ban","status":501,"bytes":202,"duration_ms":0,"request_id":"fOumIKgMco1d"}
+{"time":"2026-11-06T08:47:48.228391488Z","level":"INFO","msg":"lattice stopped"}
+2026/11/06 09:47:48 ============== 79d4fca6ff539e098e0b15552f20e50cb6545401e5a8a090b205c1bda79ca4d7 : END LOGS ==============
+
+
+2026/11/06 09:47:48 ============================================
+
+
+2026/11/06 09:47:48 2475564f42f2cdfd54d104829f169a1afa09354fb6662fcf21ecab8d0ec1e4a8 : Server logs:
+{"time":"2026-11-06T08:47:47.926122669Z","level":"INFO","msg":"lattice starting","server_name":"hs1","version":"0.1.0-dev","client_addr":"0.0.0.0:8008","federation_addr":"0.0.0.0:8448","registration_mode":"open"}
+{"time":"2026-11-06T08:47:47.941018569Z","level":"INFO","msg":"listening","addr":"0.0.0.0:8448","tls":true}
+{"time":"2026-11-06T08:47:47.941130536Z","level":"INFO","msg":"listening","addr":"0.0.0.0:8008","tls":false}
+{"time":"2026-11-06T08:47:47.970289789Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/versions","status":200,"bytes":181,"duration_ms":0,"request_id":"Hrd0T8xG-JB0"}
+{"time":"2026-11-06T08:47:47.972717498Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/register","status":401,"bytes":185,"duration_ms":0,"request_id":"ndUxOtgkxD-T"}
+{"time":"2026-11-06T08:47:47.978892255Z","level":"INFO","msg":"account registered","user_id":"@user-1:hs1","device_id":"mlVreUdikWE","admin":false}
+{"time":"2026-11-06T08:47:47.978946444Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/register","status":200,"bytes":113,"duration_ms":5,"request_id":"IM0H-KzYLFXE"}
+{"time":"2026-11-06T08:47:48.087167179Z","level":"INFO","msg":"request","method":"GET","path":"/.well-known/matrix/server","status":404,"bytes":89,"duration_ms":0,"request_id":"C92uTRjq7Gc-"}
+{"time":"2026-11-06T08:47:48.101074365Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/key/v2/server","status":200,"bytes":305,"duration_ms":0,"request_id":"8uNudFoqQuq4"}
+{"time":"2026-11-06T08:47:48.186639122Z","level":"INFO","msg":"a room's state was resolved across a fork","room_id":"!hrBJQYIZuAxCQWoujOk_PV5-2XWYGw:hs2","extremities":2}
+{"time":"2026-11-06T08:47:48.210496328Z","level":"INFO","msg":"rooms: a handed-over room is partly unlinked here; filling the gaps is the missing-event fetch of T-4007","rooms":1,"accepted":11,"outliers":2}
+{"time":"2026-11-06T08:47:48.213949229Z","level":"INFO","msg":"rooms: a local user joined a room held elsewhere","room_id":"!hrBJQYIZuAxCQWoujOk_PV5-2XWYGw:hs2","user_id":"@user-1:hs1","event_id":"$74ZCSI27B9wkN8qGWcnx3NceIoiTPkzw1d9YU1COWYE","state_events":5,"unlinked":2}
+{"time":"2026-11-06T08:47:48.214031511Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/join/!hrBJQYIZuAxCQWoujOk_PV5-2XWYGw:hs2","status":200,"bytes":50,"duration_ms":206,"request_id":"0l0vTrkaldfA"}
+{"time":"2026-11-06T08:47:48.370326054Z","level":"INFO","msg":"lattice stopped"}
+2026/11/06 09:47:48 ============== 2475564f42f2cdfd54d104829f169a1afa09354fb6662fcf21ecab8d0ec1e4a8 : END LOGS ==============
+
+
+--- FAIL: TestUnbanViaInvite (2.75s)
+=== RUN   TestFederationRejectInvite
+    federation_room_invite_test.go:24: Deploy times: 202.749027ms blueprints, 558.107884ms containers
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (1.802524ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (4.226384ms)
+    client.go:893: [CSAPI] POST hs2/_matrix/client/v3/register => 401 Unauthorized (1.517019ms)
+    client.go:893: [CSAPI] POST hs2/_matrix/client/v3/register => 200 OK (6.073035ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/createRoom => 200 OK (28.725103ms)
+    federation_room_invite_test.go:52: Server.MustJoinRoom joined room ID !HikJMK7ii5bCBLg04rUfl9m2DFnvhQ:hs1
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/rooms/!HikJMK7ii5bCBLg04rUfl9m2DFnvhQ:hs1/invite => 200 OK (220.627978ms)
+    federation_room_invite_test.go:39: Received PDU m.room.member/@delia:host.docker.internal:1024
+    federation_room_invite_test.go:39: Received PDU m.room.member/@user-2:hs2
+    client.go:893: [CSAPI] POST hs2/_matrix/client/v3/rooms/!HikJMK7ii5bCBLg04rUfl9m2DFnvhQ:hs1/leave => 200 OK (22.802843ms)
+    federation_room_invite_test.go:39: Received PDU m.room.member/@user-2:hs2
+--- PASS: TestFederationRejectInvite (5.08s)
+=== RUN   TestFederationRoomsInvite
+    federation_rooms_invite_test.go:25: Deploy times: 169.155773ms blueprints, 577.686145ms containers
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (1.53827ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (6.416739ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (848.003µs)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (6.005796ms)
+    client.go:893: [CSAPI] POST hs2/_matrix/client/v3/register => 401 Unauthorized (2.263272ms)
+    client.go:893: [CSAPI] POST hs2/_matrix/client/v3/register => 200 OK (7.426257ms)
+    client.go:893: [CSAPI] POST hs2/_matrix/client/v3/register => 401 Unauthorized (984.452µs)
+    client.go:893: [CSAPI] POST hs2/_matrix/client/v3/register => 200 OK (7.62196ms)
+=== RUN   TestFederationRoomsInvite/Parallel
+=== RUN   TestFederationRoomsInvite/Parallel/Invited_user_can_reject_invite_over_federation
+=== PAUSE TestFederationRoomsInvite/Parallel/Invited_user_can_reject_invite_over_federation
+=== RUN   TestFederationRoomsInvite/Parallel/Invited_user_can_reject_invite_over_federation_several_times
+=== PAUSE TestFederationRoomsInvite/Parallel/Invited_user_can_reject_invite_over_federation_several_times
+=== RUN   TestFederationRoomsInvite/Parallel/Invited_user_can_reject_invite_over_federation_for_empty_room
+=== PAUSE TestFederationRoomsInvite/Parallel/Invited_user_can_reject_invite_over_federation_for_empty_room
+=== RUN   TestFederationRoomsInvite/Parallel/Remote_invited_user_can_see_room_metadata
+=== PAUSE TestFederationRoomsInvite/Parallel/Remote_invited_user_can_see_room_metadata
+=== RUN   TestFederationRoomsInvite/Parallel/Remote_invited_user_can_join_the_room_when_homeserver_is_already_participating_in_the_room
+=== PAUSE TestFederationRoomsInvite/Parallel/Remote_invited_user_can_join_the_room_when_homeserver_is_already_participating_in_the_room
+=== RUN   TestFederationRoomsInvite/Parallel/Remote_invited_user_can_reject_invite_when_homeserver_is_already_participating_in_the_room
+=== PAUSE TestFederationRoomsInvite/Parallel/Remote_invited_user_can_reject_invite_when_homeserver_is_already_participating_in_the_room
+=== RUN   TestFederationRoomsInvite/Parallel/Inviter_user_can_rescind_invite_over_federation
+=== PAUSE TestFederationRoomsInvite/Parallel/Inviter_user_can_rescind_invite_over_federation
+=== RUN   TestFederationRoomsInvite/Parallel/Non-invitee_user_cannot_rescind_invite_over_federation
+=== PAUSE TestFederationRoomsInvite/Parallel/Non-invitee_user_cannot_rescind_invite_over_federation
+=== RUN   TestFederationRoomsInvite/Parallel/Invited_user_has_'is_direct'_flag_in_prev_content_after_joining
+=== NAME  TestFederationRoomsInvite
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/createRoom => 200 OK (170.869177ms)
+    client.go:893: [CSAPI] POST hs2/_matrix/client/v3/join/!9q38tEskmc4B1nPrUq_lQIzohLmG9g:hs1 => 200 OK (27.653696ms)
+    client.go:893: [CSAPI] GET hs2/_matrix/client/v3/sync => 200 OK (8.484451ms)
+=== CONT  TestFederationRoomsInvite/Parallel/Invited_user_can_reject_invite_over_federation
+=== CONT  TestFederationRoomsInvite/Parallel/Remote_invited_user_can_join_the_room_when_homeserver_is_already_participating_in_the_room
+=== CONT  TestFederationRoomsInvite/Parallel/Invited_user_can_reject_invite_over_federation_for_empty_room
+=== CONT  TestFederationRoomsInvite/Parallel/Invited_user_can_reject_invite_over_federation_several_times
+=== CONT  TestFederationRoomsInvite/Parallel/Non-invitee_user_cannot_rescind_invite_over_federation
+=== CONT  TestFederationRoomsInvite/Parallel/Inviter_user_can_rescind_invite_over_federation
+=== CONT  TestFederationRoomsInvite/Parallel/Remote_invited_user_can_reject_invite_when_homeserver_is_already_participating_in_the_room
+=== CONT  TestFederationRoomsInvite/Parallel/Remote_invited_user_can_see_room_metadata
+=== NAME  TestFederationRoomsInvite
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/createRoom => 200 OK (77.843999ms)
+    client.go:893: [CSAPI] GET hs2/_matrix/client/v3/sync => 200 OK (18.855518ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/createRoom => 200 OK (35.864063ms)
+    client.go:893: [CSAPI] POST hs2/_matrix/client/v3/rooms/!--7tGmB8a-aTC6EUdWIKsY8WE3OPJw:hs1/leave => 200 OK (18.186593ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (65.21216ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (74.917403ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/createRoom => 200 OK (105.092074ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/createRoom => 200 OK (45.050888ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/rooms/!Vn9pAHQvsgS8PjCQefI8yv7iUmLx-g:hs1/invite => 200 OK (134.997724ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (118.515558ms)
+    client.go:893: [CSAPI] GET hs2/_matrix/client/v3/sync => 200 OK (50.582172ms)
+    client.go:893: [CSAPI] POST hs2/_matrix/client/v3/join/!Vn9pAHQvsgS8PjCQefI8yv7iUmLx-g:hs1 => 200 OK (60.588983ms)
+    client.go:893: [CSAPI] GET hs2/_matrix/client/v3/sync => 200 OK (97.874724ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/rooms/!CChU3P7Khj-MISyrRvWwh4OUuuWN2w:hs1/leave => 200 OK (25.721023ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/rooms/!4XSS7-JZQVbHAKYSywnmWPkQsyhpbQ:hs1/invite => 200 OK (209.40201ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/createRoom => 200 OK (239.953764ms)
+    client.go:893: [CSAPI] GET hs2/_matrix/client/v3/sync => 200 OK (34.540747ms)
+    client.go:893: [CSAPI] POST hs2/_matrix/client/v3/rooms/!4XSS7-JZQVbHAKYSywnmWPkQsyhpbQ:hs1/leave => 200 OK (31.956155ms)
+    client.go:893: [CSAPI] GET hs2/_matrix/client/v3/sync => 200 OK (60.780434ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (383.684623ms)
+    client.go:893: [CSAPI] POST hs2/_matrix/client/v3/join/!p0DD9RwHh-su4yUAcgHOziD5gk9m-w:hs1 => 200 OK (26.20249ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (173.044801ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (145.231448ms)
+    client.go:893: [CSAPI] POST hs2/_matrix/client/v3/rooms/!CChU3P7Khj-MISyrRvWwh4OUuuWN2w:hs1/leave => 200 OK (23.757678ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (91.548832ms)
+    client.go:893: [CSAPI] GET hs2/_matrix/client/v3/sync => 200 OK (39.236538ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/createRoom => 200 OK (189.362381ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (93.813877ms)
+    client.go:893: [CSAPI] GET hs2/_matrix/client/v3/sync => 200 OK (36.798077ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/rooms/!gU7B5yy__QrSOZCwKyC4zKso14kJWg:hs1/kick => 501 Not Implemented (3.830918ms)
+=== NAME  TestFederationRoomsInvite/Parallel/Inviter_user_can_rescind_invite_over_federation
+    federation_rooms_invite_test.go:163: [31mCSAPI.MustDo POST http://127.0.0.1:37545/_matrix/client/v3/rooms/%21gU7B5yy__QrSOZCwKyC4zKso14kJWg:hs1/kick returned non-2xx code: 501 Not Implemented - body: {"errcode":"M_UNKNOWN","error":"Changing the membership of a user who lives on another homeserver has to be carried out by that server, and this server does not implement that part of federation yet."}
+        [39m
+=== NAME  TestFederationRoomsInvite
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (199.167893ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/createRoom => 200 OK (53.952345ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (156.962973ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (201.038603ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (180.062597ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/createRoom => 200 OK (216.315251ms)
+    client.go:893: [CSAPI] GET hs2/_matrix/client/v3/sync => 200 OK (41.320991ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (185.500274ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/createRoom => 200 OK (77.760518ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (299.671901ms)
+    client.go:893: [CSAPI] GET hs2/_matrix/client/v3/sync => 200 OK (46.652374ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/rooms/!zB4njhC_CO1jGImhrU_DIjX8sH_G1Q:hs1/state/m.room.name/ => 200 OK (24.688297ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (183.444584ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (171.28775ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (55.838257ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/rooms/!zB4njhC_CO1jGImhrU_DIjX8sH_G1Q:hs1/state/m.room.join_rules/ => 200 OK (22.700937ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (162.550953ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/join/!lhLTQ2vkNSm5g3MvuCQBILFEvt2bCg:hs1 => 200 OK (81.2587ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/rooms/!hb8ICdL-Gxqzl4csJP3hRWHahEUudw:hs1/invite => 200 OK (147.544552ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (152.157862ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (166.617357ms)
+    client.go:893: [CSAPI] GET hs2/_matrix/client/v3/sync => 200 OK (65.685487ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (118.433344ms)
+    client.go:893: [CSAPI] POST hs2/_matrix/client/v3/join/!hb8ICdL-Gxqzl4csJP3hRWHahEUudw:hs1 => 200 OK (36.492165ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (119.374978ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/rooms/!lhLTQ2vkNSm5g3MvuCQBILFEvt2bCg:hs1/invite => 200 OK (193.576037ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (128.446252ms)
+    client.go:893: [CSAPI] GET hs2/_matrix/client/v3/sync => 200 OK (53.530321ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/rooms/!lhLTQ2vkNSm5g3MvuCQBILFEvt2bCg:hs1/kick => 501 Not Implemented (5.85805ms)
+=== NAME  TestFederationRoomsInvite/Parallel/Non-invitee_user_cannot_rescind_invite_over_federation
+    federation_rooms_invite_test.go:199: [31mCSAPI.MustDo POST http://127.0.0.1:37545/_matrix/client/v3/rooms/%21lhLTQ2vkNSm5g3MvuCQBILFEvt2bCg:hs1/kick returned non-2xx code: 501 Not Implemented - body: {"errcode":"M_UNKNOWN","error":"Changing the membership of a user who lives on another homeserver has to be carried out by that server, and this server does not implement that part of federation yet."}
+        [39m
+=== NAME  TestFederationRoomsInvite
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (147.590056ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (119.006319ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (135.271937ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (224.493298ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (523.857023ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (527.061173ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (533.990454ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (530.058845ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/rooms/!Vn9pAHQvsgS8PjCQefI8yv7iUmLx-g:hs1/invite => 200 OK (149.483652ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/rooms/!4XSS7-JZQVbHAKYSywnmWPkQsyhpbQ:hs1/invite => 200 OK (144.998124ms)
+    client.go:893: [CSAPI] GET hs2/_matrix/client/v3/sync => 200 OK (12.837185ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (144.379224ms)
+    client.go:893: [CSAPI] POST hs2/_matrix/client/v3/join/!Vn9pAHQvsgS8PjCQefI8yv7iUmLx-g:hs1 => 200 OK (59.302548ms)
+    client.go:893: [CSAPI] GET hs2/_matrix/client/v3/sync => 200 OK (95.618096ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (77.423645ms)
+    client.go:893: [CSAPI] POST hs2/_matrix/client/v3/rooms/!4XSS7-JZQVbHAKYSywnmWPkQsyhpbQ:hs1/leave => 200 OK (16.981066ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/rooms/!hb8ICdL-Gxqzl4csJP3hRWHahEUudw:hs1/invite => 200 OK (113.425526ms)
+    client.go:893: [CSAPI] GET hs2/_matrix/client/v3/sync => 200 OK (17.229192ms)
+    client.go:893: [CSAPI] POST hs2/_matrix/client/v3/rooms/!hb8ICdL-Gxqzl4csJP3hRWHahEUudw:hs1/leave => 200 OK (19.676774ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (233.007462ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (244.722128ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (166.165478ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/rooms/!4XSS7-JZQVbHAKYSywnmWPkQsyhpbQ:hs1/invite => 200 OK (71.569146ms)
+    client.go:893: [CSAPI] GET hs2/_matrix/client/v3/sync => 200 OK (56.46268ms)
+    client.go:893: [CSAPI] POST hs2/_matrix/client/v3/rooms/!4XSS7-JZQVbHAKYSywnmWPkQsyhpbQ:hs1/leave => 200 OK (18.570755ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (59.350501ms)
+2026/11/06 09:47:57 ============================================
+
+
+2026/11/06 09:47:57 9ec8b10523201c8dd3efe40622ad03dd87c60827baf0bc469f0fdea8dfd78fcf : Server logs:
+{"time":"2026-11-06T08:47:54.285347671Z","level":"INFO","msg":"lattice starting","server_name":"hs2","version":"0.1.0-dev","client_addr":"0.0.0.0:8008","federation_addr":"0.0.0.0:8448","registration_mode":"open"}
+{"time":"2026-11-06T08:47:54.301978299Z","level":"INFO","msg":"listening","addr":"0.0.0.0:8448","tls":true}
+{"time":"2026-11-06T08:47:54.301985063Z","level":"INFO","msg":"listening","addr":"0.0.0.0:8008","tls":false}
+{"time":"2026-11-06T08:47:54.316975232Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/versions","status":200,"bytes":181,"duration_ms":0,"request_id":"9vLZol4_Zcsb"}
+{"time":"2026-11-06T08:47:54.362386304Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/register","status":401,"bytes":185,"duration_ms":0,"request_id":"nHW_TaxY51s2"}
+{"time":"2026-11-06T08:47:54.369886683Z","level":"INFO","msg":"account registered","user_id":"@user-3-bob:hs2","device_id":"0lJUrNc4bL8","admin":false}
+{"time":"2026-11-06T08:47:54.369950297Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/register","status":200,"bytes":117,"duration_ms":6,"request_id":"LsLkjvtaBtda"}
+{"time":"2026-11-06T08:47:54.371049477Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/register","status":401,"bytes":185,"duration_ms":0,"request_id":"fBHVAvH4HQeH"}
+{"time":"2026-11-06T08:47:54.378778692Z","level":"INFO","msg":"account registered","user_id":"@user-4-bob2:hs2","device_id":"egKCDrnbO1k","admin":false}
+{"time":"2026-11-06T08:47:54.378866656Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/register","status":200,"bytes":118,"duration_ms":7,"request_id":"30UkG2wQK9r5"}
+{"time":"2026-11-06T08:47:54.443107513Z","level":"INFO","msg":"request","method":"GET","path":"/.well-known/matrix/server","status":404,"bytes":89,"duration_ms":0,"request_id":"uhS0afTVALHG"}
+{"time":"2026-11-06T08:47:54.538798442Z","level":"INFO","msg":"federation: a remote server invited one of this server's users into a room","room_id":"!9q38tEskmc4B1nPrUq_lQIzohLmG9g:hs1","event_id":"$L7fPPL_dwyHIXtl0bCfASKWV7AmmqyLpzI998BytHfA","origin":"hs1","inviter":"@user-1-alice:hs1","invited":"@user-3-bob:hs2"}
+{"time":"2026-11-06T08:47:54.538869958Z","level":"INFO","msg":"request","method":"PUT","path":"/_matrix/federation/v2/invite/!9q38tEskmc4B1nPrUq_lQIzohLmG9g:hs1/$L7fPPL_dwyHIXtl0bCfASKWV7AmmqyLpzI998BytHfA","status":200,"bytes":4128,"duration_ms":79,"request_id":"RZXf5Uy8gczw"}
+{"time":"2026-11-06T08:47:54.578104184Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/join/!9q38tEskmc4B1nPrUq_lQIzohLmG9g:hs1","status":200,"bytes":50,"duration_ms":26,"request_id":"EIJACorIzlkz"}
+{"time":"2026-11-06T08:47:54.586978131Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":12757,"duration_ms":7,"request_id":"O3SraT76pctt"}
+{"time":"2026-11-06T08:47:54.651939795Z","level":"INFO","msg":"federation: a remote server invited one of this server's users into a room","room_id":"!--7tGmB8a-aTC6EUdWIKsY8WE3OPJw:hs1","event_id":"$GoqgvZxS-UW0iP25CbSVipOfP_c2ASfjklFVb1EW_c4","origin":"hs1","inviter":"@user-1-alice:hs1","invited":"@user-3-bob:hs2"}
+{"time":"2026-11-06T08:47:54.651998493Z","level":"INFO","msg":"request","method":"PUT","path":"/_matrix/federation/v2/invite/!--7tGmB8a-aTC6EUdWIKsY8WE3OPJw:hs1/$GoqgvZxS-UW0iP25CbSVipOfP_c2ASfjklFVb1EW_c4","status":200,"bytes":3435,"duration_ms":25,"request_id":"tr0DNQX4l2ab"}
+{"time":"2026-11-06T08:47:54.684409323Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":16597,"duration_ms":18,"request_id":"UpBFtWDZH_bm"}
+{"time":"2026-11-06T08:47:54.702884789Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/rooms/!--7tGmB8a-aTC6EUdWIKsY8WE3OPJw:hs1/leave","status":200,"bytes":3,"duration_ms":17,"request_id":"mC2DxmfiAal_"}
+{"time":"2026-11-06T08:47:54.797212615Z","level":"INFO","msg":"federation: a remote server invited one of this server's users into a room","room_id":"!CChU3P7Khj-MISyrRvWwh4OUuuWN2w:hs1","event_id":"$5pZAAfwyWIUuTkWG8iKwlLhqcuy08lpPedZjaS3Ucis","origin":"hs1","inviter":"@user-1-alice:hs1","invited":"@user-3-bob:hs2"}
+{"time":"2026-11-06T08:47:54.797282783Z","level":"INFO","msg":"request","method":"PUT","path":"/_matrix/federation/v2/invite/!CChU3P7Khj-MISyrRvWwh4OUuuWN2w:hs1/$5pZAAfwyWIUuTkWG8iKwlLhqcuy08lpPedZjaS3Ucis","status":200,"bytes":3435,"duration_ms":33,"request_id":"2ELd-m_zhVaj"}
+{"time":"2026-11-06T08:47:54.816628225Z","level":"INFO","msg":"federation: a remote server invited one of this server's users into a room","room_id":"!Vn9pAHQvsgS8PjCQefI8yv7iUmLx-g:hs1","event_id":"$X4tzgOTHhK2XjjRqe7SkErU5CPIn6XtHXsYc9JMRp9o","origin":"hs1","inviter":"@user-1-alice:hs1","invited":"@user-3-bob:hs2"}
+{"time":"2026-11-06T08:47:54.816970377Z","level":"INFO","msg":"request","method":"PUT","path":"/_matrix/federation/v2/invite/!Vn9pAHQvsgS8PjCQefI8yv7iUmLx-g:hs1/$X4tzgOTHhK2XjjRqe7SkErU5CPIn6XtHXsYc9JMRp9o","status":200,"bytes":3435,"duration_ms":30,"request_id":"yg3ndErgmlsu"}
+{"time":"2026-11-06T08:47:54.953600948Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":27590,"duration_ms":50,"request_id":"jjDy7w6ZY2c8"}
+{"time":"2026-11-06T08:47:55.013193639Z","level":"INFO","msg":"federation: a remote server invited one of this server's users into a room","room_id":"!4XSS7-JZQVbHAKYSywnmWPkQsyhpbQ:hs1","event_id":"$e6NfgKugZYXd7DWjqF-HHEk95f6aIQyJq9jlaShOZR8","origin":"hs1","inviter":"@user-1-alice:hs1","invited":"@user-3-bob:hs2"}
+{"time":"2026-11-06T08:47:55.01329191Z","level":"INFO","msg":"request","method":"PUT","path":"/_matrix/federation/v2/invite/!4XSS7-JZQVbHAKYSywnmWPkQsyhpbQ:hs1/$e6NfgKugZYXd7DWjqF-HHEk95f6aIQyJq9jlaShOZR8","status":200,"bytes":3435,"duration_ms":104,"request_id":"-s4RUQyKS4y7"}
+{"time":"2026-11-06T08:47:55.014875251Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/join/!Vn9pAHQvsgS8PjCQefI8yv7iUmLx-g:hs1","status":200,"bytes":50,"duration_ms":59,"request_id":"aQL7HmZGacpL"}
+{"time":"2026-11-06T08:47:55.024246287Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":25011,"duration_ms":96,"request_id":"2mjt1DB4qyj7"}
+{"time":"2026-11-06T08:47:55.028354309Z","level":"INFO","msg":"federation: a remote server invited one of this server's users into a room","room_id":"!p0DD9RwHh-su4yUAcgHOziD5gk9m-w:hs1","event_id":"$EnijOX872MbeCpALf6YKWrpWfbLUdyzP4MvqN-AKVoA","origin":"hs1","inviter":"@user-1-alice:hs1","invited":"@user-3-bob:hs2"}
+{"time":"2026-11-06T08:47:55.02844263Z","level":"INFO","msg":"request","method":"PUT","path":"/_matrix/federation/v2/invite/!p0DD9RwHh-su4yUAcgHOziD5gk9m-w:hs1/$EnijOX872MbeCpALf6YKWrpWfbLUdyzP4MvqN-AKVoA","status":200,"bytes":3435,"duration_ms":101,"request_id":"-gh6_HoefojD"}
+{"time":"2026-11-06T08:47:55.096754632Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":38743,"duration_ms":34,"request_id":"rPz4uPhvNXZ9"}
+{"time":"2026-11-06T08:47:55.129263158Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/rooms/!4XSS7-JZQVbHAKYSywnmWPkQsyhpbQ:hs1/leave","status":200,"bytes":3,"duration_ms":31,"request_id":"quP0diKrwlFn"}
+{"time":"2026-11-06T08:47:55.153508995Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":36165,"duration_ms":60,"request_id":"HXhPnqR1FA0W"}
+{"time":"2026-11-06T08:47:55.180223772Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/join/!p0DD9RwHh-su4yUAcgHOziD5gk9m-w:hs1","status":200,"bytes":50,"duration_ms":25,"request_id":"rOgidz9Ol1vR"}
+{"time":"2026-11-06T08:47:55.220516452Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/rooms/!CChU3P7Khj-MISyrRvWwh4OUuuWN2w:hs1/leave","status":200,"bytes":3,"duration_ms":23,"request_id":"lPduQZ8Rrrug"}
+{"time":"2026-11-06T08:47:55.233703169Z","level":"INFO","msg":"federation: a remote server invited one of this server's users into a room","room_id":"!gU7B5yy__QrSOZCwKyC4zKso14kJWg:hs1","event_id":"$qq2w-n0TchmOm4aZcrxkpInJVn5zOEmdytZOOlmZg9E","origin":"hs1","inviter":"@user-1-alice:hs1","invited":"@user-3-bob:hs2"}
+{"time":"2026-11-06T08:47:55.233778294Z","level":"INFO","msg":"request","method":"PUT","path":"/_matrix/federation/v2/invite/!gU7B5yy__QrSOZCwKyC4zKso14kJWg:hs1/$qq2w-n0TchmOm4aZcrxkpInJVn5zOEmdytZOOlmZg9E","status":200,"bytes":3435,"duration_ms":54,"request_id":"PVfOHtuzeAj3"}
+{"time":"2026-11-06T08:47:55.260207883Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":19884,"duration_ms":38,"request_id":"m2HdJJpXCkeM"}
+{"time":"2026-11-06T08:47:55.319210693Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":52659,"duration_ms":36,"request_id":"Pzc0rUC6p0at"}
+{"time":"2026-11-06T08:47:55.492005529Z","level":"INFO","msg":"federation: a remote server invited one of this server's users into a room","room_id":"!zB4njhC_CO1jGImhrU_DIjX8sH_G1Q:hs1","event_id":"$vcta8Y7arsNzYnh5L-umnu2obc1wX8XxLOapNkcunKA","origin":"hs1","inviter":"@user-1-alice:hs1","invited":"@user-3-bob:hs2"}
+{"time":"2026-11-06T08:47:55.492094042Z","level":"INFO","msg":"request","method":"PUT","path":"/_matrix/federation/v2/invite/!zB4njhC_CO1jGImhrU_DIjX8sH_G1Q:hs1/$vcta8Y7arsNzYnh5L-umnu2obc1wX8XxLOapNkcunKA","status":200,"bytes":4111,"duration_ms":32,"request_id":"7DgjFWTzWuSG"}
+{"time":"2026-11-06T08:47:55.594487857Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":57404,"duration_ms":40,"request_id":"40fa6kFIbman"}
+{"time":"2026-11-06T08:47:55.641962159Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":57404,"duration_ms":46,"request_id":"bIv_0fxBznRW"}
+{"time":"2026-11-06T08:47:55.714099336Z","level":"INFO","msg":"federation: a remote server invited one of this server's users into a room","room_id":"!hb8ICdL-Gxqzl4csJP3hRWHahEUudw:hs1","event_id":"$_L3m-SSYhl3oQjYaa7_yPLrkQvT8Wts82DGdbUxxNZo","origin":"hs1","inviter":"@user-1-alice:hs1","invited":"@user-3-bob:hs2"}
+{"time":"2026-11-06T08:47:55.714165658Z","level":"INFO","msg":"request","method":"PUT","path":"/_matrix/federation/v2/invite/!hb8ICdL-Gxqzl4csJP3hRWHahEUudw:hs1/$_L3m-SSYhl3oQjYaa7_yPLrkQvT8Wts82DGdbUxxNZo","status":200,"bytes":3435,"duration_ms":25,"request_id":"jBpSiTlzKA1e"}
+{"time":"2026-11-06T08:47:55.850653148Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":61233,"duration_ms":65,"request_id":"yLc0cUwt4P9r"}
+{"time":"2026-11-06T08:47:55.882247991Z","level":"INFO","msg":"federation: a remote server invited one of this server's users into a room","room_id":"!lhLTQ2vkNSm5g3MvuCQBILFEvt2bCg:hs1","event_id":"$46VhG02tPtS-ZsWWpnNh8uY_vB_JU8eF4dAql7gZrNM","origin":"hs1","inviter":"@user-2-alice2:hs1","invited":"@user-3-bob:hs2"}
+{"time":"2026-11-06T08:47:55.882325415Z","level":"INFO","msg":"request","method":"PUT","path":"/_matrix/federation/v2/invite/!lhLTQ2vkNSm5g3MvuCQBILFEvt2bCg:hs1/$46VhG02tPtS-ZsWWpnNh8uY_vB_JU8eF4dAql7gZrNM","status":200,"bytes":4178,"duration_ms":71,"request_id":"8zm1Ky-V8miJ"}
+{"time":"2026-11-06T08:47:55.888003651Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/join/!hb8ICdL-Gxqzl4csJP3hRWHahEUudw:hs1","status":200,"bytes":50,"duration_ms":35,"request_id":"oSARLrqU9yhn"}
+{"time":"2026-11-06T08:47:56.015988082Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":69300,"duration_ms":52,"request_id":"HCM9J2KKSVeE"}
+{"time":"2026-11-06T08:47:56.319208423Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/key/v2/server","status":200,"bytes":305,"duration_ms":0,"request_id":"Ofwi0_iXvk3B"}
+{"time":"2026-11-06T08:47:56.661584992Z","level":"INFO","msg":"request","method":"GET","path":"/.well-known/matrix/server","status":404,"bytes":89,"duration_ms":0,"request_id":"uAmM1NlFc6r0"}
+{"time":"2026-11-06T08:47:56.669482792Z","level":"INFO","msg":"rooms: ignoring a state event sent along with an invite; its origin's signature does not check","room_id":"!4XSS7-JZQVbHAKYSywnmWPkQsyhpbQ:hs1","event_id":"$pGZpNCIkOpAMPkskUVVF1tktu-DLg12BiG64j6RxeKM","type":"m.room.member","error":"event $pGZpNCIkOpAMPkskUVVF1tktu-DLg12BiG64j6RxeKM is not valid: none of the 1 signatures it carries from hs2 check against a key that server published: ed25519:v1: federation: hs2 has no keys recorded and was asked for too recently to ask again"}
+{"time":"2026-11-06T08:47:56.677397959Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/key/v2/server","status":200,"bytes":305,"duration_ms":0,"request_id":"Pu4NtQi0Lkfp"}
+{"time":"2026-11-06T08:47:56.689295123Z","level":"INFO","msg":"federation: a remote server invited one of this server's users into a room","room_id":"!4XSS7-JZQVbHAKYSywnmWPkQsyhpbQ:hs1","event_id":"$2B17dzjbhfie7V0vazeZhJU1PQ7CPZMHoligNOMURwU","origin":"hs1","inviter":"@user-1-alice:hs1","invited":"@user-3-bob:hs2"}
+{"time":"2026-11-06T08:47:56.689363158Z","level":"INFO","msg":"request","method":"PUT","path":"/_matrix/federation/v2/invite/!4XSS7-JZQVbHAKYSywnmWPkQsyhpbQ:hs1/$2B17dzjbhfie7V0vazeZhJU1PQ7CPZMHoligNOMURwU","status":200,"bytes":4313,"duration_ms":26,"request_id":"JZN7GFR0ANI4"}
+{"time":"2026-11-06T08:47:56.696691745Z","level":"INFO","msg":"federation: a remote server invited one of this server's users into a room","room_id":"!Vn9pAHQvsgS8PjCQefI8yv7iUmLx-g:hs1","event_id":"$-Y_z8fkaCXF9Envf7z8qCmjZ1VAswNqEv3lZlzojhv0","origin":"hs1","inviter":"@user-1-alice:hs1","invited":"@user-4-bob2:hs2"}
+{"time":"2026-11-06T08:47:56.696794252Z","level":"INFO","msg":"request","method":"PUT","path":"/_matrix/federation/v2/invite/!Vn9pAHQvsgS8PjCQefI8yv7iUmLx-g:hs1/$-Y_z8fkaCXF9Envf7z8qCmjZ1VAswNqEv3lZlzojhv0","status":200,"bytes":4313,"duration_ms":47,"request_id":"o2f2Lc768H_Z"}
+{"time":"2026-11-06T08:47:56.775859919Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":8664,"duration_ms":12,"request_id":"qwerSHe4qvNl"}
+{"time":"2026-11-06T08:47:56.835318667Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/join/!Vn9pAHQvsgS8PjCQefI8yv7iUmLx-g:hs1","status":200,"bytes":50,"duration_ms":58,"request_id":"XRFl9awD41KQ"}
+{"time":"2026-11-06T08:47:56.865317761Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":71962,"duration_ms":95,"request_id":"DKlL3inKaHVX"}
+{"time":"2026-11-06T08:47:56.883288694Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/rooms/!4XSS7-JZQVbHAKYSywnmWPkQsyhpbQ:hs1/leave","status":200,"bytes":3,"duration_ms":16,"request_id":"PVgSSDWYqJcA"}
+{"time":"2026-11-06T08:47:56.919743905Z","level":"INFO","msg":"federation: a remote server invited one of this server's users into a room","room_id":"!hb8ICdL-Gxqzl4csJP3hRWHahEUudw:hs1","event_id":"$mBCBnx1-ZvvDdW7eOi-YiQlJ4A415ke3hAVpRkJrhV0","origin":"hs1","inviter":"@user-1-alice:hs1","invited":"@user-4-bob2:hs2"}
+{"time":"2026-11-06T08:47:56.91981611Z","level":"INFO","msg":"request","method":"PUT","path":"/_matrix/federation/v2/invite/!hb8ICdL-Gxqzl4csJP3hRWHahEUudw:hs1/$mBCBnx1-ZvvDdW7eOi-YiQlJ4A415ke3hAVpRkJrhV0","status":200,"bytes":4313,"duration_ms":23,"request_id":"YRrI47iKC_pR"}
+{"time":"2026-11-06T08:47:56.998537432Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":21319,"duration_ms":16,"request_id":"O1aVHaBdl36F"}
+{"time":"2026-11-06T08:47:57.018602731Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/rooms/!hb8ICdL-Gxqzl4csJP3hRWHahEUudw:hs1/leave","status":200,"bytes":3,"duration_ms":19,"request_id":"jbN8SvplPZXb"}
+{"time":"2026-11-06T08:47:57.187594663Z","level":"INFO","msg":"federation: a remote server invited one of this server's users into a room","room_id":"!4XSS7-JZQVbHAKYSywnmWPkQsyhpbQ:hs1","event_id":"$Ba_IrS7P-MbBooOsfVDqHlLclLxgi9G624-55Er_hIE","origin":"hs1","inviter":"@user-1-alice:hs1","invited":"@user-3-bob:hs2"}
+{"time":"2026-11-06T08:47:57.187670753Z","level":"INFO","msg":"request","method":"PUT","path":"/_matrix/federation/v2/invite/!4XSS7-JZQVbHAKYSywnmWPkQsyhpbQ:hs1/$Ba_IrS7P-MbBooOsfVDqHlLclLxgi9G624-55Er_hIE","status":200,"bytes":4172,"duration_ms":27,"request_id":"sCPVXrncxdA3"}
+{"time":"2026-11-06T08:47:57.258832659Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":77072,"duration_ms":55,"request_id":"q_wo_lhzmSHZ"}
+{"time":"2026-11-06T08:47:57.278139304Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/rooms/!4XSS7-JZQVbHAKYSywnmWPkQsyhpbQ:hs1/leave","status":200,"bytes":3,"duration_ms":17,"request_id":"Dq4r9bef6hDx"}
+{"time":"2026-11-06T08:47:57.352991279Z","level":"INFO","msg":"lattice stopped"}
+2026/11/06 09:47:57 ============== 9ec8b10523201c8dd3efe40622ad03dd87c60827baf0bc469f0fdea8dfd78fcf : END LOGS ==============
+
+
+2026/11/06 09:47:57 ============================================
+
+
+2026/11/06 09:47:57 3fba0b969288c9512634f58c8a35a100c0a7c8b37fc6ee687bb1b47ea03215a3 : Server logs:
+{"time":"2026-11-06T08:47:54.300641582Z","level":"INFO","msg":"lattice starting","server_name":"hs1","version":"0.1.0-dev","client_addr":"0.0.0.0:8008","federation_addr":"0.0.0.0:8448","registration_mode":"open"}
+{"time":"2026-11-06T08:47:54.315503695Z","level":"INFO","msg":"listening","addr":"0.0.0.0:8448","tls":true}
+{"time":"2026-11-06T08:47:54.315513181Z","level":"INFO","msg":"listening","addr":"0.0.0.0:8008","tls":false}
+{"time":"2026-11-06T08:47:54.344722983Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/versions","status":200,"bytes":181,"duration_ms":0,"request_id":"z7TrHE9idFvS"}
+{"time":"2026-11-06T08:47:54.346451811Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/register","status":401,"bytes":185,"duration_ms":0,"request_id":"iun6oemTqwSJ"}
+{"time":"2026-11-06T08:47:54.352837906Z","level":"INFO","msg":"account registered","user_id":"@user-1-alice:hs1","device_id":"p-KXc219ZV4","admin":false}
+{"time":"2026-11-06T08:47:54.352921163Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/register","status":200,"bytes":119,"duration_ms":6,"request_id":"_IFWegB1OSa7"}
+{"time":"2026-11-06T08:47:54.353883017Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/register","status":401,"bytes":185,"duration_ms":0,"request_id":"mmkUh07DPlRj"}
+{"time":"2026-11-06T08:47:54.359912789Z","level":"INFO","msg":"account registered","user_id":"@user-2-alice2:hs1","device_id":"R0xKMNrxDtw","admin":false}
+{"time":"2026-11-06T08:47:54.35996906Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/register","status":200,"bytes":120,"duration_ms":5,"request_id":"sx-XpSxqLdz3"}
+{"time":"2026-11-06T08:47:54.497824097Z","level":"INFO","msg":"request","method":"GET","path":"/.well-known/matrix/server","status":404,"bytes":89,"duration_ms":0,"request_id":"QVIeIcO-rw86"}
+{"time":"2026-11-06T08:47:54.512534839Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/key/v2/server","status":200,"bytes":305,"duration_ms":0,"request_id":"kL0gXjoa36zs"}
+{"time":"2026-11-06T08:47:54.55031355Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/createRoom","status":200,"bytes":50,"duration_ms":170,"request_id":"lH3HnM4cM3t2"}
+{"time":"2026-11-06T08:47:54.665171241Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/createRoom","status":200,"bytes":50,"duration_ms":77,"request_id":"xeZEdRGB7emt"}
+{"time":"2026-11-06T08:47:54.70146557Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/createRoom","status":200,"bytes":50,"duration_ms":35,"request_id":"exCPfSDe9m-H"}
+{"time":"2026-11-06T08:47:54.766964142Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":23027,"duration_ms":64,"request_id":"htzALly-u7H9"}
+{"time":"2026-11-06T08:47:54.778152639Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":26614,"duration_ms":73,"request_id":"XtUPpbTvfcOi"}
+{"time":"2026-11-06T08:47:54.806736192Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/createRoom","status":200,"bytes":50,"duration_ms":103,"request_id":"i635NfbExRFQ"}
+{"time":"2026-11-06T08:47:54.852076117Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/createRoom","status":200,"bytes":50,"duration_ms":43,"request_id":"cZyFzEmnWc66"}
+{"time":"2026-11-06T08:47:54.902690726Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/rooms/!Vn9pAHQvsgS8PjCQefI8yv7iUmLx-g:hs1/invite","status":200,"bytes":3,"duration_ms":134,"request_id":"LHxn-WSNks78"}
+{"time":"2026-11-06T08:47:54.925727497Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":33464,"duration_ms":118,"request_id":"3gifCFWIbxcf"}
+{"time":"2026-11-06T08:47:55.05063862Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/rooms/!CChU3P7Khj-MISyrRvWwh4OUuuWN2w:hs1/leave","status":200,"bytes":3,"duration_ms":24,"request_id":"6C6mQ7Efpqko"}
+{"time":"2026-11-06T08:47:55.061740581Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/rooms/!4XSS7-JZQVbHAKYSywnmWPkQsyhpbQ:hs1/invite","status":200,"bytes":3,"duration_ms":208,"request_id":"4DXryVZ16xyB"}
+{"time":"2026-11-06T08:47:55.092341038Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/createRoom","status":200,"bytes":50,"duration_ms":238,"request_id":"OpQsp4ScZ3EJ"}
+{"time":"2026-11-06T08:47:55.162754324Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":19018,"duration_ms":383,"request_id":"Z1NQw08L85s1"}
+{"time":"2026-11-06T08:47:55.188358717Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":44841,"duration_ms":172,"request_id":"lmkXIYf-rtA3"}
+{"time":"2026-11-06T08:47:55.196150398Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":19018,"duration_ms":144,"request_id":"xvC9sgdb4BPZ"}
+{"time":"2026-11-06T08:47:55.254898239Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":7550,"duration_ms":91,"request_id":"YlFBFQAtB1zD"}
+{"time":"2026-11-06T08:47:55.282009298Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/createRoom","status":200,"bytes":50,"duration_ms":188,"request_id":"Fn7aEmML7fQH"}
+{"time":"2026-11-06T08:47:55.284451136Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":8581,"duration_ms":92,"request_id":"QqdzCBWjRKf0"}
+{"time":"2026-11-06T08:47:55.32356171Z","level":"WARN","msg":"an operation was refused because it needs federation","error":"M_UNKNOWN: Changing the membership of a user who lives on another homeserver has to be carried out by that server, and this server does not implement that part of federation yet."}
+{"time":"2026-11-06T08:47:55.323658023Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/rooms/!gU7B5yy__QrSOZCwKyC4zKso14kJWg:hs1/kick","status":501,"bytes":202,"duration_ms":3,"request_id":"eC2unX6gJtAF"}
+{"time":"2026-11-06T08:47:55.328819576Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":51710,"duration_ms":198,"request_id":"fXIUqJ92x4L6"}
+{"time":"2026-11-06T08:47:55.336294323Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/createRoom","status":200,"bytes":50,"duration_ms":53,"request_id":"cUeQqVDzFVDH"}
+{"time":"2026-11-06T08:47:55.412272879Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":3963,"duration_ms":156,"request_id":"VMGvsqyOh-Df"}
+{"time":"2026-11-06T08:47:55.485990724Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":7550,"duration_ms":200,"request_id":"jHWRfjiFfIhe"}
+{"time":"2026-11-06T08:47:55.510137514Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":11813,"duration_ms":179,"request_id":"S7Pv8qkrfff0"}
+{"time":"2026-11-06T08:47:55.552833516Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/createRoom","status":200,"bytes":50,"duration_ms":215,"request_id":"x-t6mHrE3ew0"}
+{"time":"2026-11-06T08:47:55.598181082Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":7992,"duration_ms":185,"request_id":"uIOhzJE6lMbV"}
+{"time":"2026-11-06T08:47:55.630605286Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/createRoom","status":200,"bytes":50,"duration_ms":76,"request_id":"Scf8LhEYwA3D"}
+{"time":"2026-11-06T08:47:55.63625654Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":62985,"duration_ms":299,"request_id":"7R8efBvVBjB4"}
+{"time":"2026-11-06T08:47:55.667216482Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/rooms/!zB4njhC_CO1jGImhrU_DIjX8sH_G1Q:hs1/state/m.room.name/","status":200,"bytes":24,"duration_ms":22,"request_id":"yiSUYRqY8yBx"}
+{"time":"2026-11-06T08:47:55.669934412Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":8506,"duration_ms":182,"request_id":"eNFyKk7N7aDH"}
+{"time":"2026-11-06T08:47:55.681812419Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":4639,"duration_ms":170,"request_id":"D3oI-BRtwM_f"}
+{"time":"2026-11-06T08:47:55.686990031Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":5482,"duration_ms":55,"request_id":"JybJN3xYqfYq"}
+{"time":"2026-11-06T08:47:55.690079954Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/rooms/!zB4njhC_CO1jGImhrU_DIjX8sH_G1Q:hs1/state/m.room.join_rules/","status":200,"bytes":23,"duration_ms":22,"request_id":"YNaR29aytbEH"}
+{"time":"2026-11-06T08:47:55.761064501Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":8969,"duration_ms":162,"request_id":"lwQ365e1bm--"}
+{"time":"2026-11-06T08:47:55.768486173Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/join/!lhLTQ2vkNSm5g3MvuCQBILFEvt2bCg:hs1","status":200,"bytes":50,"duration_ms":80,"request_id":"vP4LSCsPuWCE"}
+{"time":"2026-11-06T08:47:55.784629358Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/rooms/!hb8ICdL-Gxqzl4csJP3hRWHahEUudw:hs1/invite","status":200,"bytes":3,"duration_ms":146,"request_id":"zk2hip_89E3N"}
+{"time":"2026-11-06T08:47:55.834273925Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":9121,"duration_ms":151,"request_id":"h515wB59-p4E"}
+{"time":"2026-11-06T08:47:55.837036536Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":9121,"duration_ms":166,"request_id":"vlYv-qDWXLAY"}
+{"time":"2026-11-06T08:47:55.879910888Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":5366,"duration_ms":117,"request_id":"78mgrEBtfOmp"}
+{"time":"2026-11-06T08:47:55.954179088Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":5366,"duration_ms":118,"request_id":"mpFt36SAlesV"}
+{"time":"2026-11-06T08:47:55.962206323Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/rooms/!lhLTQ2vkNSm5g3MvuCQBILFEvt2bCg:hs1/invite","status":200,"bytes":3,"duration_ms":192,"request_id":"t4XBhCXYHU24"}
+{"time":"2026-11-06T08:47:55.965961199Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":5366,"duration_ms":127,"request_id":"OXzIOveOn9od"}
+{"time":"2026-11-06T08:47:56.022464889Z","level":"WARN","msg":"an operation was refused because it needs federation","error":"M_UNKNOWN: Changing the membership of a user who lives on another homeserver has to be carried out by that server, and this server does not implement that part of federation yet."}
+{"time":"2026-11-06T08:47:56.02274674Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/rooms/!lhLTQ2vkNSm5g3MvuCQBILFEvt2bCg:hs1/kick","status":501,"bytes":202,"duration_ms":5,"request_id":"8IETfHUsfwIU"}
+{"time":"2026-11-06T08:47:56.027856844Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":4706,"duration_ms":147,"request_id":"-7PxqM2R_hRx"}
+{"time":"2026-11-06T08:47:56.085486798Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":4706,"duration_ms":118,"request_id":"5bjxKTKlv7X1"}
+{"time":"2026-11-06T08:47:56.089733801Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":4706,"duration_ms":134,"request_id":"32PUwb8wdgl4"}
+{"time":"2026-11-06T08:47:56.112873062Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":80016,"duration_ms":224,"request_id":"LwL24jpNC6J9"}
+{"time":"2026-11-06T08:47:56.55208429Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":4311,"duration_ms":523,"request_id":"2Ekh0UqWuuB1"}
+{"time":"2026-11-06T08:47:56.612855503Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":5624,"duration_ms":526,"request_id":"HOuIBTp3OaAz"}
+{"time":"2026-11-06T08:47:56.624012152Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":5624,"duration_ms":533,"request_id":"kHxyDovhmjsj"}
+{"time":"2026-11-06T08:47:56.64469159Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":5624,"duration_ms":529,"request_id":"bNdISYUezVEd"}
+{"time":"2026-11-06T08:47:56.691374343Z","level":"INFO","msg":"a room's state was resolved across a fork","room_id":"!CChU3P7Khj-MISyrRvWwh4OUuuWN2w:hs1","extremities":2}
+{"time":"2026-11-06T08:47:56.762636648Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/rooms/!Vn9pAHQvsgS8PjCQefI8yv7iUmLx-g:hs1/invite","status":200,"bytes":3,"duration_ms":148,"request_id":"OUxRpb09sPJm"}
+{"time":"2026-11-06T08:47:56.769364055Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/rooms/!4XSS7-JZQVbHAKYSywnmWPkQsyhpbQ:hs1/invite","status":200,"bytes":3,"duration_ms":144,"request_id":"EFtURpuM00iN"}
+{"time":"2026-11-06T08:47:56.789321153Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":11966,"duration_ms":143,"request_id":"03ec7JlueUeF"}
+{"time":"2026-11-06T08:47:56.867138253Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":11023,"duration_ms":76,"request_id":"i91seSt4b9Ur"}
+{"time":"2026-11-06T08:47:56.895700093Z","level":"INFO","msg":"request","method":"PUT","path":"/_matrix/federation/v1/send/lat-1793954876302745789-1","status":200,"bytes":360,"duration_ms":584,"request_id":"7Yv92WJryjlx"}
+{"time":"2026-11-06T08:47:56.980812564Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/rooms/!hb8ICdL-Gxqzl4csJP3hRWHahEUudw:hs1/invite","status":200,"bytes":3,"duration_ms":112,"request_id":"OXVDkv92uoUy"}
+{"time":"2026-11-06T08:47:57.068791016Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":99624,"duration_ms":232,"request_id":"CE-ifqQvuzGU"}
+{"time":"2026-11-06T08:47:57.098294351Z","level":"INFO","msg":"request","method":"PUT","path":"/_matrix/federation/v1/send/lat-1793954876896865766-12","status":200,"bytes":110,"duration_ms":196,"request_id":"G6muuo2ZOLZU"}
+{"time":"2026-11-06T08:47:57.128358874Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":100400,"duration_ms":243,"request_id":"JUA7Ak5zyXyI"}
+{"time":"2026-11-06T08:47:57.151571262Z","level":"INFO","msg":"request","method":"PUT","path":"/_matrix/federation/v1/send/lat-1793954877099144406-16","status":200,"bytes":60,"duration_ms":50,"request_id":"BhxW_Rvi00Cm"}
+{"time":"2026-11-06T08:47:57.185039406Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":101197,"duration_ms":165,"request_id":"-pLG3XIzTgpk"}
+{"time":"2026-11-06T08:47:57.201919523Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/rooms/!4XSS7-JZQVbHAKYSywnmWPkQsyhpbQ:hs1/invite","status":200,"bytes":3,"duration_ms":70,"request_id":"mzkmSslmUDVz"}
+{"time":"2026-11-06T08:47:57.337836584Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":105448,"duration_ms":58,"request_id":"ufbohckIRpsA"}
+{"time":"2026-11-06T08:47:57.505289937Z","level":"INFO","msg":"lattice stopped"}
+2026/11/06 09:47:57 ============== 3fba0b969288c9512634f58c8a35a100c0a7c8b37fc6ee687bb1b47ea03215a3 : END LOGS ==============
+
+
+--- FAIL: TestFederationRoomsInvite (4.07s)
+    --- FAIL: TestFederationRoomsInvite/Parallel (0.21s)
+        --- PASS: TestFederationRoomsInvite/Parallel/Invited_user_has_'is_direct'_flag_in_prev_content_after_joining (0.21s)
+        --- PASS: TestFederationRoomsInvite/Parallel/Invited_user_can_reject_invite_over_federation_for_empty_room (0.67s)
+        --- FAIL: TestFederationRoomsInvite/Parallel/Inviter_user_can_rescind_invite_over_federation (0.74s)
+        --- PASS: TestFederationRoomsInvite/Parallel/Remote_invited_user_can_see_room_metadata (1.10s)
+        --- FAIL: TestFederationRoomsInvite/Parallel/Non-invitee_user_cannot_rescind_invite_over_federation (1.44s)
+        --- PASS: TestFederationRoomsInvite/Parallel/Invited_user_can_reject_invite_over_federation (1.97s)
+        --- PASS: TestFederationRoomsInvite/Parallel/Remote_invited_user_can_join_the_room_when_homeserver_is_already_participating_in_the_room (2.48s)
+        --- PASS: TestFederationRoomsInvite/Parallel/Remote_invited_user_can_reject_invite_when_homeserver_is_already_participating_in_the_room (2.60s)
+        --- PASS: TestFederationRoomsInvite/Parallel/Invited_user_can_reject_invite_over_federation_several_times (2.75s)
+FAIL
+FAIL	github.com/matrix-org/complement/tests	17.610s
+2026/11/06 09:47:41 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:csapi CACertificate:0x1234930aa008 CAPrivateKey:0x123493072070 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+=== RUN   TestAddAccountData
+    account_data_test.go:13: Deploy times: 2.360598982s blueprints, 676.502512ms containers
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (1.449276ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (4.717372ms)
+=== RUN   TestAddAccountData/Can_add_global_account_data
+=== NAME  TestAddAccountData
+    client.go:893: [CSAPI] PUT hs1/_matrix/client/v3/user/@user-1:hs1/account_data/test.key => 200 OK (1.346882ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/user/@user-1:hs1/account_data/test.key => 200 OK (788.822µs)
+    client.go:893: [CSAPI] PUT hs1/_matrix/client/v3/user/@user-1:hs1/account_data/test.key => 200 OK (1.189344ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/user/@user-1:hs1/account_data/test.key => 200 OK (741.369µs)
+=== RUN   TestAddAccountData/Can_add_room_account_data
+=== NAME  TestAddAccountData
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/createRoom => 200 OK (16.058575ms)
+    client.go:893: [CSAPI] PUT hs1/_matrix/client/v3/user/@user-1:hs1/rooms/!gfsn6s01iIkxVoJvu6ganN4jbJDsBw:hs1/account_data/test.key => 404 Not Found (314.873µs)
+=== NAME  TestAddAccountData/Can_add_room_account_data
+    client.go:346: [31mCSAPI.MustDo PUT http://127.0.0.1:45557/_matrix/client/v3/user/@user-1:hs1/rooms/%21gfsn6s01iIkxVoJvu6ganN4jbJDsBw:hs1/account_data/test.key returned non-2xx code: 404 Not Found - body: {"errcode":"M_UNRECOGNIZED","error":"Unrecognized endpoint /_matrix/client/v3/user/@user-1:hs1/rooms/!gfsn6s01iIkxVoJvu6ganN4jbJDsBw:hs1/account_data/test.key."}
+        [39m
+2026/11/06 09:47:45 ============================================
+
+
+2026/11/06 09:47:45 b107832c9bbc8cffc840524b121af9833ef5fe1cc28c59a245d94863ce38e34d : Server logs:
+{"time":"2026-11-06T08:47:45.111402778Z","level":"INFO","msg":"lattice starting","server_name":"hs1","version":"0.1.0-dev","client_addr":"0.0.0.0:8008","federation_addr":"0.0.0.0:8448","registration_mode":"open"}
+{"time":"2026-11-06T08:47:45.127801552Z","level":"INFO","msg":"listening","addr":"0.0.0.0:8008","tls":false}
+{"time":"2026-11-06T08:47:45.127788082Z","level":"INFO","msg":"listening","addr":"0.0.0.0:8448","tls":true}
+{"time":"2026-11-06T08:47:45.136184542Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/versions","status":200,"bytes":181,"duration_ms":0,"request_id":"UTHKGv_VUjZ5"}
+{"time":"2026-11-06T08:47:45.137913517Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/register","status":401,"bytes":185,"duration_ms":0,"request_id":"iLWF9OCCxAdN"}
+{"time":"2026-11-06T08:47:45.14267328Z","level":"INFO","msg":"account registered","user_id":"@user-1:hs1","device_id":"oV19a-rsR90","admin":false}
+{"time":"2026-11-06T08:47:45.142715508Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/register","status":200,"bytes":113,"duration_ms":4,"request_id":"OL8ZymUCN6dX"}
+{"time":"2026-11-06T08:47:45.144305449Z","level":"INFO","msg":"request","method":"PUT","path":"/_matrix/client/v3/user/@user-1:hs1/account_data/test.key","status":200,"bytes":3,"duration_ms":0,"request_id":"mG66DJgvq7lg"}
+{"time":"2026-11-06T08:47:45.14521628Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/user/@user-1:hs1/account_data/test.key","status":200,"bytes":17,"duration_ms":0,"request_id":"XkjjDG7hLcF6"}
+{"time":"2026-11-06T08:47:45.146565591Z","level":"INFO","msg":"request","method":"PUT","path":"/_matrix/client/v3/user/@user-1:hs1/account_data/test.key","status":200,"bytes":3,"duration_ms":0,"request_id":"6pkBa6z7Y8Dc"}
+{"time":"2026-11-06T08:47:45.147354727Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/user/@user-1:hs1/account_data/test.key","status":200,"bytes":18,"duration_ms":0,"request_id":"0Fkbir-J0lvp"}
+{"time":"2026-11-06T08:47:45.163567484Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/createRoom","status":200,"bytes":50,"duration_ms":15,"request_id":"yAQZJrTe3jX0"}
+{"time":"2026-11-06T08:47:45.16407218Z","level":"INFO","msg":"request","method":"PUT","path":"/_matrix/client/v3/user/@user-1:hs1/rooms/!gfsn6s01iIkxVoJvu6ganN4jbJDsBw:hs1/account_data/test.key","status":404,"bytes":162,"duration_ms":0,"request_id":"5mt4ch6tdImj"}
+{"time":"2026-11-06T08:47:45.173059857Z","level":"INFO","msg":"lattice stopped"}
+2026/11/06 09:47:45 ============== b107832c9bbc8cffc840524b121af9833ef5fe1cc28c59a245d94863ce38e34d : END LOGS ==============
+
+
+--- FAIL: TestAddAccountData (3.25s)
+    --- PASS: TestAddAccountData/Can_add_global_account_data (0.00s)
+    --- FAIL: TestAddAccountData/Can_add_room_account_data (0.02s)
+FAIL
+FAIL	github.com/matrix-org/complement/tests/csapi	5.305s
+2026/11/06 09:47:40 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc2836 CACertificate:0x13d33a0a8008 CAPrivateKey:0x13d33a06c070 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc2836	0.994s [no tests to run]
+2026/11/06 09:47:42 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3389 CACertificate:0xcde6e662008 CAPrivateKey:0xcde6e62e070 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3389	3.332s [no tests to run]
+2026/11/06 09:47:43 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3391 CACertificate:0x1694776a0008 CAPrivateKey:0x16947765e070 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+=== RUN   TestRemovingAccountData
+    msc3391_test.go:25: Deploy times: 1.383290163s blueprints, 620.505433ms containers
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (1.953279ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (4.986058ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/createRoom => 200 OK (16.88318ms)
+=== RUN   TestRemovingAccountData/Deleting_a_user's_account_data_via_DELETE_works
+=== NAME  TestRemovingAccountData
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (7.417022ms)
+    client.go:893: [CSAPI] PUT hs1/_matrix/client/v3/user/@user-1:hs1/account_data/org.example.test => 200 OK (1.414871ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (4.920445ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/user/@user-1:hs1/account_data/org.example.test => 200 OK (874.71µs)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (6.865714ms)
+    client.go:893: [CSAPI] DELETE hs1/_matrix/client/unstable/org.matrix.msc3391/user/@user-1:hs1/account_data/org.example.test => 404 Not Found (514.497µs)
+=== NAME  TestRemovingAccountData/Deleting_a_user's_account_data_via_DELETE_works
+    msc3391_test.go:132: [31mCSAPI.MustDo DELETE http://127.0.0.1:43499/_matrix/client/unstable/org.matrix.msc3391/user/@user-1:hs1/account_data/org.example.test returned non-2xx code: 404 Not Found - body: {"errcode":"M_UNRECOGNIZED","error":"Unrecognized endpoint /_matrix/client/unstable/org.matrix.msc3391/user/@user-1:hs1/account_data/org.example.test."}
+        [39m
+=== RUN   TestRemovingAccountData/Deleting_a_user's_account_data_via_PUT_works
+=== NAME  TestRemovingAccountData
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (7.060347ms)
+    client.go:893: [CSAPI] PUT hs1/_matrix/client/v3/user/@user-1:hs1/account_data/org.example.test => 200 OK (1.783418ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (4.357482ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/user/@user-1:hs1/account_data/org.example.test => 200 OK (1.204478ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (7.403501ms)
+    client.go:893: [CSAPI] PUT hs1/_matrix/client/v3/user/@user-1:hs1/account_data/org.example.test => 200 OK (2.172294ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (5.158168ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/user/@user-1:hs1/account_data/org.example.test => 200 OK (1.271415ms)
+=== NAME  TestRemovingAccountData/Deleting_a_user's_account_data_via_PUT_works
+    msc3391_test.go:155: [31mMatchResponse got status 200 want 404 - http://127.0.0.1:43499/_matrix/client/v3/user/@user-1:hs1/account_data/org.example.test => {}[39m
+=== RUN   TestRemovingAccountData/Deleting_a_user's_room_data_via_DELETE_works
+=== NAME  TestRemovingAccountData
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (7.199805ms)
+    client.go:893: [CSAPI] PUT hs1/_matrix/client/v3/user/@user-1:hs1/rooms/!CQt_UaKEr1aZe8d6sTz23TygJ4GdHQ:hs1/account_data/org.example.test => 404 Not Found (750.708µs)
+=== NAME  TestRemovingAccountData/Deleting_a_user's_room_data_via_DELETE_works
+    client.go:346: [31mCSAPI.MustDo PUT http://127.0.0.1:43499/_matrix/client/v3/user/@user-1:hs1/rooms/%21CQt_UaKEr1aZe8d6sTz23TygJ4GdHQ:hs1/account_data/org.example.test returned non-2xx code: 404 Not Found - body: {"errcode":"M_UNRECOGNIZED","error":"Unrecognized endpoint /_matrix/client/v3/user/@user-1:hs1/rooms/!CQt_UaKEr1aZe8d6sTz23TygJ4GdHQ:hs1/account_data/org.example.test."}
+        [39m
+=== RUN   TestRemovingAccountData/Deleting_a_user's_room_account_data_via_PUT_works
+=== NAME  TestRemovingAccountData
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (7.268212ms)
+    client.go:893: [CSAPI] PUT hs1/_matrix/client/v3/user/@user-1:hs1/rooms/!CQt_UaKEr1aZe8d6sTz23TygJ4GdHQ:hs1/account_data/org.example.test => 404 Not Found (547.985µs)
+=== NAME  TestRemovingAccountData/Deleting_a_user's_room_account_data_via_PUT_works
+    client.go:346: [31mCSAPI.MustDo PUT http://127.0.0.1:43499/_matrix/client/v3/user/@user-1:hs1/rooms/%21CQt_UaKEr1aZe8d6sTz23TygJ4GdHQ:hs1/account_data/org.example.test returned non-2xx code: 404 Not Found - body: {"errcode":"M_UNRECOGNIZED","error":"Unrecognized endpoint /_matrix/client/v3/user/@user-1:hs1/rooms/!CQt_UaKEr1aZe8d6sTz23TygJ4GdHQ:hs1/account_data/org.example.test."}
+        [39m
+2026/11/06 09:47:46 ============================================
+
+
+2026/11/06 09:47:46 673d7bb02e0e6aa4a9d5c0ffcd5ff59143f739c49d2031c427ad6154eaaf16e8 : Server logs:
+{"time":"2026-11-06T08:47:45.708896268Z","level":"INFO","msg":"lattice starting","server_name":"hs1","version":"0.1.0-dev","client_addr":"0.0.0.0:8008","federation_addr":"0.0.0.0:8448","registration_mode":"open"}
+{"time":"2026-11-06T08:47:45.726395641Z","level":"INFO","msg":"listening","addr":"0.0.0.0:8448","tls":true}
+{"time":"2026-11-06T08:47:45.726403009Z","level":"INFO","msg":"listening","addr":"0.0.0.0:8008","tls":false}
+{"time":"2026-11-06T08:47:45.765068817Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/versions","status":200,"bytes":181,"duration_ms":0,"request_id":"gks3P32KsQLh"}
+{"time":"2026-11-06T08:47:45.767257079Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/register","status":401,"bytes":185,"duration_ms":0,"request_id":"WAFonwp8_7s5"}
+{"time":"2026-11-06T08:47:45.7724826Z","level":"INFO","msg":"account registered","user_id":"@user-1:hs1","device_id":"ofAjUdYikrQ","admin":false}
+{"time":"2026-11-06T08:47:45.772531089Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/register","status":200,"bytes":113,"duration_ms":4,"request_id":"-G9nnqu5hwbU"}
+{"time":"2026-11-06T08:47:45.789573265Z","level":"INFO","msg":"request","method":"POST","path":"/_matrix/client/v3/createRoom","status":200,"bytes":50,"duration_ms":16,"request_id":"-7WlEWs2kCvA"}
+{"time":"2026-11-06T08:47:45.79725559Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":7476,"duration_ms":6,"request_id":"sFeNCMamdw1N"}
+{"time":"2026-11-06T08:47:45.798832508Z","level":"INFO","msg":"request","method":"PUT","path":"/_matrix/client/v3/user/@user-1:hs1/account_data/org.example.test","status":200,"bytes":3,"duration_ms":0,"request_id":"4STEgBiA8kFN"}
+{"time":"2026-11-06T08:47:45.803846222Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":186,"duration_ms":4,"request_id":"RHQ2J1QUNBAr"}
+{"time":"2026-11-06T08:47:45.804958848Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/user/@user-1:hs1/account_data/org.example.test","status":200,"bytes":15,"duration_ms":0,"request_id":"Visy5iasjUsz"}
+{"time":"2026-11-06T08:47:45.811987151Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":7530,"duration_ms":6,"request_id":"70xSeIk2t8ur"}
+{"time":"2026-11-06T08:47:45.812602474Z","level":"INFO","msg":"request","method":"DELETE","path":"/_matrix/client/unstable/org.matrix.msc3391/user/@user-1:hs1/account_data/org.example.test","status":404,"bytes":153,"duration_ms":0,"request_id":"lat08L8HUao2"}
+{"time":"2026-11-06T08:47:45.820074969Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":7530,"duration_ms":6,"request_id":"4ICG9e8ty3vd"}
+{"time":"2026-11-06T08:47:45.822017273Z","level":"INFO","msg":"request","method":"PUT","path":"/_matrix/client/v3/user/@user-1:hs1/account_data/org.example.test","status":200,"bytes":3,"duration_ms":1,"request_id":"F_lFYtxkjInc"}
+{"time":"2026-11-06T08:47:45.826558178Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":187,"duration_ms":3,"request_id":"c8CZhBhzoZCA"}
+{"time":"2026-11-06T08:47:45.827887003Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/user/@user-1:hs1/account_data/org.example.test","status":200,"bytes":15,"duration_ms":0,"request_id":"FLrsLQSIq1yh"}
+{"time":"2026-11-06T08:47:45.835495877Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":7532,"duration_ms":7,"request_id":"E-l0lq0fML1_"}
+{"time":"2026-11-06T08:47:45.837778468Z","level":"INFO","msg":"request","method":"PUT","path":"/_matrix/client/v3/user/@user-1:hs1/account_data/org.example.test","status":200,"bytes":3,"duration_ms":1,"request_id":"LerG0htopZuV"}
+{"time":"2026-11-06T08:47:45.843058311Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":174,"duration_ms":4,"request_id":"D-uustREP8nY"}
+{"time":"2026-11-06T08:47:45.844464908Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/user/@user-1:hs1/account_data/org.example.test","status":200,"bytes":2,"duration_ms":0,"request_id":"jCuGatYUzoh7"}
+{"time":"2026-11-06T08:47:45.852126482Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":7519,"duration_ms":6,"request_id":"2a-e1jx2CSab"}
+{"time":"2026-11-06T08:47:45.853044416Z","level":"INFO","msg":"request","method":"PUT","path":"/_matrix/client/v3/user/@user-1:hs1/rooms/!CQt_UaKEr1aZe8d6sTz23TygJ4GdHQ:hs1/account_data/org.example.test","status":404,"bytes":170,"duration_ms":0,"request_id":"McNRjHbeCVnb"}
+{"time":"2026-11-06T08:47:45.860784412Z","level":"INFO","msg":"request","method":"GET","path":"/_matrix/client/v3/sync","status":200,"bytes":7519,"duration_ms":6,"request_id":"PU-s73q6KMZq"}
+{"time":"2026-11-06T08:47:45.861610954Z","level":"INFO","msg":"request","method":"PUT","path":"/_matrix/client/v3/user/@user-1:hs1/rooms/!CQt_UaKEr1aZe8d6sTz23TygJ4GdHQ:hs1/account_data/org.example.test","status":404,"bytes":170,"duration_ms":0,"request_id":"5avWQWFog5yY"}
+{"time":"2026-11-06T08:47:45.872819511Z","level":"INFO","msg":"lattice stopped"}
+2026/11/06 09:47:46 ============== 673d7bb02e0e6aa4a9d5c0ffcd5ff59143f739c49d2031c427ad6154eaaf16e8 : END LOGS ==============
+
+
+--- FAIL: TestRemovingAccountData (2.28s)
+    --- FAIL: TestRemovingAccountData/Deleting_a_user's_account_data_via_DELETE_works (0.02s)
+    --- FAIL: TestRemovingAccountData/Deleting_a_user's_account_data_via_PUT_works (0.03s)
+    --- FAIL: TestRemovingAccountData/Deleting_a_user's_room_data_via_DELETE_works (0.01s)
+    --- FAIL: TestRemovingAccountData/Deleting_a_user's_room_account_data_via_PUT_works (0.01s)
+FAIL
+FAIL	github.com/matrix-org/complement/tests/msc3391	5.876s
+2026/11/06 09:47:40 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3757 CACertificate:0x3759b6236c08 CAPrivateKey:0x3759b6266930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3757	1.022s [no tests to run]
+2026/11/06 09:47:40 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3874 CACertificate:0x125e8f500c08 CAPrivateKey:0x125e8f5f2930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3874	1.110s [no tests to run]
+2026/11/06 09:47:42 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3890 CACertificate:0x2e2a8ffa008 CAPrivateKey:0x2e2a8fc6070 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3890	3.690s [no tests to run]
+2026/11/06 09:47:42 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3902 CACertificate:0xd58a3bae008 CAPrivateKey:0xd58a3a76070 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3902	4.001s [no tests to run]
+2026/11/06 09:47:41 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3930 CACertificate:0x371e47e9e008 CAPrivateKey:0x371e47de4070 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3930	1.222s [no tests to run]
+2026/11/06 09:47:44 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3967 CACertificate:0x14b256c04008 CAPrivateKey:0x14b256d4e070 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3967	4.292s [no tests to run]
+2026/11/06 09:47:41 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc4140 CACertificate:0x149544936c08 CAPrivateKey:0x14954505a930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc4140	1.733s [no tests to run]
+2026/11/06 09:47:42 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc4155 CACertificate:0x8a1ef950c08 CAPrivateKey:0x8a1ef982930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc4155	3.670s [no tests to run]
+2026/11/06 09:47:41 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc4222 CACertificate:0x38cf33cf6c08 CAPrivateKey:0x38cf33d3c930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc4222	1.228s [no tests to run]
+2026/11/06 09:47:41 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc4242 CACertificate:0x1dd70ad84008 CAPrivateKey:0x1dd70ad4e070 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc4242	3.294s [no tests to run]
+2026/11/06 09:47:40 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc4306 CACertificate:0x2c209ba26c08 CAPrivateKey:0x2c209bb58930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc4306	1.037s [no tests to run]
+2026/11/06 09:47:44 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc4429 CACertificate:0x35b19d016008 CAPrivateKey:0x35b19d088070 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc4429	5.249s [no tests to run]
+FAIL

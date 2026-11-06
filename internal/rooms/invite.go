@@ -127,6 +127,11 @@ func (s *Service) buildInvite(ctx context.Context, change MembershipChange) (map
 		return nil, nil, err
 	}
 	content := map[string]any{"membership": eventauth.MembershipInvite}
+	if change.IsDirect {
+		// The flag travels with the invitation because the countersigning server has no other
+		// way to learn it, and the invited user's client reads it from the invitation.
+		content["is_direct"] = true
+	}
 	if change.Reason != "" {
 		content["reason"] = change.Reason
 	}
