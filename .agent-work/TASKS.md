@@ -596,11 +596,26 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
       per-room ephemeral store with an expiry (a typing notification is a claim that is true for
       ~30s, not history), feeding `/sync` `ephemeral.events`, `PUT /rooms/{roomID}/typing`, and
       forwarding to joined servers. Receipts (T-?) share that store.
-- [ ] T-4037 the `ServeChunk` row/event misalignment is fixed but untested. Write the test in
-      `tests/unit/serve_test.go`: a chunk of a withheld redaction, a state event with
-      `PrevContent`, and a message with a transaction ID; assert the surviving events carry their
-      own `unsigned`, and that the withheld one is gone. The bug only appears when something is
-      withheld, which is why it survived.
+- [x] T-4037 the `ServeChunk` row/event misalignment is covered (2026-11-06).
+      `TestServeChunkKeepsEachEventWithItsOwnUnsigned` in `tests/unit/serve_test.go` serves a chunk
+      of a message with a transaction ID, a redaction whose target is not stored (withheld), and a
+      topic with `PrevContent`; it asserts the surviving events carry their own `unsigned` and only
+      their own. Verified to fail against the old pairing — the topic event comes back with no
+      `prev_content` because it got the message's row — and to pass against the fixed one.
+      Worth knowing rather than pretending otherwise: `ServeChunk`/`ServeChunkAs` have **no
+      production callers** — every read path serves events one at a time — so the bug was latent,
+      and the test pins an API that is not yet on any live path. That is T-4040.
+- [ ] T-4040 put the read paths on the chunk API, and take the cost of MSC4115 down with it.
+      `/sync` (timeline per room, state per room) and `/messages` serve events one at a time
+      through `Serve`/`ServeAs`, so each event pays for its own lookups: the redaction-link read,
+      and now two more per event for `unsigned.membership` (the snapshot entry, then the member
+      event itself). `ServeChunkAs` exists precisely so those are batched — one
+      `RedactionLinks` for the chunk instead of one per event — and it is currently called by
+      nothing outside its own tests. Batching the membership lookups needs either one query per
+      chunk over the event IDs or a per-chunk cache keyed by (snapshot, state_key); measure the
+      sync path before and after rather than assuming it is slow, and note that a chunk is where
+      the withholding decision is *also* better made (a client seeing half of a redaction pair in
+      one timeline is the failure `Withheld` exists to prevent).
 - [ ] T-4038 does MSC4115 cover `/state`, `/state/{type}/{key}`, `/context` and `/relations`?
       `/messages` and `/event` now carry `unsigned.membership`; the state-style reads do not.
       Read the MSC text and the specification section rather than guessing from another server's

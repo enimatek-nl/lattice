@@ -199,3 +199,79 @@ func TestServePlacesRedactsWhereTheRoomVersionPutsIt(t *testing.T) {
 		t.Errorf("serving the event should not hide the field it arrived with: %v", event)
 	}
 }
+
+// A chunk is served as a unit, and one event in it can be withheld: a redaction whose target
+// has not reached this server is left out rather than shown as a destruction the client cannot
+// place. That is only safe if what stays behind keeps its own company. Pairing output position
+// to input position — which this code used to do — attaches one event's `unsigned` to the next
+// event's body as soon as anything is withheld: a topic's `prev_content` on a message, a
+// transaction ID on a state event that never had one.
+func TestServeChunkKeepsEachEventWithItsOwnUnsigned(t *testing.T) {
+	t.Parallel()
+	servicer, db := openServicer(t)
+	ctx := context.Background()
+	roomID := "!v11:example.org"
+
+	insert := func(eventID, eventType, raw string, txnID string, prevContent []byte, prevSender string) *persist.Event {
+		t.Helper()
+		row := &persist.Event{
+			EventID: eventID, RoomID: roomID, Type: eventType, JSON: []byte(raw),
+			TxnID: txnID, PrevContent: prevContent, PrevSender: prevSender,
+		}
+		if err := db.Events.Insert(ctx, row); err != nil {
+			t.Fatalf("insert %s: %v", eventID, err)
+		}
+		return row
+	}
+
+	message := insert("$message:e", "m.room.message",
+		`{"event_id":"$message:e","room_id":"!v11:example.org","type":"m.room.message","content":{"msgtype":"m.text","body":"kept"}}`,
+		"txn-on-message", nil, "")
+	// A redaction with nothing stored that it redacts: not yet showable, so it leaves the chunk.
+	insert("$redaction:e", "m.room.redaction",
+		`{"event_id":"$redaction:e","room_id":"!v11:example.org","type":"m.room.redaction","redacts":"$elsewhere:e","content":{}}`,
+		"", nil, "")
+	topic := insert("$topic:e", "m.room.topic",
+		`{"event_id":"$topic:e","room_id":"!v11:example.org","type":"m.room.topic","state_key":"","content":{"topic":"now"}}`,
+		"", []byte(`{"topic":"was"}`), "@alice:example.org")
+
+	withheldRow, err := db.Events.ByID(ctx, "$redaction:e")
+	if err != nil {
+		t.Fatalf("reading the redaction back: %v", err)
+	}
+	out, err := servicer.ServeChunk(ctx, []*persist.Event{message, withheldRow, topic})
+	if err != nil {
+		t.Fatalf("serving the chunk: %v", err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("the chunk holds %d events, want 2 (the redaction is withheld): %v", len(out), eventIDsOf(out))
+	}
+	for i, want := range []string{"$message:e", "$topic:e"} {
+		if got, _ := out[i]["event_id"].(string); got != want {
+			t.Fatalf("position %d of the served chunk is %s, want %s", i, got, want)
+		}
+	}
+	// Each event carries its own addition, and only its own.
+	if unsigned, _ := out[0]["unsigned"].(map[string]any); unsigned["transaction_id"] != "txn-on-message" {
+		t.Errorf("the message lost its transaction ID: %#v", out[0]["unsigned"])
+	} else if _, ok := unsigned["prev_content"]; ok {
+		t.Errorf("the message carries a prev_content that belongs to the topic event: %#v", unsigned)
+	}
+	unsigned, _ := out[1]["unsigned"].(map[string]any)
+	prev, _ := unsigned["prev_content"].(map[string]any)
+	if prev == nil || prev["topic"] != "was" {
+		t.Errorf("the topic event does not carry what it replaced: %#v", out[1]["unsigned"])
+	}
+	if _, ok := unsigned["transaction_id"]; ok {
+		t.Errorf("the topic event carries the message's transaction ID: %#v", unsigned)
+	}
+}
+
+func eventIDsOf(events []map[string]any) []string {
+	ids := make([]string, 0, len(events))
+	for _, event := range events {
+		id, _ := event["event_id"].(string)
+		ids = append(ids, id)
+	}
+	return ids
+}
