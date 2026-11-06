@@ -1,5 +1,41 @@
 # Progress
 
+## 2026-11-09 — who may invite is the creating server\u2019s answer; a join it cannot sign for asks a neighbour
+
+Commit `3a0cba4`. Two Complement tests moved (`TestRestrictedRoomsRemoteJoinLocalUser` and its
+MSC3787 variant), and the reason they failed was in room *creation* rather than in joining: the
+authorisation rules read `invite` from the power levels and default it to 0, and the event that names
+it is the creating server\u2019s to write. Ours said 0 for every preset, so any member of any room we
+created could invite anyone \u2014 which in a restricted room is not cosmetic, because rule 4.3.5.1 lets
+an invited user in past the restriction. A public room now starts at 50, the private presets at 0.
+`trusted_private_chat` also gained the preset table\u2019s last column: invitees get the creator\u2019s power
+level.
+
+Joins gained the failover `M_UNABLE_TO_GRANT_JOIN` asks for: the federation joiner keeps asking the
+other servers in the room instead of returning the first refusal, and a server holding the room but
+holding nobody who can vouch carries the join out over federation through its neighbours.
+
+Two storage/correctness fixes fell out of exercising the fan-out. `ClaimQueueItems` claimed in two
+separate statements, so two passes could take the same rows and deliver the same events twice; it is
+one write transaction now, and `FlushOnce` serialises passes in a process. And an event whose *auth
+events* are not here is not a verdict about it: rule 2.2 was being recorded as a rejection, which
+poisoned the event forever and every event citing it \u2014 how a room whose events arrived out of order
+becomes a room that can never be joined. It now returns `MissingAuthEventsError` and files nothing.
+
+**Tried and reverted: prompt delivery.** The sender sleeps two seconds when the queue looks empty, so
+an accepted event can sit unsent that long; waking it per enqueue and cutting the idle to 250 ms made
+delivery prompt and made our own federation integration tests flaky (4\u20137 failures per run, several
+with `auth rule 2.3: auth event \u2026 was rejected on receipt` in the join path). Both experiments are
+reverted, the reason is written on `defaultSenderIdle`, and T-4054 carries the diagnosis forward. The
+honest consequence is recorded there too: with the invitation level now 50, `TestRestrictedRoomsRemoteJoin`
+passes or fails depending on whether hs2 has been told about hs1\u2019s state yet \u2014 it used to pass for
+the wrong reason.
+
+Full Complement run after the commit: **80 / 139 / 1** (previous: 81 / 138 / 1). Newly passing: the two
+`RemoteJoinLocalUser` tests. Newly failing: the flaky `TestDeviceListUpdates` (passes on its own) and
+the `TestRestrictedRoomsRemoteJoin` pair, for the propagation reason above. Nothing is claimed about
+the restricted cluster until the ordering work in T-4054 is done.
+
 ## 2026-11-08 — restricted rooms work end to end; six Complement tests move, none break
 
 Commit `dd2b096`. `eventauth.MayJoinRestricted` had the allow-list rule right and nothing called it.

@@ -722,3 +722,30 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
       filtered one, so it is flaky — probably a timing or ordering dependency in the join handshake.
       Reproduce with `RUN='TestRestrictedRooms.*'` before chasing it.
 
+- [ ] T-4054 fan-out ordering, then prompt delivery. Three findings, from today's runs:
+      (a) The federation sender polls the queue and sleeps two seconds when it finds nothing, so an
+      event this server accepts can sit unsent for two seconds. Complement's restricted-room tests act
+      seconds later and read the neighbour's stale state: `TestRestrictedRoomsLocalJoinNoCreatorsUsesPowerLevelsV11`
+      asks hs2 to authorise a join with power levels hs2 has not been told about yet.
+      (b) Cutting that idle to 250 ms, and waking the sender on every enqueue, made delivery prompt and
+      made **our own** integration suite flaky: four to seven federation tests fail in a run, with
+      `auth rule 2.3: auth event … was rejected on receipt` in the join path. Both were reverted; the
+      note is on `defaultSenderIdle`. So eager fan-out currently hands a neighbour events out of order
+      — most likely a room's state pushed at a server that is mid-join, or a later event in one
+      transaction and its predecessor in another. Find the actual ordering failure before shortening the
+      idle again; `TestFederationSenderQueue`, `TestRemoteUserJoinsARoomHeldElsewhere` and
+      `TestDeviceListChangesCrossTheFederationLink` are the ones that flip.
+      (c) `TestRestrictedRoomsRemoteJoin` and its MSC3787 variant pass with a two-second fan-out only
+      because hs2 authorises the join locally. Once the invitation level is 50 (T-4053's preset fix),
+      hs2 has no local authoriser and fails over to hs1 — and hs1 still thinks a user who left the
+      allow room is in it, so a join that must fail succeeds. This is (a) with a consequence: the
+      restricted-room pair is now flaky rather than passing by accident. Do not fix it by weakening the
+      failover.
+
+- [ ] T-4055 what a full run looks like today (2026-11-09, after `3a0cba4`): **80 passing, 139
+      failing, 1 skipped**. Against the previous full run, `TestRestrictedRoomsRemoteJoinLocalUser`
+      and `TestRestrictedRoomsRemoteJoinLocalUserInMSC3787Room` newly pass, and
+      `TestRestrictedRoomsRemoteJoin`, its MSC3787 variant and `TestDeviceListUpdates` newly fail — the
+      restricted pair for the reason in T-4054(c), and `TestDeviceListUpdates` because it is load-flaky
+      (it passes when run on its own). Treat `TestRestrictedRooms*` results as unstable until T-4054 is
+      done, and re-tally after it.
