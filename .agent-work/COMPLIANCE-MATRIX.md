@@ -358,3 +358,15 @@ if a full run suddenly fails in a block at ~0.5 s each, check `docker volume ls 
 believing the numbers.
 
 No Complement assertion was modified.
+
+## Full run, clean environment (2026-11-11, after T-4056)
+
+`RUN='.*' COMPLEMENT_LOCAL_MIGRATIONS=true scripts/complement.sh -v`, same commit as the run above
+(`9535c64`) plus the preflight in `scripts/complement.sh`. **90 pass, 129 fail, 1 skip** (was 89/130/1
+on a polluted environment). Logs: `.agent-work/next/tally-clean-20261113.log`, list
+`.agent-work/complement-failures-20261113c.txt`. Nothing newly failing; the one difference is
+`TestRestrictedRoomsRemoteJoinFailOverInMSC3787Room`, which stopped being flaky once the environment
+was fixed — the reason is T-4056, in short: a removed podman network left its `aardvark-dns` record
+file behind, and `hs1` kept resolving to an address from that deleted deployment, so one homeserver
+dialled another container and was refused for presenting the wrong certificate. Both earlier tallies in
+this file were measured on a dirtier network than this one.

@@ -1,5 +1,39 @@
 # Progress
 
+## 2026-11-11 — a flaky federation test was the network lying, not the server (`scripts/complement.sh`)
+
+T-4056, closed, with no protocol change. `TestRestrictedRoomsRemoteJoinFailOverInMSC3787Room` failed in
+about half the runs at a 5 second sync wait; `...RemoteJoinInMSC3787Room` failed in cluster runs with a
+404 for a room the same deployment had just made. Neither was a Lattice decision going wrong.
+
+Reading the container log of a failing run rather than the assertion that failed settled it: hs2 was
+dialling `https://10.89.0.2:8448` for the name `hs1` and being answered by a server whose certificate
+says `hs2` — hs2 dialling itself. The name had resolved to the wrong machine, two joins then returned
+500, bob never stood in the restricted room, and the sync assertion timed out three steps later. The
+mechanism is rootless podman: one `aardvark-dns` serves every network from a file per network under
+`$XDG_RUNTIME_DIR/containers/networks/aardvark-dns/`, a removed network can leave its file behind, and
+the stale records keep being answered. `getent hosts hs1` inside a live deployment answered
+`10.89.12.2` while the running `hs1` container was `10.89.0.4`, and the leftover file named exactly
+that address. `podman network prune` will not clear it — the network is already gone.
+
+Two things worth keeping from this.
+
+First, the note written about these tests on 2026-11-11 said they were "delivery, not decision", pointing
+at a T-4007 line in the log. That line was real and it was irrelevant: the same log carries refusal lines
+in passing during runs that pass. A log line is not a cause until something shows the step failing
+because of it. The corrected entry in TASKS says so.
+
+Second, nothing in Lattice should bend here. Dialling the resolved address while demanding a certificate
+for the name is what the specification's name resolution requires, and it is exactly what caught a
+federation request aimed at the wrong machine. The tempting change — accept the connection because the
+address was "close enough" — would turn a detected misdelivery into a silent one.
+
+What went into the script instead is a preflight that reports aardvark record files whose network no
+longer exists, naming the commands that clear them, and leaves the cleaning to the operator, as the
+volume note does. Verification: three consecutive filtered runs of the flaky test (5.0–5.8 s), the whole
+`TestRestrictedRooms` cluster green except the room-version-12 policy case, and a full clean run at
+**90 / 129 / 1** with nothing newly failing. Earlier tallies were measured on a dirtier network.
+
 ## 2026-11-11 — a space can be walked, as far as the reader may see (`9535c65`)
 
 T-4051, closed. `GET /_matrix/client/v1/rooms/{roomId}/hierarchy` and its Server-Server twin

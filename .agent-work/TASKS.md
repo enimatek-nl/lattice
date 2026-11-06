@@ -712,13 +712,12 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
         creation. That is a policy decision this project has not made: read
         `roomversion.supported`, the pinned specification's room-version section and what v12 changes
         about room identifiers before deciding, and record the decision rather than flipping a flag.
-      * The two MSC3787 restricted-join variants flip between runs: `...RemoteJoinInMSC3787Room` fails
-        in a filtered cluster run with 404 "room is not known to this server" for rooms the same
-        deployment made earlier, and `...RemoteJoinFailOverInMSC3787Room` fails roughly half the runs
-        even alone, at `bob.MustSyncUntil(... SyncJoinedTo(charlie, room, join_authorised_via_users_server
-        == alice))` after 5 s. Both are delivery, not decision: the logs show `hs3` refusing a relayed
-        event with "the auth events it cites are not stored here, so it cannot be authorised", which is
-        the missing-event/auth-chain gap of T-4007 arriving through a different path. Tracked as T-4056.
+      * ~~The two MSC3787 restricted-join variants flip between runs~~ — not a Lattice fault, and the
+        cause written here first ("delivery, not decision … the T-4007 gap") was **wrong**: it read a
+        log line that was present in passing as the reason, without checking it. The real cause is the
+        test environment handing out a stale address for a peer server name; see T-4056. With the
+        environment cleaned, the whole `TestRestrictedRooms*` cluster passes except the room version 12
+        case above.
       Note: an earlier version of this task claimed MSC3787 needed the invite power of *the allow
       room* rather than the restricted room to decide an invitation. That was never checked against
       the specification, and the tests it was meant to explain (`RemoteJoinLocalUser` and its MSC3787
@@ -785,17 +784,42 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
       all (`SetRemoteHierarchy` unwired), so the remote child was simply absent and a `want 1` assertion
       could not tell absence from a refusal. A hierarchy test that only counts rooms cannot fail that.
 
-- [ ] T-4056 the two MSC3787 restricted-join Complement tests flip. `RemoteJoinFailOverInMSC3787Room`
-      fails in about half the runs, alone or in a cluster, always at the same step: after the join that
-      fails over to hs1 succeeds with 200, `bob` (hs2) never sees charlie's member event with
-      `content.join_authorised_via_users_server` naming alice within the 5 s Complement allows. The
-      restricted room and its auth chain live on hs1; hs2 is a bystander that has to be told. The server
-      logs for the same run carry `federation: a remote server refused an event … the auth events it
-      cites are not stored here, so it cannot be authorised` aimed at hs3 — the T-4007 gap (a server
-      that has not been given the auth chain refuses the events that need it), arriving through the
-      restricted-join path. Steps: reproduce with `RUN='TestRestrictedRoomsRemoteJoinFailOver'` and the
-      logs on, check whether hs2's copy of the room is missing the auth events or merely the member
-      event, and settle it where it belongs — the missing-event fetch (T-4007) or the fan-out ordering —
-      not by lengthening a timeout. `RemoteJoinInMSC3787Room` is the sibling and fails in filtered runs
-      with 404 "room is not known to this server" for rooms the same deployment made minutes earlier;
-      check whether it is the same cause before treating it as separate.
+- [x] T-4056 (done 2026-11-11, `scripts/complement.sh`) the two MSC3787 restricted-join Complement
+      tests flip — **the cause is the test environment, not this server**, and no protocol behaviour was
+      changed for it.
+      What was observed: `TestRestrictedRoomsRemoteJoinFailOverInMSC3787Room` failed in about half the
+      runs, alone or in a cluster, always at `bob.MustSyncUntil(SyncJoinedTo(@user-3:hs3, room))` with
+      bob's sync showing `rooms: {}`; `...RemoteJoinInMSC3787Room` failed in filtered cluster runs with
+      404 "room is not known to this server" for rooms the same deployment had made minutes earlier.
+      What the log of a failing run showed, in hs2's own container: `certificate is valid for hs2, not
+      hs1` while dialing `https://10.89.0.2:8448` for `hs1` — that is hs2 dialing **itself** and
+      correctly refusing hs2's certificate when it was asked for hs1. Two joins then returned 500
+      ("no server in the room would take the join"), so bob never stood in the restricted room, so his
+      sync never showed charlie in it: the sync timeout was the last symptom of a name that resolved to
+      the wrong machine.
+      The mechanism, checked rather than assumed: rootless podman serves every network from one
+      `aardvark-dns` process driven by one file per network under
+      `$XDG_RUNTIME_DIR/containers/networks/aardvark-dns/`. A deployment's network was removed and its
+      file stayed; the live probe showed `getent hosts hs1` answering **10.89.12.2** while the running
+      hs1 container was **10.89.0.4**, and the leftover file
+      `complement_msc3902_1_servers` named 10.89.12.2 for `hs1`. So a homeserver container could be
+      pointed at an address from a deleted deployment — some other test's hs2, or nothing. `podman
+      network prune` does not clear it: the network is already gone, so there is nothing to prune.
+      Why nothing was changed in Lattice: the two rules that look implicated are both right as
+      implemented. Dialling the resolved address while requiring a certificate for the *name* is what
+      the Server-Server name-resolution section says, and it is what caught the wrong machine — a
+      permissive behaviour here would have made a genuinely misdelivered federation request look
+      successful. Trying every address a name resolves to instead of the first allowed one is a real
+      hardening idea for the future, but it would not have helped here: DNS returned exactly one
+      address, and it was wrong.
+      What was changed instead: `scripts/complement.sh` now reports, before running anything, any
+      aardvark-dns record file whose network no longer exists, with the commands that clear it in a
+      comment. Deliberately reported and not cleaned automatically, for the same reason the leaked
+      volumes are reported and not deleted: it is another project's container state on somebody else's
+      machine.
+      Verification: with the orphan removed and aardvark restarted, `TestRestrictedRoomsRemoteJoinFailOverInMSC3787Room`
+      passed three consecutive filtered runs (5.0–5.8 s, never the 17–18 s failure shape), the whole
+      `TestRestrictedRooms` cluster passed except the room version 12 case, and a full clean run gave
+      **90 passing, 129 failing, 1 skipped** with nothing newly failing. The earlier 89/130 tally was
+      taken while the stale record was live, so numbers before this entry sit on a dirtier environment
+      than numbers after it.
