@@ -201,7 +201,7 @@ func NewService(db *persist.Database, log *slog.Logger) *Service {
 		db:       db,
 		events:   db.Events,
 		state:    db.State,
-		serve:    redaction.NewServicer(db.Events, db.Rooms),
+		serve:    redaction.NewServicer(db.Events, db.Rooms, db.StateGroups),
 		filters:  db.Filters,
 		account:  db.AccountData,
 		presence: db.Presence,
@@ -300,7 +300,7 @@ func (s *Service) build(ctx context.Context, userID string, since Token, filter 
 		case eventauth.MembershipLeave, eventauth.MembershipBan:
 			until = membership.StreamOrdering
 		}
-		room, err := s.room(ctx, membership.RoomID, since, until, position, filter, req)
+		room, err := s.room(ctx, userID, membership.RoomID, since, until, position, filter, req)
 		if err != nil {
 			return nil, false, err
 		}
@@ -580,7 +580,7 @@ type roomUpdate struct {
 // room reads one room's window. `until` bounds the newest event the requester may see
 // (zero means "as new as it gets"), which is how a room the user has left stops at the
 // point where they left.
-func (s *Service) room(ctx context.Context, roomID string, since Token, until int64, position int64, filter Filter, req Request) (roomUpdate, error) {
+func (s *Service) room(ctx context.Context, userID, roomID string, since Token, until int64, position int64, filter Filter, req Request) (roomUpdate, error) {
 	limit := filter.TimelineLimit()
 
 	total, err := s.events.CountAfter(ctx, roomID, int64(since))
@@ -617,7 +617,7 @@ func (s *Service) room(ctx context.Context, roomID string, since Token, until in
 		if !filter.AllowsTimeline(event.Type) {
 			continue
 		}
-		body, err := s.clientEvent(ctx, event)
+		body, err := s.clientEvent(ctx, userID, event)
 		if err != nil {
 			if errors.Is(err, redaction.ErrWithheld) {
 				// A redaction whose target has not reached this server is left out of the
@@ -650,7 +650,7 @@ func (s *Service) room(ctx context.Context, roomID string, since Token, until in
 		timeline.PrevBatch = Token(position).String()
 	}
 
-	stateEvents, err := s.stateEvents(ctx, roomID, since, until, position, filter, req, accepted)
+	stateEvents, err := s.stateEvents(ctx, userID, roomID, since, until, position, filter, req, accepted)
 	if err != nil {
 		return roomUpdate{}, err
 	}
@@ -666,7 +666,7 @@ func (s *Service) room(ctx context.Context, roomID string, since Token, until in
 // token (or all of them on a first or full-state sync), and dropping any that the
 // timeline already carries. That is a documented approximation: it can name state that
 // changed after the window, never state that has since been superseded.
-func (s *Service) stateEvents(ctx context.Context, roomID string, since Token, until int64, position int64, filter Filter, req Request, timeline []Event) (Events, error) {
+func (s *Service) stateEvents(ctx context.Context, userID, roomID string, since Token, until int64, position int64, filter Filter, req Request, timeline []Event) (Events, error) {
 	entries, err := s.state.All(ctx, roomID)
 	if err != nil {
 		return Events{}, fmt.Errorf("sync: cannot read the state of %s: %w", roomID, err)
@@ -707,7 +707,7 @@ func (s *Service) stateEvents(ctx context.Context, roomID string, since Token, u
 		} else if req.HasSince && !req.FullState && event.StreamOrdering <= int64(since) {
 			continue
 		}
-		body, err := s.clientEvent(ctx, event)
+		body, err := s.clientEvent(ctx, userID, event)
 		if err != nil {
 			if errors.Is(err, redaction.ErrWithheld) {
 				continue
@@ -765,10 +765,11 @@ func (s *Service) strippedState(ctx context.Context, roomID, userID string) Even
 }
 
 // clientEvent renders a stored event as it goes to a client: the redacted form when a
-// redaction has been applied, `redacts` where the room version puts it, and the redaction
-// itself under `unsigned.redacted_because`.
-func (s *Service) clientEvent(ctx context.Context, event *persist.Event) (Event, error) {
-	body, err := s.serve.Serve(ctx, event)
+// redaction has been applied, `redacts` where the room version puts it, the redaction itself
+// under `unsigned.redacted_because`, and the reader's own membership of the room as of that
+// event under `unsigned.membership`.
+func (s *Service) clientEvent(ctx context.Context, userID string, event *persist.Event) (Event, error) {
+	body, err := s.serve.ServeAs(ctx, event, userID)
 	if err != nil {
 		return nil, err
 	}

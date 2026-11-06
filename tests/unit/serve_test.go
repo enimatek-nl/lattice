@@ -31,7 +31,7 @@ func openServicer(t *testing.T) (*redaction.Servicer, *persist.Database) {
 			t.Fatalf("create %s: %v", room.RoomID, err)
 		}
 	}
-	return redaction.NewServicer(db.Events, db.Rooms), db
+	return redaction.NewServicer(db.Events, db.Rooms, db.StateGroups), db
 }
 
 // store writes an event row in the shape the read paths see it.

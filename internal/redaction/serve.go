@@ -27,11 +27,14 @@ import (
 type Servicer struct {
 	events persist.EventRepo
 	rooms  persist.RoomRepo
+	groups persist.StateGroupRepo
 }
 
-// NewServicer wires the translation to storage.
-func NewServicer(events persist.EventRepo, rooms persist.RoomRepo) *Servicer {
-	return &Servicer{events: events, rooms: rooms}
+// NewServicer wires the translation to storage. The state-group repository is what answers
+// "what did this room think about this user when this event was sent", so it is only needed
+// for the reader-aware paths; passing nil leaves those fields unattached rather than guessed.
+func NewServicer(events persist.EventRepo, rooms persist.RoomRepo, groups persist.StateGroupRepo) *Servicer {
+	return &Servicer{events: events, rooms: rooms, groups: groups}
 }
 
 // ErrWithheld reports an event this server holds but has not yet worked out the consequence
@@ -92,8 +95,19 @@ func (sv *Servicer) withheldForChunk(ctx context.Context, events []map[string]an
 	return withheld, nil
 }
 
-// Serve decodes one stored event into the client-facing form.
+// Serve decodes one stored event into the client-facing form, for a response that is not
+// addressed to one particular reader — so it carries no `unsigned.membership`. See ServeAs.
 func (sv *Servicer) Serve(ctx context.Context, row *persist.Event) (map[string]any, error) {
+	return sv.ServeAs(ctx, row, "")
+}
+
+// ServeAs decodes one stored event as it goes to one named user. The reader matters because
+// part of what a client is entitled to see is about itself: MSC4115 asks for the reader's own
+// membership of the room as of the moment each event was sent, which is not a fact about the
+// event and cannot be read off it. A message Alice sent before Bob joined says, to Bob, that
+// he was not in the room when it was written — which is how a client rendering history
+// backwards knows which part of it it was entitled to read at the time.
+func (sv *Servicer) ServeAs(ctx context.Context, row *persist.Event, reader string) (map[string]any, error) {
 	event, err := sv.decode(ctx, row)
 	if err != nil {
 		return nil, err
@@ -103,13 +117,18 @@ func (sv *Servicer) Serve(ctx context.Context, row *persist.Event) (map[string]a
 	} else if withheld {
 		return nil, fmt.Errorf("%w: %s", ErrWithheld, row.EventID)
 	}
-	return sv.decorate(ctx, row, event), nil
+	return sv.decorate(ctx, row, event, reader), nil
 }
 
-// ServeChunk decodes a chunk, leaving out what is not yet showable. A chunk is where the
+// ServeChunk decodes a chunk for a response with no particular reader.
+func (sv *Servicer) ServeChunk(ctx context.Context, rows []*persist.Event) ([]map[string]any, error) {
+	return sv.ServeChunkAs(ctx, rows, "")
+}
+
+// ServeChunkAs decodes a chunk, leaving out what is not yet showable. A chunk is where the
 // rule matters most: a timeline that names a destruction the client cannot yet place is a
 // timeline that describes a room the client cannot reconstruct.
-func (sv *Servicer) ServeChunk(ctx context.Context, rows []*persist.Event) ([]map[string]any, error) {
+func (sv *Servicer) ServeChunkAs(ctx context.Context, rows []*persist.Event, reader string) ([]map[string]any, error) {
 	decoded := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
 		event, err := sv.decode(ctx, row)
@@ -122,13 +141,17 @@ func (sv *Servicer) ServeChunk(ctx context.Context, rows []*persist.Event) ([]ma
 	if err != nil {
 		return nil, err
 	}
+	// decoded[i] is rows[i] — decode appends in row order and bails out rather than
+	// skipping, so the two stay aligned. Pairing them any other way (by the length of the
+	// output, for instance) attaches one event's `unsigned` to another event's body as soon
+	// as one event is withheld.
 	out := make([]map[string]any, 0, len(decoded))
-	for _, event := range decoded {
+	for i, event := range decoded {
 		id, _ := event["event_id"].(string)
 		if withheld[id] {
 			continue
 		}
-		out = append(out, sv.decorate(ctx, rows[len(out)], event))
+		out = append(out, sv.decorate(ctx, rows[i], event, reader))
 	}
 	return out, nil
 }
@@ -146,9 +169,10 @@ func (sv *Servicer) decode(ctx context.Context, row *persist.Event) (map[string]
 
 // decorate attaches `unsigned.redacted_because` for an event this server redacted, which is
 // how a client learns what happened to an event it had already seen.
-func (sv *Servicer) decorate(ctx context.Context, row *persist.Event, event map[string]any) map[string]any {
+func (sv *Servicer) decorate(ctx context.Context, row *persist.Event, event map[string]any, reader string) map[string]any {
 	event = showPrevState(row, event)
 	event = showTransactionID(row, event)
+	event = sv.showMembership(ctx, row, event, reader)
 	if !row.Redacted || row.EventID == "" {
 		return event
 	}
@@ -183,6 +207,67 @@ func (sv *Servicer) decorate(ctx context.Context, row *persist.Event, event map[
 		event["unsigned"] = unsigned
 		return event
 	}
+	return event
+}
+
+// showMembership attaches the reader's own membership of the room as of the moment this event
+// was sent, which is MSC4115. It comes from the state snapshot the event was sent against —
+// the same snapshot the room's authorisation rules judged that event by — because the room's
+// state now answers a different question, and answers it wrongly in the case that matters most:
+// a user reading history from after they left, or a message written before they joined.
+//
+// A snapshot that holds no member event for the reader is `leave`: the protocol treats a user
+// with no membership event as not a member, and a client should not have to know that.
+// Something else is a missing snapshot. For an event this server has no snapshot of at all —
+// one received from a peer, or one written before snapshots were recorded — this server did not
+// see what that room thought, so it says nothing rather than guessing `leave`.
+func (sv *Servicer) showMembership(ctx context.Context, row *persist.Event, event map[string]any, reader string) map[string]any {
+	if reader == "" || row.EventID == "" || sv.groups == nil {
+		return event
+	}
+	unsigned, _ := event["unsigned"].(map[string]any)
+	if unsigned != nil {
+		// A value already on the event stays. `unsigned` is also where another server records
+		// what it added around an event, and replacing its claim about its own room would be
+		// this server speaking for a room it has no part in.
+		if _, ok := unsigned["membership"]; ok {
+			return event
+		}
+	}
+	membership := ""
+	memberID, err := sv.groups.StateEntryAt(ctx, row.EventID, "m.room.member", reader)
+	switch {
+	case err == nil:
+		member, err := sv.events.ByID(ctx, memberID)
+		if err == nil {
+			if memberEvent, err := decodeStored(member); err == nil {
+				content, _ := memberEvent["content"].(map[string]any)
+				membership, _ = content["membership"].(string)
+			}
+		}
+	case errors.Is(err, persist.ErrNotFound):
+		if _, gerr := sv.groups.GroupOf(ctx, row.EventID); gerr == nil {
+			membership = "leave"
+		}
+		// No snapshot for the event at all: leave the field off, which is the difference
+		// between "nobody" and "we were not there".
+	}
+	if err != nil && !errors.Is(err, persist.ErrNotFound) {
+		// A lookup that failed is not evidence that the reader was not a member.
+		return event
+	}
+	// Anything else in that field would be a value this server invented; the room versions
+	// allow these five, and a stored event that says otherwise is not answered for.
+	switch membership {
+	case "join", "invite", "leave", "ban", "knock":
+	default:
+		return event
+	}
+	if unsigned == nil {
+		unsigned = map[string]any{}
+	}
+	unsigned["membership"] = membership
+	event["unsigned"] = unsigned
 	return event
 }
 
