@@ -1,5 +1,33 @@
 # Progress
 
+## 2026-11-08 — federation visibility, and a duplicated membership event it exposed
+
+Commit `206e508`. `rooms.Service.VisibilityToPeer` decides, per event and per peer, whether the
+event's body may be handed over at all: `m.room.history_visibility` read from the state snapshot the
+event was sent against, then the peer's membership in that same snapshot — `world_readable` to
+anybody, `shared` (or absent) retroactively to members, `joined`/`invited` only for the span in which
+that peer had a user here. Where a moment matters and this server has no snapshot for it, the event
+goes out trimmed. The trimming goes through the room version's redaction rules so signatures and
+graph fields survive; the stored event is never rewritten, because the room did not destroy anything
+— this reader was never entitled to it.
+
+`TestInboundCanReturnMissingEvents` confirms the rule bites: for `invited` and `joined`, events
+written before Charlie arrived now reach his server `redacted:true` (`.agent-work/next/gme4.log`),
+where they previously arrived whole.
+
+The four subtests are still red, and the reason is now a bug of a different size, recorded as
+T-4046 rather than papered over: the "extra event" the test rejects is Charlie's **own**
+`m.room.member` event at depth 8, in a room where his join is also the request's `latest_events`
+seed. So this server is carrying two member events for one remote user after a federated join —
+decoded straight from the byte array Complement prints, not inferred from a count. That is a claim
+that a user joined twice, and it lands on state resolution, `/members`, member counts and join rules
+as much as on a history walk. The task says where to look and, importantly, says not to fix it by
+filtering member events in the read path.
+
+T-4047 records the rest of the shape of this work: the same decision has to sit on `GET /event`, on
+backfill and on the outbound fan-out — and `handleGetEvent` currently serves `stored.JSON`
+unconditionally, so a redaction applied here is not even reflected to peers on that path.
+
 ## 2026-11-08 — the first federation endpoint in a while: `/get_missing_events`
 
 Commit `31f4d5e`, and the start of the federation-first re-sequencing the plan needed.

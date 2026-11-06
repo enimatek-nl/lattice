@@ -644,17 +644,43 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
       did not create), or keep creating and record that Complement's federation expectations assume
       otherwise. Whichever way this goes it is a design decision for `DECISIONS`-style recording,
       not a tweak: it changes what a client's write means.
-- [ ] T-4044 events handed to a peer are not redacted for the history the peer was not entitled to.
-      `TestInboundCanReturnMissingEvents` for `invited` and `joined` history visibility requires the
-      events written before the requester's server had a joined user to arrive **redacted**
-      (`federation_room_get_missing_events_test.go:435: Expected event to be redacted`). This is the
-      room-version-aware federation form of the visibility rules — the same family of rules
-      `redaction.ForClient` implements for our own users, and the same one `backfill`, `/event` and
-      `/get_missing_events` all need. We have the machinery to answer it: the state snapshot an
-      event was sent against, and `StateEntryAt` for the requester's membership at that moment
-      (built for MSC4115 and T-4032). Do this before the outbound halves of gap-filling and backfill
-      are trusted: a server that leaks history to a peer that should not have it is not saved by
-      the peer's own checks.
+- [x] T-4044 (done 2026-11-06, commit `206e508`) history a peer was not entitled to is handed over
+      without its body. `rooms.Service.VisibilityToPeer` reads `m.room.history_visibility` out of the
+      state snapshot the event was sent against and answers for the *peer*: `world_readable` to
+      anybody; `shared` (and an absent setting) to a member for the whole history including what
+      came before they arrived; `joined`/`invited` only while that peer had a joined (or invited, for
+      `invited`) user here. No snapshot for a moment that depends on it → trimmed, because "we do not
+      know who was here" is not "the asker was". `redaction.Apply` does the trimming through the room
+      version's rules, so the graph fields and signatures survive and the peer can still place and
+      verify the event; a room whose version this server cannot apply rules to is refused rather than
+      guessed at. Evidence that the rule works: in `TestInboundCanReturnMissingEvents` the events
+      written before Charlie arrived now arrive `redacted:true` for `invited` and `joined`
+      (`.agent-work/next/gme4.log`) where they arrived whole before. Still to do with it: the same
+      decision belongs on `GET /event`, on backfill and on the outbound PDU fan-out, which is
+      T-4047.
+- [ ] T-4046 this server holds **two** `m.room.member` events for the same remote user after a
+      federated join, and the second one is in the room's history where it should not be.
+      Measured 2026-11-06 in `.agent-work/next/gme4.log`: `TestInboundCanReturnMissingEvents`
+      objects with `extra events returned` (`federation_room_get_missing_events_test.go:471`) in all
+      three subtests whose expected count was met otherwise, and the extra event — decoded from the
+      byte array the test prints — is `m.room.member` with `state_key
+      @charlie:host.docker.internal:1024` at **depth 8**, unredacted in the `world_readable` case and
+      trimmed in `invited`/`joined` (so T-4044 is working on it too). Charlie's join is also the
+      `latest_events` seed of the very request, so either this server stored a second member event
+      for him, or the join's event ID as it knows it differs from the one the peer named — and the
+      walk did descend from the seed, which means the seed was found, which makes the duplicate the
+      stronger reading. Start where the join handshake persists: `internal/api/federation/joins.go`
+      (`handleSendJoin` → the accept path), and ask whether the room's state ends up with one entry
+      while the graph carries two. This is worth more than the test that caught it: a duplicated
+      membership event is a claim that a user joined twice, and it reaches state resolution,
+      `/members`, member counts and join rules, not only the history walk. Do not fix it by
+      filtering member events in the read path; find which write is wrong.
+- [ ] T-4047 the visibility decision is applied on one read path only. `get_missing_events` trims;
+      `GET /event`, backfill (when it exists) and the outbound fan-out of PDUs do not, and
+      `handleGetEvent` additionally serves `stored.JSON` unconditionally instead of the redacted form
+      (`internal/api/federation/transactions.go:handleGetEvent`), so a redaction applied here is not
+      reflected to peers on that path. Move the decision next to the single place federation reads
+      an event, and test each path.
 - [ ] T-4045 what does the `public_chat` preset set `history_visibility` to? Our preset says
       `world_readable` (`internal/rooms/service.go:presetState`, recorded as an interpretation
       decision). Complement's expectations in `TestInboundCanReturnMissingEvents` are consistent
