@@ -17,11 +17,15 @@ type Code string
 const (
 	CodeUnknown      Code = "M_UNKNOWN"
 	CodeUnrecognized Code = "M_UNRECOGNIZED"
-	CodeNotFound     Code = "M_NOT_FOUND"
-	CodeUnknownToken Code = "M_UNKNOWN_TOKEN"
-	CodeMissingToken Code = "M_MISSING_TOKEN"
-	CodeBadJSON      Code = "M_BAD_JSON"
-	CodeNotJSON      Code = "M_NOT_JSON"
+	// CodeUnableToGrantJoin is the join-specific "ask somebody else" answer: the joining user
+	// is entitled to be in the room, but this resident server cannot stand behind the join
+	// because none of its own members could have invited them. It is deliberately not a refusal.
+	CodeUnableToGrantJoin Code = "M_UNABLE_TO_GRANT_JOIN"
+	CodeNotFound          Code = "M_NOT_FOUND"
+	CodeUnknownToken      Code = "M_UNKNOWN_TOKEN"
+	CodeMissingToken      Code = "M_MISSING_TOKEN"
+	CodeBadJSON           Code = "M_BAD_JSON"
+	CodeNotJSON           Code = "M_NOT_JSON"
 	// CodeBadRequest reports a request the server could not handle as asked. The
 	// Client-Server API lists it; the Server-Server API has no such list, and a
 	// transaction missing its origin needs a code that is not M_UNKNOWN.
@@ -169,6 +173,7 @@ var statusByCode = map[Code]int{
 	CodeResourceLimitExceeded:   http.StatusServiceUnavailable,
 	CodeTooLarge:                http.StatusRequestEntityTooLarge,
 	CodeUnrecognized:            http.StatusBadRequest,
+	CodeUnableToGrantJoin:       http.StatusBadRequest,
 	CodeUnsupportedRoomVersion:  http.StatusBadRequest,
 	CodeDuplicateAlias:          http.StatusConflict,
 	CodeIncompatibleRoomVersion: http.StatusBadRequest,

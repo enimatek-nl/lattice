@@ -102,6 +102,13 @@ type SendRequest struct {
 	// room version before 11 names its target at the top level, and where that field goes
 	// is decided by the room version, not by the client.
 	Extra map[string]any
+	// Authoriser is the user this server has decided stands behind a join of a restricted room,
+	// which the room version writes into the member event's content. It is a separate field
+	// rather than a key in `Content` because it is not the client's to choose: a body that named
+	// somebody with invite power would otherwise be a self-authored ticket into a room its owner
+	// kept closed to the sender. `Send` drops any such key that arrives in the content and writes
+	// this one instead.
+	Authoriser string
 }
 
 // Service creates rooms and appends events to them.
@@ -140,8 +147,14 @@ type Service struct {
 	// until federation is wired up, and a room service without one refuses such a join
 	// rather than pretending the room does not exist.
 	remoteJoin RemoteJoin
-	name       string
-	log        *slog.Logger
+	// keyRing answers "which keys does this homeserver sign with", which is what the
+	// authorisation rules need for a restricted join: rule 4.2 asks whether the homeserver of the
+	// user who authorised the join signed the event, and that is a question about somebody's keys,
+	// not about room state. It is nil until federation is wired up, and a room service without one
+	// refuses a restricted join rather than waving it through unchecked.
+	keyRing KeyRingFor
+	name    string
+	log     *slog.Logger
 	// now is replaced in tests. A homeserver's timestamps must come from the server,
 	// but a test has to control them to make ordering assertions.
 	now func() time.Time
@@ -185,6 +198,40 @@ type Relayer interface {
 // SetRelayer connects the federation sender. Without it this server keeps rooms to
 // itself, which is the honest state of a server with federation not yet wired in.
 func (s *Service) SetRelayer(relayer Relayer) { s.relayer = relayer }
+
+// KeyRingFor returns the key lookup for a room version. The room version matters because the
+// versions differ in what a signature covers and in how long a key stays usable.
+type KeyRingFor func(ctx context.Context, rules roomversion.Rules) events.KeyLookup
+
+// SetKeyRing gives the room service the way to answer "did this homeserver sign that event".
+// Without it, a restricted join cannot be authorised: rule 4.2 is a question about a signature,
+// and guessing at it is how somebody else's user ends up vouching for a join nobody vouched for.
+func (s *Service) SetKeyRing(lookup KeyRingFor) {
+	s.keyRing = lookup
+}
+
+// authOpts builds the options the authorisation rules need for an event in this room: the
+// membership lookup a restricted allow list asks for, and the key lookup rule 4.2 asks for. A
+// room service with no key ring leaves the verifier nil, which makes the rule reject rather than
+// assume — an unchecked signature is not a weaker check than no check at all.
+func (s *Service) authOpts(ctx context.Context, rules roomversion.Rules) eventauth.Opts {
+	opts := eventauth.Opts{
+		JoinedInRoom: func(allowRoom, member string) (bool, error) {
+			state, err := s.MembershipOf(ctx, allowRoom, member)
+			if err != nil {
+				return false, err
+			}
+			return state == eventauth.MembershipJoin, nil
+		},
+	}
+	if s.keyRing != nil {
+		lookup := s.keyRing(ctx, rules)
+		opts.VerifyServerSignature = func(event map[string]any, serverName string) error {
+			return events.VerifyServerSignature(rules, event, serverName, lookup)
+		}
+	}
+	return opts
+}
 
 // DeviceListAnnouncer tells the other homeservers that share a room with a local user that this
 // user's devices are worth re-reading. The end-to-end encryption key service implements it.
@@ -261,9 +308,17 @@ func (s *Service) WithTx(tx *gorm.DB) *Service {
 		presence: s.presence,
 		upgrades: s.upgrades,
 		relayer:  s.relayer,
-		name:     s.name,
-		log:      s.log,
-		now:      s.now,
+		// The capabilities the application attaches after construction have to be carried over
+		// as well. A transaction-scoped service that loses the key ring cannot answer rule 4.2, so
+		// a restricted join would be refused inside a transaction and allowed outside it — which is
+		// the kind of bug that shows up as a room that works until it is busy.
+		keyRing:             s.keyRing,
+		deviceListAnnouncer: s.deviceListAnnouncer,
+		inviter:             s.inviter,
+		remoteJoin:          s.remoteJoin,
+		name:                s.name,
+		log:                 s.log,
+		now:                 s.now,
 	}
 }
 
@@ -573,7 +628,7 @@ func (s *Service) createRoom(ctx context.Context, rules roomversion.Rules, roomI
 		// Authorising our own construction is not busywork. It is the only thing
 		// standing between a bug in this builder and a room that every other server
 		// refuses as soon as it federates.
-		if err := eventauth.Check(rules, event, snapshot, eventauth.Opts{}); err != nil {
+		if err := eventauth.Check(rules, event, snapshot, s.authOpts(ctx, rules)); err != nil {
 			return "", fmt.Errorf("rooms: the initial state we built is not authorised: %w", err)
 		}
 
@@ -657,6 +712,25 @@ func (s *Service) send(ctx context.Context, req SendRequest) (string, error) {
 		return "", err
 	}
 
+	content := valueOrEmpty(req.Content)
+	if req.EventType == eventauth.TypeMember {
+		// A copy, so that dropping a key here does not edit the caller's map out from under them.
+		owned := make(map[string]any, len(content)+1)
+		for key, value := range content {
+			owned[key] = value
+		}
+		// Who vouched for a join is this server's answer, not the body's. A client that copies a
+		// member event out of a room and writes it back — which is what the state endpoint invites —
+		// carries the old authoriser along with it, and a client that simply names somebody with
+		// invite power is holding its own ticket into a room the owner kept shut. Whatever arrived is
+		// dropped; only what this server decided is written.
+		delete(owned, eventauth.JACSKey)
+		if req.Authoriser != "" {
+			owned[eventauth.JACSKey] = req.Authoriser
+		}
+		content = owned
+	}
+
 	event := map[string]any{
 		"type":    req.EventType,
 		"room_id": req.RoomID,
@@ -666,7 +740,7 @@ func (s *Service) send(ctx context.Context, req SendRequest) (string, error) {
 		// to believe this one all read the name from here; an event without it is a PDU that
 		// cannot be traced to who sent it.
 		"origin":           s.name,
-		"content":          valueOrEmpty(req.Content),
+		"content":          content,
 		"prev_events":      toAnySlice(prev),
 		"depth":            depth,
 		"origin_server_ts": s.now().UnixMilli(),
@@ -691,11 +765,17 @@ func (s *Service) send(ctx context.Context, req SendRequest) (string, error) {
 		}
 	}
 
-	if err := eventauth.Check(rules, event, snapshot, eventauth.Opts{}); err != nil {
-		return "", s.refused(err, req)
-	}
+	// The event is signed before it is authorised, not after. Room version 8's rule 4.2 asks
+	// whether the homeserver of the user named as a restricted join's authoriser has signed the
+	// event, and until this server has signed it there is no signature for that rule to look at:
+	// authorising first would refuse a join this server is entitled to make, in every restricted
+	// room, forever. A signed event that fails the rules is discarded here rather than stored, so
+	// signing early costs a signature and gains nothing for anybody.
 	if err := events.Seal(s.name, rules, event, s.signer); err != nil {
 		return "", fmt.Errorf("rooms: cannot sign the event: %w", err)
+	}
+	if err := eventauth.Check(rules, event, snapshot, s.authOpts(ctx, rules)); err != nil {
+		return "", s.refused(err, req)
 	}
 	eventID, err := events.EventID(rules, event)
 	if err != nil {

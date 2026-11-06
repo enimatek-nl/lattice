@@ -29,6 +29,12 @@ type JoinAcceptor interface {
 	AuthChainIDs(ctx context.Context, seeds []string) ([]string, error)
 	// ServersInRoom names the homeservers with a joined user in the room.
 	ServersInRoom(ctx context.Context, roomID string) ([]string, error)
+	// RestrictedJoin decides what a restricted room asks of a join: whether the joining user
+	// satisfies one of the room's allow conditions, and which of this server's own members has
+	// to be named as the join's authoriser. An empty authoriser means the room asks nothing extra.
+	RestrictedJoin(ctx context.Context, roomID, userID string) (string, error)
+	// JoinAuthoriserValid reports whether this server can sign behind a named authoriser.
+	JoinAuthoriserValid(ctx context.Context, roomID, candidate string) (bool, error)
 }
 
 // handleMakeJoin implements GET /_matrix/federation/v1/make_join/{roomId}/{userId}.
@@ -163,6 +169,40 @@ func (d *Deps) handleSendJoin(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		d.Log.Warn("federation: cannot read a room's servers for a send_join",
 			"room_id", roomID, "error", err)
+	}
+
+	// A restricted room's conditions are worked out again here rather than trusted from the
+	// /make_join that came before. The room may have changed its join rule, its allow list or
+	// who is in it between the two halves of the handshake, and a resident server that signs a
+	// join is putting its name under everybody it is vouching for.
+	joining, _ := event["state_key"].(string)
+	authoriser, err := d.Joins.RestrictedJoin(r.Context(), roomID, joining)
+	if err != nil {
+		d.answerServiceError(w, "send_join", roomID, err)
+		return
+	}
+	if authoriser != "" {
+		content, _ := event["content"].(map[string]any)
+		named, _ := content[eventauth.JACSKey].(string)
+		signed, err := d.Joins.JoinAuthoriserValid(r.Context(), roomID, named)
+		if err != nil {
+			d.Log.Error("federation: cannot read the room for a join authoriser",
+				"room_id", roomID, "error", err)
+			matrixerr.Write(w, http.StatusInternalServerError, matrixerr.New(matrixerr.CodeUnknown,
+				"The server encountered an internal error."))
+			return
+		}
+		if !signed {
+			// The join names an authoriser this server cannot sign for — somebody else's user,
+			// a user who is not in the room, or one who could not have invited anyone. Rule 4.2
+			// will reject that event wherever it goes, so the joining server is told now, with
+			// the code that means "a different resident server may be able to help you".
+			d.Log.Warn("federation: a send_join named an authoriser this server cannot stand behind",
+				"room_id", roomID, "event_id", eventID, "authoriser", named)
+			matrixerr.Write(w, http.StatusBadRequest, matrixerr.New(matrixerr.CodeUnableToGrantJoin,
+				"This server cannot authorise your join of this room."))
+			return
+		}
 	}
 
 	// This server adds its own signature before storing, so the event that goes on to the

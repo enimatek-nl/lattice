@@ -295,7 +295,7 @@ func (s *Service) storeBundleEvent(ctx context.Context, event map[string]any, ru
 		// about the event, and filing one would make the gap permanent.
 		return "", false, true, nil
 	}
-	if err := eventauth.Check(rules, event, snapshot, eventauth.Opts{}); err != nil {
+	if err := eventauth.Check(rules, event, snapshot, s.authOpts(ctx, rules)); err != nil {
 		return "", false, false, s.refuse(ctx, roomID, eventID,
 			fmt.Sprintf("the event is not authorised by the events it cites: %v", err))
 	}

@@ -51,6 +51,17 @@ type Opts struct {
 	// JoinedInRoom reports whether a user is a joined member of another room. The
 	// restricted join-rule allow list needs it. See MayJoinRestricted.
 	JoinedInRoom func(roomID, userID string) (bool, error)
+
+	// AllowUnsignedTemplate relaxes rule 4.2 for the unsigned event template a resident server
+	// hands to a joining server. A template cannot carry the authoriser's signature: it is not an
+	// event yet, and the server that will seal it has not agreed to it. The signature is checked
+	// where it exists — when the signed event arrives at /send_join — so skipping it here costs
+	// nothing that is not checked again on the way in, and requiring it here would make every
+	// restricted room unjoinable from anywhere but the server that holds it.
+	//
+	// This is only ever correct for a template this server is building. It must never be set for
+	// an event arriving from a peer or being persisted.
+	AllowUnsignedTemplate bool
 }
 
 // Failure says which rule rejected an event. The rule numbers are the ones in the
@@ -390,11 +401,17 @@ func checkMember(rules roomversion.Rules, event map[string]any, state Snapshot, 
 		if !rules.SupportsRestrictedJoin {
 			return Failure{"4.2", "room version " + rules.ID + " does not support restricted joins"}
 		}
-		if opts.VerifyServerSignature == nil {
+		switch {
+		case opts.AllowUnsignedTemplate:
+			// The template a resident server hands to a joining server cannot carry this
+			// signature, because the servers that will sign it have not agreed to it yet. The
+			// check is made where the signature exists, when the signed event arrives.
+		case opts.VerifyServerSignature == nil:
 			return Failure{"4.2", "no signature verifier available for join_authorised_via_users_server"}
-		}
-		if err := opts.VerifyServerSignature(event, serverName(authoriser)); err != nil {
-			return Failure{"4.2", "join_authorised_via_users_server is not validly signed: " + err.Error()}
+		default:
+			if err := opts.VerifyServerSignature(event, serverName(authoriser)); err != nil {
+				return Failure{"4.2", "join_authorised_via_users_server is not validly signed: " + err.Error()}
+			}
 		}
 	}
 

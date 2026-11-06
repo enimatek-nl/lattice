@@ -116,6 +116,17 @@ func (s *Service) SetMembership(ctx context.Context, change MembershipChange) (s
 	for key, value := range change.Extra {
 		content[key] = value
 	}
+	// A client cannot name the user who authorised its own join. That key is a claim about who
+	// in the room vouched for the joiner, and the signature the room version demands is only
+	// meaningful when the server chose it. Whatever a client put in the body is dropped here and
+	// re-set below from what this server decided.
+	authoriser := ""
+	if change.Membership == eventauth.MembershipJoin {
+		var err error
+		if authoriser, err = s.RestrictedJoin(ctx, change.RoomID, change.Target); err != nil {
+			return "", err
+		}
+	}
 	content["membership"] = change.Membership
 	if change.IsDirect && change.Membership == eventauth.MembershipInvite {
 		content["is_direct"] = true
@@ -124,13 +135,14 @@ func (s *Service) SetMembership(ctx context.Context, change MembershipChange) (s
 		content["reason"] = change.Reason
 	}
 	return s.Send(ctx, SendRequest{
-		RoomID:    change.RoomID,
-		Sender:    change.Sender,
-		DeviceID:  change.DeviceID,
-		EventType: eventauth.TypeMember,
-		StateKey:  change.Target,
-		IsState:   true,
-		Content:   content,
+		RoomID:     change.RoomID,
+		Sender:     change.Sender,
+		DeviceID:   change.DeviceID,
+		EventType:  eventauth.TypeMember,
+		StateKey:   change.Target,
+		IsState:    true,
+		Content:    content,
+		Authoriser: authoriser,
 	})
 }
 
