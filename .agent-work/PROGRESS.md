@@ -1662,3 +1662,47 @@ over Complement's whole `./tests/...` tree — every package, including the MSC-
 narrower scope (`./tests` and `./tests/csapi` only), so the totals are not comparable; what is
 comparable is that nothing previously green went red, and `TestFederationRejectInvite` joined the
 passing set.
+
+## 2026-11-08 — a state event shows what it replaced; a direct message is recorded where the specification puts it (T-4023, T-4024)
+
+Commit `fcc4dae`.
+
+**`unsigned.prev_content` / `unsigned.prev_sender` (T-4023).** The previous content of a state
+event is a fact about the moment it was written, so it is computed at persistence
+(`persist.eventRepo.recordPrevState`, called from `Insert` for state events): the current
+`room_state` row for the same `(room, type, state_key)` is read *before* the caller records the
+new state, its content — in the redacted form when a redaction was applied, because that is the
+content a client compares against — is stored on the new row with the sender of that event. Two
+deliberate omissions: a state event that repeats the content already in place records nothing
+("the same content again" has no previous content, and reporting one would show a change that did
+not happen), and a state event whose predecessor cannot read records nothing, which leaves it
+looking like the first of its kind rather than inventing a history. Presentation is
+`redaction.showPrevState`, in the same servicer that adds `unsigned.redacted_because`; the fields
+never enter the stored bytes, so the signature still covers what it covered, and they do not
+travel to other homeservers — a claim about our own state is not something a peer agreed to.
+
+**`is_direct` (T-4024).** `createRoom` accepted the key and dropped it. Invitations now carry
+`is_direct: true` in their content — local ones and the remote ones, where the countersigning
+server has no other way to learn the flag — and the creator's `m.direct` account data gains the
+room against each invited user, extending the existing mapping because account data is a current
+value and overwriting it would lose the user's other conversations. It is not room state: a room
+is a direct message for the people it was opened between, not for everyone who may join later.
+
+**The account data endpoints.** `GET`/`PUT /_matrix/client/v3/user/{userID}/account_data/{type}`
+were missing entirely: the server stored account data and synced it, but no client could read or
+write it, so the `m.direct` mapping the server had just recorded was invisible to the user who
+owns it. `internal/users.AccountDataService` and `internal/api/client/accountdata.go`; the
+document is kept and returned as the bytes the client sent, because decoding it through this
+server's structs would drop keys this server has no opinion about.
+
+Complement evidence from the run after this change (`.agent-work/next/inv5.log`):
+`TestWriteMDirectAccountData` passes (newly green), `TestFederationRejectInvite` still passes, and
+`TestAddAccountData` now reaches room-scoped account data instead of failing on the user-scoped
+half. `TestFederationRoomsInvite` no longer fails on `prev_content` or on the invitation: what is
+left in it, and in `TestUnbanViaInvite`, is the remote ban/kick gap (T-4025) — `POST /kick` and
+`POST /ban` for a user who lives elsewhere are still refused with 501.
+
+Local tests: `tests/integration/prev_state_test.go` (three topic writes in the order second,
+third, second; only per-event recording can report both predecessors, and the room's first topic
+reports no predecessor), `tests/integration/direct_test.go` (the flag on the invitation, the
+mapping extended rather than replaced, and an ordinary room filed nowhere).

@@ -417,7 +417,7 @@ Status legend: `[ ]` pending · `[~]` in progress · `[x]` done (verification re
       `TestDeviceListsUpdateOverFederationOnRoomJoin` pass; the remaining device-list Complement
       failure, `TestDeviceListsUpdateOverFederation`, stops at `createRoom` because it invites a
       remote user, which is the missing outbound invite (T-4009c), not a device-list gap.
-- [ ] T-4023 what is still missing around device lists: announcing a *deleted* device
+- [x] T-4023 what is still missing around device lists: announcing a *deleted* device
       (`deleted: true` — a logout removes a device and its keys, and a peer's clients keep tracking
       it until told otherwise), cross-signing key changes once cross-signing exists, and
       `GET /client/v3/keys/changes`, which is how a client can ask directly rather than waiting to
@@ -483,7 +483,7 @@ T-4009c is split rather than closed: the invite half is done (see PROGRESS 2026-
       the new one lands), store it beside the event, and inject it into `unsigned` when the event is
       served to a client. It must not enter the stored bytes a signature covers, and it is not a
       federation field.
-- [ ] T-4024 `is_direct` on invites and the `m.direct` account data. `createRoom` ignores the flag
+- [x] T-4024 `is_direct` on invites and the `m.direct` account data. `createRoom` ignores the flag
       today, so a room created as a direct message is not recorded as one anywhere. Needed by the
       same Complement case, and by any client that groups DMs.
 - [ ] T-4025 Ban, kick and leave for a user who lives on another homeserver. Still refused with 501
@@ -498,3 +498,14 @@ T-4009c is split rather than closed: the invite half is done (see PROGRESS 2026-
       `auth_events` in a re-served PDU, or redaction handling in `events.Verify`. The invite path now
       skips such events instead of refusing, which keeps interoperability but hides the fault; the
       log line names each event that fails.
+
+- [x] T-4023, T-4024 are done (PROGRESS 2026-11-08, commit `fcc4dae`). Two gaps opened by that
+      work:
+- [ ] T-4027 Room-scoped account data: `PUT`/`DELETE /rooms/{roomID}/account_data/{type}`, stored
+      per user per room, and shown in sync under `rooms.join.<room>.account_data`. Complement's
+      `TestAddAccountData/Can_add_room_account_data` and half of `TestRemovingAccountData` wait on
+      it. It needs a table of its own (the value is per user *and* per room, unlike `account_data`)
+      and a sync section, so it is a task of its own rather than a copy of the user-scoped one.
+- [ ] T-4028 `DELETE /user/{userID}/account_data/{type}`. Complement deletes account data both
+      ways — with DELETE and with an empty PUT — and only the PUT half exists. The empty PUT
+      already erases the content; the DELETE verb should do the same and answer `{}`.
