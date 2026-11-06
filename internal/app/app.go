@@ -173,11 +173,12 @@ func NewWithOptions(ctx context.Context, cfg *config.Config, log *slog.Logger, o
 	// probed on the client port answers 405, not 404.
 	defer a.clientRouter.MirrorFrom(a.federationRouter)
 	federationDeps := &federationapi.Deps{
-		Cfg:     cfg,
-		Log:     log,
-		Keys:    signingKeys,
-		Version: Version,
-		E2EKeys: deviceKeys,
+		Cfg:         cfg,
+		Log:         log,
+		Keys:        signingKeys,
+		Version:     Version,
+		E2EKeys:     deviceKeys,
+		DeviceLists: deviceKeys,
 	}
 	if cfg.Federation.Enabled {
 		policy, err := federation.NewIPpolicy(cfg.Federation.IPAllow, cfg.Federation.IPDeny)
@@ -214,6 +215,10 @@ func NewWithOptions(ctx context.Context, cfg *config.Config, log *slog.Logger, o
 		// query for a remote user is simply empty, which a client reads as "no keys".
 		deviceKeys.ServeRemotes(cfg.ServerName, client)
 		a.Sender = federation.NewSender(db.Federation, db.Events, db.State, client, cfg.ServerName, log)
+		// And the other direction: this server's own device list changes go out as ephemeral
+		// units through the same queue as its events, so that a client on another server is
+		// prompted to ask at all.
+		deviceKeys.ServeDeviceEDUs(a.Sender)
 		// A room's exclusion of servers is read from room state, so both the endpoints that answer
 		// a server and the relay that decides which servers to tell read it from the room service.
 		a.Sender.ACLs = roomService
@@ -227,6 +232,9 @@ func NewWithOptions(ctx context.Context, cfg *config.Config, log *slog.Logger, o
 		// Every event this server accepts is offered to the other servers in the room.
 		// Queuing is not delivery: an unreachable remote cannot make a local send fail.
 		roomService.SetRelayer(a.Sender)
+		// A user joining from here is a new device list to the rest of the room, and only this
+		// server can say so.
+		roomService.SetDeviceListAnnouncer(deviceKeys)
 		// A local user joining a room held elsewhere is carried by this handshake: ask a
 		// server that holds the room for the shape of the join, sign it here, hand it back.
 		// The room service decides when it is needed; this is the part that reaches out.
@@ -249,6 +257,7 @@ func NewWithOptions(ctx context.Context, cfg *config.Config, log *slog.Logger, o
 			LocalKeys: signingKeys,
 			Name:      cfg.ServerName,
 			Ingest:    roomService,
+			Announcer: roomService,
 			Log:       log,
 		}
 		joiner.Backfill = backfiller

@@ -125,6 +125,9 @@ type Service struct {
 	// until federation is wired up, and a room service without one works exactly as
 	// before: local rooms stay local.
 	relayer Relayer
+	// deviceListAnnouncer tells a user's other servers about their devices; nil until
+	// [Service.SetDeviceListAnnouncer].
+	deviceListAnnouncer DeviceListAnnouncer
 	// remoteJoin carries a local user into a room this server does not hold. It is nil
 	// until federation is wired up, and a room service without one refuses such a join
 	// rather than pretending the room does not exist.
@@ -174,6 +177,35 @@ type Relayer interface {
 // SetRelayer connects the federation sender. Without it this server keeps rooms to
 // itself, which is the honest state of a server with federation not yet wired in.
 func (s *Service) SetRelayer(relayer Relayer) { s.relayer = relayer }
+
+// DeviceListAnnouncer tells the other homeservers that share a room with a local user that this
+// user's devices are worth re-reading. The end-to-end encryption key service implements it.
+type DeviceListAnnouncer interface {
+	AnnounceDeviceListsToFederation(ctx context.Context, userID string)
+}
+
+// SetDeviceListAnnouncer connects that announcement. It is separate from [Service.SetRelayer]
+// because the two answer different questions — where to send a room's events, and who to tell
+// about a user's devices — even though the same sender carries both in a running server.
+func (s *Service) SetDeviceListAnnouncer(announcer DeviceListAnnouncer) {
+	s.deviceListAnnouncer = announcer
+}
+
+// AnnounceDeviceLists tells the other homeservers in a local user's rooms that the user's devices
+// are worth re-reading.
+//
+// The join handshake needs this directly. A join made here arrives as part of the bundle a resident
+// server hands over, and an adopted bundle does not run the side effects of an event this server
+// accepted itself — it did not decide to accept that event, another server did, and running a peer's
+// whole handover through the room's effects would echo it back into the room. But the user who just
+// joined is exactly the fact the other servers have not been told about, and only this server can
+// tell them.
+func (s *Service) AnnounceDeviceLists(ctx context.Context, userID string) {
+	if s.deviceListAnnouncer == nil {
+		return
+	}
+	s.deviceListAnnouncer.AnnounceDeviceListsToFederation(ctx, userID)
+}
 
 func New(db *persist.Database, signer events.Signer, presence PresenceNotifier, upgrades UpgradeNotifier, serverName string, log *slog.Logger) (*Service, error) {
 	if db == nil {

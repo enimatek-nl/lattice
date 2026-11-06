@@ -13,4 +13,4 @@ data/
 *.db-wal
 *.db-shm
 /local/
-.agent-work/tmp-*.log
+.agent-work/*.log

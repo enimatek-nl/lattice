@@ -2,6 +2,7 @@ package persist
 
 import (
 	"context"
+	"fmt"
 
 	"gorm.io/gorm"
 )
@@ -48,7 +49,26 @@ type DeviceListRepo interface {
 	// ListFor returns the changes an observer has not heard yet, in (since, until], oldest
 	// first.
 	ListFor(ctx context.Context, observerID string, since, until int64) ([]*DeviceListChange, error)
+	// NextDeviceStream returns the next device list update number for a user, and is the
+	// number this server announces when it tells other servers about that user's devices. It
+	// is per user and strictly increasing, which is what the receiving server uses to tell a
+	// newer update from one it has already applied. It is not the same numbering as the sync
+	// stream: two servers each number their own users' changes, and neither position means
+	// anything on the other.
+	NextDeviceStream(ctx context.Context, userID string) (int64, error)
 }
+
+// DeviceListStream is how far this server has numbered one user's device list updates. The
+// counter is kept rather than derived because the point of the number is that it never goes
+// backwards: a count of the user's devices would restart from one whenever a device is deleted,
+// and a peer that has already applied a higher number would throw the new update away.
+type DeviceListStream struct {
+	UserID     string `gorm:"column:user_id;type:text;primaryKey"`
+	LastStream int64  `gorm:"column:last_stream;not null;default:0"`
+}
+
+// TableName fixes the table name rather than letting GORM pluralise the type name.
+func (DeviceListStream) TableName() string { return "device_list_streams" }
 
 // NewDeviceListRepo returns the device list repository bound to db.
 func NewDeviceListRepo(db *gorm.DB) DeviceListRepo { return &deviceListRepo{db: db} }
@@ -59,6 +79,24 @@ type deviceListRepo struct{ db *gorm.DB }
 func (r *deviceListRepo) WithTx(tx *gorm.DB) DeviceListRepo { return &deviceListRepo{db: tx} }
 
 // Record implements [DeviceListRepo].
+// NextDeviceStream implements [DeviceListRepo].
+//
+// The increment and the read are one statement so that two devices of one user uploading keys
+// at the same moment cannot both be announced with the same number.
+func (r *deviceListRepo) NextDeviceStream(ctx context.Context, userID string) (int64, error) {
+	if userID == "" {
+		return 0, nil
+	}
+	var next int64
+	if err := r.db.WithContext(ctx).Raw(
+		`INSERT INTO device_list_streams (user_id, last_stream) VALUES (?, 1)
+		 ON CONFLICT(user_id) DO UPDATE SET last_stream = last_stream + 1
+		 RETURNING last_stream`, userID).Scan(&next).Error; err != nil {
+		return 0, fmt.Errorf("persist: cannot advance the device list stream of %s: %w", userID, err)
+	}
+	return next, nil
+}
+
 func (r *deviceListRepo) Record(ctx context.Context, roomID, observerID, userID, kind string) (int64, error) {
 	if observerID == "" || userID == "" {
 		return 0, nil
