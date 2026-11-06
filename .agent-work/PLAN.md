@@ -65,12 +65,12 @@ Done here: keys and discovery, `X-Matrix` in and out, the `/send/{txn}` receiver
 durable queue, PDU ingest checks in specification order, refusals recorded and cascading
 (T-2006a, DEC-021), outbound fan-out, Complement's federation credential fix (DEC-020).
 
-Not met, and named rather than glossed: two homeservers agreeing on one room's *state* after
-both changed it. `rooms.persistEvent` sets a state key to the last state event persisted for
-it — the last-write-wins this project must not substitute — while `internal/state.Resolve`
-implements State Resolution 2, is unit-tested, and is never called. The resolver needs the
-state each forward extremity was carrying, so T-2017 follows T-3004 (per-event state
-snapshots). Until T-2017 lands this milestone stays open even though events move.
+Corrected 2026-11-08: the blocker named here for a long time — that current state was
+last-write-wins while `internal/state.Resolve` was never called — no longer holds.
+`rooms.reconcileCurrentState` (`internal/rooms/resolve.go:183`–218) reads the room's forward
+extremities, takes each one's recorded state snapshot, resolves them with the algorithm the room
+version names, and makes the result the current state; `internal/rooms/stateat.go:91` resolves the
+state an event at a fork was carrying. Unit coverage of the resolver itself predates this.
 
 ## M5 — Extended functionality
 

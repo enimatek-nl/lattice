@@ -517,3 +517,37 @@ T-4009c is split rather than closed: the invite half is done (see PROGRESS 2026-
       content object, so the store needs a removal that is itself positionable in the stream —
       a row marked removed, whose reads report M_NOT_FOUND and whose sync entry carries `{}`.
       Complement: `TestRemovingAccountData` in `tests/msc3391`.
+
+## M2/M3 gate run (2026-11-08, `.agent-work/next/gate.log`: 19 pass, 13 fail)
+
+Ordered cheapest-verified-win first. Evidence lines are from Complement sources at the checkout in
+`~/complement`.
+
+- [ ] T-4030 `/login` accepts a client-supplied `device_id`. Complement's txnid tests log in with a
+      chosen device ID and we answer `M_INVALID_PARAM "Device ID …"` (`txnid_test.go:147`, `:233`).
+      Fails `TestTxnScopeOnLocalEcho`, `TestTxnIdWithRefreshToken`,
+      `TestTxnIdempotencyScopedToDevice` at the first step. Validate the shape, reuse the device if
+      it already belongs to that user, refuse one that belongs to somebody else.
+- [ ] T-4031 A reused transaction ID with a *different* body is a new event.
+      `TestTxnIdempotency` (`txnid_test.go:211`): the fourth send re-used the third's txn ID with
+      different content and got the cached event back. Synapse's uniqueness is
+      (user, device, txn, body); ours is (device, txn). Same test class: 5 tests.
+- [ ] T-4032 `unsigned.membership` on served events: the sender's room membership as the event was
+      sent (`TestMembershipOnEvents`, `membership_on_events_test.go:65` — "got , want leave/join"
+      on every event in the room). This is the same presentation layer as
+      `redaction.showPrevState`; the fact itself belongs to persistence, like prev_content: record
+      the sender's membership when the event is written.
+- [ ] T-4033 `/members`: the `membership=` filter and the at-point view return entries they should
+      not — `JSONCheckOff(chunk): unexpected item` at `room_members_test.go:105`, `:177`, `:202`
+      (`TestGetFilteredRoomMembers`, `TestGetRoomMembersAtPoint`).
+- [ ] T-4034 Diagnose why an event a client just sent does not reach its own `/sync` timeline:
+      `SendEventSynced waiting for event ID …` at `room_members_test.go:74`, `:88` and
+      `room_messages_test.go:127`, `:137`, `:195`, `:412`, plus `TestSync` itself. Probably one
+      cause covering several tests; it is also the main thing between M2 and M3.
+- [ ] T-4035 `TestRoomCreationReportsEventsToMyself` — undiagnosed.
+- [ ] T-4036 `TestSyncOmitsStateChangeOnFilteredEvents` (sync filter), `TestMessagesOverFederation`.
+
+Ledger correction: PLAN.md's M4 note claiming `internal/state.Resolve` is never called is stale.
+`rooms.reconcileCurrentState` (`internal/rooms/resolve.go:183`–218) resolves current state across
+forward extremities through `state.Resolve`, and `stateat.go:91` resolves an event's own state.
+That blocker is closed and must not be counted against M4.
