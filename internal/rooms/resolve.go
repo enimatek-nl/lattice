@@ -89,6 +89,12 @@ func (g *storedGraph) Rejected(id string) bool {
 	if g.askedAbout[id] {
 		return false
 	}
+	// An event this server holds went through its hash and signature checks before it was
+	// stored, so a refusal filed against its ID earlier can only have been about different
+	// bytes. See dropStoredRefusals.
+	if held, err := g.events.ByID(g.ctx, id); err == nil && held != nil {
+		return false
+	}
 	g.askedAbout[id] = true
 	reasons, err := g.events.Rejections(g.ctx, []string{id})
 	if err != nil {

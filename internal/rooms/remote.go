@@ -118,8 +118,21 @@ func (s *Service) AcceptRemoteEvent(ctx context.Context, pdu []byte, verify Veri
 	}
 	if err := verify(event, rules); err != nil {
 		reason := fmt.Sprintf("the event failed its signature and hash checks: %v", err)
-		return "", s.refuse(ctx, roomID, eventID, reason)
+		if errors.Is(err, events.ErrKeysUnavailable) {
+			// The keys to check the signature were not obtainable. Nothing has been said about
+			// the event: the neighbour may have rotated its keys, this fetch may have failed, and
+			// the next attempt may verify perfectly. A refusal here is a homeserver refusing a
+			// room it was happy with a second earlier.
+			return "", fmt.Errorf("rooms: the event cannot be checked yet: %w", err)
+		}
+		if err := s.refuse(ctx, roomID, eventID, reason); err != nil {
+			return "", err
+		}
+		return "", errors.New(reason)
 	}
+	// The event signed itself and hashes to the name it is filed under, so any verdict this
+	// server holds against that name was about different bytes. See clearStaleVerdict.
+	s.clearStaleVerdict(ctx, eventID)
 
 	// The auth events the sender cited have to be present here, both to authorise this
 	// event and to authorise whatever comes after it. Fetching missing ones is the
@@ -133,6 +146,7 @@ func (s *Service) AcceptRemoteEvent(ctx context.Context, pdu []byte, verify Veri
 	if err != nil {
 		return "", fmt.Errorf("rooms: cannot read the refusals recorded for a remote event: %w", err)
 	}
+	dropStoredRefusals(refusals, authEvents)
 	if len(authEvents)+len(refusals) < len(authIDs) {
 		// Nothing is known about at least one of the events it relies on. That is a gap,
 		// not a verdict: the gap may be filled (T-4007) and the same event may then be
@@ -255,6 +269,8 @@ func (s *Service) refuse(ctx context.Context, roomID, eventID, reason string) er
 			// bytes under a good event's ID — become a verdict against that good event.
 			return errors.New(reason)
 		}
+		s.log.Warn("rooms: this server refused an event and remembers it",
+			slog.String("room_id", roomID), slog.String("event_id", eventID), slog.String("reason", reason))
 		if err := s.events.RecordRejection(ctx, &persist.EventRejection{
 			EventID: eventID, RoomID: roomID, Reason: reason, Refuser: s.name,
 		}); err != nil {
@@ -299,6 +315,50 @@ func (s *Service) adoptRemoteRoom(ctx context.Context, event map[string]any) (bo
 		}
 	}
 	return true, nil
+}
+
+// dropStoredRefusals forgets the refusals that name events this server holds.
+//
+// A refusal is a verdict about the bytes somebody showed under an event ID. A tampered copy of a
+// real event — right ID, broken signature — earns one, and this server keeps that verdict so the
+// same forgery offered twice gets the same answer. What it cannot do is stand against the event
+// itself: that was stored only after its reference hash and its origin server's signature were
+// checked, which is the thing the forgery failed. Nothing is recorded against an event held here
+// (see refuse); this is the same rule from the other side. Without it, one forged copy arriving
+// before the genuine one would refuse every later event that cites the genuine event, and a room
+// would be finished off by whoever lied first.
+func dropStoredRefusals(refusals map[string]string, stored []*persist.Event) {
+	if len(refusals) == 0 {
+		return
+	}
+	for _, entry := range stored {
+		delete(refusals, entry.EventID)
+	}
+}
+
+// clearStaleVerdict forgets a refusal this server filed against an event ID that has now arrived
+// properly made.
+//
+// A refusal is filed against a name, and a name can be attached to tampered bytes by anybody: the
+// verdict is about the bytes that were shown, not about the event. So when the event itself turns
+// up — signing itself, hashing to that name — the verdict has to go, or this server would refuse
+// every later event in the room for citing an event it has just accepted, and the room would be
+// finished off by whoever lied first.
+func (s *Service) clearStaleVerdict(ctx context.Context, eventID string) {
+	if eventID == "" {
+		return
+	}
+	reasons, err := s.events.Rejections(ctx, []string{eventID})
+	if err != nil || len(reasons) == 0 {
+		return
+	}
+	if err := s.events.ForgetRejection(ctx, eventID); err != nil {
+		s.log.Warn("rooms: cannot forget a refusal this server filed against an event it has accepted",
+			slog.String("event_id", eventID), slog.Any("error", err))
+		return
+	}
+	s.log.Info("rooms: an event arrived properly made, so the refusal filed against its name is dropped",
+		slog.String("event_id", eventID), slog.String("previous_verdict", reasons[eventID]))
 }
 
 // MissingAuthEventsError says an event could not be judged because events it cites for its

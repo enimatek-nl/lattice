@@ -129,6 +129,11 @@ func (d *dbSnapshot) Rejected(id string) bool {
 	if d.asked[id] {
 		return false
 	}
+	// An event held here is not refused, whatever was once offered under its ID. See
+	// dropStoredRefusals.
+	if held, err := d.events.ByID(d.ctx, id); err == nil && held != nil {
+		return false
+	}
 	if d.asked == nil {
 		d.asked = map[string]bool{}
 	}

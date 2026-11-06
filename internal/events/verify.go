@@ -18,11 +18,21 @@ import (
 type InvalidEventError struct {
 	EventID string
 	Reason  string
+
+	// Err is the failure behind the reason, kept so a caller can tell the kinds of "not valid"
+	// apart instead of reading prose. "This server could not get the signing keys" and "this
+	// signature does not match" both make an event invalid at the moment they are reported, and
+	// only the second is a verdict worth remembering: a refusal filed for the first refuses the
+	// event forever, and every later event that cites it.
+	Err error
 }
 
 func (e InvalidEventError) Error() string {
 	return fmt.Sprintf("event %s is not valid: %s", e.EventID, e.Reason)
 }
+
+// Unwrap lets errors.Is reach the failure behind the reason.
+func (e InvalidEventError) Unwrap() error { return e.Err }
 
 // KeyLookup resolves a server's signing key by ID. It is the federation keyring's job
 // to answer, and answering "no such key" is the correct response to a key this server
@@ -50,11 +60,11 @@ func Verify(rules roomversion.Rules, event map[string]any, lookup KeyLookup) err
 	// and one arriving with a label that disagrees is not a different event — see AssignEventID.
 	eventID, err := AssignEventID(rules, event)
 	if err != nil {
-		return InvalidEventError{Reason: err.Error()}
+		return InvalidEventError{Reason: err.Error(), Err: err}
 	}
 
 	if err := verifyContentHash(rules, event); err != nil {
-		return InvalidEventError{EventID: eventID, Reason: err.Error()}
+		return InvalidEventError{EventID: eventID, Reason: err.Error(), Err: err}
 	}
 
 	sender, _ := event["sender"].(string)
@@ -63,7 +73,7 @@ func Verify(rules roomversion.Rules, event map[string]any, lookup KeyLookup) err
 		return InvalidEventError{EventID: eventID, Reason: fmt.Sprintf("its sender %q has no server name", sender)}
 	}
 	if err := verifyOriginSignature(rules, event, origin, lookup); err != nil {
-		return InvalidEventError{EventID: eventID, Reason: err.Error()}
+		return InvalidEventError{EventID: eventID, Reason: err.Error(), Err: err}
 	}
 	return nil
 }
@@ -124,6 +134,14 @@ func verifyContentHash(rules roomversion.Rules, event map[string]any) error {
 // what was signed. Checking with a generic JSON signer accepts or rejects the wrong
 // bytes: in a room whose IDs are hashes, keeping the event ID in the signed form makes
 // every honest event look forged.
+// ErrKeysUnavailable says the signing keys needed to check an event could not be obtained — the
+// fetch for them failed, or the store holding them could not be read. It is kept apart from a
+// signature that was obtained and did not match, because those are different sentences about
+// different things: one is about this server's network and says nothing about the event, the other
+// is a verdict about the event. Only the second is worth remembering, and a server that files the
+// first as a verdict refuses an event that its own next attempt would have accepted.
+var ErrKeysUnavailable = errors.New("events: the signing keys needed to check this event are not available here")
+
 func verifyOriginSignature(rules roomversion.Rules, event map[string]any, origin string, lookup KeyLookup) error {
 	if origin == "" {
 		return errors.New("the sender has no server name to sign it")
@@ -139,15 +157,21 @@ func verifyOriginSignature(rules roomversion.Rules, event map[string]any, origin
 	}
 	var problems []string
 	verified := 0
+	// unobtainable stays true only while every reason for not verifying is that a key could not
+	// be got hold of. One signature that decoded and was checked against a published key and did
+	// not match, and the sentence stops being about keys.
+	unobtainable := true
 	for keyID, raw := range byKey {
 		value, _ := raw.(string)
 		if value == "" {
 			problems = append(problems, fmt.Sprintf("%s carries an empty signature", keyID))
+			unobtainable = false
 			continue
 		}
 		signature, err := matrixjson.DecodeUnpadded(value)
 		if err != nil {
 			problems = append(problems, fmt.Sprintf("%s: %v", keyID, err))
+			unobtainable = false
 			continue
 		}
 		key, err := lookup(origin, keyID)
@@ -158,15 +182,20 @@ func verifyOriginSignature(rules roomversion.Rules, event map[string]any, origin
 		if len(key) != ed25519.PublicKeySize {
 			problems = append(problems, fmt.Sprintf("%s: the published key is %d bytes, not %d",
 				keyID, len(key), ed25519.PublicKeySize))
+			unobtainable = false
 			continue
 		}
 		if !ed25519.Verify(key, signed, signature) {
 			problems = append(problems, fmt.Sprintf("%s: the signature does not match", keyID))
+			unobtainable = false
 			continue
 		}
 		verified++
 	}
 	if verified == 0 {
+		if unobtainable && len(problems) > 0 {
+			return fmt.Errorf("%w: %s", ErrKeysUnavailable, strings.Join(problems, "; "))
+		}
 		if len(problems) > 0 {
 			return fmt.Errorf("none of the %d signatures it carries from %s check against a key that server published: %s",
 				len(byKey), origin, strings.Join(problems, "; "))
@@ -190,7 +219,7 @@ func VerifyServerSignature(rules roomversion.Rules, event map[string]any, server
 		return InvalidEventError{Reason: "no homeserver is named to have signed the event"}
 	}
 	if err := verifyOriginSignature(rules, event, serverName, lookup); err != nil {
-		return InvalidEventError{EventID: eventIDOf(event), Reason: err.Error()}
+		return InvalidEventError{EventID: eventIDOf(event), Reason: err.Error(), Err: err}
 	}
 	return nil
 }

@@ -286,6 +286,11 @@ type EventRepo interface {
 	// event be offered again, or a successor that cites it be judged from scratch by a
 	// server that has lost its own memory.
 	RecordRejection(ctx context.Context, rejection *EventRejection) error
+	// ForgetRejection drops a verdict this server filed against an event ID. It is for the case
+	// where the event itself then turns up properly signed: the verdict was about the bytes that
+	// were offered under that ID, not about the event, and keeping it would refuse every later
+	// event that cites an event this server has now accepted.
+	ForgetRejection(ctx context.Context, eventID string) error
 	// Rejections returns the recorded reason for each of the given event IDs. An ID this
 	// server never refused is absent from the result, which is the difference between
 	// "never seen" and "seen and refused".
@@ -618,6 +623,14 @@ func (r *eventRepo) RecordRejection(ctx context.Context, rejection *EventRejecti
 		return nil
 	}
 	return err
+}
+
+// ForgetRejection implements [EventRepo].
+func (r *eventRepo) ForgetRejection(ctx context.Context, eventID string) error {
+	if eventID == "" {
+		return nil
+	}
+	return r.db.WithContext(ctx).Where("event_id = ?", eventID).Delete(&EventRejection{}).Error
 }
 
 // Rejections implements [EventRepo].
