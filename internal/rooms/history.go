@@ -279,7 +279,7 @@ func (s *Service) historyState(ctx context.Context, roomID, requester string, ch
 		if asOf > 0 && stored.StreamOrdering > asOf {
 			continue
 		}
-		body, err := s.eventJSON(ctx, entry.EventID)
+		body, err := s.eventJSONFor(ctx, entry.EventID, requester)
 		if err != nil {
 			return err
 		}
