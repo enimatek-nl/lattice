@@ -37,6 +37,9 @@ type Service struct {
 	// because a piece of derived data could not be written would be worse than a user
 	// who has to be given it again on their next read.
 	AfterRegister func(ctx context.Context, userID string) error
+
+	// profiles receives the room layer's half of a profile change. See [ProfileBroadcaster].
+	profiles ProfileBroadcaster
 }
 
 // New builds the account service.

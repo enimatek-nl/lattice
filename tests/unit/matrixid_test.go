@@ -326,3 +326,43 @@ func safeName(s string) string {
 		}
 	}, string(r))
 }
+
+// TestSplitMXC covers the content identifier a profile, a media URL and a room's image state all
+// carry: `mxc://<server-name>/<media-id>`.
+func TestSplitMXC(t *testing.T) {
+	t.Parallel()
+	valid := []struct {
+		id, server, media string
+	}{
+		{"mxc://example.com/SEsfnsuifSDFSSEF", "example.com", "SEsfnsuifSDFSSEF"},
+		{"mxc://example.org:8448/abc-DEF_123", "example.org:8448", "abc-DEF_123"},
+		{"mxc://example.com/a.b!c=d+e", "example.com", "a.b!c=d+e"},
+	}
+	for _, tc := range valid {
+		server, media, err := matrixid.SplitMXC(tc.id)
+		if err != nil {
+			t.Errorf("SplitMXC(%q) = %v, want %q and %q", tc.id, err, tc.server, tc.media)
+			continue
+		}
+		if server != tc.server || media != tc.media {
+			t.Errorf("SplitMXC(%q) = %q, %q, want %q, %q", tc.id, server, media, tc.server, tc.media)
+		}
+	}
+
+	invalid := []string{
+		"",
+		"https://example.com/abc",
+		"mxc://",
+		"mxc://example.com",
+		"mxc:///abc",
+		"mxc://example.com/",
+		"mxc://not a host/abc",
+		"mxc://example.com/has space",
+		"mxc://example.com/que?stion",
+	}
+	for _, id := range invalid {
+		if server, media, err := matrixid.SplitMXC(id); err == nil {
+			t.Errorf("SplitMXC(%q) = %q, %q, want an error", id, server, media)
+		}
+	}
+}

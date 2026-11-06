@@ -131,6 +131,17 @@ func (s *Service) SetMembership(ctx context.Context, change MembershipChange) (s
 		}
 	}
 	content["membership"] = change.Membership
+	// A user speaking for themselves brings their profile with them, because that is what the room's
+	// other members read. A membership event written by someone else about this user — a kick, an
+	// invite this server built — does not: this server is not the authority on how that person is
+	// presented, and a name written by the wrong hand is the kind of thing a room then believes.
+	if change.Membership == eventauth.MembershipJoin && change.Sender == change.Target {
+		for key, value := range s.profileForMember(ctx, change.Target) {
+			if _, present := content[key]; !present {
+				content[key] = value
+			}
+		}
+	}
 	if change.IsDirect && change.Membership == eventauth.MembershipInvite {
 		content["is_direct"] = true
 	}
