@@ -541,6 +541,20 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
       be one stored column: serving needs the reader's membership at each event, which is the same
       membership-history lookup T-4033 needs. Presentation still goes through
       `internal/redaction/serve.go`.
+      Mechanism now available, and this is the plan rather than a guess: T-4033a built the "state
+      at a stream position" lookup (`EventsWindow` → `groups.GroupOf` → `groups.Entries`). The same
+      lookup answers MSC4115 per event: for each event served to a user, read that event's own
+      snapshot (`GroupOf(eventID)` → its `m.room.member/<reader>` entry → that event's content
+      membership). No such entry means `leave`, which is what the create event wants, and a user's
+      own join event resolves to `join`, because `recordStateAt` attaches the snapshot *including*
+      the state event itself (`internal/rooms/stateat.go:28-56`). It is per reader, so
+      `redaction.Servicer` needs the reader passed in — it already takes the room rules and does the
+      client-side adjustment, so that is a parameter and a lookup, not a redesign. Cost to watch: one
+      entry lookup per served event, so either a per-request cache of (group, state_key) →
+      membership, or one SQL join (`event_state_groups` → `state_group_entries` → `events`) behind a
+      repo method such as `MembershipAt(ctx, eventID, stateKey)`. Scope it to events this server
+      authored: a peer's event arrives with that server's own `unsigned`, and writing our values
+      over them would be a claim about a room we did not witness.
 - [x] T-4033 (half). `handleMembers` read only `not_membership`; `membership=` was ignored. Fixed
       in the commit after `7157a39`: `TestGetFilteredRoomMembers` passes all three subtests
       (`not_membership`, `membership/leave`, `membership/join`).

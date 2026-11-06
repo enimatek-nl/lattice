@@ -1787,3 +1787,19 @@ Open observation, recorded rather than theorised: `SendEventSynced waiting for e
 in some runs of `room_members_test.go:74`/`:88` and not others with the same blueprint, so a sent
 event sometimes does not reach the sender's own `/sync` in time. That is intermittent, and it is
 T-4034.
+
+### In flight, for the next session to read
+
+A full Complement suite run (`RUN='.'`, all packages) is writing to
+`.agent-work/next/gate3.log`, started 10:37 UTC on 2026-11-06 with the tree at `96576d2`.
+Read it when it ends for the honest tally; do not read the whole file — the useful commands are
+`grep -E '^(ok|FAIL)\s+github'` for packages and `grep -E '^--- FAIL'` for tests.
+
+Already visible in it, and worth its own task rather than a footnote: the `msc3902` package hangs
+with its homeserver container `Up 14 minutes` and no further log output (the log went quiet at
+11:44 local). A Complement test that never returns is a server bug of a particular kind — the test
+is waiting for something the server will never send (a sync that never carries an event, a
+missing-event fetch that is never answered, or a request handler that never replies). It is worse
+than a failure, because a failure reports itself. `msc4242`, `msc4306` and `msc4429` report package
+failures, which is expected for unimplemented MSCs and needs separating from hangs when the tally is
+taken.
