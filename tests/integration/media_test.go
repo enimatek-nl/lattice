@@ -369,6 +369,16 @@ func TestMediaCreateThenUpload(t *testing.T) {
 		t.Errorf("the file name given with the body was not kept: %q", disposition.raw)
 	}
 
+	// Filling it again is the specification's own refusal, with its own code: the address already has
+	// content, and replacing bytes that other people hold links to is not what a second upload means.
+	again := h.raw(t, http.MethodPut, "/_matrix/media/v3/upload/hs1/"+mediaID, []byte("again"), aliceToken)
+	if again.status != http.StatusConflict || again.errcode(t) != "M_CANNOT_OVERWRITE_MEDIA" {
+		t.Errorf("uploading over existing content: status %d %s", again.status, again.body)
+	}
+	if after := getRaw(t, h, "/_matrix/media/v3/download/hs1/"+mediaID, ""); string(after.body) != "at last" {
+		t.Errorf("the refused upload changed the stored content: %q", after.body)
+	}
+
 	// A URI that was never reserved cannot be uploaded to: accepting it would let an uploader choose
 	// identifiers, including ones already in use.
 	neverCreated := h.raw(t, http.MethodPut, "/_matrix/media/v3/upload/hs1/neverreserved", []byte("x"), aliceToken)

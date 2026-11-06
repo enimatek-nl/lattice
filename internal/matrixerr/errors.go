@@ -48,8 +48,12 @@ const (
 	// bytes (POST /_matrix/media/v1/create) and asked for before they arrive. It is not M_NOT_FOUND,
 	// because the address exists and is waiting, which is a different answer for a client.
 	CodeNotYetUploaded Code = "M_NOT_YET_UPLOADED"
-	CodeInvalidToken   Code = "M_INVALID_TOKEN"
-	CodeInvalidSTS     Code = "M_INVALID_STK" //nolint:gocritic // Matrix code name
+	// CodeCannotOverwriteMedia belongs to the content repository's two-step upload: content was already
+	// stored at this `mxc://` URI, and a second upload to the same address is refused rather than
+	// silently replacing what other people already hold a link to.
+	CodeCannotOverwriteMedia Code = "M_CANNOT_OVERWRITE_MEDIA"
+	CodeInvalidToken         Code = "M_INVALID_TOKEN"
+	CodeInvalidSTS           Code = "M_INVALID_STK" //nolint:gocritic // Matrix code name
 
 	// Room and event errors from the Client-Server API.
 
@@ -181,6 +185,7 @@ var statusByCode = map[Code]int{
 	CodeUnableToGrantJoin:       http.StatusBadRequest,
 	CodeUnsupportedRoomVersion:  http.StatusBadRequest,
 	CodeDuplicateAlias:          http.StatusConflict,
+	CodeCannotOverwriteMedia:    http.StatusConflict,
 	CodeIncompatibleRoomVersion: http.StatusBadRequest,
 	CodeBadState:                http.StatusBadRequest,
 	CodeBadAlias:                http.StatusBadRequest,

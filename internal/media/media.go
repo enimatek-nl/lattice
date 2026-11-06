@@ -227,7 +227,11 @@ func (s *Service) UploadToURI(ctx context.Context, userID, server, mediaID, file
 		return "", matrixerr.New(matrixerr.CodeForbidden, "That media identifier was created by another user.")
 	}
 	if existing.UploadedAt != 0 {
-		return "", matrixerr.New(matrixerr.CodeForbidden, "That media identifier has already been uploaded to.")
+		// The specification gives this its own code and status: the address already has content, so a second
+		// upload is refused rather than replacing bytes somebody else already holds a link to. M_FORBIDDEN
+		// would suggest the caller is the wrong person, which is a different fact and the wrong lead.
+		return "", matrixerr.New(matrixerr.CodeCannotOverwriteMedia,
+			"That media identifier already has content.")
 	}
 	stored, err := s.store(ctx, server, mediaID, fileName, contentType, userID, body)
 	if err != nil {
