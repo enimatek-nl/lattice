@@ -13,3 +13,36 @@ Emulate Docker CLI using podman. Create /etc/containers/nodocker to quiet msg.
 [1/2] STEP 5/6: COPY . .
 --> d9493e5d8843
 [1/2] STEP 6/6: RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/lattice ./cmd/lattice
+--> 821845e2d109
+[2/2] STEP 1/10: FROM docker.io/library/alpine:3.20
+[2/2] STEP 2/10: RUN apk add --no-cache ca-certificates && update-ca-certificates
+--> Using cache 03e153230bb2614173f0c22b65ec72ac40d2eceb237ba66bd1c74a192c4ca588
+--> 03e153230bb2
+[2/2] STEP 3/10: COPY --from=build /out/lattice /usr/local/bin/lattice
+--> Using cache e057556bc29fa2d4d68ddc501a2c6676cef609d376082a3d4f16da98870cc699
+--> e057556bc29f
+[2/2] STEP 4/10: COPY deploy/complement/entrypoint.sh /entrypoint.sh
+--> Using cache 04c19cb41ce17ae2f3e6d30e612e7427adde00609e4d1be6b4e6a2a4fbaa1a8c
+--> 04c19cb41ce1
+[2/2] STEP 5/10: RUN chmod 0755 /entrypoint.sh
+--> Using cache 81b21e86f0a4628cc44634fab6d05fbcd2059862dfa288f507a451841f1ddf87
+--> 81b21e86f0a4
+[2/2] STEP 6/10: ENV LATTICE_DATA_DIR=/data
+--> Using cache 59ada90642f1c0d4522cf5f6f7d7434f8486afd8055fe6ec82948da7209be8b6
+--> 59ada90642f1
+[2/2] STEP 7/10: VOLUME ["/data"]
+--> Using cache ceacacb5acf844a355b6d1e93cb38544ab3d475f0d83390968b1b68f73b7e013
+--> ceacacb5acf8
+[2/2] STEP 8/10: EXPOSE 8008 8448
+--> Using cache 9e745163cd0605c9c7098c8957bbe1e65e074d4839f7489e60a1d5e19af21967
+--> 9e745163cd06
+[2/2] STEP 9/10: HEALTHCHECK --interval=5s --timeout=5s --start-period=5s --retries=5 	CMD ["/usr/local/bin/lattice", "healthcheck", "-addr", "127.0.0.1:8008"]
+--> Using cache b0a40bb53e4a29e5740a0d67c02bfdadb614be6764425df67194897e373ac879
+--> b0a40bb53e4a
+[2/2] STEP 10/10: ENTRYPOINT ["/entrypoint.sh"]
+--> Using cache 8afba8581eaa7d1beaa003238a671d40936d04844271559a35f72af789c3f214
+[2/2] COMMIT complement-lattice:latest
+--> 8afba8581eaa
+Successfully tagged localhost/complement-lattice:latest
+8afba8581eaa7d1beaa003238a671d40936d04844271559a35f72af789c3f214
+== running Complement (filter: .)

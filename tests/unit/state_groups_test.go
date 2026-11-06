@@ -135,3 +135,97 @@ func openStateGroupStore(t *testing.T) *persist.Database {
 	t.Cleanup(func() { _ = db.Close() })
 	return db
 }
+
+// A snapshot is only useful if it can be asked about on its own. The question that matters in
+// the protocol is narrow — what did this room think about this key at the moment this event was
+// sent — and answering it from the room's current state answers a different question: a member
+// who has since left is not in the current state at all, so there is nothing left to look up.
+func TestStateEntryAtAnswersAboutTheMomentNotTheMomentAfter(t *testing.T) {
+	t.Parallel()
+	db := openStateGroupStore(t)
+	ctx := context.Background()
+	room := "!room:example.org"
+
+	created, err := db.StateGroups.EnsureGroup(ctx, room, []persist.StateGroupEntry{
+		{Type: "m.room.create", StateKey: "", EventID: "$create:e"},
+	})
+	if err != nil {
+		t.Fatalf("recording the state the create event carries: %v", err)
+	}
+	withAlice, err := db.StateGroups.EnsureGroup(ctx, room, []persist.StateGroupEntry{
+		{Type: "m.room.create", StateKey: "", EventID: "$create:e"},
+		{Type: "m.room.member", StateKey: "@alice:e", EventID: "$alice-join:e"},
+	})
+	if err != nil {
+		t.Fatalf("recording the state alice's join carries: %v", err)
+	}
+	withBob, err := db.StateGroups.EnsureGroup(ctx, room, []persist.StateGroupEntry{
+		{Type: "m.room.create", StateKey: "", EventID: "$create:e"},
+		{Type: "m.room.member", StateKey: "@alice:e", EventID: "$alice-join:e"},
+		{Type: "m.room.member", StateKey: "@bob:e", EventID: "$bob-join:e"},
+	})
+	if err != nil {
+		t.Fatalf("recording the state bob's join carries: %v", err)
+	}
+	afterBobLeft, err := db.StateGroups.EnsureGroup(ctx, room, []persist.StateGroupEntry{
+		{Type: "m.room.create", StateKey: "", EventID: "$create:e"},
+		{Type: "m.room.member", StateKey: "@alice:e", EventID: "$alice-join:e"},
+		{Type: "m.room.member", StateKey: "@bob:e", EventID: "$bob-leave:e"},
+	})
+	if err != nil {
+		t.Fatalf("recording the state bob's leave carries: %v", err)
+	}
+	for _, attach := range []struct {
+		eventID string
+		groupID int64
+	}{
+		{"$create:e", created},
+		{"$alice-join:e", withAlice},
+		{"$bob-join:e", withBob},
+		{"$message:e", withBob},
+		{"$bob-leave:e", afterBobLeft},
+	} {
+		if err := db.StateGroups.Attach(ctx, attach.eventID, attach.groupID); err != nil {
+			t.Fatalf("attaching %s to its state: %v", attach.eventID, err)
+		}
+	}
+
+	cases := []struct {
+		eventID  string
+		stateKey string
+		want     string
+		missing  bool
+	}{
+		// The message was sent while bob was joined, and says so even though he left later.
+		{"$message:e", "@bob:e", "$bob-join:e", false},
+		// And the leave does not rewrite that: asked about the same message again, the answer
+		// is still the join that stood when it was sent.
+		{"$message:e", "@alice:e", "$alice-join:e", false},
+		// The leave event's own snapshot holds bob as gone.
+		{"$bob-leave:e", "@bob:e", "$bob-leave:e", false},
+		// The create event was sent before alice existed in the room: no entry, which the
+		// caller must not fill in with the member event that came after.
+		{"$create:e", "@alice:e", "", true},
+		// A key nobody ever set.
+		{"$message:e", "@carol:e", "", true},
+		// An event whose snapshot was never recorded. Inventing an answer from what is in place
+		// now is what this method exists to make impossible.
+		{"$unrecorded:e", "@alice:e", "", true},
+	}
+	for _, tc := range cases {
+		got, err := db.StateGroups.StateEntryAt(ctx, tc.eventID, "m.room.member", tc.stateKey)
+		if tc.missing {
+			if !errors.Is(err, persist.ErrNotFound) {
+				t.Errorf("StateEntryAt(%s, %s) = %q, %v; want ErrNotFound", tc.eventID, tc.stateKey, got, err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("StateEntryAt(%s, %s): %v", tc.eventID, tc.stateKey, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("StateEntryAt(%s, %s) = %q, want %q", tc.eventID, tc.stateKey, got, tc.want)
+		}
+	}
+}
