@@ -39,6 +39,9 @@ type AccountDataRepo interface {
 	// given. Writing the same type again replaces it: account data is a current value,
 	// not a history.
 	Put(ctx context.Context, userID, dataType, content string) (int64, error)
+	// Delete removes one type of a user's account data. Removing a type that was never
+	// written is not an error: the state the caller asked for already holds.
+	Delete(ctx context.Context, userID, dataType string) error
 }
 
 // NewAccountDataRepo returns the account data repository bound to db.
@@ -100,4 +103,11 @@ func (r *accountDataRepo) Put(ctx context.Context, userID, dataType, content str
 		return 0, err
 	}
 	return next, nil
+}
+
+// Delete removes one type of a user's account data.
+func (r *accountDataRepo) Delete(ctx context.Context, userID, dataType string) error {
+	return asConflict(r.db.WithContext(ctx).
+		Where("user_id = ? AND data_type = ?", userID, dataType).
+		Delete(&AccountData{}).Error)
 }

@@ -67,6 +67,18 @@ func (s *AccountDataService) Put(ctx context.Context, userID, dataType string, c
 	return nil
 }
 
+// Delete removes one type of a user's account data. A type that was never written is not an
+// error to remove: the client asked for a state of affairs, and it holds either way.
+func (s *AccountDataService) Delete(ctx context.Context, userID, dataType string) error {
+	if err := validAccountDataType(dataType); err != nil {
+		return err
+	}
+	if err := s.accountData.Delete(ctx, userID, dataType); err != nil {
+		return fmt.Errorf("users: cannot remove account data: %w", err)
+	}
+	return nil
+}
+
 // validAccountDataType rejects the path values that would not survive being stored: an empty
 // type, and one longer than the column that holds it. The specification leaves the namespace
 // to clients, so nothing here decides which names are meaningful.

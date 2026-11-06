@@ -48,3 +48,20 @@ func (d *Deps) handleAccountDataPut(w http.ResponseWriter, r *http.Request) {
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{})
 }
+
+// handleAccountDataDelete implements DELETE /_matrix/client/v3/user/{userID}/account_data/{type}.
+//
+// Clients remove account data in two ways — an empty PUT, and this — and both mean the same
+// thing here: the type is no longer stored. Answering a delete of something that was never
+// written with an error would make a client retry a change that is already true.
+func (d *Deps) handleAccountDataDelete(w http.ResponseWriter, r *http.Request) {
+	userID, ok := d.requireSelf(w, r)
+	if !ok {
+		return
+	}
+	if err := d.AccountData.Delete(r.Context(), userID, pathValue(r, "type")); err != nil {
+		d.serviceError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{})
+}
