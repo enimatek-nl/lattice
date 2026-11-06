@@ -1,5 +1,38 @@
 # Progress
 
+## 2026-11-08 — `/event` stops serving whatever it is asked for, and the baseline holds
+
+Commit `80f9a82`. `GET /_matrix/federation/v1/event/{eventId}` answered with `stored.JSON`: the event
+as stored. That ignored a redaction the room had applied to that very event, and it ignored history
+visibility entirely — a server with nobody entitled to an event could read it by naming it.
+`pduForPeer` is now the single place federation decides what a peer is shown: the room's own redaction
+first (stored, a fact about the room), then the asking server's entitlement at the moment of the event
+(a fact about the reader). Both history endpoints go through it. A trimmed event keeps `prev_events`,
+`auth_events` and `signatures`, because a peer has to be able to place and verify an event to know it
+is missing something. `TestFederationEventReadHonoursHistoryVisibility` covers both directions between
+two real servers: trimmed under `joined` visibility, body intact for a `shared` room sharing its
+history backwards.
+
+`GET /event_auth` is deliberately *not* trimmed and the reason is written where the endpoint lives: an
+auth chain is not history, it is the permissions — strip their bodies and the peer cannot authorise the
+event it asked about, which is worse than a peer that can check and refuse.
+
+**The baseline was used for its purpose.** Full run again (`RUN='.*'`,
+`.agent-work/next/tally-full-20261107.log`): **77 passing / 142 failing / 1 skipped**, and
+`comm` against yesterday's failure list gives **empty in both directions** — no test went from green
+to red and none from red to green. So the eight behaviours that moved across this session (preset
+contents and order, `join_rule` in the directory, the guest-access read, the walk's ceiling, federation
+visibility on two endpoints, redacted serving on `/event`) are measurably neutral against Complement,
+which is a claim that could not have been made a day ago because there was nothing to diff against.
+
+Reading the failure list for the next increment: the "join" cluster is not one bug. About ten of those
+names are **restricted rooms** — `TestRestrictedRooms*` (local, remote, fail-over, MSC3787 variants)
+and `TestKnockRestrictedRooms*` — where `eventauth.MayJoinRestricted` already exists but the join flow
+does not carry it end to end; four more are MSC4242 (rejection cascades across a rejoin), and
+`TestPartialStateJoin` is its own piece of work. That is the ordering the next increment should take:
+restricted rooms first, because it is one rule with many faces and the authorisation half is already
+written.
+
 ## 2026-11-08 — one Complement test walked to the end, and the presets turned out to be invented
 
 Commits `206e508`, `5a381a4`. `TestInboundCanReturnMissingEvents`: 0/4 → 3/4.
