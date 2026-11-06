@@ -144,10 +144,34 @@ type MemberFilter struct {
 	At      string
 }
 
-// Members returns the room's current m.room.member events.
+// matches reports whether an event survives the membership half of a filter. It is shared by the
+// current roster and the historical one so that `membership=` cannot mean one thing on `/members`
+// and another thing on `/members?at=`.
+func (f MemberFilter) matches(event map[string]any) bool {
+	if f.Include == "" && f.Exclude == "" {
+		return true
+	}
+	content, _ := event["content"].(map[string]any)
+	membership, _ := content["membership"].(string)
+	if f.Include != "" && membership != f.Include {
+		return false
+	}
+	return f.Exclude == "" || membership != f.Exclude
+}
+
+// Members returns the room's m.room.member events — the current ones, unless `at` names an
+// earlier point in this server's history.
 func (s *Service) Members(ctx context.Context, roomID, requester string, filter MemberFilter) ([]map[string]any, error) {
 	if err := s.requireMembership(ctx, roomID, requester, membershipAny); err != nil {
 		return nil, err
+	}
+	if filter.At != "" {
+		position, err := stream.Parse(filter.At)
+		if err != nil {
+			return nil, matrixerr.New(matrixerr.CodeInvalidParam,
+				"at is not a synchronisation token this server issued.")
+		}
+		return s.membersAt(ctx, roomID, requester, int64(position), filter)
 	}
 	rows, err := s.state.ByType(ctx, roomID, eventauth.TypeMember)
 	if err != nil {
@@ -157,29 +181,9 @@ func (s *Service) Members(ctx context.Context, roomID, requester string, filter 
 	if err != nil {
 		return nil, err
 	}
-	// `at` narrows the list to what had happened by a token the client already holds. The
-	// membership read here is the current one cut at that position, which answers the question
-	// clients actually ask with it — who had joined by then — and gets the interesting case
-	// wrong in one direction only: a member who joined before the position and left after it is
-	// missing, because this server's current state no longer holds them. Reconstructing the
-	// roster as it was needs the state snapshot the event at that position was sent against,
-	// which is recorded per event and is the same lookup `/context` and the membership-on-events
-	// question need; it is deliberately not approximated here.
-	capped := asOf > 0
-	if filter.At != "" {
-		position, err := stream.Parse(filter.At)
-		if err != nil {
-			return nil, matrixerr.New(matrixerr.CodeInvalidParam,
-				"at is not a synchronisation token this server issued.")
-		}
-		if !capped || int64(position) < asOf {
-			asOf = int64(position)
-		}
-		capped = true
-	}
 	out := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
-		if capped {
+		if asOf > 0 {
 			stored, err := s.events.ByID(ctx, row.EventID)
 			if err != nil {
 				return nil, err
@@ -194,15 +198,73 @@ func (s *Service) Members(ctx context.Context, roomID, requester string, filter 
 		if err != nil {
 			return nil, err
 		}
-		if filter.Include != "" || filter.Exclude != "" {
-			content, _ := event["content"].(map[string]any)
-			membership, _ := content["membership"].(string)
-			if filter.Include != "" && membership != filter.Include {
-				continue
-			}
-			if filter.Exclude != "" && membership == filter.Exclude {
-				continue
-			}
+		if !filter.matches(event) {
+			continue
+		}
+		out = append(out, event)
+	}
+	return out, nil
+}
+
+// membersAt answers `GET /members?at=<token>`: the roster this server's history held at that
+// point in the stream.
+//
+// The answer is the state snapshot the newest event at or before that position was sent against —
+// the same snapshot the authorisation rules judged that event by — so the roster a client is shown
+// and the room's own view of itself at that moment cannot disagree. Cutting today's state by stream
+// position looks identical in the easy case and wrong in the interesting one: a member who joined
+// before the token and left after it was a member then, and today's state does not hold them at all,
+// so there is no row left to cut.
+func (s *Service) membersAt(ctx context.Context, roomID, requester string, position int64, filter MemberFilter) ([]map[string]any, error) {
+	asOf, err := s.readHorizon(ctx, roomID, requester)
+	if err != nil {
+		return nil, err
+	}
+	// `from` is exclusive in both directions, so asking for the window before position+1 is how
+	// the event standing exactly at the token is included.
+	boundary, err := s.events.EventsWindow(ctx, roomID, position+1, true, 1)
+	if err != nil {
+		return nil, fmt.Errorf("rooms: cannot read the room at the point %q asks for: %w", filter.At, err)
+	}
+	if len(boundary) == 0 {
+		// Nothing had happened in this room by that token, so the roster is empty. Today's
+		// members would answer a different question and would be believed as though they
+		// answered this one.
+		return []map[string]any{}, nil
+	}
+	groupID, err := s.groups.GroupOf(ctx, boundary[0].EventID)
+	if err != nil {
+		// The token names a point this server cannot reconstruct. Guessing from what is in
+		// place now would present an invented history; a client that asked a question about a
+		// point it no longer holds can be told so.
+		return nil, matrixerr.New(matrixerr.CodeInvalidParam,
+			"at names a point in this room whose state this server cannot reconstruct.")
+	}
+	entries, err := s.groups.Entries(ctx, groupID)
+	if err != nil {
+		return nil, fmt.Errorf("rooms: cannot read the state at the point %q asks for: %w", filter.At, err)
+	}
+	out := make([]map[string]any, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Type != eventauth.TypeMember {
+			continue
+		}
+		stored, err := s.events.ByID(ctx, entry.EventID)
+		if err != nil {
+			return nil, err
+		}
+		// The requester's own horizon still applies: a roster from the past is not a licence to
+		// show the room to somebody who left it. The boundary event itself is the exception — it
+		// is what the token names, and the requester's view of the room includes it.
+		if asOf > 0 && stored.StreamOrdering > asOf && entry.EventID != boundary[0].EventID {
+			continue
+		}
+		event, err := s.eventJSON(ctx, entry.EventID)
+		if err != nil {
+			return nil, err
+		}
+		if !filter.matches(event) {
+			continue
 		}
 		out = append(out, event)
 	}
