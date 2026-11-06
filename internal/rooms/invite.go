@@ -154,7 +154,7 @@ func (s *Service) buildInvite(ctx context.Context, change MembershipChange) (map
 	// The room's own rules decide whether this invite may be written at all, here as
 	// everywhere else: an invite into a room whose power levels say the sender cannot invite
 	// is refused before a signature is asked for.
-	if err := eventauth.Check(rules, event, snapshot, eventauth.Opts{}); err != nil {
+	if err := eventauth.Check(rules, event, snapshot, s.authOpts(ctx, rules)); err != nil {
 		return nil, nil, s.refused(err, SendRequest{RoomID: change.RoomID, Sender: change.Sender})
 	}
 	state, err := s.inviteRoomState(ctx, change.RoomID)
@@ -398,7 +398,7 @@ func (s *Service) checkInviteAgainstRules(ctx context.Context, event map[string]
 			return nil
 		}
 	}
-	if err := eventauth.Check(rules, event, snapshot, eventauth.Opts{}); err != nil {
+	if err := eventauth.Check(rules, event, snapshot, s.authOpts(ctx, rules)); err != nil {
 		return matrixerr.New(matrixerr.CodeForbidden, err.Error())
 	}
 	return nil

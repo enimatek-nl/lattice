@@ -76,17 +76,37 @@ func (s *Service) JoinTemplate(ctx context.Context, roomID, userID string) (map[
 		"origin":           s.name,
 		"origin_server_ts": s.now().UnixMilli(),
 	}
+	// A restricted room needs a resident voice on the join event before the event is named and
+	// signed: rule 4.2 of the room version requires the event to be signed by the homeserver of
+	// the user the join names as its authoriser, and the authoriser has to be in the event's
+	// auth chain for a receiving server to be able to check it without replaying the room.
+	// Deciding this after the event ID is computed would rename the event in front of everyone.
+	authoriser, err := s.RestrictedJoin(ctx, roomID, userID)
+	if err != nil {
+		return nil, "", err
+	}
+	if authoriser != "" {
+		content, _ := event["content"].(map[string]any)
+		content[eventauth.JACSKey] = authoriser
+	}
 	event["auth_events"] = toAnySlice(eventauth.SelectEventIDs(rules, event, snapshot))
 	if err := s.nameAndReference(event, ctx, rules, nil); err != nil {
 		return nil, "", err
 	}
 
-	if err := eventauth.Check(rules, event, snapshot, eventauth.Opts{}); err != nil {
+	// The template is not an event yet, so rule 4.2's signature is not something it can carry:
+	// the server that speaks for the joining user seals it, and this server adds its own at
+	// /send_join, where the signature is checked for real before the join is stored.
+	templateOpts := s.authOpts(ctx, rules)
+	templateOpts.AllowUnsignedTemplate = true
+	if err := eventauth.Check(rules, event, snapshot, templateOpts); err != nil {
 		failure, reason := "the room's own rules", ""
 		if detail, ok := eventauth.AsFailure(err); ok {
 			failure = detail.Rule
 		}
 		reason = fmt.Sprintf("%s does not let %s join this room.", failure, userID)
+		s.log.Debug("rooms: a join template was refused",
+			"room_id", roomID, "user_id", userID, "rule", failure, "reason", reason)
 		return nil, "", matrixerr.New(matrixerr.CodeForbidden, "You are not allowed to join this room.").
 			WithExtra(map[string]any{"rule": failure, "reason": reason})
 	}

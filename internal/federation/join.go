@@ -195,8 +195,22 @@ func (j *Joiner) joinVia(ctx context.Context, destination, roomID, userID string
 	// this join: its state, and the events that authorise that state. Stored as a bundle —
 	// these events cite one another, and the join cites the room's forward extremities, which
 	// the handover does not include.
+	// What this server stores as its own join is the copy the resident server handed back, not
+	// the bytes it sent. A resident server signs the join it accepts, and in a restricted room
+	// that signature is load-bearing: rule 4.2 asks whether the homeserver of the authorising
+	// user signed the event, and only the resident server can supply it. Storing the local copy
+	// would keep an event that every other server in the room rejects, and the room would be
+	// inconsistent from the inside.
+	joinPDU := sealed
+	if answered, ok := answer["event"].(map[string]any); ok {
+		if id, _ := answered["event_id"].(string); id == "" || id == eventID {
+			if encoded, err := events.Canonical(answered); err == nil && len(encoded) > 0 {
+				joinPDU = encoded
+			}
+		}
+	}
 	bundle := rooms.RemoteBundle{PDUs: append(pdusFrom(answer, "auth_chain"), pdusFrom(answer, "state")...)}
-	bundle.PDUs = append(bundle.PDUs, sealed)
+	bundle.PDUs = append(bundle.PDUs, joinPDU)
 	outcome, err := j.Ingest.AcceptRemoteBundle(ctx, bundle, j.verifier(ctx))
 	if err != nil {
 		return rooms.RemoteJoinResult{}, err
@@ -372,7 +386,12 @@ func refusalFrom(destination string, response Response) *RemoteRefusal {
 	if err := json.Unmarshal(response.Body, &problem); err != nil || problem.ErrCode == "" {
 		return nil
 	}
-	if problem.ErrCode == string(matrixerr.CodeNotFound) || problem.ErrCode == string(matrixerr.CodeForbidden) {
+	// M_UNABLE_TO_GRANT_JOIN belongs with the refusals that mean "ask somebody else": the
+	// resident server is saying the user may well be entitled to the room, but this server cannot
+	// be the one to let them in. Trying another server in the room is the point of the code.
+	if problem.ErrCode == string(matrixerr.CodeNotFound) ||
+		problem.ErrCode == string(matrixerr.CodeForbidden) ||
+		problem.ErrCode == string(matrixerr.CodeUnableToGrantJoin) {
 		return &RemoteRefusal{
 			Server:  destination,
 			ErrCode: problem.ErrCode,

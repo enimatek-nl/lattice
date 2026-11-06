@@ -176,3 +176,28 @@ func verifyOriginSignature(rules roomversion.Rules, event map[string]any, origin
 	}
 	return nil
 }
+
+// VerifyServerSignature asks whether a particular homeserver signed this event — not whether its
+// origin did. Room version 8's rule 4.2 needs that question: a restricted join is authorised by a
+// user on another (or the same) server, and the event has to carry that server's signature so the
+// authorisation cannot be manufactured by whoever happens to be sending the join.
+//
+// The origin's signature is a different claim, and both are required: the origin says "I made this
+// event and speak for its sender", the authoriser's server says "one of my users, who could have
+// invited them, stood behind this join".
+func VerifyServerSignature(rules roomversion.Rules, event map[string]any, serverName string, lookup KeyLookup) error {
+	if serverName == "" {
+		return InvalidEventError{Reason: "no homeserver is named to have signed the event"}
+	}
+	if err := verifyOriginSignature(rules, event, serverName, lookup); err != nil {
+		return InvalidEventError{EventID: eventIDOf(event), Reason: err.Error()}
+	}
+	return nil
+}
+
+// eventIDOf reads an event's identifier for an error message. A template has none, and saying so
+// in the message would be more confusing than leaving it blank.
+func eventIDOf(event map[string]any) string {
+	id, _ := event["event_id"].(string)
+	return id
+}

@@ -176,7 +176,7 @@ func (s *Service) AcceptRemoteEvent(ctx context.Context, pdu []byte, verify Veri
 			snapshot.byKey[eventauth.Key{Type: entry.Type, StateKey: *entry.StateKey}] = body
 		}
 	}
-	if err := eventauth.Check(rules, event, snapshot, eventauth.Opts{}); err != nil {
+	if err := eventauth.Check(rules, event, snapshot, s.authOpts(ctx, rules)); err != nil {
 		reason := fmt.Sprintf("the event is not authorised by the events it cites: %v", err)
 		return "", s.refuse(ctx, roomID, eventID, reason)
 	}
@@ -187,7 +187,7 @@ func (s *Service) AcceptRemoteEvent(ctx context.Context, pdu []byte, verify Veri
 	if err != nil {
 		return "", err
 	}
-	softFailed := eventauth.Check(rules, event, current, eventauth.Opts{}) != nil
+	softFailed := eventauth.Check(rules, event, current, s.authOpts(ctx, rules)) != nil
 
 	var accepted string
 	var stream int64

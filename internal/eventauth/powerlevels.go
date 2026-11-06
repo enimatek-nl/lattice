@@ -186,9 +186,21 @@ func (p *PowerLevels) User(userID string) int {
 // ForEvent returns the power level required to send an event of the given type.
 // State events use state_default unless the events map names the type; message
 // events use events_default.
+//
+// A membership event is the exception, and it is an exception that decides whether a room can be
+// used at all. `m.room.member` is a state event, so state_default would put it at 50 — and then an
+// ordinary user could not write the event that says they left. The specification's default
+// requirement for `m.room.member` is zero, because *who* may change a membership is decided by the
+// membership rules themselves, not by a level on the type: a join must come from the user joining,
+// an invite needs the invite level, a kick needs the kick level and a lower power than the target, a
+// ban needs the ban level. Those rules are checked on their own; holding the type at 50 on top of
+// them would not stop anything, it would only lock ordinary users out of their own membership.
 func (p *PowerLevels) ForEvent(eventType string, isState bool) int {
 	if v, ok := p.Events[eventType]; ok {
 		return v
+	}
+	if eventType == TypeMember {
+		return 0
 	}
 	if isState {
 		return p.StateDefault

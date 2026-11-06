@@ -5,6 +5,7 @@ package app
 
 import (
 	"context"
+	"crypto/ed25519"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"github.com/enimatek/lattice/internal/auth"
 	"github.com/enimatek/lattice/internal/config"
 	"github.com/enimatek/lattice/internal/e2ekeys"
+	"github.com/enimatek/lattice/internal/events"
 	"github.com/enimatek/lattice/internal/federation"
 	"github.com/enimatek/lattice/internal/httpserver"
 	"github.com/enimatek/lattice/internal/keys"
@@ -23,6 +25,7 @@ import (
 	"github.com/enimatek/lattice/internal/presence"
 	"github.com/enimatek/lattice/internal/pushrules"
 	"github.com/enimatek/lattice/internal/rooms"
+	"github.com/enimatek/lattice/internal/roomversion"
 	"github.com/enimatek/lattice/internal/sync"
 	"github.com/enimatek/lattice/internal/tlsgen"
 	"github.com/enimatek/lattice/internal/users"
@@ -139,6 +142,28 @@ func NewWithOptions(ctx context.Context, cfg *config.Config, log *slog.Logger, o
 		clientRouter:     httpserver.NewRouter(),
 		federationRouter: httpserver.NewRouter(),
 	}
+
+	// A restricted room's join rule is only half of it: the room version also demands that the
+	// homeserver of the user who authorised the join signed the join event. That is a question
+	// about somebody's signing keys, so the room service needs a key ring to answer it — for a
+	// neighbour's user, and for this server's own, whose signature it is about to make. This is
+	// wired outside the federation block on purpose: a server that does not federate still has
+	// restricted rooms, and its own signature is still the one those rooms ask for.
+	roomService.SetKeyRing(func(ctx context.Context, rules roomversion.Rules) events.KeyLookup {
+		return func(origin, keyID string) (ed25519.PublicKey, error) {
+			// This server's own signature is checked against its own keys. The federation key ring
+			// holds other homeservers' keys, because that is what federation needs from it, and a
+			// server that looked up itself there would find nothing and refuse a join it had made
+			// with its own hand.
+			if key, err := signingKeys.VerifyLocal(origin, keyID); err == nil {
+				return key, nil
+			}
+			if a.Keyring == nil {
+				return nil, fmt.Errorf("app: no key ring to check %q's signature with", origin)
+			}
+			return a.Keyring.LookupForRoom(ctx, rules)(origin, keyID)
+		}
+	})
 
 	if err := pushRules.EnsureAllDefaults(ctx); err != nil {
 		_ = db.Close()
