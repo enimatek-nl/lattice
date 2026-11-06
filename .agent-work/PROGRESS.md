@@ -1744,3 +1744,46 @@ membership-history lookup.
 Local: `tests/integration/devicelogin_test.go` (three tests) and
 `TestTransactionIDsAreScopedToDeviceAndRoom` in `tests/unit/eventstore_test.go`;
 `go vet ./...` clean, `go test -race -count=1 ./tests/...` green.
+
+## 2026-11-08 — the member roster a client asks for, at the point it asks for it (T-4033, T-4033a)
+
+Commits `9abc815`, `066bb6c`, `2dcda9a`.
+
+Complement, filter `TestGetRoomMembers|TestGetRoomMembersAtPoint|TestGetFilteredRoomMembers`
+plus the sync and message families (`.agent-work/next/prevbatch1.log`):
+
+- `TestGetFilteredRoomMembers` — all three subtests pass. `handleMembers` had read only
+  `not_membership`, so `membership=join` and `membership=leave` were ignored.
+- `TestGetRoomMembersAtPoint` — passes.
+- `TestGetRoomMembers`, `TestSendAndFetchMessage`, `TestRoomMessagesLazyLoading`,
+  `TestRoomMessagesLazyLoadingLocalUser`, `TestSyncFilter`, `TestSync` (csapi),
+  `TestRoomSummaryAllowedRoomIDs` — pass, unchanged from before the change.
+- `tests/msc4222` `TestSync` still fails its two `state_after` subtests; it failed the same way in
+  the previous gate run, so it is not a regression from anything here.
+
+Two things had to change, and the second only became visible once the first was right:
+
+1. `GET /members?at=<token>` was reading today's state and cutting it by stream position. For the
+   case `at` exists for, that has nothing to cut: a member whose join this server has replaced with
+   a leave is not in the current state at all. It now reads the state snapshot the newest event at
+   or before the token was sent against (`events.EventsWindow` → `groups.GroupOf` →
+   `groups.Entries`) — the same snapshot the authorisation rules judged that event by, which is why
+   the roster shown to a client cannot drift away from the room's own view of itself at that
+   moment. A token whose snapshot was never recorded is refused; nothing had happened by another
+   token gives an empty roster. The requester's own horizon still applies.
+2. `/sync` was issuing `timeline.prev_batch` as the position of the **oldest** event in the batch,
+   so a client asking who was in the room "at the point my batch began" was naming the create event
+   and was told nobody — in a room it had just been shown the joins of. It now names the **newest**
+   end, which is what Synapse issues and what Complement expects. The Client-Server API does not
+   decide this (matrix-org/matrix-spec#595, open since 2020), so the reasoning and the cost — a
+   client may meet an event twice paging backwards — are in the comment at
+   `internal/sync/service.go:634-646`, not only in a commit message.
+
+`tests/integration/members_filter_test.go` covers the three filters and three points in the
+history, including the one the old code could not express: who was in the room while they were
+there, asked after they have left.
+
+Open observation, recorded rather than theorised: `SendEventSynced waiting for event ID …` appears
+in some runs of `room_members_test.go:74`/`:88` and not others with the same blueprint, so a sent
+event sometimes does not reach the sender's own `/sync` in time. That is intermittent, and it is
+T-4034.

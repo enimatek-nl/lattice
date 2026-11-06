@@ -1,0 +1,431 @@
+== building complement-lattice:latest
+Emulate Docker CLI using podman. Create /etc/containers/nodocker to quiet msg.
+[1/2] STEP 1/6: FROM docker.io/library/golang:1.26-alpine AS build
+[1/2] STEP 2/6: WORKDIR /src
+--> Using cache 41f8576e376f5a915c0cd6832b08f4051ae37a129db82b3671a7e094432d4207
+--> 41f8576e376f
+[1/2] STEP 3/6: COPY go.mod go.sum ./
+--> Using cache bd7c2a0c59707b6662d00c9867471257f5be93d0ac29d01409bae5efe586c854
+--> bd7c2a0c5970
+[1/2] STEP 4/6: RUN go mod download
+--> Using cache f930c821bfaf6d5986c6d3bd25a3323d5dba266132dfa98a6e80e4f481762d50
+--> f930c821bfaf
+[1/2] STEP 5/6: COPY . .
+--> 6453197d03b0
+[1/2] STEP 6/6: RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/lattice ./cmd/lattice
+--> 3fedfa7eccf6
+[2/2] STEP 1/10: FROM docker.io/library/alpine:3.20
+[2/2] STEP 2/10: RUN apk add --no-cache ca-certificates && update-ca-certificates
+--> Using cache 03e153230bb2614173f0c22b65ec72ac40d2eceb237ba66bd1c74a192c4ca588
+--> 03e153230bb2
+[2/2] STEP 3/10: COPY --from=build /out/lattice /usr/local/bin/lattice
+--> Using cache e057556bc29fa2d4d68ddc501a2c6676cef609d376082a3d4f16da98870cc699
+--> e057556bc29f
+[2/2] STEP 4/10: COPY deploy/complement/entrypoint.sh /entrypoint.sh
+--> Using cache 04c19cb41ce17ae2f3e6d30e612e7427adde00609e4d1be6b4e6a2a4fbaa1a8c
+--> 04c19cb41ce1
+[2/2] STEP 5/10: RUN chmod 0755 /entrypoint.sh
+--> Using cache 81b21e86f0a4628cc44634fab6d05fbcd2059862dfa288f507a451841f1ddf87
+--> 81b21e86f0a4
+[2/2] STEP 6/10: ENV LATTICE_DATA_DIR=/data
+--> Using cache 59ada90642f1c0d4522cf5f6f7d7434f8486afd8055fe6ec82948da7209be8b6
+--> 59ada90642f1
+[2/2] STEP 7/10: VOLUME ["/data"]
+--> Using cache ceacacb5acf844a355b6d1e93cb38544ab3d475f0d83390968b1b68f73b7e013
+--> ceacacb5acf8
+[2/2] STEP 8/10: EXPOSE 8008 8448
+--> Using cache 9e745163cd0605c9c7098c8957bbe1e65e074d4839f7489e60a1d5e19af21967
+--> 9e745163cd06
+[2/2] STEP 9/10: HEALTHCHECK --interval=5s --timeout=5s --start-period=5s --retries=5 	CMD ["/usr/local/bin/lattice", "healthcheck", "-addr", "127.0.0.1:8008"]
+--> Using cache b0a40bb53e4a29e5740a0d67c02bfdadb614be6764425df67194897e373ac879
+--> b0a40bb53e4a
+[2/2] STEP 10/10: ENTRYPOINT ["/entrypoint.sh"]
+--> Using cache 8afba8581eaa7d1beaa003238a671d40936d04844271559a35f72af789c3f214
+[2/2] COMMIT complement-lattice:latest
+--> 8afba8581eaa
+Successfully tagged localhost/complement-lattice:latest
+8afba8581eaa7d1beaa003238a671d40936d04844271559a35f72af789c3f214
+== running Complement (filter: TestVersionStructure|TestUnknownEndpoints|TestRegistration|TestLogin|TestLogout|TestServerCapabilities|TestDeviceManagement|TestCanRegisterAdmin)
+2026/11/06 11:14:43 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:fed CACertificate:0x1c2001974008 CAPrivateKey:0x1c200193e070 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+=== RUN   TestUnknownEndpoints
+    unknown_endpoints_test.go:42: Deploy times: 3.687816733s blueprints, 813.961082ms containers
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (1.504383ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (6.19323ms)
+=== RUN   TestUnknownEndpoints/Unknown_prefix
+=== NAME  TestUnknownEndpoints
+    client.go:893: [CSAPI] GET hs1/_matrix/unknown => 404 Not Found (427.373µs)
+=== RUN   TestUnknownEndpoints/Client-server_endpoints
+=== NAME  TestUnknownEndpoints
+    client.go:893: [CSAPI] GET hs1/_matrix/client/unknown => 404 Not Found (471.679µs)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v1/unknown => 404 Not Found (310.495µs)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/room/unknown => 404 Not Found (295.118µs)
+    client.go:893: [CSAPI] PUT hs1/_matrix/client/v3/login => 405 Method Not Allowed (283.082µs)
+=== RUN   TestUnknownEndpoints/Server-server_endpoints
+=== NAME  TestUnknownEndpoints
+    client.go:893: [CSAPI] GET hs1/_matrix/federation/unknown => 404 Not Found (301.41µs)
+    client.go:893: [CSAPI] GET hs1/_matrix/federation/v1/unknown => 404 Not Found (257.611µs)
+    client.go:893: [CSAPI] PUT hs1/_matrix/federation/v1/version => 405 Method Not Allowed (250.996µs)
+=== RUN   TestUnknownEndpoints/Key_endpoints
+=== NAME  TestUnknownEndpoints
+    client.go:893: [CSAPI] GET hs1/_matrix/key/unknown => 404 Not Found (313.467µs)
+    client.go:893: [CSAPI] GET hs1/_matrix/key/v2/unknown => 404 Not Found (296.238µs)
+    client.go:893: [CSAPI] PUT hs1/_matrix/key/v2/query => 405 Method Not Allowed (298.646µs)
+=== RUN   TestUnknownEndpoints/Media_endpoints
+=== NAME  TestUnknownEndpoints
+    client.go:893: [CSAPI] GET hs1/_matrix/media/unknown => 404 Not Found (353.409µs)
+    client.go:893: [CSAPI] GET hs1/_matrix/media/v3/unknown => 404 Not Found (336.501µs)
+    client.go:893: [CSAPI] PATCH hs1/_matrix/media/v3/upload => 405 Method Not Allowed (309.656µs)
+--- PASS: TestUnknownEndpoints (4.69s)
+    --- PASS: TestUnknownEndpoints/Unknown_prefix (0.00s)
+    --- PASS: TestUnknownEndpoints/Client-server_endpoints (0.00s)
+    --- PASS: TestUnknownEndpoints/Server-server_endpoints (0.00s)
+    --- PASS: TestUnknownEndpoints/Key_endpoints (0.00s)
+    --- PASS: TestUnknownEndpoints/Media_endpoints (0.00s)
+PASS
+ok  	github.com/matrix-org/complement/tests	6.300s
+2026/11/06 11:14:44 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:csapi CACertificate:0x2a8364d6c08 CAPrivateKey:0x2a8367fe930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+=== RUN   TestCanRegisterAdmin
+    admin_test.go:21: Deploy times: 1.87190529s blueprints, 687.60912ms containers
+    client.go:893: [CSAPI] GET hs1/_synapse/admin/v1/register => 200 OK (1.113424ms)
+    client.go:893: [CSAPI] POST hs1/_synapse/admin/v1/register => 200 OK (4.604286ms)
+--- PASS: TestCanRegisterAdmin (2.73s)
+=== RUN   TestDeviceManagement
+    apidoc_device_management_test.go:17: Deploy times: 248.225336ms blueprints, 625.932225ms containers
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (1.903414ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (7.461945ms)
+=== RUN   TestDeviceManagement/GET_/device/{deviceId}
+=== NAME  TestDeviceManagement
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/login => 200 OK (5.56458ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/devices/login_device => 200 OK (1.616472ms)
+=== RUN   TestDeviceManagement/GET_/device/{deviceId}_gives_a_404_for_unknown_devices
+=== NAME  TestDeviceManagement
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/devices/unknown_device => 404 Not Found (1.546349ms)
+=== RUN   TestDeviceManagement/GET_/devices
+=== NAME  TestDeviceManagement
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/login => 200 OK (5.315764ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/devices => 200 OK (1.763219ms)
+=== RUN   TestDeviceManagement/PUT_/device/{deviceId}_updates_device_fields
+=== NAME  TestDeviceManagement
+    client.go:893: [CSAPI] PUT hs1/_matrix/client/v3/devices/login_device => 200 OK (1.706662ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/devices/login_device => 200 OK (1.510175ms)
+=== RUN   TestDeviceManagement/PUT_/device/{deviceId}_gives_a_404_for_unknown_devices
+=== NAME  TestDeviceManagement
+    client.go:893: [CSAPI] PUT hs1/_matrix/client/v3/devices/unknown_device => 404 Not Found (1.442509ms)
+=== RUN   TestDeviceManagement/DELETE_/device/{deviceId}
+    apidoc_device_management_test.go:131: WARNING: TestDeviceManagement/DELETE_/device/{deviceId} called runtime.SkipIf([venator]) but Complement doesn't know which HS is running as it was run without a *_blacklist tag: executing test.
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/login => 200 OK (5.754399ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (3.916956ms)
+=== NAME  TestDeviceManagement
+    client.go:893: [CSAPI] DELETE hs1/_matrix/client/v3/devices/Zxcj5Ul8m8U => 401 Unauthorized (1.513751ms)
+    client.go:893: [CSAPI] DELETE hs1/_matrix/client/v3/devices/Zxcj5Ul8m8U => 401 Unauthorized (4.906325ms)
+    client.go:893: [CSAPI] DELETE hs1/_matrix/client/v3/devices/Zxcj5Ul8m8U => 200 OK (5.498329ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/devices/Zxcj5Ul8m8U => 404 Not Found (1.579314ms)
+=== NAME  TestDeviceManagement/DELETE_/device/{deviceId}
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 401 Unauthorized (968.341µs)
+=== RUN   TestDeviceManagement/DELETE_/device/{deviceId}_requires_UI_auth_user_to_match_device_owner
+    apidoc_device_management_test.go:203: WARNING: TestDeviceManagement/DELETE_/device/{deviceId}_requires_UI_auth_user_to_match_device_owner called runtime.SkipIf([venator]) but Complement doesn't know which HS is running as it was run without a *_blacklist tag: executing test.
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (1.058284ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (8.128416ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/login => 200 OK (5.67241ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 200 OK (3.555556ms)
+=== NAME  TestDeviceManagement
+    client.go:893: [CSAPI] DELETE hs1/_matrix/client/v3/devices/r5kD_l8KgQI => 403 Forbidden (4.852859ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/devices/r5kD_l8KgQI => 200 OK (1.467155ms)
+    client.go:893: [CSAPI] DELETE hs1/_matrix/client/v3/devices/r5kD_l8KgQI => 200 OK (5.599737ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/devices/r5kD_l8KgQI => 404 Not Found (1.588272ms)
+--- PASS: TestDeviceManagement (1.14s)
+    --- PASS: TestDeviceManagement/GET_/device/{deviceId} (0.01s)
+    --- PASS: TestDeviceManagement/GET_/device/{deviceId}_gives_a_404_for_unknown_devices (0.00s)
+    --- PASS: TestDeviceManagement/GET_/devices (0.01s)
+    --- PASS: TestDeviceManagement/PUT_/device/{deviceId}_updates_device_fields (0.00s)
+    --- PASS: TestDeviceManagement/PUT_/device/{deviceId}_gives_a_404_for_unknown_devices (0.00s)
+    --- PASS: TestDeviceManagement/DELETE_/device/{deviceId} (0.03s)
+    --- PASS: TestDeviceManagement/DELETE_/device/{deviceId}_requires_UI_auth_user_to_match_device_owner (0.03s)
+=== RUN   TestLogin
+    apidoc_login_test.go:20: Deploy times: 276.120077ms blueprints, 635.249207ms containers
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (1.675681ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (4.899499ms)
+=== RUN   TestLogin/parallel
+=== RUN   TestLogin/parallel/GET_/login_yields_a_set_of_flows
+=== PAUSE TestLogin/parallel/GET_/login_yields_a_set_of_flows
+=== RUN   TestLogin/parallel/POST_/login_can_login_as_user
+=== PAUSE TestLogin/parallel/POST_/login_can_login_as_user
+=== RUN   TestLogin/parallel/POST_/login_returns_the_same_device_id_as_that_in_the_request
+=== PAUSE TestLogin/parallel/POST_/login_returns_the_same_device_id_as_that_in_the_request
+=== RUN   TestLogin/parallel/POST_/login_can_log_in_as_a_user_with_just_the_local_part_of_the_id
+=== PAUSE TestLogin/parallel/POST_/login_can_log_in_as_a_user_with_just_the_local_part_of_the_id
+=== RUN   TestLogin/parallel/POST_/login_as_non-existing_user_is_rejected
+=== PAUSE TestLogin/parallel/POST_/login_as_non-existing_user_is_rejected
+=== RUN   TestLogin/parallel/POST_/login_wrong_password_is_rejected
+=== PAUSE TestLogin/parallel/POST_/login_wrong_password_is_rejected
+=== RUN   TestLogin/parallel/Login_with_uppercase_username_works_and_GET_/whoami_afterwards_also
+=== PAUSE TestLogin/parallel/Login_with_uppercase_username_works_and_GET_/whoami_afterwards_also
+=== CONT  TestLogin/parallel/GET_/login_yields_a_set_of_flows
+=== CONT  TestLogin/parallel/POST_/login_wrong_password_is_rejected
+=== CONT  TestLogin/parallel/Login_with_uppercase_username_works_and_GET_/whoami_afterwards_also
+=== CONT  TestLogin/parallel/POST_/login_returns_the_same_device_id_as_that_in_the_request
+=== CONT  TestLogin/parallel/POST_/login_can_login_as_user
+=== CONT  TestLogin/parallel/POST_/login_can_log_in_as_a_user_with_just_the_local_part_of_the_id
+=== CONT  TestLogin/parallel/POST_/login_as_non-existing_user_is_rejected
+=== NAME  TestLogin
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/login => 200 OK (818.261µs)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/login => 403 Forbidden (2.825007ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/login => 403 Forbidden (3.703195ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/login => 200 OK (6.288229ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/login => 200 OK (7.310204ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/login => 200 OK (8.408619ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/login => 200 OK (9.593885ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/account/whoami => 200 OK (3.65202ms)
+--- PASS: TestLogin (1.11s)
+    --- PASS: TestLogin/parallel (0.00s)
+        --- PASS: TestLogin/parallel/GET_/login_yields_a_set_of_flows (0.00s)
+        --- PASS: TestLogin/parallel/POST_/login_as_non-existing_user_is_rejected (0.00s)
+        --- PASS: TestLogin/parallel/POST_/login_wrong_password_is_rejected (0.00s)
+        --- PASS: TestLogin/parallel/POST_/login_can_log_in_as_a_user_with_just_the_local_part_of_the_id (0.01s)
+        --- PASS: TestLogin/parallel/POST_/login_can_login_as_user (0.01s)
+        --- PASS: TestLogin/parallel/POST_/login_returns_the_same_device_id_as_that_in_the_request (0.01s)
+        --- PASS: TestLogin/parallel/Login_with_uppercase_username_works_and_GET_/whoami_afterwards_also (0.01s)
+=== RUN   TestLogout
+    apidoc_logout_test.go:17: Deploy times: 252.50633ms blueprints, 637.578136ms containers
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (1.692647ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (6.14761ms)
+=== RUN   TestLogout/Can_logout_current_device
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/login => 200 OK (4.692399ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/devices => 200 OK (1.380711ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/logout => 200 OK (1.676303ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 401 Unauthorized (722.167µs)
+=== NAME  TestLogout
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/devices => 200 OK (1.151152ms)
+=== RUN   TestLogout/Can_logout_all_devices
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/login => 200 OK (4.552075ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/devices => 200 OK (1.381913ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/logout/all => 200 OK (1.626028ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 401 Unauthorized (876.541µs)
+=== NAME  TestLogout
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/sync => 401 Unauthorized (923.231µs)
+=== RUN   TestLogout/Request_to_logout_with_invalid_an_access_token_is_rejected
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/login => 200 OK (5.379279ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/logout => 401 Unauthorized (938.83µs)
+=== RUN   TestLogout/Request_to_logout_without_an_access_token_is_rejected
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/login => 200 OK (5.34152ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/logout => 401 Unauthorized (670.74µs)
+--- PASS: TestLogout (1.10s)
+    --- PASS: TestLogout/Can_logout_current_device (0.01s)
+    --- PASS: TestLogout/Can_logout_all_devices (0.01s)
+    --- PASS: TestLogout/Request_to_logout_with_invalid_an_access_token_is_rejected (0.01s)
+    --- PASS: TestLogout/Request_to_logout_without_an_access_token_is_rejected (0.01s)
+=== RUN   TestRegistration
+    apidoc_register_test.go:42: Deploy times: 242.434349ms blueprints, 557.621721ms containers
+=== RUN   TestRegistration/parallel
+=== RUN   TestRegistration/parallel/POST_{}_returns_a_set_of_flows
+=== PAUSE TestRegistration/parallel/POST_{}_returns_a_set_of_flows
+=== RUN   TestRegistration/parallel/POST_/register_can_create_a_user
+=== PAUSE TestRegistration/parallel/POST_/register_can_create_a_user
+=== RUN   TestRegistration/parallel/POST_/register_downcases_capitals_in_usernames
+=== PAUSE TestRegistration/parallel/POST_/register_downcases_capitals_in_usernames
+=== RUN   TestRegistration/parallel/POST_/register_returns_the_same_device_id_as_that_in_the_request
+=== PAUSE TestRegistration/parallel/POST_/register_returns_the_same_device_id_as_that_in_the_request
+=== RUN   TestRegistration/parallel/POST_/register_rejects_usernames_with_special_characters
+=== PAUSE TestRegistration/parallel/POST_/register_rejects_usernames_with_special_characters
+=== RUN   TestRegistration/parallel/POST_/register_rejects_if_user_already_exists
+    apidoc_register_test.go:146: WARNING: TestRegistration/parallel/POST_/register_rejects_if_user_already_exists called runtime.SkipIf([dendrite]) but Complement doesn't know which HS is running as it was run without a *_blacklist tag: executing test.
+=== PAUSE TestRegistration/parallel/POST_/register_rejects_if_user_already_exists
+=== RUN   TestRegistration/parallel/POST_/register_allows_registration_of_usernames_with_
+=== RUN   TestRegistration/parallel/POST_/register_allows_registration_of_usernames_with_/q
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (1.258578ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (7.773942ms)
+=== RUN   TestRegistration/parallel/POST_/register_allows_registration_of_usernames_with_/3
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (636.697µs)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (7.561114ms)
+=== RUN   TestRegistration/parallel/POST_/register_allows_registration_of_usernames_with_/.
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (814.312µs)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (7.545252ms)
+=== RUN   TestRegistration/parallel/POST_/register_allows_registration_of_usernames_with_/_
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (865.023µs)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (8.8966ms)
+=== RUN   TestRegistration/parallel/POST_/register_allows_registration_of_usernames_with_/=
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (698.153µs)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (9.427633ms)
+=== RUN   TestRegistration/parallel/POST_/register_allows_registration_of_usernames_with_/-
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (961.868µs)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (8.960655ms)
+=== RUN   TestRegistration/parallel/POST_/register_allows_registration_of_usernames_with_//
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (910.012µs)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (8.754698ms)
+=== RUN   TestRegistration/parallel/POST_/_synapse/admin/v1/register_admin_with_shared_secret
+=== NAME  TestRegistration
+    client.go:893: [CSAPI] GET hs1/_synapse/admin/v1/register => 200 OK (615.39µs)
+    client.go:893: [CSAPI] POST hs1/_synapse/admin/v1/register => 200 OK (6.606765ms)
+=== RUN   TestRegistration/parallel/POST_/_synapse/admin/v1/register_with_shared_secret
+=== NAME  TestRegistration
+    client.go:893: [CSAPI] GET hs1/_synapse/admin/v1/register => 200 OK (543.024µs)
+    client.go:893: [CSAPI] POST hs1/_synapse/admin/v1/register => 200 OK (7.554835ms)
+=== RUN   TestRegistration/parallel/POST_/_synapse/admin/v1/register_with_shared_secret_disallows_symbols
+=== NAME  TestRegistration
+    client.go:893: [CSAPI] GET hs1/_synapse/admin/v1/register => 200 OK (589.41µs)
+    client.go:893: [CSAPI] POST hs1/_synapse/admin/v1/register => 400 Bad Request (572.034µs)
+=== RUN   TestRegistration/parallel/POST_/_synapse/admin/v1/register_with_shared_secret_downcases_capitals
+=== NAME  TestRegistration
+    client.go:893: [CSAPI] GET hs1/_synapse/admin/v1/register => 200 OK (507.684µs)
+    client.go:893: [CSAPI] POST hs1/_synapse/admin/v1/register => 200 OK (7.952316ms)
+=== RUN   TestRegistration/parallel/Registration_accepts_non-ascii_passwords
+=== NAME  TestRegistration
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (781.286µs)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (5.869428ms)
+=== RUN   TestRegistration/parallel/GET_/register/available_returns_available_for_unregistered_user_name
+=== PAUSE TestRegistration/parallel/GET_/register/available_returns_available_for_unregistered_user_name
+=== RUN   TestRegistration/parallel/GET_/register/available_returns_M_USER_IN_USE_for_registered_user_name
+=== PAUSE TestRegistration/parallel/GET_/register/available_returns_M_USER_IN_USE_for_registered_user_name
+=== RUN   TestRegistration/parallel/GET_/register/available_returns_M_INVALID_USERNAME_for_invalid_user_name
+=== PAUSE TestRegistration/parallel/GET_/register/available_returns_M_INVALID_USERNAME_for_invalid_user_name
+=== RUN   TestRegistration/parallel/Registration_without_a_session_fails
+    apidoc_register_test.go:301: WARNING: TestRegistration/parallel/Registration_without_a_session_fails called runtime.SkipIf([synapse dendrite conduit]) but Complement doesn't know which HS is running as it was run without a *_blacklist tag: executing test.
+=== PAUSE TestRegistration/parallel/Registration_without_a_session_fails
+=== CONT  TestRegistration/parallel/POST_{}_returns_a_set_of_flows
+=== CONT  TestRegistration/parallel/POST_/register_rejects_if_user_already_exists
+=== CONT  TestRegistration/parallel/POST_/register_returns_the_same_device_id_as_that_in_the_request
+=== CONT  TestRegistration/parallel/POST_/register_rejects_usernames_with_special_characters
+=== CONT  TestRegistration/parallel/GET_/register/available_returns_M_INVALID_USERNAME_for_invalid_user_name
+=== CONT  TestRegistration/parallel/POST_/register_can_create_a_user
+=== CONT  TestRegistration/parallel/POST_/register_downcases_capitals_in_usernames
+=== CONT  TestRegistration/parallel/GET_/register/available_returns_available_for_unregistered_user_name
+=== CONT  TestRegistration/parallel/Registration_without_a_session_fails
+=== CONT  TestRegistration/parallel/GET_/register/available_returns_M_USER_IN_USE_for_registered_user_name
+=== NAME  TestRegistration
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (1.486851ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/register/available => 400 Bad Request (2.686829ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (2.709241ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 400 Bad Request (2.380509ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (2.908508ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 400 Bad Request (674.107µs)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 400 Bad Request (313.704µs)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 400 Bad Request (344.061µs)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 400 Bad Request (291.915µs)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 400 Bad Request (361.473µs)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 400 Bad Request (294.702µs)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 400 Bad Request (321.067µs)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 400 Bad Request (375.218µs)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 400 Bad Request (252.522µs)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 400 Bad Request (337.099µs)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 400 Bad Request (346.661µs)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (5.351418ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 400 Bad Request (467.076µs)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 400 Bad Request (333.607µs)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 400 Bad Request (331.448µs)
+=== NAME  TestRegistration/parallel/GET_/register/available_returns_M_USER_IN_USE_for_registered_user_name
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (11.597109ms)
+=== NAME  TestRegistration
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (12.089625ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (12.274272ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/register/available => 200 OK (12.487738ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (12.826433ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (1.092859ms)
+=== NAME  TestRegistration/parallel/GET_/register/available_returns_M_USER_IN_USE_for_registered_user_name
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (9.547834ms)
+=== NAME  TestRegistration
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/register/available => 400 Bad Request (709.855µs)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (10.27919ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (20.850207ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 400 Bad Request (872.566µs)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (12.10556ms)
+--- PASS: TestRegistration (1.10s)
+    --- PASS: TestRegistration/parallel (0.10s)
+        --- PASS: TestRegistration/parallel/POST_/register_allows_registration_of_usernames_with_ (0.07s)
+            --- PASS: TestRegistration/parallel/POST_/register_allows_registration_of_usernames_with_/q (0.01s)
+            --- PASS: TestRegistration/parallel/POST_/register_allows_registration_of_usernames_with_/3 (0.01s)
+            --- PASS: TestRegistration/parallel/POST_/register_allows_registration_of_usernames_with_/. (0.01s)
+            --- PASS: TestRegistration/parallel/POST_/register_allows_registration_of_usernames_with_/_ (0.01s)
+            --- PASS: TestRegistration/parallel/POST_/register_allows_registration_of_usernames_with_/= (0.01s)
+            --- PASS: TestRegistration/parallel/POST_/register_allows_registration_of_usernames_with_/- (0.01s)
+            --- PASS: TestRegistration/parallel/POST_/register_allows_registration_of_usernames_with_// (0.01s)
+        --- PASS: TestRegistration/parallel/POST_/_synapse/admin/v1/register_admin_with_shared_secret (0.01s)
+        --- PASS: TestRegistration/parallel/POST_/_synapse/admin/v1/register_with_shared_secret (0.01s)
+        --- PASS: TestRegistration/parallel/POST_/_synapse/admin/v1/register_with_shared_secret_disallows_symbols (0.00s)
+        --- PASS: TestRegistration/parallel/POST_/_synapse/admin/v1/register_with_shared_secret_downcases_capitals (0.01s)
+        --- PASS: TestRegistration/parallel/Registration_accepts_non-ascii_passwords (0.01s)
+        --- PASS: TestRegistration/parallel/POST_{}_returns_a_set_of_flows (0.00s)
+        --- PASS: TestRegistration/parallel/GET_/register/available_returns_M_INVALID_USERNAME_for_invalid_user_name (0.00s)
+        --- PASS: TestRegistration/parallel/POST_/register_can_create_a_user (0.01s)
+        --- PASS: TestRegistration/parallel/POST_/register_rejects_usernames_with_special_characters (0.01s)
+        --- PASS: TestRegistration/parallel/GET_/register/available_returns_available_for_unregistered_user_name (0.01s)
+        --- PASS: TestRegistration/parallel/Registration_without_a_session_fails (0.01s)
+        --- PASS: TestRegistration/parallel/GET_/register/available_returns_M_USER_IN_USE_for_registered_user_name (0.02s)
+        --- PASS: TestRegistration/parallel/POST_/register_downcases_capitals_in_usernames (0.02s)
+        --- PASS: TestRegistration/parallel/POST_/register_rejects_if_user_already_exists (0.02s)
+        --- PASS: TestRegistration/parallel/POST_/register_returns_the_same_device_id_as_that_in_the_request (0.02s)
+=== RUN   TestServerCapabilities
+    apidoc_server_capabilities_test.go:14: Deploy times: 242.493457ms blueprints, 625.655803ms containers
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 401 Unauthorized (2.023774ms)
+    client.go:893: [CSAPI] POST hs1/_matrix/client/v3/register => 200 OK (8.032531ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/capabilities => 200 OK (1.139557ms)
+    client.go:893: [CSAPI] GET hs1/_matrix/client/v3/capabilities => 401 Unauthorized (693.553µs)
+--- PASS: TestServerCapabilities (1.07s)
+=== RUN   TestVersionStructure
+    apidoc_version_test.go:24: Deploy times: 231.113476ms blueprints, 647.136031ms containers
+=== RUN   TestVersionStructure/Version_responds_200_OK_with_valid_structure
+=== NAME  TestVersionStructure
+    client.go:893: [CSAPI] GET hs1/_matrix/client/versions => 200 OK (1.521148ms)
+--- PASS: TestVersionStructure (1.05s)
+    --- PASS: TestVersionStructure/Version_responds_200_OK_with_valid_structure (0.00s)
+PASS
+ok  	github.com/matrix-org/complement/tests/csapi	13.509s
+2026/11/06 11:14:43 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc2836 CACertificate:0x133277a62008 CAPrivateKey:0x133277a30070 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc2836	4.266s [no tests to run]
+2026/11/06 11:14:44 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3389 CACertificate:0xa5ac8c56c08 CAPrivateKey:0xa5ac93a2930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3389	5.155s [no tests to run]
+2026/11/06 11:14:43 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3391 CACertificate:0x1457233e8c08 CAPrivateKey:0x145723402930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3391	4.440s [no tests to run]
+2026/11/06 11:14:43 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3757 CACertificate:0x21c59c6ae008 CAPrivateKey:0x21c59c676070 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3757	3.502s [no tests to run]
+2026/11/06 11:14:44 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3874 CACertificate:0x1c82265ee008 CAPrivateKey:0x1c82265b4070 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3874	5.158s [no tests to run]
+2026/11/06 11:14:42 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3890 CACertificate:0x257972abac08 CAPrivateKey:0x257972f5e930 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3890	0.764s [no tests to run]
+2026/11/06 11:14:43 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3902 CACertificate:0x8dcef2a6c08 CAPrivateKey:0x8dcef2d29a0 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3902	4.760s [no tests to run]
+2026/11/06 11:14:44 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3930 CACertificate:0x2dd6461d0008 CAPrivateKey:0x2dd64619c070 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3930	4.776s [no tests to run]
+2026/11/06 11:14:43 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc3967 CACertificate:0x367c5e0e6008 CAPrivateKey:0x367c5e0ae070 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc3967	1.912s [no tests to run]
+2026/11/06 11:14:43 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc4140 CACertificate:0x23126418ac08 CAPrivateKey:0x2312649161c0 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc4140	4.796s [no tests to run]
+2026/11/06 11:14:43 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc4155 CACertificate:0x55be058008 CAPrivateKey:0x55be026070 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc4155	4.757s [no tests to run]
+2026/11/06 11:14:43 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc4222 CACertificate:0x24c711052008 CAPrivateKey:0x24c71101a070 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc4222	4.427s [no tests to run]
+2026/11/06 11:14:43 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc4242 CACertificate:0x38aafa112c08 CAPrivateKey:0x38aafa1429a0 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc4242	1.381s [no tests to run]
+2026/11/06 11:14:43 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc4306 CACertificate:0x51150292c08 CAPrivateKey:0x511509aa9a0 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc4306	4.714s [no tests to run]
+2026/11/06 11:14:43 config: &{BaseImageURI:complement-lattice:latest DebugLoggingEnabled:false AlwaysPrintServerLogs:false EnvVarsPropagatePrefix: SpawnHSTimeout:30s ContainerCPUCores:0 ContainerMemoryBytes:0 KeepBlueprints:[] HostMounts:[] BaseImageURIs:map[] PackageNamespace:msc4429 CACertificate:0xb4211286008 CAPrivateKey:0xb4211246070 BestEffort:false HostnameRunningComplement:host.docker.internal EnableDirtyRuns:false HSPortBindingIP:127.0.0.1 PostTestScript:}
+testing: warning: no tests to run
+PASS
+ok  	github.com/matrix-org/complement/tests/msc4429	4.084s [no tests to run]

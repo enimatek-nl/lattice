@@ -544,38 +544,28 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
 - [x] T-4033 (half). `handleMembers` read only `not_membership`; `membership=` was ignored. Fixed
       in the commit after `7157a39`: `TestGetFilteredRoomMembers` passes all three subtests
       (`not_membership`, `membership/leave`, `membership/join`).
-- [ ] T-4033a `/members?at=<sync token>` — the roster as it was at that point. What the last commit
-      did was parse and apply it as a cap on the member rows' stream position, which answers
-      "who had joined by then" but returns an *empty* chunk for Complement's case
-      (`room_members_test.go:105`, `.agent-work/next/mem1.log`: `?at=s5` → `{"chunk":[]}`, and the
-      test wants alice). Cause, worked out from our own sync: `/sync` issues
-      `timeline.prev_batch` as the position of the **oldest** event in the batch
-      (`internal/sync/service.go:636-639`), so `at=prev_batch` names the create event, and alice's
-      join sits at a later position than the token that is supposed to see her.
-      The fix is the snapshot lookup, not a wider cap: take the newest event at or before the
-      position (`events.EventsWindow(room, position+1, true, 1)`), read the state group that event
-      was sent against (`groups.GroupOf` + `groups.Entries`), and answer with the
-      `m.room.member` entries in it. The event at `s5` carries alice's join in its snapshot, which
-      is exactly why this is the right mechanism — it is the same state the authorisation rules
-      judged that event by. Worth checking whether `prev_batch` should name the newest end of the
-      batch instead, which is what Synapse issues and what would make `at` and pagination agree;
-      that question touches every passing pagination test, so it is a separate decision.
-- [ ] T-4034 Diagnose why an event a client just sent does not reach its own `/sync` timeline:
-      `SendEventSynced waiting for event ID …` at `room_members_test.go:74`, `:88` and
-      `room_messages_test.go:127`, `:137`, `:195`, `:412`, plus `TestSync` itself. Probably one
-      cause covering several tests; it is also the main thing between M2 and M3.
-- [ ] T-4035 `TestRoomCreationReportsEventsToMyself` — undiagnosed.
-- [ ] T-4036 `TestSyncOmitsStateChangeOnFilteredEvents` (sync filter), `TestMessagesOverFederation`.
-
-Ledger correction: PLAN.md's M4 note claiming `internal/state.Resolve` is never called is stale.
-`rooms.reconcileCurrentState` (`internal/rooms/resolve.go:183`–218) resolves current state across
-forward extremities through `state.Resolve`, and `stateat.go:91` resolves an event's own state.
-That blocker is closed and must not be counted against M4.
-
-- [x] T-4030, T-4031 are done (commit `7157a39`): `/login` reuses a device the account already
-      has, and a transaction ID is scoped to (device, room). Four of the five `txnid_test.go`
-      tests pass; `unsigned.transaction_id` is now served too, which neither of the earlier
-      diagnoses named and both of them needed.
+- [x] T-4033a `/members?at=<sync token>` — done in commit `066bb6c`. The roster is read from the
+      state snapshot the newest event at or before the token was sent against
+      (`events.EventsWindow` → `groups.GroupOf` → `groups.Entries`), which is the same snapshot the
+      authorisation rules judged that event by. Empty by that token gives an empty roster; a token
+      whose snapshot was never recorded is refused rather than answered from today's state.
+      The other half of the fix was `prev_batch` (commit `2dcda9a`): `/sync` named the **oldest**
+      event of the batch, so a client asking about the point its own batch began was told a roster
+      from before the room had any members. It now names the newest end, which is what Synapse
+      issues and what Complement expects. The Client-Server API does not settle this —
+      matrix-org/matrix-spec#595 has been open on it since 2020 — so the decision and its cost (a
+      client may meet an event twice paging back) are written into the comment at
+      `internal/sync/service.go`. Complement `TestGetRoomMembersAtPoint` passes, and the sync and
+      message families re-run unchanged.
+      Follow-on worth its own look, not assumed: the `at` resolution and MSC4115's
+      `unsigned.membership` (T-4032) need the same "state at a stream position" mechanism; the
+      snapshot lookup now exists and should be reused rather than rewritten.
+- [ ] T-4034 intermittent, not constant: `SendEventSynced waiting for event ID …` appears in some
+      runs of `room_members_test.go:74`/`:88` and not in others (`.agent-work/next/mem1.log` and
+      `mem2.log` show it; `prevbatch1.log` does not, with the same blueprint). So a sent event
+      sometimes does not reach the sender's own `/sync` in time. Reproduce before theorising:
+      run `TestGetRoomMembers|TestGetRoomMembersAtPoint` repeatedly and keep the server logs of a
+      failing run.
 - [ ] T-4037 Refresh tokens. `POST /login` refuses `refresh_token: true` outright, so
       `TestTxnIdWithRefreshToken` cannot get past its first step and no token-refresh test can run.
       The Client-Server API defines the flow (short-lived access tokens, a refresh token,
