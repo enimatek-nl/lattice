@@ -233,6 +233,22 @@ the parts that must be byte-exact before any room is created.
    specification states this in the receiving behaviour rather than in the hash
    definition.
 
+### 6.4 Spaces: a room pointing at rooms (added during M3)
+
+| ID | Source | Requirement | Level | Status | Tests |
+| --- | --- | --- | --- | --- | --- |
+| REQ-SPACE-001 | CS v1.11 v1 `/rooms/{roomId}/hierarchy` | The requested room followed by its descendants, depth-first; children ordered by the `m.space.child` link's `order` (well formed: printable ASCII, ≤50, no `/`), then the link's `origin_server_ts`, then room ID; `suggested_only`, `max_depth`, `limit`, `from` honoured; `next_batch` while rooms remain. | MUST | implemented+tested | `tests/integration/hierarchy_test.go`, Complement `TestClientSpacesSummaryJoinRules`, `TestFederatedClientSpaces` |
+| REQ-SPACE-002 | CS v1.11 v1 `/rooms/{roomId}/hierarchy` | A room is listed only for a user who may see it; a restricted room names `allowed_room_ids`; the room the request is about is refused rather than answered with an empty list. | MUST | implemented+tested | `tests/integration/hierarchy_test.go`, Complement `TestRoomSummaryAllowedRoomIDs`, `TestRestrictedRoomsSpacesSummaryLocal` |
+| REQ-SPACE-003 | FED v1.11 v1 `/hierarchy/{roomId}` | Answer another server with the room, a summary of each child **the asking server** could see, and `inaccessible_children` for those it could not. | MUST | implemented+tested | `tests/integration/hierarchy_test.go`, Complement `TestRestrictedRoomsSpacesSummaryFederation` |
+
+The visibility decision is the same one the read endpoints make (public, world-readable, joined,
+invited, or satisfying the room's restriction), including the rule that this server leans on its copy
+of a room a restriction names only while it is still inside that room. A child held by another server is
+described by that server and weighed, not believed: an answer that does not name the room asked about is
+set aside, and the asking server still answers for its own user out of its own state. The full record,
+including what the first attempt got wrong, is in `.agent-work/TASKS.md` (T-4051) and
+`.agent-work/PROGRESS.md`.
+
 ## 7. Operational requirements
 
 | ID | Source | Requirement | Level | Status | Tests |
