@@ -181,6 +181,7 @@ func NewWithOptions(ctx context.Context, cfg *config.Config, log *slog.Logger, o
 		E2EKeys:     deviceKeys,
 		DeviceLists: deviceKeys,
 		Invites:     roomService,
+		Gaps:        roomService,
 	}
 	if cfg.Federation.Enabled {
 		policy, err := federation.NewIPpolicy(cfg.Federation.IPAllow, cfg.Federation.IPDeny)

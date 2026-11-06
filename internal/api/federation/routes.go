@@ -40,6 +40,9 @@ type Deps struct {
 	// exclusion is room state, and the endpoints and the event-accepting path have to give the
 	// same answer to it.
 	ACLs RoomACLs
+	// Gaps answers what a peer asks for when an event it was handed cites history it was never
+	// given. It is the room service: the answer is a walk over the room's event graph.
+	Gaps GapReader
 	// Backfill asks another server for the events this room's events cite and this server does
 	// not hold. It is what makes a refusal for missing predecessors a step rather than an ending.
 	Backfill GapFiller
@@ -80,6 +83,7 @@ func Register(r *httpserver.Router, d *Deps) {
 	// the room can check for itself.
 	r.Handle("GET", "/_matrix/federation/v1/state_ids/{roomId}", d.requireCredential(d.handleStateIDs))
 	r.Handle("GET", "/_matrix/federation/v1/event_auth/{roomId}/{eventId}", d.requireCredential(d.handleEventAuth))
+	r.Handle("POST", "/_matrix/federation/v1/get_missing_events/{roomId}", d.requireCredential(d.handleGetMissingEvents))
 	r.Handle("GET", "/_matrix/federation/v1/version", d.handleVersion)
 	r.Handle("GET", "/_matrix/key/v2/server", d.handleServerKeys)
 	r.Handle("POST", "/_matrix/key/v2/query", d.handleKeyQuery)
