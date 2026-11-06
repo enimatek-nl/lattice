@@ -171,12 +171,21 @@ the parts that must be byte-exact before any room is created.
    that parsed but had the wrong shape. Go's decoder reports truncation as
    `io.ErrUnexpectedEOF`, which is not a `*json.SyntaxError`, so a naive check answered
    `M_BAD_JSON` for `{`. Tested in `TestRoomSendErrors`.
-6. **Room preset contents.** The specification names `private_chat`, `public_chat` and
-   `trusted_private_chat` but leaves their contents to the implementation. This server's
-   presets: public → `join_rule: public` with `history_visibility: world_readable`;
-   private → `invite` with `shared`; trusted → `invite` with `invite` power level 0. All
-   three give the creator 100 and `state_default` 50. Falsifiable: a Complement preset
-   test that expects different history visibility or invite levels.
+6. **Room preset contents.** The specification gives a table for the three presets, and it is
+   normative: `private_chat` → `join_rule: invite`, `history_visibility: shared`,
+   `guest_access: can_join`; `trusted_private_chat` → the same, with every invitee given the
+   creator's power level; `public_chat` → `join_rule: public`, `history_visibility: shared`,
+   `guest_access: forbidden`. This server writes that table, plus a power-level layout giving
+   the creator 100 and `state_default` 50.
+   **Corrected 2026-11-06.** An earlier entry here claimed the preset contents were
+   implementation-defined and had `public_chat` start `world_readable`. That was wrong twice
+   over: the table is in the specification, and its public row says `shared`. A public room is
+   joinable without an invitation, which is not a statement that its history is readable by
+   people who never joined; the old preset published the history on the strength of the join
+   rule. Complement's `TestInboundCanReturnMissingEvents` counts the history-visibility events
+   of a `public_chat` room and is right to. The same correction applies to guest access: the
+   event is `m.room.guest_access` with a string `guest_access` key, and the directory read here
+   had invented `m.room.guest_join` with a boolean.
 7. **Empty state key routing.** `/state/{eventType}/` is the empty state key. Go's mux
    treats a pattern ending in `/` after a wildcard as a subtree, so that pattern also
    matches `/state/a/b/c`; the handler counts the remaining segments and refuses the
