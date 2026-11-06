@@ -1,6 +1,6 @@
 # Progress
 
-## 2026-11-06 — a content repository, and the federation refusal that was a database write (`not yet committed`)
+## 2026-11-06 — a content repository, and the federation refusal that was a database write (`69d2378`, `7e56edb`)
 
 T-4059 and T-4060, closed. `internal/media` plus the two doors that serve it: eleven Client-Server
 endpoints (upload, create-then-upload, download, thumbnail, config — and the authenticated
