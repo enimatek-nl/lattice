@@ -539,7 +539,7 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
       the anonymous-volume count and names the cleanup instead of running it, and defaults to
       `-p 2`. Until a full suite is re-run on a clean store, `gate4.log` (59/161) and `full2.log`
       (67/152) are both to be treated as noise, not tallies.
-- [ ] T-4039 re-run the full suite with a clean volume store and record the tally as a number with
+- [x] T-4039 re-run the full suite with a clean volume store and record the tally as a number with
       a date, replacing the two contaminated ones. Expect it to take tens of minutes; expect
       `msc3902` (`TestPartialStateJoin`) to fail rather than hang, and separate unimplemented MSCs
       from real regressions by family, not by count.
@@ -632,3 +632,8 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
       `POST /refresh`, `refresh_token` in the login and refresh responses, `org.matrix.msc21`
       unstable prefix). It touches token minting, expiry and logout, so it is its own task and not
       a login tweak.
+
+  T-4039 done 2026-11-06 at tree `4502f1e`: 76 top-level passes / 143 failures over all 17
+  packages, `exceeded num_locks` count 0, and nine tests newly passing against `full2.log` with
+  none newly failing (`.agent-work/next/gate5.log`). The two contaminated tallies stay in the
+  records as what they were, with the reason; the new number is in COMPLIANCE-MATRIX.md.

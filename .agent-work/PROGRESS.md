@@ -1,5 +1,20 @@
 # Progress
 
+## 2026-11-08 — a full-suite number that means something: 76 passing, 143 failing, zero lock errors
+
+`.agent-work/next/gate5.log`, tree `4502f1e`, `RUN=.`, `-p 2`, volume store clean, and the log
+contains 0 hits for `exceeded num_locks` — the check that the two earlier tallies failed.
+
+Nine tests newly pass against the 09:39 baseline and **none newly fail**: the members family
+(`TestGetFilteredRoomMembers`, `TestGetRoomMembersAtPoint`), MSC4115 (`TestMembershipOnEvents`),
+the four transaction-ID tests, `TestIsDirectFlagLocal`, `TestWriteMDirectAccountData`. That "none
+newly fail" is the sentence to care about: everything added today — the at-point roster,
+`prev_batch` naming, `unsigned.membership`, the chunk pairing fix — moved nothing the other way.
+
+143 failures is mostly absence rather than breakage: federation joins and ACLs, device keys,
+media, threads, receipts, relations, knocking and restricted rooms, to-device, account data,
+search, and the unstable MSC suites. It is a trajectory marker, not a compliance claim.
+
 ## 2026-11-08 — MSC4115 lands, the suite tally collapses, and one of my own ledger claims was wrong
 
 Commit `ad8499a`. `unsigned.membership` on served events is the **reader's** membership of the

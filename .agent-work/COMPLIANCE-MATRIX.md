@@ -122,6 +122,27 @@ request twice" case. What is left failing in `TestSync` is two things, both know
   * the two MSC4222 `state_after` subtests, and the whole `tests/msc4222` package, which is
     an unstable specification extension this server does not implement.
 
+## Full suite, clean environment (2026-11-06, tree `4502f1e`)
+
+`RUN='.'` over all 17 of Complement's packages, `-p 2`, anonymous-volume store clean, and
+`grep -c "exceeded num_locks"` over the log is **0** — so unlike the two runs below it, this one
+measures the server and not the host. `.agent-work/next/gate5.log`.
+
+**76 top-level tests pass, 143 fail.** Every package contains at least one failure; that is what
+an unimplemented-surface picture looks like, not a server in pieces. Against the earlier run of
+2026-11-06 09:39 (`full2.log`, 67/152 — itself contaminated by deploy failures), **nine tests
+newly pass and none newly fail**: `TestGetFilteredRoomMembers`, `TestGetRoomMembersAtPoint`,
+`TestMembershipOnEvents` (MSC4115), `TestTxnInEvent`, `TestTxnIdempotency`,
+`TestTxnIdempotencyScopedToDevice`, `TestTxnScopeOnLocalEcho`, `TestIsDirectFlagLocal`,
+`TestWriteMDirectAccountData`.
+
+This is a count of Complement tests, not a statement of Matrix compliance. The failures are
+dominated by whole areas that are absent rather than broken — federation room joins and ACLs,
+device keys and key claiming, media and thumbnails, threads, receipts, relations, knocking and
+restricted rooms, to-device, account data, search, URL previews, MSC suites that are unstable
+specifications (msc4242, msc4222, msc4429, msc4291, msc4289, msc4311). A number this size is only
+useful as a trajectory, which is why the per-test comparison above is the part worth keeping.
+
 ## Latest filtered run (2026-11-06, sending, typing, membership)
 
 Filters: `.agent-work/next/txn1.log`, `txn2.log`, `prevbatch1.log` (Complement unchanged; no
