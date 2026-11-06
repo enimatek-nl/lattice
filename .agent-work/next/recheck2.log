@@ -1,0 +1,3 @@
+== building complement-lattice:latest
+Emulate Docker CLI using podman. Create /etc/containers/nodocker to quiet msg.
+Error: failed to open 32768 locks in /libpod_rootless_lock_1000: numerical result out of range

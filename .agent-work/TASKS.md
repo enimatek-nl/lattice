@@ -532,6 +532,13 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
       `TestTxnIdempotency` (`txnid_test.go:211`): the fourth send re-used the third's txn ID with
       different content and got the cached event back. Synapse's uniqueness is
       (user, device, txn, body); ours is (device, txn). Same test class: 5 tests.
+- [ ] T-4035 full Complement suite runs are unmeasurable on this host (Podman `num_locks`, B-0008).
+      Do not read `.agent-work/next/gate4.log` (59 pass / 161 fail) as a compliance picture: 15+ of
+      those failures are `ContainerCreate … exceeded num_locks (2048)` at deploy time, on tests that
+      pass in filtered runs. Reliable until then: filtered family runs. Possible fixes, none tried
+      blind: a non-destructive way to grow the rootless lock set; running the suite package by
+      package with `podman container prune -f` between packages; or a Docker-backed host. Do not run
+      `podman system reset` on this machine without asking — it has unrelated containers on it.
 - [ ] T-4032 `unsigned.membership` on served events — MSC4115, and it is **the reader's**
       membership as of each event, not the sender's. Reading the test rather than its title settled
       this: in `TestMembershipOnEvents` every event before bob's join wants `leave`, including

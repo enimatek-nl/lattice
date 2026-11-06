@@ -1,5 +1,30 @@
 # Progress
 
+## 2026-11-08 — the MSC4115 lookup lands, and the full-suite tally turns out not to be a tally
+
+`persist.StateGroupRepo.StateEntryAt(eventID, type, stateKey)` (commit `64135dc`) answers what a
+state key held in the snapshot an event was sent against, in one statement, and distinguishes "the
+snapshot held nothing" from "this event has no recorded snapshot" — the second has to stay
+distinguishable or a server starts inventing history. `go test ./tests/...` green;
+`TestStateEntryAtAnswersAboutTheMomentNotTheMomentAfter` covers a message sent while bob was joined,
+asked after he left: still `join`. The presentation half of T-4032 is written out as steps in
+TASKS.md rather than left to be rediscovered.
+
+Then the full-suite run, and the discovery that the run itself is the problem (B-0008, T-4035):
+`RUN='.'` reports 59 top-level passes and 161 failures, but 15+ of the sampled failures are
+`ContainerCreate: … exceeded num_locks (2048)` at **deploy** time, with 0.4-0.9s durations — tests
+that never reached a homeserver. `TestUnknownEndpoints` and `TestRoomSummaryAllowedRoomIDs` are
+among them and both passed in a filtered run 40 minutes earlier, so the number is not a compliance
+measurement and is recorded as such.
+
+Measured on the way: raising `num_locks` is refused at 4096 and above because the rootless lock set
+`/libpod_rootless_lock_1000` already exists at 2048 and Podman will not resize it; that needs
+`podman system reset`, which deletes images and containers this machine also uses for other work, so
+it was not run and the config file was removed again (host verified back to its prior state:
+`docker ps` shows the two pre-existing containers). No orphaned `conmon`, no stopped
+`complement_*` containers, nothing to reap. `scripts/complement.sh` now defaults to `-p 2` and prints
+it, which helps but does not make a whole-suite run possible here.
+
 Newest first. Every entry names the command that produced the evidence; nothing here is a claim
 without a run behind it.
 

@@ -145,3 +145,40 @@ though the parts they test first now exist, because Complement drives them throu
 
 Action: T-4009 (the join/leave/invite exchange), with T-4007 (missing-event fetch) needed
 for any handover that does not arrive in causal order.
+
+## B-0008 — full Complement suite cannot run to completion on this host: Podman lock exhaustion
+
+Symptom, measured on 2026-11-06: a full-suite run (`RUN='.'`, 17 packages) reports 59 top-level
+passes and 161 failures, and the failures are not test failures. Their bodies read
+
+    Deploy: Deploy returned error … ContainerCreate: Error response from daemon: container create:
+    allocating lock for new container: allocation failed; exceeded num_locks (2048)
+
+`TestUnknownEndpoints` and `TestRoomSummaryAllowedRoomIDs` are among them; both passed in filtered
+runs 40 minutes earlier, and their durations in the full run are 0.4-0.9s — too short to have
+talked to a homeserver. So the full-suite tally is contaminated and must not be read as a
+compliance measurement. Filtered runs of a handful of tests are unaffected.
+
+What was tried, and why it did not work:
+
+  * Raising `num_locks` in `~/.config/containers/containers.conf`. 32768 and 16384 are refused —
+    `failed to open N locks in /libpod_rootless_lock_1000: numerical result out of range` — and so
+    is 4096, because the rootless lock set already exists at 2048 and Podman will not resize it in
+    place. Resizing means deleting that set, which is what `podman system reset` does, and that
+    also deletes the user's images and stopped containers. **Not run: it destroys other people's
+    work.** The config file was removed again, so the host is back to its previous state (checked:
+    `docker ps` lists the pre-existing containers).
+  * Reaping leaks: no orphaned `conmon` processes (2 running, both for live containers), no stopped
+    `complement_*` containers, no stale files under the storage lock directories that exist. So the
+    locks are not held by leftovers that can be reaped without a reset.
+
+What works instead: keep Complement runs to a bounded number of deployments. `scripts/complement.sh`
+now passes `-p 2` by default (override with `PARALLEL=n` or a `-p` on the command line) and says so
+in its output. That is not enough on its own for the whole suite — the suite creates hundreds of
+containers in one process — so the full tally still cannot be produced here.
+
+For whoever reads this next: the question to answer is whether the 2048 rootless lock set can be
+recreated at a larger size *without* `podman system reset` (which is destructive). If it cannot,
+then a full-suite run needs either a host with Docker rather than rootless Podman, or the suite run
+package-by-package with a lock-releasing step between packages. Ask the user before touching the
+storage of a machine that has other containers on it.
