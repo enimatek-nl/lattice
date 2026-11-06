@@ -552,7 +552,30 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
       client-side adjustment, so that is a parameter and a lookup, not a redesign. Cost to watch: one
       entry lookup per served event, so either a per-request cache of (group, state_key) →
       membership, or one SQL join (`event_state_groups` → `state_group_entries` → `events`) behind a
-      repo method such as `MembershipAt(ctx, eventID, stateKey)`. Scope it to events this server
+      repo method such as `MembershipAt(ctx, eventID, stateKey)` — now added as
+      `persist.StateGroupRepo.StateEntryAt(ctx, eventID, eventType, stateKey)` (commit `64135dc`,
+      tested by `TestStateEntryAtAnswersAboutTheMomentNotTheMomentAfter`: a message sent while bob
+      was joined still answers `join` after he has left). What is left is the presentation half,
+      and the steps are these:
+        1. `redaction.Servicer` gains the group repository — `NewServicer(events, rooms)` becomes
+           `NewServicer(events, rooms, groups)`; the call sites are the sync service, `/messages`,
+           `/event`, `/context` and `/relations`, all of which already hold a `persist.Database`.
+        2. Add reader-aware entry points, `ServeAs(ctx, row, reader)` and
+           `ServeChunkAs(ctx, rows, reader)`, and keep the reader-free `Serve`/`ServeChunk` for the
+           federation paths, where inventing our own `unsigned` would be a claim about state a peer
+           never saw. `decorate` takes the reader.
+        3. In `decorate`: only when the reader is non-empty, the stored event carries no
+           `unsigned.membership` of its own, and this server has a snapshot for the event
+           (`groups.StateEntryAt(row.EventID, "m.room.member", reader)`): write that member event's
+           `content.membership`; [persist.ErrNotFound] from the snapshot means `leave`, which is
+           what the create event wants and what the Complement test asserts. ErrNotFound from the
+           *event* (no snapshot recorded) means do not write the field at all — see 549-552.
+        4. Then `TestMembershipOnEvents` is the check, and `TestGetRoomMembers`'s
+           `assertMembershipEventEventsPresent` walks the whole timeline, so a partially applied
+           version will not pass. Cost check with `-race` before calling it done: one snapshot
+           lookup per served event, and `/sync` serves a batch per joined room, so measure it on the
+           sync benchmark rather than assuming.
+      Scope it to events this server
       authored: a peer's event arrives with that server's own `unsigned`, and writing our values
       over them would be a claim about a room we did not witness.
 - [x] T-4033 (half). `handleMembers` read only `not_membership`; `membership=` was ignored. Fixed
