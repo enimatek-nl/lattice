@@ -238,8 +238,9 @@ Newly passing, none newly failing:
   joining user is the one fact the other servers have not been told.
 
 Still failing in this area, with the cause checked rather than assumed:
-`TestDeviceListsUpdateOverFederation` stops at `POST /createRoom`, because it invites a user who
-lives on the other homeserver and the outbound invite handshake is missing (T-4009c). It is not a
+`TestDeviceListsUpdateOverFederation` gets past `POST /createRoom` now that an invite for a user on
+another homeserver is countersigned by that server (T-4009c); it stops later, at the device list
+assertions. It is not a
 device-list gap.
 
 No Complement assertion was modified.

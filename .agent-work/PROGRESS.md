@@ -1590,3 +1590,68 @@ sender's own user does — otherwise the forged case would only prove announceme
 Complement full `./tests` + `./tests/csapi`: **64 passing, 132 failing**, up from 62 and 134, with
 `TestDeviceListUpdates` (all ten subtests) and
 `TestDeviceListsUpdateOverFederationOnRoomJoin` newly green and none newly failing.
+
+## 2026-11-08 — an invite for a user who lives elsewhere is countersigned by that user's server (T-4009c)
+
+Commit `fb11648`.
+
+An invite named a user on another homeserver used to be refused with 501. The handshake now
+exists: the inviting server builds the event, the invited user's server signs it as well, and only
+the twice-signed event is stored anywhere.
+
+Sending (`internal/rooms/invite.go`, `internal/federation/invite.go`).
+`Service.inviteRemote` builds the member event with the room's own prev events, the auth events the
+room's rules select, the depth and origin the room expects, and refuses before asking if the room's
+power levels would not allow the invite in the first place. `unsigned.invite_room_state` carries the
+state a client needs to recognise the room — create, join rules, name, avatar, canonical alias,
+encryption, power levels — plus the member events, because the inviter's own membership is what
+authorises the invite and the invited user's previous membership is what an invite may be lifting
+(a ban, for instance). `federation.Inviter.SendInvite` asks `PUT /_matrix/federation/v2/invite/
+{roomId}/{eventId}` and falls back to v1 only for a room version 1 or 2 room and only when the
+answer says the endpoint is unknown: a 403 that gives a reason is a verdict, and asking twice would
+only ask the same question twice. The event that comes back is compared with the one that was sent —
+type, membership, sender, state key, room — because only signatures may differ, and a peer that
+returns a different event is not countersigning this invite. Nothing is stored unless the answer is
+right, and a peer's refusal is answered to the client as a gateway failure (`matrixerr` grew a
+`Status` override for exactly this: an `M_UNKNOWN` on its own reads as this homeserver's fault, and
+the operator would look in the wrong place).
+
+Receiving (`internal/api/federation/invites.go`, v1 and v2). The checks are about what this server
+would be promising: an `m.room.member` invite, about a user who lives here, whose sender lives on the
+server that sent it, in the room the path names, with the event ID the path names. v2 names the room
+version; v1 has nowhere to put it, so a v1 invite for a room this server holds is judged by its own
+record and one for a room it does not hold is taken as a version 1 room rather than a guess at a
+newer one. The inviting server's signature is verified *before* this server seals the event, because
+afterwards a verifier cannot tell whose word is whose.
+
+The room an invite names may be new here. It is created with the version the request states, and the
+state that arrived inside the invite is kept as events and current state — no event graph, no forward
+extremities, because this server holds no history of that room and pretending otherwise invites
+pagination into a room it knows one event of. Without it the invited user could read the invitation
+but not answer it: the join or rejection that follows has to be authorisable, and the events it cites
+have to be here. A bundled state event is used only when its own origin's signature checks; one that
+does not is skipped and logged rather than treated as a verdict, because a peer whose older state this
+server cannot re-verify (rotated keys, a redaction whose rules are applied differently) would
+otherwise be unable to invite here at all. The invitation itself is signed by the server that holds
+the room, and that is the promise worth checking.
+
+Room creation keeps its shape. A room created "with Bob in it", where Bob lives elsewhere, is
+created; the invitation is attempted afterwards and its failure is logged rather than returned. An
+unreachable Bob should not destroy a room that now exists, and a client that is told the room exists
+can retry `/invite`, where the answer is a status it can act on. `tests/integration/rooms_test.go`
+now asserts that: the room is created, and no remote invite is stored for a user whose server never
+countersigned it.
+
+Complement evidence.
+`TestFederationRejectInvite` passes: alice@hs1 invites charlie@hs2, delia (a Complement stub
+already in the room) sees the invite arrive as a PDU, charlie rejects it, and the rejection reaches
+delia too. That is the whole loop — build, countersign, store, relay — with a third party checking
+the relay.
+`TestFederationRoomsInvite` and `TestUnbanViaInvite` still fail, on two named gaps that are not
+invites: `unsigned.prev_content` is not written on membership changes, and a ban or a kick for a
+user who lives elsewhere is still refused with 501.
+Full `./tests` + `./tests/csapi` counts are recorded in the next section.
+
+Two local test expectations changed, deliberately, because the behaviour they pinned is gone:
+inviting `@someone:elsewhere.example` is now a gateway failure rather than 501, and creating a room
+with a remote invitee is now a created room rather than 501.
