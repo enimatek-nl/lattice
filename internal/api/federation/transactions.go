@@ -341,10 +341,35 @@ func (d *Deps) handleGetEvent(w http.ResponseWriter, r *http.Request) {
 			"This server does not know you to be in the room that event belongs to."))
 		return
 	}
+	// A peer asking for one event by name is asking for history, so it gets the same answer it
+	// would get from any other history read: the room's own redactions honoured, and the body
+	// withheld when the room's history visibility says this server's users could not have read
+	// the event when it was written. Serving `stored.JSON` unconditionally handed out both.
+	rules, err := d.rulesForRoom(r.Context(), stored.RoomID)
+	if err != nil {
+		var protocol *matrixerr.Error
+		if errors.As(err, &protocol) && protocol.Code == matrixerr.CodeIncompatibleRoomVersion {
+			matrixerr.Write(w, http.StatusForbidden, protocol)
+			return
+		}
+		d.Log.Warn("federation: the room of an event request could not be read",
+			"room_id", stored.RoomID, "event_id", eventID, "error", err)
+		matrixerr.Write(w, http.StatusInternalServerError, matrixerr.New(matrixerr.CodeUnknown,
+			"This server could not read that room."))
+		return
+	}
+	raw, err := d.pduForPeer(r.Context(), stored, origin, rules)
+	if err != nil {
+		d.Log.Warn("federation: an event could not be put into the form a peer may be given",
+			"room_id", stored.RoomID, "event_id", eventID, "origin", origin, "error", err)
+		matrixerr.Write(w, http.StatusInternalServerError, matrixerr.New(matrixerr.CodeUnknown,
+			"This server could not serve that event."))
+		return
+	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"origin":           d.Cfg.ServerName,
 		"origin_server_ts": time.Now().UnixMilli(),
-		"pdus":             []json.RawMessage{json.RawMessage(stored.JSON)},
+		"pdus":             []json.RawMessage{json.RawMessage(raw)},
 	})
 }
 

@@ -3,13 +3,12 @@ package federation
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/enimatek/lattice/internal/httpx"
 	"github.com/enimatek/lattice/internal/matrixerr"
 	"github.com/enimatek/lattice/internal/persist"
-	"github.com/enimatek/lattice/internal/redaction"
-	"github.com/enimatek/lattice/internal/roomversion"
 )
 
 // GapReader answers what a peer is missing between two points of a room's history. The room
@@ -96,69 +95,34 @@ func (d *Deps) handleGetMissingEvents(w http.ResponseWriter, r *http.Request) {
 			"This server could not read its history."))
 		return
 	}
-	// The room's rules decide what a redacted event still carries. A room whose version this
+	// The room's rules decide what a trimmed event still carries. A room whose version this
 	// server cannot apply rules to is not answered with guesses: the content of its events
 	// would be handed over in the one form this server cannot guarantee is trimmed.
-	room, err := d.DB.Rooms.ByRoomID(r.Context(), roomID)
+	rules, err := d.rulesForRoom(r.Context(), roomID)
 	if err != nil {
+		var protocol *matrixerr.Error
+		if errors.As(err, &protocol) && protocol.Code == matrixerr.CodeIncompatibleRoomVersion {
+			matrixerr.Write(w, http.StatusForbidden, protocol)
+			return
+		}
 		d.Log.Warn("federation: the room of a get_missing_events request could not be read",
 			"room_id", roomID, "origin", origin, "error", err)
 		matrixerr.Write(w, http.StatusInternalServerError, matrixerr.New(matrixerr.CodeUnknown,
 			"This server could not read that room."))
 		return
 	}
-	rules, known := roomversion.Get(room.RoomVersion)
-	if !known {
-		matrixerr.Write(w, http.StatusForbidden, matrixerr.New(matrixerr.CodeForbidden,
-			"This server cannot apply that room version's rules."))
-		return
-	}
 	pdus := make([]json.RawMessage, 0, len(events))
 	for _, event := range events {
-		raw := pduBytesFor(event)
-		visible, err := d.Gaps.VisibilityToPeer(r.Context(), event, origin)
+		raw, err := d.pduForPeer(r.Context(), event, origin, rules)
 		if err != nil {
-			// A visibility question this server cannot answer is answered the careful way.
-			d.Log.Warn("federation: a peer's entitlement to an event could not be determined",
+			// An event this server cannot put into the form the peer is entitled to is left
+			// out rather than handed over in the form it is surest about: the whole point of
+			// the check is that the peer is not given the body.
+			d.Log.Warn("federation: an event could not be put into the form a peer may be given",
 				"room_id", roomID, "event_id", event.EventID, "origin", origin, "error", err)
-			visible = false
-		}
-		if !visible {
-			trimmed, err := redactForPeer(raw, rules)
-			if err != nil {
-				d.Log.Warn("federation: an event that should be trimmed for a peer could not be",
-					"room_id", roomID, "event_id", event.EventID, "origin", origin, "error", err)
-				continue
-			}
-			raw = trimmed
+			continue
 		}
 		pdus = append(pdus, json.RawMessage(raw))
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"events": pdus})
-}
-
-// redactForPeer puts an event into the form a peer that was not entitled to its content is given:
-// the redaction rules of the room version applied to the event as stored. The graph fields and the
-// signatures survive, because the peer still has to be able to place and verify the event — what it
-// is not given is the body. The event as stored is never changed by this: the room did not redact
-// it, this reader was simply not entitled to it, and a server that rewrote stored history on the
-// basis of who asked would be making the room say something it never said.
-func redactForPeer(raw []byte, rules roomversion.Rules) ([]byte, error) {
-	var event map[string]any
-	if err := json.Unmarshal(raw, &event); err != nil {
-		return nil, err
-	}
-	return json.Marshal(redaction.Apply(rules, event))
-}
-
-// pduBytesFor chooses the bytes a peer is given for a stored event. A redacted event is handed
-// over in its redacted form: a redaction removes content from the event as far as the rest of the
-// Matrix network is concerned too, so republishing the original body under it would undo what the
-// room decided. The bytes are otherwise the event as stored, because what a peer verifies is the
-// exact form that was signed.
-func pduBytesFor(event *persist.Event) []byte {
-	if event.Redacted && len(event.RedactedJSON) > 0 {
-		return event.RedactedJSON
-	}
-	return event.JSON
 }

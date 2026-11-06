@@ -330,6 +330,17 @@ func (d *Deps) handleStateIDs(w http.ResponseWriter, r *http.Request) {
 // the room's whole history. It is the events' own account of what authorised them, so it is
 // answered from what is stored rather than from what this server currently believes the state
 // to be.
+//
+// The history-visibility trimming that the read endpoints apply (see `pduForPeer`) is deliberately
+// not applied here. The events in an auth chain are not history: they are the permissions — a
+// membership event, the power levels, the join rule — and taking their bodies out leaves the peer
+// with a chain it cannot evaluate, so it cannot authorise the event it asked about, cannot decide
+// whether to keep it, and cannot tell its own users why the room is inconsistent. A room's
+// permissions being unreadable is not the same as its history being private, and a peer that cannot
+// check an event is worse off than one that can. What the protocol does ask here is narrower and
+// separate: a server with nobody in the room has no standing to be handed the room's membership
+// events at all, which is a question about who is being sent what, not about how much of an event to
+// show them.
 func (d *Deps) handleEventAuth(w http.ResponseWriter, r *http.Request) {
 	roomID := r.PathValue("roomId")
 	eventID := r.PathValue("eventId")
