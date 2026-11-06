@@ -1,5 +1,31 @@
 # Progress
 
+## 2026-11-08 — the restricted-room cluster opened, and its condition was wrong at the root
+
+Commit `6e038c9`. `eventauth.MayJoinRestricted` — the function that decides whether a user satisfies a
+`restricted` room's allow list — looked for entries of type `m.room.member`. The specification's allow
+condition is `m.room_membership`, and it is the only condition the protocol defines. So every entry was
+skipped and the rule answered "not joined to any room in the allow list" about a room its owner had
+opened. This was worth finding before the flow around it: wiring a broken condition would have produced
+restricted rooms that refuse everyone, and the failure would have looked like a join-flow bug.
+
+A table now covers the condition vocabulary: satisfied, unsatisfied, one-of-several, a type that is not
+a condition (refused — a condition type this server has not read is not one it may treat as satisfied),
+`restricted` with no conditions (invite-only, as the specification says), a public room asking nothing,
+and `knock_restricted` in the versions that carry it. The older single-case test carried the same wrong
+type string, which is what had kept it agreeing with the code instead of with the protocol.
+
+Also worth recording as a lesson about edits rather than about Matrix: while checking whether
+`knock_restricted` was correctly absent from room version 9, I patched the wrong version block and
+stripped the flag from version 10 — the version that introduced it. `TestRoomVersionDifferences` and
+`TestAuthRulesKnockGating` both name the version each flag belongs to, so the mistake was two minutes
+of work instead of a mystery. v9 was already right.
+
+Still open, and deliberately not improvised: the flow (T-4052) — nothing calls `MayJoinRestricted`;
+the join event must carry `join_authorised_via_users_server`, and room version 8's rule **4.2** demands
+that event be signed by the homeserver of the user that key names, which is what decides who may be
+named at all. The task says to read the Server-Server §Restricted rooms and the v8 rules first.
+
 ## 2026-11-08 — `/event` stops serving whatever it is asked for, and the baseline holds
 
 Commit `80f9a82`. `GET /_matrix/federation/v1/event/{eventId}` answered with `stored.JSON`: the event

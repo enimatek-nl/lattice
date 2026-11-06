@@ -686,6 +686,23 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
       common cause first (federation outbound and join flows dominate it), and diff against this
       baseline each time.
 
+- [ ] T-4052 the restricted-room **flow**, now that the condition rule is right (`6e038c9`).
+      `eventauth.MayJoinRestricted` evaluates the allow list correctly and is tested, but **nothing
+      calls it**, and a restricted join needs two more things before `TestRestrictedRooms*` can move:
+      (a) the join event this server creates must carry
+      `content.join_authorised_via_users_server`, and room-version rule **4.2** requires that event to
+      be *signed by the homeserver of the user the key names* — so the choosing of that authoriser, and
+      whose signature goes on the join, is the substance of the work; (b) `/make_join` and `/send_join`
+      have to carry it across for remote joins, including the resident server's side of the refusal.
+      Read before writing: the pinned specification's Server-Server **§Restricted rooms**, room version
+      8's authorization rules **4.2 and 4.3.5** (which deliberately do *not* evaluate the allow list —
+      that is the creating server's job, which is what `MayJoinRestricted` is for), and the
+      Client-Server §Restricted rooms paragraph on what the joining server MUST verify. Do not choose
+      the authoriser from memory of MSC3083/MSC3787: the signing obligation in 4.2 is what decides
+      which user may be named, and guessing it produces joins that one server accepts and another
+      rejects. Also verify that this server accepts `restricted` and `knock_restricted` in
+      `m.room.join_rules` state for the versions that carry them, and that a `restricted` room with no
+      valid conditions behaves as invite-only.
 - [ ] T-4051 work the Complement failure list down by cluster, diffing against
       `complement-failures-20261106.txt` after each change. The biggest single cluster is
       **restricted rooms**: `TestRestrictedRoomsLocalJoin`, `...LocalJoinInMSC3787Room`,
