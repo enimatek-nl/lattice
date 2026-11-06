@@ -122,7 +122,38 @@ request twice" case. What is left failing in `TestSync` is two things, both know
   * the two MSC4222 `state_after` subtests, and the whole `tests/msc4222` package, which is
     an unstable specification extension this server does not implement.
 
-## Latest filtered run (2026-11-05, presence)
+## Latest filtered run (2026-11-06, sending, typing, membership)
+
+Filters: `.agent-work/next/txn1.log`, `txn2.log`, `prevbatch1.log` (Complement unchanged; no
+assertion weakened). Newly passing, all verified in this session:
+
+  * `TestTxnIDDeduplication` — a transaction ID is an idempotency key, not a lock; a same-body
+    resend returns the same event ID instead of `M_UNKNOWN`.
+  * `TestClientNoEncryption` — the whole package, including `TestSendEventSynced`, which had been
+    failing on a `PUT /send` whose body could not be decoded at all: `msgtype`/`body` were looked
+    for at the top level instead of inside `content`.
+  * `TestTyping` — including "Typing notifications are sent to other users".
+  * `TestGetFilteredRoomMembers` — all three subtests. `handleMembers` read only `not_membership`,
+    so `membership=` was ignored.
+  * `TestGetRoomMembers`, `TestGetRoomMembersAtPoint` — the roster, and the roster as it was at a
+    synchronisation token. `at` is answered from the state snapshot the event at that position was
+    sent against, not from today's state cut by position; `/sync` now issues `timeline.prev_batch`
+    as the newest end of the batch, which is the half that made the at-point question answerable at
+    all (the Client-Server API does not decide which end it names — matrix-org/matrix-spec#595).
+  * `TestSendAndFetchMessage`, `TestRoomMessagesLazyLoading`, `TestRoomMessagesLazyLoadingLocalUser`,
+    `TestSyncFilter`, `TestRoomSummaryAllowedRoomIDs` and `TestSync` in `tests/csapi` — unchanged
+    from before these changes, i.e. no regression.
+  * The M1 gate set (`gate2.log`): every package `ok`.
+
+Still red in the same families, with causes named rather than inferred: `TestMembershipOnEvents`
+(`room_members_test.go:193`, failing in the full run of 2026-11-06 09:39 as well as in this
+session's filtered runs) wants `unsigned.membership` on every served event, which is **the
+reader's** membership as of each event (MSC4115), not the sender's; the mechanism to answer it now
+exists and the plan is T-4032. And
+`SendEventSynced waiting for event ID …` appears in some runs of `room_members_test.go:74`/`:88`
+and not others, which is T-4034 and recorded as intermittent rather than explained.
+
+## Earlier filtered run (2026-11-05, presence)
 
 Filter: presence, push rules and push sync, room directory and summaries, `/messages`,
 logout and devices, registration and login.
