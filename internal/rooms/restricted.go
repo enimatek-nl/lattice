@@ -19,6 +19,18 @@ import (
 // rather than give up, which is why the specification gives it its own error code.
 var errUnableToGrantJoin = errors.New("rooms: this server cannot authorise the join")
 
+// errAllowRoomNotHeld says this server cannot tell whether the membership it would rely on in an
+// allow room is still current.
+//
+// A restricted room points at another room and lets in that room's members. A server that is not
+// itself in the room pointed at keeps a copy of it that nobody is obliged to update: it has no local
+// member there, so the room's changes are not sent to it, and the membership it is holding may be
+// weeks old. Granting the join from that copy would be granting it on a question this server cannot
+// answer, and refusing on it would be the same invention the other way round. So the answer is
+// M_UNABLE_TO_GRANT_JOIN: the room may well let the user in, and a server that is in the allow room
+// is the one that can say so.
+var errAllowRoomNotHeld = errors.New("rooms: this server is not in the room the restriction points at")
+
 // RestrictedJoin works out what a join this server is about to create needs from the room's
 // restricted join rule, and returns the user ID that the join event has to name as its
 // authoriser. An empty return means the room asks nothing extra of this join: the rule is
@@ -92,9 +104,26 @@ func (s *Service) RestrictedJoin(ctx context.Context, roomID, userID string) (st
 			if err != nil {
 				return false, err
 			}
-			return state == eventauth.MembershipJoin, nil
+			if state != eventauth.MembershipJoin {
+				return false, nil
+			}
+			// The membership says "joined" here and now. Whether that is still what the allow room
+			// says is a second question, and this server is only told the answer while it is a member
+			// of that room itself.
+			current, err := s.stillTracksRoom(ctx, allowRoom)
+			if err != nil {
+				return false, err
+			}
+			if !current {
+				return false, errAllowRoomNotHeld
+			}
+			return true, nil
 		},
 	}); err != nil {
+		if failure, ok := eventauth.AsFailure(err); ok && failure.Rule == eventauth.RuleAllowLookup {
+			return "", matrixerr.New(matrixerr.CodeUnableToGrantJoin,
+				"This server cannot confirm the join conditions of this room.")
+		}
 		// The user satisfies none of the room's conditions. This is the answer every server in
 		// the room gives, so there is another door to try and the joining server is told so.
 		detail, _ := eventauth.AsFailure(err)
@@ -235,4 +264,29 @@ func (s *Service) JoinAuthoriserValid(ctx context.Context, roomID, candidate str
 		return false, fmt.Errorf("rooms: a room's power levels do not load: %w", err)
 	}
 	return levels.User(candidate) >= levels.Invite, nil
+}
+
+// stillTracksRoom says whether this server's copy of a room is one it is still being told about:
+// either the room is this server's own, or a user of this server is a joined member of it, which is
+// what puts this server on the room's list of servers to send changes to.
+func (s *Service) stillTracksRoom(ctx context.Context, roomID string) (bool, error) {
+	if _, domain, err := matrixid.SplitID(matrixid.SigilRoom, roomID); err == nil {
+		if matrixid.IsLocal(domain, s.name) {
+			return true, nil
+		}
+	}
+	members, err := s.state.CurrentMembers(ctx, roomID)
+	if err != nil {
+		if notFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("rooms: cannot read the members of the room a restriction points at: %w", err)
+	}
+	for _, member := range members {
+		domain, err := matrixid.UserDomain(member)
+		if err == nil && matrixid.IsLocal(domain, s.name) {
+			return true, nil
+		}
+	}
+	return false, nil
 }

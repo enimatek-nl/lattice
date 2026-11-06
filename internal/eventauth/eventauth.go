@@ -67,6 +67,12 @@ type Opts struct {
 // Failure says which rule rejected an event. The rule numbers are the ones in the
 // specification's per-version authorisation lists, so a failure can be checked
 // against the text without guessing.
+// RuleAllowLookup names not a rule of the room but a check this server could not carry out: the
+// membership an allow room would have to confirm could not be read. It is kept apart from the room's
+// own rules because the answer it deserves is "ask a server that can see that room", not "this user
+// is not allowed".
+const RuleAllowLookup = "allow lookup"
+
 type Failure struct {
 	Rule   string
 	Reason string
@@ -753,7 +759,10 @@ func MayJoinRestricted(rules roomversion.Rules, event map[string]any, state Snap
 		}
 		joined, err := opts.JoinedInRoom(target, stateKey)
 		if err != nil {
-			return Failure{"allow", "allow list lookup failed: " + err.Error()}
+			// A check this server could not carry out is not the room refusing. It is named by a
+			// rule of its own so that the caller can answer "I cannot confirm this" instead of
+			// filing a verdict about a room whose state it cannot see.
+			return Failure{RuleAllowLookup, "the allow list could not be checked: " + err.Error()}
 		}
 		if joined {
 			return nil
