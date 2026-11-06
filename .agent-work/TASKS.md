@@ -823,3 +823,57 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
       **90 passing, 129 failing, 1 skipped** with nothing newly failing. The earlier 89/130 tally was
       taken while the stale record was live, so numbers before this entry sit on a dirtier environment
       than numbers after it.
+
+- [x] T-4057 (done 2026-11-11, commit `192c3dc`) the profile endpoints, and the member events that have
+      to hear about a change. `GET /_matrix/client/v3/profile/{userId}` and
+      `GET`/`PUT`/`DELETE /_matrix/client/v3/profile/{userId}/{keyName}` (with the `r0` prefixes), the
+      `m.set_displayname` / `m.set_avatar_url` capabilities, and `persist.User` columns for the two fields.
+      The endpoint is the small half. A room presents a person through the `m.room.member` event it holds,
+      which carried a copy of the profile at the moment it was written, so a change that only touches the
+      account row leaves one human named two ways in one room — and a room that was told once is never
+      told again. `users.Service.SetProfile`/`ClearProfile` therefore call
+      `rooms.Service.RefreshProfile` through a `ProfileBroadcaster` interface, which sends the membership
+      again in every room the user stands in as an ordinary event under that room's own rules: a room that
+      will not take it keeps what it had, one refusing does not stop the others, and the account's own
+      change is not undone because somebody else's server was unreachable. The room layer reads the
+      account layer back through `ProfileReader` (`users.Service.ProfileFields`) so a join writes the
+      member event with the current profile instead of an empty one. Interfaces, not types, in both
+      directions.
+      Only a local user's profile is copied. A remote user's member event belongs to that user's server;
+      writing their name into an event this server signs is this server putting words in another's mouth,
+      and the disagreement is settled by the signature.
+      A decision, because it reads like a missing check: `avatar_url` is stored as given even when it is
+      not a Matrix content identifier. The specification puts that MUST on the client, says servers MAY
+      validate, and says clients MUST expect values they did not ask for; Complement stores "LemurLover"
+      as an avatar and expects success. Refusing would enforce an optional rule and fail a test that is not
+      about that rule. `matrixid.SplitMXC` exists and is tested for the place the identifier is acted on —
+      a media fetch. The one bound kept is this server's own: 255 bytes, refused `M_TOO_LARGE`, because a
+      profile is amplified into every room the user joins (AGENTS §9, resource limits). Recorded under
+      "Decisions" in REQUIREMENTS.md.
+      Full run after: **95 passing, 124 failing, 1 skipped**, nothing newly failing — the member-event
+      content changed for joins, which is the kind of change that breaks tests comparing member content
+      exactly, and it did not. Newly passing: the four profile tests and `TestPushRuleRoomUpgrade`, which
+      had been flaky.
+
+- [ ] T-4058 the profile gaps T-4057 left, recorded rather than left implicit.
+      (a) `GET /_matrix/client/v3/profile/{userId}` for a user on **another** server is answered 404 here.
+      Synapse asks the other server over federation
+      (`GET /_matrix/federation/v1/profile/{userID}`, an unauthenticated federation GET) and caches. Until
+      that exists, Complement's `TestInboundFederationProfile` and `TestOutboundFederationProfile` stay
+      red, and a client looking at a remote user has no way to ask how that user is presented except
+      through the member events of a room it is already in. Read the Server-Server section on `/profile`,
+      check whether the pinned specification marks that endpoint stable (the Complement test names suggest
+      MSC4032/MSC4039 work: verify against the spec pages, not the test names), and note that an
+      unauthenticated federation endpoint is a directory of this server's users unless it is scoped.
+      (b) Custom profile fields (`keyName` of any name, `m.profile_fields` in `/versions` and in
+      `/capabilities`). Not implemented and deliberately not advertised; this server holds the two standard
+      fields and refuses any other `keyName` with `M_NOT_FOUND`, which is the answer the specification
+      expects from a server that does not advertise the extension. Do not advertise it by storing arbitrary
+      JSON in the account row without deciding how a field is propagated: a profile field is copied into
+      member events in every room the user stands in, which turns one account into a fan-out per room per
+      change.
+      (c) `POST /user_directory/search` and `GET /user_directory` are not implemented
+      (`TestRoomSpecificUsernameAtJoin`, `TestRoomSpecificUsernameChange`,
+      `TestUserDirectorySearchLimited`…). The room-specific display name they check is *already* carried by
+      the member events this server writes, so the user directory is a search index over state this server
+      can already see, not a new kind of data — worth taking after T-4057 rather than before.

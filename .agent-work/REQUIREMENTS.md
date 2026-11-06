@@ -143,6 +143,11 @@ Requirement coverage and Complement coverage are tracked separately (see COMPLIA
 | REQ-UPGRADE-002 | Not a specification requirement: a homeserver that learns of an upgrade carries each local user's room-scoped push rules from the old room to the new one. | Implementation convention (Synapse, Dendrite; Complement tests it). | implemented | `tests/integration/upgrade_test.go`, Complement `TestPushRuleRoomUpgrade` | Recorded as a convention rather than a requirement, because the specification's upgrade section does not say it. The copy scans every local account, which is a linear scan at today's scale. |
 | DEC-016 | Device key uploads: a signature that is offered is verified against the keys the device publishes, and is refused when it does not check. A document that offers *no* signature is stored. The specification says a device signs its own identity keys, but it also puts device-key verification on the client that is about to encrypt to them, and says a client must not rely on the server being well behaved. This server therefore does not claim to be the authority on which keys a device owns; it guarantees that a device can only publish for itself and that an offered signature checks. Complement's device list tests upload documents signed by nobody, and the behaviour they describe is worth more than a signature this server is not the authority on. One-time keys are different: their format requires a signature, and it is verified against the device's published keys. | — | decided | `tests/integration/keys_test.go` (a forged signature and an unsigned one-time key are both refused) | Recorded because it is a relaxation with a reason, not an omission. |
 
+### Profiles
+
+| REQ-PROFILE-001 | Client-Server API v1.11/v1.19: v3 — *Profiles*: `GET /profile/{userId}`, `GET`/`PUT`/`DELETE /profile/{userId}/{keyName}`. Reads are public; a write requires an access token for that user; a body carries exactly one property, named as the path names. | MUST. | implemented+tested | `tests/integration/profile_test.go`, Complement `TestProfileDisplayName`, `TestProfileAvatarURL` | A `keyName` outside the two standard fields is refused `M_NOT_FOUND`; custom fields and `m.profile_fields` are not advertised (see below). A remote user's profile is refused rather than proxied: the federation `/profile` query is not implemented (T-4058a). |
+| REQ-PROFILE-002 | Not a requirement of the event format: after a profile change, the homeserver restates the user's `m.room.member` event in every room the user is joined to, with the new `displayname`/`avatar_url`, so a room does not present the same user two ways. | Implementation convention (Synapse, Dendrite; Complement tests it as `TestDisplayNameUpdate`/`TestAvatarUrlUpdate`). | implemented+tested | `tests/integration/profile_test.go` (`TestProfileChangeRestatesTheRooms`), Complement `TestDisplayNameUpdate`, `TestAvatarUrlUpdate` | Restated as ordinary sends under each room's rules; a room that refuses keeps the event it had and the profile change still stands. Only a local user's profile is ever written. |
+
 ### Spaces and room hierarchy
 
 | REQ-SPACE-001 | Client-Server API v1.11: v1 — *Room Hierarchy*: `GET /rooms/{roomId}/hierarchy` returns the room asked about followed by its descendants, depth-first, each child ordered by its `m.space.child` `order` (well formed: printable ASCII, length 50, no `/`, compared as codepoint sequences), then by that link's `origin_server_ts`, then by room ID. `suggested_only`, `max_depth`, `limit` and `from` are honoured; a page carries `next_batch` while rooms remain. | MUST. | implemented+tested | `tests/integration/hierarchy_test.go` (`TestHierarchyOrdersPagesAndFiltersItsChildren`), Complement `TestRestrictedRoomsSpacesSummaryLocal`, `TestClientSpacesSummaryJoinRules`, `TestFederatedClientSpaces` | `limit` above the server's page cap is clamped rather than refused; the walk's own depth and room caps are server policy (500 rooms, depth 10) and are not yet configurable. |
@@ -155,6 +160,21 @@ Requirement coverage and Complement coverage are tracked separately (see COMPLIA
 
 
 ## Decisions for ambiguities (documented, reversible)
+1. **A profile value's shape is not validated; its length is.** For `PUT /profile/{userId}/{keyName}` the
+   pinned specification says the client's `avatar_url` MUST be a MXC URI, that servers **MAY** validate the
+   value, and that clients MUST expect unknown or invalid values. This server does not validate the shape:
+   an optional rule enforced against a client that is following the specification's own tolerance is a
+   refusal the specification did not ask for, and Complement (the project's interoperability reference)
+   stores the string `LemurLover` as an avatar and expects success — a test that is about member-event
+   propagation, not about identifier grammar. The identifier is parsed where it is acted on: fetching media
+   (`matrixid.SplitMXC`). The length bound of 255 bytes is this server's own limit, refused `M_TOO_LARGE`,
+   because a profile is copied into the member events of every room the user joins; it is an operational
+   limit under AGENTS §9, not a specification bound, and a deployment that wants a different one should
+   make it configuration rather than change the code.
+2. **A profile field this server does not hold is `M_NOT_FOUND`, not `M_UNRECOGNIZED`.** The endpoint is
+   understood; the field is not. This is also what a server that does not advertise `m.profile_fields` is
+   expected to do.
+
 
 | ID | Decision |
 | --- | --- |

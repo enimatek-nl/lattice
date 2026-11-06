@@ -1,5 +1,41 @@
 # Progress
 
+## 2026-11-11 — a profile is only useful if the rooms hear about it (`192c3dc`)
+
+T-4057, closed. `GET /_matrix/client/v3/profile/{userId}`,
+`GET`/`PUT`/`DELETE /profile/{userId}/{keyName}`, the two profile capabilities, and the restatement that
+makes the endpoint mean anything in a room.
+
+The endpoint is the easy half. What a room shows of a person is the `m.room.member` event it holds, and
+that event carried a copy of the profile from the moment it was written. A profile change that stops at
+the account row leaves one human being named two ways in the same room, depending on which event a client
+is rendering — and the room that was told once is never told again. So the account layer asks the room
+layer to restate the membership: an ordinary send per room, under that room's own rules, where a room that
+will not take the event keeps what it had, one refusing does not stop the others, and an unreachable
+remote does not undo the account's own change. The room layer asks the account layer back the other way so
+a join writes the member event with the current profile rather than an empty one. Interfaces in both
+directions, so neither layer has to know the other's model.
+
+The rule that decided what is *not* copied: only a local user's profile. Putting another server's user's
+name into an event this server signs is this server putting words in another's mouth, and profile
+disagreements between servers are settled by the signature on the event.
+
+One thing that looks like a missing check and isn't: `avatar_url` is stored as given, non-MXC values
+included. The specification puts that MUST on the client, says servers MAY validate, and says clients MUST
+expect values they did not ask for — and Complement stores `"LemurLover"` as an avatar while testing
+something else entirely. This server's own limit is length (255 bytes, `M_TOO_LARGE`) because a profile is
+amplified into every room the user joins. The identifier is parsed where it is acted on, in a media fetch;
+`matrixid.SplitMXC` is in place and tested for that.
+
+Full run: **95 / 124 / 1** (was 90 / 129 / 1). Newly passing: the four profile tests plus
+`TestPushRuleRoomUpgrade`, which had been flaky. Nothing newly failing, which matters because joins now
+carry profile fields.
+
+Left recorded rather than implicit (T-4058): the federation `/profile` query so a remote user can be asked
+about at all; custom profile fields, deliberately unadvertised while only the two standard ones are held;
+and the user directory, which is a search index over state this server can already see and is what the two
+room-specific-username tests actually stop at.
+
 ## 2026-11-11 — a flaky federation test was the network lying, not the server (`scripts/complement.sh`)
 
 T-4056, closed, with no protocol change. `TestRestrictedRoomsRemoteJoinFailOverInMSC3787Room` failed in

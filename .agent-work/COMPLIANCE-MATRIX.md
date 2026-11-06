@@ -370,3 +370,23 @@ was fixed — the reason is T-4056, in short: a removed podman network left its 
 file behind, and `hs1` kept resolving to an address from that deleted deployment, so one homeserver
 dialled another container and was refused for presenting the wrong certificate. Both earlier tallies in
 this file were measured on a dirtier network than this one.
+
+## Full run (2026-11-11, profiles — T-4057 closed, T-4058 opened)
+
+`RUN='.*' COMPLEMENT_LOCAL_MIGRATIONS=true scripts/complement.sh -v`, commit `192c3dc`.
+**95 pass, 124 fail, 1 skip** (was 90 / 129 / 1). Logs `.agent-work/next/tally-profile-20261113.log`,
+list `.agent-work/complement-failures-20261113d.txt`.
+
+Newly passing, nothing newly failing: `TestProfileDisplayName`, `TestProfileAvatarURL`,
+`TestDisplayNameUpdate`, `TestAvatarUrlUpdate`, and `TestPushRuleRoomUpgrade` (which had been flaky across
+earlier runs and passed here).
+
+The change that could have broken something else is the member event: joins now carry `displayname` and
+`avatar_url`, and a profile change appends a restated member event to every room the user stands in.
+Nothing in the suite objected — the tests that compare member content compare particular keys, not the
+whole object. Still failing in this area, and not because of the profile work:
+`TestInboundFederationProfile` and `TestOutboundFederationProfile` (the federation `/profile` query,
+T-4058a), and `TestRoomSpecificUsernameAtJoin`/`...Change`, which stop at the user directory
+(`POST /user_directory/search` unimplemented, T-4058c).
+
+No Complement assertion was modified.
