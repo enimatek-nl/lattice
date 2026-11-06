@@ -175,6 +175,7 @@ func Register(r *httpserver.Router, d *Deps, requireAuth func(http.Handler) http
 	// lives here, and so does everything the server stores without interpreting.
 	versioned("GET", "/user/{userID}/account_data/{type}", d.handleAccountDataGet)
 	versioned("PUT", "/user/{userID}/account_data/{type}", d.handleAccountDataPut)
+	versioned("DELETE", "/user/{userID}/account_data/{type}", d.handleAccountDataDelete)
 
 	// Room aliases.
 	versioned("PUT", "/directory/room/{roomAlias}", d.handleAliasPut)
