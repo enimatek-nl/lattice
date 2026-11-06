@@ -207,6 +207,7 @@ func NewWithOptions(ctx context.Context, cfg *config.Config, log *slog.Logger, o
 		DeviceLists: deviceKeys,
 		Invites:     roomService,
 		Gaps:        roomService,
+		Hierarchies: roomService,
 	}
 	if cfg.Federation.Enabled {
 		policy, err := federation.NewIPpolicy(cfg.Federation.IPAllow, cfg.Federation.IPDeny)
@@ -295,6 +296,9 @@ func NewWithOptions(ctx context.Context, cfg *config.Config, log *slog.Logger, o
 		joiner.Backfill = backfiller
 		a.Joiner = joiner
 		roomService.SetRemoteJoin(joiner)
+		// A space whose child lives on another homeserver cannot be walked from this server's own
+		// state: the child's summary belongs to the server that holds it. This is the part that asks.
+		roomService.SetRemoteHierarchy(&federation.HierarchyQuerier{Client: client, Log: log})
 		federationDeps.Keyring = a.Keyring
 		federationDeps.Federation = db.Federation
 		federationDeps.Rooms = roomService

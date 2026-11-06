@@ -147,6 +147,10 @@ type Service struct {
 	// until federation is wired up, and a room service without one refuses such a join
 	// rather than pretending the room does not exist.
 	remoteJoin RemoteJoin
+	// remoteHierarchy asks another homeserver what it says about a room this server does not hold,
+	// which is how a space whose child lives elsewhere can be walked at all. It is nil until
+	// federation is wired up, and a room service without one leaves such a room out.
+	remoteHierarchy RemoteHierarchy
 	// keyRing answers "which keys does this homeserver sign with", which is what the
 	// authorisation rules need for a restricted join: rule 4.2 asks whether the homeserver of the
 	// user who authorised the join signed the event, and that is a question about somebody's keys,
