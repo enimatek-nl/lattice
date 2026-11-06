@@ -323,3 +323,38 @@ assertions. It is not a
 device-list gap.
 
 No Complement assertion was modified.
+
+## Latest full run (2026-11-11, room hierarchy — T-4051 closed, T-4056 opened)
+
+`RUN='.*' COMPLEMENT_LOCAL_MIGRATIONS=true scripts/complement.sh -v`, commit `9535c64`.
+**89 top-level tests pass, 130 fail, 1 skipped** (was 86 / 133 / 1 in run 2026-11-11 earlier).
+Logs: `.agent-work/next/tally-full-20261113b.log`, failure list
+`.agent-work/complement-failures-20261113b.txt`.
+
+Newly passing, nothing newly failing except the pair noted below:
+
+* `TestRestrictedRoomsSpacesSummaryLocal` and `TestRestrictedRoomsSpacesSummaryFederation` — the
+  space tree, local and federated. The federation one is the reason the Server-Server endpoint exists:
+  the space is on hs1, the restricted room on hs2, and hs1 must not describe a room it does not hold.
+  hs2 withholds it while it cannot see the space, and lists it once one of its own users joins the
+  space; hs1 then answers for its own users, which is why the room stays hidden from the hs1 user who
+  never joined the space.
+* `TestClientSpacesSummaryJoinRules`, `TestFederatedClientSpaces` — both were waiting on the same
+  endpoint.
+
+Newly failing, and checked rather than assumed:
+
+* `TestRestrictedRoomsRemoteJoinFailOverInMSC3787Room` — flaky, not a regression: it fails in roughly
+  half the runs including alone, at a 5 s `MustSyncUntil` on a relayed member event, with T-4007
+  refusal lines in the log. Recorded as T-4056. Its sibling `...FailOver` passed in the same run.
+* `TestRestrictedRoomsRemoteJoinInMSC3787Room` — recorded as flaky earlier (2026-11-11) and passed in
+  this run.
+
+One run of this tally was thrown away, and the cause is worth recording because it will recur:
+podman had accumulated **2043 unnamed volumes** from earlier Complement runs, and mid-run every
+deployment began failing with `creating named volume …: allocation failed; exceeded num_locks (2048)`,
+which reads as 60 protocol failures that are not failures at all. `docker volume prune -f` clears it;
+if a full run suddenly fails in a block at ~0.5 s each, check `docker volume ls -q | wc -l` before
+believing the numbers.
+
+No Complement assertion was modified.

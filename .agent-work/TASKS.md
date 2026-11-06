@@ -705,19 +705,20 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
       `LocalJoin`, both MSC3787 variants, `LocalJoinNoCreatorsUsesPowerLevelsV11`, `RemoteJoin`
       (+MSC3787), `RemoteJoinLocalUser` (+MSC3787) and `RemoteJoinFailOver` (+MSC3787) passing.
       What is left, in the order worth taking it:
-      * `TestRestrictedRoomsSpacesSummaryLocal` / `...Federation` — the room summary's
-        `allowed_room_ids`. This is the space-summary endpoint, not the join path: a restricted room
-        has to name the rooms its join rule points at so a client can show why a room is joinable.
-        T-4051 is the same work; do them together.
+      * ~~`TestRestrictedRoomsSpacesSummaryLocal` / `...Federation`~~ — done in `9535c65`; the room
+        hierarchy is implemented on both listeners and both tests pass. That was T-4051.
       * `TestRestrictedRoomsLocalJoinNoCreatorsUsesPowerLevelsV12` — refused at `createRoom` with
         `M_UNSUPPORTED_ROOM_VERSION`. Room version 12 is in the registry but not offered for
         creation. That is a policy decision this project has not made: read
         `roomversion.supported`, the pinned specification's room-version section and what v12 changes
         about room identifiers before deciding, and record the decision rather than flipping a flag.
-      * `TestRestrictedRoomsRemoteJoinInMSC3787Room` passes on its own (3.6 s) and in the full run,
-        and fails in a filtered run of the cluster (404 "room is not known to this server" for rooms
-        the same deployment created earlier in the test). Reproduce it with `RUN='TestRestrictedRooms.*'`
-        before chasing it; it is load-dependent and is reported as such, not hidden.
+      * The two MSC3787 restricted-join variants flip between runs: `...RemoteJoinInMSC3787Room` fails
+        in a filtered cluster run with 404 "room is not known to this server" for rooms the same
+        deployment made earlier, and `...RemoteJoinFailOverInMSC3787Room` fails roughly half the runs
+        even alone, at `bob.MustSyncUntil(... SyncJoinedTo(charlie, room, join_authorised_via_users_server
+        == alice))` after 5 s. Both are delivery, not decision: the logs show `hs3` refusing a relayed
+        event with "the auth events it cites are not stored here, so it cannot be authorised", which is
+        the missing-event/auth-chain gap of T-4007 arriving through a different path. Tracked as T-4056.
       Note: an earlier version of this task claimed MSC3787 needed the invite power of *the allow
       room* rather than the restricted room to decide an invitation. That was never checked against
       the specification, and the tests it was meant to explain (`RemoteJoinLocalUser` and its MSC3787
@@ -763,3 +764,38 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
       restricted pair for the reason in T-4054(c), and `TestDeviceListUpdates` because it is load-flaky
       (it passes when run on its own). Treat `TestRestrictedRooms*` results as unstable until T-4054 is
       done, and re-tally after it.
+
+- [x] T-4051 (done 2026-11-11, commit `9535c65`) the room hierarchy, on both listeners. The task ID had
+      been referenced in three earlier entries without an entry of its own; it is recorded here, closed,
+      so the references point at something.
+      `GET /_matrix/client/v1/rooms/{roomId}/hierarchy` walks a space depth-first in the order its own
+      `m.space.child` links give (`order` when well formed, then the link's timestamp, then room ID),
+      lists a room only for a reader who may see it, honours `suggested_only`, `max_depth`, `limit` and
+      `from`, and refuses the room the request is about with 403 rather than answering an empty tree.
+      `GET /_matrix/federation/v1/hierarchy/{roomId}` answers a peer about what that *peer* could see:
+      the room, a summary per visible child, and `inaccessible_children` so the peer does not ask again.
+      The room service's `Hierarchy`/`HierarchyQuery` share one summary builder and the same visibility
+      rules used by the read endpoints, including the allow-room currency rule from the restricted-join
+      work: this server leans on its copy of a room the restriction names only while it is inside it.
+      Remote answers are weighed, not believed — an answer that does not name the room asked about is
+      dropped. Tests: four in `tests/integration/hierarchy_test.go`. Complement:
+      `TestRestrictedRoomsSpacesSummaryLocal`, `TestRestrictedRoomsSpacesSummaryFederation`,
+      `TestClientSpacesSummaryJoinRules` and `TestFederatedClientSpaces` newly passing.
+      What was wrong in the first attempt is worth keeping: the room service had no way to ask a peer at
+      all (`SetRemoteHierarchy` unwired), so the remote child was simply absent and a `want 1` assertion
+      could not tell absence from a refusal. A hierarchy test that only counts rooms cannot fail that.
+
+- [ ] T-4056 the two MSC3787 restricted-join Complement tests flip. `RemoteJoinFailOverInMSC3787Room`
+      fails in about half the runs, alone or in a cluster, always at the same step: after the join that
+      fails over to hs1 succeeds with 200, `bob` (hs2) never sees charlie's member event with
+      `content.join_authorised_via_users_server` naming alice within the 5 s Complement allows. The
+      restricted room and its auth chain live on hs1; hs2 is a bystander that has to be told. The server
+      logs for the same run carry `federation: a remote server refused an event … the auth events it
+      cites are not stored here, so it cannot be authorised` aimed at hs3 — the T-4007 gap (a server
+      that has not been given the auth chain refuses the events that need it), arriving through the
+      restricted-join path. Steps: reproduce with `RUN='TestRestrictedRoomsRemoteJoinFailOver'` and the
+      logs on, check whether hs2's copy of the room is missing the auth events or merely the member
+      event, and settle it where it belongs — the missing-event fetch (T-4007) or the fan-out ordering —
+      not by lengthening a timeout. `RemoteJoinInMSC3787Room` is the sibling and fails in filtered runs
+      with 404 "room is not known to this server" for rooms the same deployment made minutes earlier;
+      check whether it is the same cause before treating it as separate.

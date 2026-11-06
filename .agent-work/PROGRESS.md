@@ -1,5 +1,51 @@
 # Progress
 
+## 2026-11-11 — a space can be walked, as far as the reader may see (`9535c65`)
+
+T-4051, closed. `GET /_matrix/client/v1/rooms/{roomId}/hierarchy` and its Server-Server twin
+`GET /_matrix/federation/v1/hierarchy/{roomId}`. The ID had been cited in three earlier ledger entries
+without ever having an entry of its own; it has one now.
+
+A hierarchy is a graph walk plus two decisions that are not about graphs.
+
+**Who may see a room.** A space may point at rooms the reader has no standing in, and a hierarchy entry
+carries the room's name, topic and avatar — the room's existence and subject. So each room on the walk
+is asked what the read endpoints ask: public, world-readable, joined, invited, or satisfying the room's
+restriction. The restriction branch reuses the rule from the restricted-join work: this server may lean
+on its copy of the room the restriction names only while it is still inside that room. Showing a room on
+membership nobody has been telling this server about anymore leaks the room to somebody it has moved on
+without.
+
+**Who is allowed to describe a room this server does not hold.** The child's own servers, and their
+answer is weighed: it must name the room that was asked about or it is set aside, and
+`inaccessible_children` tells the asker not to spend another request on a room that has been answered
+about. The scopes differ on purpose — the peer answers whether the *asking server* could see it, and
+the asking server then answers for its own user from its own state. That is why a restricted room can be
+reported by one homeserver and still withheld from a user that homeserver cannot see, and it is exactly
+what `TestRestrictedRoomsSpacesSummaryFederation` checks: with the space on hs1 and the restricted room
+on hs2, the room is absent until hs2 can see the space, then present for the hs1 user who is in the
+space and absent for the one who is not.
+
+The first version of the federation test passed for the wrong reason, which is the lesson worth keeping:
+the room service had no way to ask a peer (`SetRemoteHierarchy` was never wired), so the remote child was
+simply missing — and an assertion of "one room listed" cannot tell a refusal from an unimplemented
+question. Wiring it and asserting on both servers' answers turned the same test into one of the rule.
+
+Ordering, `suggested_only`, `max_depth`, `limit` and pagination tokens are the specification's; a token
+carries the filters of the walk it came from, so a second page cannot silently come from a different
+tree, and an unknown token is 400 rather than a fresh walk.
+
+Full run: **89 / 130 / 1** (was 86 / 133 / 1). Also newly passing without being aimed at:
+`TestClientSpacesSummaryJoinRules`, `TestFederatedClientSpaces`. Nothing newly failing except
+`TestRestrictedRoomsRemoteJoinFailOverInMSC3787Room`, which fails in about half the runs *on its own*,
+at a 5 s sync wait for a relayed member event, with T-4007 auth-chain refusal lines in the log. That is
+now T-4056 rather than a shrug.
+
+An environment note that cost a whole run: 2043 leaked podman volumes from earlier Complement runs made
+every deployment fail mid-run with `exceeded num_locks (2048)`, which looks like sixty protocol failures
+and is none. `docker volume prune -f` fixes it; a block of ~0.5 s failures in a full run means check the
+volume count before believing anything.
+
 ## 2026-11-11 — who is allowed to look for another server when a restricted join cannot be authorised (`cc7ec65`)
 
 Complement\u2019s `TestRestrictedRoomsRemoteJoinFailOver` and its MSC3787 variant now pass. The rule they
