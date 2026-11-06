@@ -86,7 +86,7 @@ func (s *Service) Event(ctx context.Context, roomID, eventID, requester string) 
 	if row.RoomID != roomID {
 		return nil, matrixerr.Newf(matrixerr.CodeNotFound, "Event %q is not known to this server.", eventID)
 	}
-	event, err := s.serveEvent(ctx, row)
+	event, err := s.serve.ServeAs(ctx, row, requester)
 	if errors.Is(err, redaction.ErrWithheld) {
 		// The same answer as for an event this server has never heard of. Saying "I have
 		// this redaction but not yet what it destroys" would tell the client about an event
@@ -166,7 +166,7 @@ func (s *Service) History(ctx context.Context, roomID, requester string, req His
 			hiddenByHorizon = true
 			continue
 		}
-		body, err := s.serveEvent(ctx, event)
+		body, err := s.serve.ServeAs(ctx, event, requester)
 		if err != nil {
 			if errors.Is(err, redaction.ErrWithheld) {
 				// A redaction whose target has not arrived is left out of the page: the
