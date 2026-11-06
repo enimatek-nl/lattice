@@ -1869,3 +1869,13 @@ missing-event fetch that is never answered, or a request handler that never repl
 than a failure, because a failure reports itself. `msc4242`, `msc4306` and `msc4429` report package
 failures, which is expected for unimplemented MSCs and needs separating from hangs when the tally is
 taken.
+
+### In flight: the first trustworthy full-suite tally (T-4039)
+
+`RUN='.'` started 12:44 local (11:44 UTC) on 2026-11-06 at tree `4502f1e`, writing to
+`.agent-work/next/gate5.log`, with the anonymous-volume store clean (17, not 2044) and the script
+at its `-p 2` default. The two earlier tallies (`gate4.log` 59/161, `full2.log` 67/152) are
+contaminated and should be replaced by this one in the compliance matrix — read the log with
+`grep -E '^(ok|FAIL)\s+github'` for packages and `grep -E '^--- FAIL'` for top-level tests, and
+check it did not die of `num_locks` before believing any number:
+`grep -c 'exceeded num_locks' gate5.log` should be 0.
