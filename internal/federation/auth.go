@@ -223,8 +223,16 @@ func VerifyRequest(r *http.Request, expectedDestination string, lookup func(orig
 		return Authorization{}, nil, fmt.Errorf("federation: the credential cannot be checked: %w", err)
 	}
 	if !result.VerifiedAll([]string{auth.Origin}) {
-		return Authorization{}, nil, fmt.Errorf("federation: the credential from %s is not signed by a key that server published under %s",
-			auth.Origin, auth.Key)
+		// The reason the signature did not verify is kept in the failure record, and it is worth more than
+		// the refusal alone: "the key was not published", "the key could not be fetched" and "the signature
+		// does not match" are three different problems for whoever is debugging a room that will not federate.
+		reason := result.Failures[auth.Origin]
+		if reason == "" {
+			reason = "no signature from that server verified"
+		}
+		return Authorization{}, nil, fmt.Errorf(
+			"federation: the credential from %s is not signed by a key that server published under %s: %s",
+			auth.Origin, auth.Key, reason)
 	}
 	return auth, body, nil
 }

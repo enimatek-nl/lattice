@@ -57,13 +57,29 @@ type Response struct {
 // certificate must be valid for. Sending both in one place is what keeps a delegated
 // server from being able to answer for a name it was not told to answer for.
 func (c *Client) Do(ctx context.Context, destination, method, target string, body []byte) (Response, error) {
+	response, _, err := c.send(ctx, destination, method, target, body, maxFederationAuthBodyBytes)
+	return response, err
+}
+
+// GetRaw sends a signed GET and returns the answer's status, headers and bytes.
+//
+// The size bound is a parameter rather than the signing limit because not everything a server sends is
+// JSON: the content repository answers with file bytes, and the caller — which knows how much it is willing
+// to hold — has to say how much may be read. Pulling a remote server's file into memory under a fixed
+// internal cap is one way for a server to run out of memory.
+func (c *Client) GetRaw(ctx context.Context, destination, target string, maxBytes int64) (Response, http.Header, error) {
+	return c.send(ctx, destination, http.MethodGet, target, nil, maxBytes)
+}
+
+// send is one signed request, with the response's headers kept.
+func (c *Client) send(ctx context.Context, destination, method, target string, body []byte, maxBytes int64) (Response, http.Header, error) {
 	resolved, err := c.resolver.Resolve(ctx, destination)
 	if err != nil {
-		return Response{}, err
+		return Response{}, nil, err
 	}
 	header, err := AuthorizationHeader(c.origin, c.signer, destination, method, target, body)
 	if err != nil {
-		return Response{}, err
+		return Response{}, nil, err
 	}
 	var reader io.Reader
 	if body != nil {
@@ -71,7 +87,7 @@ func (c *Client) Do(ctx context.Context, destination, method, target string, bod
 	}
 	request, err := http.NewRequestWithContext(ctx, method, resolved.DialURL+target, reader)
 	if err != nil {
-		return Response{}, fmt.Errorf("federation: cannot build the request for %s: %w", destination, err)
+		return Response{}, nil, fmt.Errorf("federation: cannot build the request for %s: %w", destination, err)
 	}
 	request.Host = resolved.HostHeader
 	request.Header.Set("Authorization", header)
@@ -80,14 +96,18 @@ func (c *Client) Do(ctx context.Context, destination, method, target string, bod
 	}
 	response, err := c.clientFor(resolved).Do(request)
 	if err != nil {
-		return Response{}, fmt.Errorf("federation: the request to %s failed: %w", destination, err)
+		return Response{}, nil, fmt.Errorf("federation: the request to %s failed: %w", destination, err)
 	}
 	defer func() { _ = response.Body.Close() }()
-	payload, err := io.ReadAll(io.LimitReader(response.Body, maxFederationAuthBodyBytes))
-	if err != nil {
-		return Response{}, fmt.Errorf("federation: the answer from %s could not be read: %w", destination, err)
+	limit := maxBytes
+	if limit <= 0 {
+		limit = maxFederationAuthBodyBytes
 	}
-	return Response{StatusCode: response.StatusCode, Body: payload}, nil
+	payload, err := io.ReadAll(io.LimitReader(response.Body, limit))
+	if err != nil {
+		return Response{}, nil, fmt.Errorf("federation: the answer from %s could not be read: %w", destination, err)
+	}
+	return Response{StatusCode: response.StatusCode, Body: payload}, response.Header, nil
 }
 
 // clientFor picks the HTTP client for one resolved target: one that verifies the certificate

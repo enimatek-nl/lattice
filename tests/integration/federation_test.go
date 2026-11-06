@@ -160,6 +160,7 @@ func newFederationNode(t *testing.T, name string, ca *testCA, dial *testDial) *f
 	cfg.ServerName = name
 	cfg.DataDir = dir
 	cfg.Store.Path = filepath.Join(dir, "lattice.db")
+	cfg.Media.Path = filepath.Join(dir, "media")
 	cfg.TLS.CertFile = filepath.Join(dir, "tls", name+".crt")
 	cfg.TLS.KeyFile = filepath.Join(dir, "tls", name+".key")
 	cfg.TLS.CACertFile = ca.certPath

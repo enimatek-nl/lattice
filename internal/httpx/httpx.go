@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/enimatek/lattice/internal/matrixerr"
@@ -164,4 +165,50 @@ func AccessTokenFromRequest(r *http.Request) string {
 		return strings.TrimSpace(h)
 	}
 	return r.URL.Query().Get("access_token")
+}
+
+// QueryInt reads a required integer query parameter. The second result says the parameter was present and
+// well-formed, which is what lets a handler answer "missing parameter" rather than treating a typo as zero.
+func QueryInt(r *http.Request, name string) (int, bool) {
+	value := r.URL.Query().Get(name)
+	if value == "" {
+		return 0, false
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, false
+	}
+	return parsed, true
+}
+
+// QueryInt64 reads an optional integer query parameter with a fallback.
+func QueryInt64(r *http.Request, name string, fallback int64) int64 {
+	value := r.URL.Query().Get(name)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+// QueryBool reads an optional boolean query parameter with the default the specification gives it.
+//
+// A value that is not a boolean falls back to the default rather than to false. That is a decision, and it
+// is the safe one only because the defaults the content repository defines are the permissive ones: a client
+// that wrote allow_remote=0 meant "do not fetch", and a server that read it as an absent parameter does the
+// opposite of what was asked. A deployment that wants strictness should reject the value; this one reports
+// nothing, so the parameter is at least not a trap for the client that got the syntax right.
+func QueryBool(r *http.Request, name string, fallback bool) bool {
+	value := r.URL.Query().Get(name)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }

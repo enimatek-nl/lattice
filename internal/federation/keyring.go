@@ -95,7 +95,21 @@ func (k *Keyring) Lookup(ctx context.Context, origin, keyID string) (ed25519.Pub
 		}
 		return ed25519.PublicKey(row.Key), nil
 	}
-	return nil, fmt.Errorf("federation: %s has never published a key %s that this server holds", origin, keyID)
+	return nil, fmt.Errorf("federation: %s has never published a key %s that this server holds (%s)",
+		origin, keyID, heldKeyIDs(rows))
+}
+
+// heldKeyIDs names the keys this server does hold for a server, because a lookup that misses is usually a
+// question about which document was read and when.
+func heldKeyIDs(rows []persist.ServerSigningKey) string {
+	if len(rows) == 0 {
+		return "no keys are recorded"
+	}
+	ids := make([]string, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.KeyID)
+	}
+	return "what is recorded: " + strings.Join(ids, ", ")
 }
 
 // LookupForRoom returns the lookup that checking an event uses.
@@ -119,7 +133,8 @@ func (k *Keyring) LookupForRoom(ctx context.Context, rules roomversion.Rules) fu
 			}
 			return ed25519.PublicKey(row.Key), nil
 		}
-		return nil, fmt.Errorf("federation: %s has never published a key %s that this server holds", origin, keyID)
+		return nil, fmt.Errorf("federation: %s has never published a key %s that this server holds (%s)",
+			origin, keyID, heldKeyIDs(rows))
 	}
 }
 

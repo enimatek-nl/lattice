@@ -287,23 +287,14 @@ func TestMatrixErrorSemantics(t *testing.T) {
 	}
 }
 
-// TestMediaEndpointsAreHonest checks that an unimplemented media repository says
-// so, while the paths still exist for method negotiation.
-func TestMediaEndpointsAreHonest(t *testing.T) {
+// TestMediaUploadNeedsAToken checks the one rule the media surface shares with the rest of the API:
+// storing something on this server is done as somebody. The rest of the content repository is covered by
+// media_test.go, which is where the interesting parts are — what a downloader is told, and what happens
+// when the bytes belong to another server.
+func TestMediaUploadNeedsAToken(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
-	_, token, _ := h.register(t, "uploader", "sUp3rs3kr1t", "")
 
-	upload := h.post(t, "/_matrix/media/v3/upload", []byte("binary content"), token)
-	if upload.status != http.StatusNotImplemented {
-		t.Errorf("upload status = %d, want 501 (body %s)", upload.status, upload.body)
-	}
-	if _, ok := upload.decoded(t)["errcode"]; !ok {
-		t.Errorf("upload error body is not a Matrix error: %s", upload.body)
-	}
-
-	// Upload requires a token: an anonymous attempt is refused before the
-	// not-implemented answer.
 	anonymous := h.raw(t, http.MethodPost, "/_matrix/media/v3/upload", []byte("x"), "")
 	if anonymous.status != http.StatusUnauthorized {
 		t.Errorf("anonymous upload status = %d, want 401", anonymous.status)

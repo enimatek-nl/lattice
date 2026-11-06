@@ -21,6 +21,7 @@ import (
 	"github.com/enimatek/lattice/internal/federation"
 	"github.com/enimatek/lattice/internal/httpserver"
 	"github.com/enimatek/lattice/internal/keys"
+	mediasvc "github.com/enimatek/lattice/internal/media"
 	"github.com/enimatek/lattice/internal/persist"
 	"github.com/enimatek/lattice/internal/presence"
 	"github.com/enimatek/lattice/internal/pushrules"
@@ -51,6 +52,9 @@ type App struct {
 	// Sender is the federation outbound worker: the queue of events still owed to other
 	// homeservers. It is nil when federation is disabled.
 	Sender *federation.Sender
+	// Media is the content repository: the files this server holds and the metadata that says what they
+	// are.
+	Media *mediasvc.Service
 	// Keyring holds the signing keys of other homeservers.
 	Keyring *federation.Keyring
 	// Backfill asks other homeservers for the events this server's rooms cite and does not hold.
@@ -135,7 +139,25 @@ func NewWithOptions(ctx context.Context, cfg *config.Config, log *slog.Logger, o
 		return presenceService.Set(ctx, userID, persist.PresenceOnline, "")
 	}
 
+	// The content repository. It is built before the federation block because a server that does not
+	// federate still has one — for its own content — and only loses the ability to answer for somebody
+	// else's.
+	mediaService, err := mediasvc.New(db, mediasvc.Config{
+		Path:                     cfg.Media.Path,
+		MaxUploadBytes:           cfg.Media.MaxUploadBytes,
+		MaxRemoteBytes:           cfg.Media.MaxRemoteBytes,
+		MaxThumbnailSourceBytes:  cfg.Media.MaxThumbnailSourceBytes,
+		MaxPendingUploadsPerUser: cfg.Media.MaxPendingUploadsPerUser,
+		PendingUploadTTL:         cfg.Media.PendingUploadTTL.Get(),
+		RemoteFetchTimeout:       cfg.Media.FetchTimeout.Get(),
+	}, cfg.ServerName, log, nil)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+
 	a := &App{
+		Media:            mediaService,
 		Cfg:              cfg,
 		Log:              log,
 		DB:               db,
@@ -202,7 +224,7 @@ func NewWithOptions(ctx context.Context, cfg *config.Config, log *slog.Logger, o
 		Version:     Version,
 		Started:     a.Started,
 	}, requireAuth)
-	media.Register(a.clientRouter, &media.Deps{Cfg: cfg}, requireAuth)
+	media.Register(a.clientRouter, &media.Deps{Cfg: cfg, Log: log, Media: mediaService}, requireAuth)
 	// Method negotiation must be consistent across listeners: a federation path
 	// probed on the client port answers 405, not 404.
 	defer a.clientRouter.MirrorFrom(a.federationRouter)
@@ -247,6 +269,10 @@ func NewWithOptions(ctx context.Context, cfg *config.Config, log *slog.Logger, o
 		a.Keyring = federation.NewKeyring(db.Federation, resolver, dialer, cfg.ServerName,
 			cfg.Federation.NotaryServers, log)
 		client := federation.NewClient(resolver, dialer, cfg.ServerName, signingKeys, log)
+		// The content repository asks that same client for another server's files. Wiring it here is what
+		// makes the distinction visible: without federation this server still stores and serves its own
+		// content, and refuses to speak for anybody else's.
+		mediaService.SetRemote(federation.NewMediaFetcher(client, log))
 		// A key query for a user who lives elsewhere is answered by asking that user's
 		// homeserver, because it holds the documents their devices uploaded. Without this the
 		// query for a remote user is simply empty, which a client reads as "no keys".
@@ -260,6 +286,7 @@ func NewWithOptions(ctx context.Context, cfg *config.Config, log *slog.Logger, o
 		// a server and the relay that decides which servers to tell read it from the room service.
 		a.Sender.ACLs = roomService
 		federationDeps.ACLs = roomService
+		federationDeps.Media = mediaService
 		if maxAge := cfg.Federation.QueueMaxAge.Get(); maxAge > 0 {
 			a.Sender.MaxAge = maxAge
 		}

@@ -868,21 +868,25 @@ func (s *stateRepo) MembershipsOf(ctx context.Context, userID string) ([]*RoomSt
 // snapshot consistent with the event: an auth context is a property of the event,
 // not something that drifts.
 func (s *stateRepo) RememberAuthContext(ctx context.Context, eventID string, stateEventIDs []string) error {
-	if err := s.db.WithContext(ctx).
-		Where("event_id = ?", eventID).Delete(&EventAuthContext{}).Error; err != nil {
-		return err
-	}
-	if len(stateEventIDs) == 0 {
+	// Delete and insert as one transaction. The same event can be handed to this server by two peers at
+	// once, and two uncoordinated replacements interleave into a unique-index collision in the rows that
+	// describe an event's own auth context.
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("event_id = ?", eventID).Delete(&EventAuthContext{}).Error; err != nil {
+			return err
+		}
+		if len(stateEventIDs) == 0 {
+			return nil
+		}
+		rows := make([]EventAuthContext, 0, len(stateEventIDs))
+		for _, id := range stateEventIDs {
+			rows = append(rows, EventAuthContext{EventID: eventID, StateEventID: id})
+		}
+		if err := tx.Create(&rows).Error; err != nil {
+			return asConflict(err)
+		}
 		return nil
-	}
-	rows := make([]EventAuthContext, 0, len(stateEventIDs))
-	for _, id := range stateEventIDs {
-		rows = append(rows, EventAuthContext{EventID: eventID, StateEventID: id})
-	}
-	if err := s.db.WithContext(ctx).Create(&rows).Error; err != nil {
-		return asConflict(err)
-	}
-	return nil
+	})
 }
 
 // AuthContext implements [StateRepo].

@@ -15,6 +15,7 @@ import (
 	"github.com/enimatek/lattice/internal/httpx"
 	"github.com/enimatek/lattice/internal/keys"
 	"github.com/enimatek/lattice/internal/matrixerr"
+	"github.com/enimatek/lattice/internal/media"
 	"github.com/enimatek/lattice/internal/persist"
 )
 
@@ -50,6 +51,10 @@ type Deps struct {
 	// the peer could see. It is the room service: the answer is room state, and the two listeners
 	// cannot be allowed to describe the same room differently.
 	Hierarchies HierarchyReader
+	// Media is this server's content repository. A peer asking for a file is asking this server for
+	// content this server holds, so the answer comes from the same store the Client-Server API serves —
+	// two doors, one shelf.
+	Media *media.Service
 	// E2EKeys answers another homeserver's question about the device keys of this server's
 	// own users. It is the same store the Client-Server API reads, so the two listeners cannot
 	// give different answers about who holds which keys.
@@ -88,6 +93,14 @@ func Register(r *httpserver.Router, d *Deps) {
 	r.Handle("GET", "/_matrix/federation/v1/state_ids/{roomId}", d.requireCredential(d.handleStateIDs))
 	r.Handle("GET", "/_matrix/federation/v1/event_auth/{roomId}/{eventId}", d.requireCredential(d.handleEventAuth))
 	r.Handle("POST", "/_matrix/federation/v1/get_missing_events/{roomId}", d.requireCredential(d.handleGetMissingEvents))
+
+	// The content repository's server-server endpoints. They are signed for the same reason every other
+	// federation read is signed: the caller is a server, not a user, and an open file endpoint is a way to
+	// download a homeserver's content without ever identifying who asked.
+	r.Handle("GET", "/_matrix/federation/v1/media/download/{mediaId}",
+		d.requireCredential(d.handleMediaDownload))
+	r.Handle("GET", "/_matrix/federation/v1/media/thumbnail/{mediaId}",
+		d.requireCredential(d.handleMediaThumbnail))
 
 	// What a room is, and which of a space's children the asking server could see. A server holding the
 	// middle of a space cannot summarise a child that lives elsewhere, and this is how it learns that
