@@ -632,6 +632,38 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
       history page walking `leave` -> `invite` -> `join` — and fails when the field is switched off.
       Complement unchanged by the threading: `TestMembershipOnEvents`, `TestGetRoomMembers(AtPoint)`
       and `tests/csapi` `TestSync` (`msc4115state.log`).
+- [ ] T-4043 does an identical state write make a new event? It has to be decided, not inherited.
+      Measured 2026-11-06 in `.agent-work/next/gme3.log`: this server stores one. The room's preset
+      sets `m.room.history_visibility: world_readable` for a public room, the test writes
+      `world_readable` again, and `TestInboundCanReturnMissingEvents` then finds one event too many
+      (`federation_room_get_missing_events_test.go:471: extra events returned`). The `prev_content`
+      test in Complement tolerates either answer ("whether this server stores the repeated write at
+      all is this server's choice"); this one does not. So the options are: do not create an event
+      when type, state_key and content match the current state (and answer the client's `PUT` with
+      the existing event's ID — say which, in the API docs, because a client is told an event ID it
+      did not create), or keep creating and record that Complement's federation expectations assume
+      otherwise. Whichever way this goes it is a design decision for `DECISIONS`-style recording,
+      not a tweak: it changes what a client's write means.
+- [ ] T-4044 events handed to a peer are not redacted for the history the peer was not entitled to.
+      `TestInboundCanReturnMissingEvents` for `invited` and `joined` history visibility requires the
+      events written before the requester's server had a joined user to arrive **redacted**
+      (`federation_room_get_missing_events_test.go:435: Expected event to be redacted`). This is the
+      room-version-aware federation form of the visibility rules — the same family of rules
+      `redaction.ForClient` implements for our own users, and the same one `backfill`, `/event` and
+      `/get_missing_events` all need. We have the machinery to answer it: the state snapshot an
+      event was sent against, and `StateEntryAt` for the requester's membership at that moment
+      (built for MSC4115 and T-4032). Do this before the outbound halves of gap-filling and backfill
+      are trusted: a server that leaks history to a peer that should not have it is not saved by
+      the peer's own checks.
+- [ ] T-4045 what does the `public_chat` preset set `history_visibility` to? Our preset says
+      `world_readable` (`internal/rooms/service.go:presetState`, recorded as an interpretation
+      decision). Complement's expectations in `TestInboundCanReturnMissingEvents` are consistent
+      with a public room starting at `shared`: for `shared` it expects exactly one
+      `m.room.history_visibility` event, for `world_readable` two. Read the Client-Server API's
+      preset table in the pinned specification and settle it from the text — this is the kind of
+      thing to decide from the specification rather than from what another server does, and if the
+      answer contradicts our documented decision, the decision record has to be corrected rather
+      than quietly changed in code.
 - [ ] T-4042 `GET /rooms/{roomID}/context/{eventID}` and `GET /rooms/{roomID}/relations/{eventID}`
       do not exist: `/context` answers `M_UNRECOGNIZED` (measured 2026-11-06 while writing the
       membership test, which is why that test checks `/state` and `/messages` instead). Worth

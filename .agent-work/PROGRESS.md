@@ -1,5 +1,40 @@
 # Progress
 
+## 2026-11-08 — the first federation endpoint in a while: `/get_missing_events`
+
+Commit `31f4d5e`, and the start of the federation-first re-sequencing the plan needed.
+
+`POST /_matrix/federation/v1/get_missing_events/{roomId}` was absent — a **required** endpoint on
+the specification's list, and the mechanism that lets a server which joined late (or was handed an
+event citing history it never received) fill the hole instead of parking its successors as outliers
+forever. Breadth-first down `prev_events` from `latest_events`; `earliest_events` is a floor, so
+those events are neither returned nor used as a route below them; `min_depth` is the peer's second
+floor; only a server with somebody joined in the room is answered, and never one the room's
+`m.room.server_acl` excludes. Refused events are withheld, soft-failed events are not (the
+specification's rule, and the one `GET /event` already follows), and redacted events go out in their
+redacted form because a redaction removes that content from the network's view too. Oldest-first,
+with the local persistence order as the tie-break for a creation batch, whose events sit at one depth
+and are usually written inside the same millisecond.
+
+That ordering question moved a room-creation decision: the preset state was written join_rules,
+history_visibility, power_levels, and now starts with the power levels. Those three are siblings in
+the graph — the room's own events do not record an order between them — but the event that says who
+may write should exist before this server writes the rest, and a peer walking the history oldest
+first should meet the room's authority before the state that authority permitted. Local suite green
+with the change.
+
+`TestInboundCanReturnMissingEvents` is still red, and it matters that the reason changed: it used to
+fail with `M_UNRECOGNIZED`; it now gets an answer in the order the test expects (every
+"type-by-type" mismatch is gone) and fails on two things we do not yet do, each recorded as its own
+task with the measured line from the log: a no-op state write creating a second
+`m.room.history_visibility` event (T-4043, and it is a decision about what a client's write *means*,
+not a tweak), and the absence of history-visibility redaction on events handed to a peer that was
+not entitled to them when they were written (T-4044 — the machinery for the entitlement question
+already exists, since MSC4115 made us read a member event out of the snapshot an event was sent
+against). T-4045 asks what `public_chat` should set `history_visibility` to, because the test's
+event counts assume `shared` and our documented interpretation says `world_readable`; that gets
+settled from the pinned specification, not by copying another server.
+
 ## 2026-11-08 — the membership field on the state reads, and a gap Complement cannot see
 
 Commit `134b25c`. `unsigned.membership` was reaching clients only through `/sync`, `/messages` and
