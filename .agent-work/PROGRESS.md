@@ -1,5 +1,44 @@
 # Progress
 
+## 2026-11-08 — one Complement test walked to the end, and the presets turned out to be invented
+
+Commits `206e508`, `5a381a4`. `TestInboundCanReturnMissingEvents`: 0/4 → 3/4, and the default
+Complement suite is green end to end (`.agent-work/next/tally-20261106.log`).
+
+Four causes, each found by measuring rather than reasoning:
+
+1. **Federation visibility.** Events handed to a peer are trimmed by the room's
+   `history_visibility` *as of the event*, read out of the state snapshot the event was sent against,
+   with the peer's membership in that same snapshot. `invited` and `joined` went green on this.
+2. **The walk returned its own ceiling.** `EventsBetween` queued the `latest_events` events as its
+   starting point and then appended them to the answer too. The peer's question is "what are the
+   previous events of these".
+3. **The presets were invented, and wrong.** The specification gives a table for the three presets;
+   this server had `public_chat` starting `world_readable`, which publishes a public room's history
+   to anybody who asks on the strength of a join rule that says nothing of the kind. Reading the
+   table properly also exposed two neighbours: `visibility: public` without a named preset must take
+   the `public_chat` preset (we made an invite-only room and listed it as walk-in), and `GET
+   /publicRooms` entries were missing the required `join_rule`.
+4. **An invented event type.** The guest-access read looked for `m.room.guest_join` with a boolean
+   `guest_can_join`; the protocol event is `m.room.guest_access` with a string `guest_access`. A room
+   that refused guests was advertising that it admitted them.
+
+Two honest corrections to the record. The task opened yesterday as "two `m.room.member` events for
+one remote user" was a misreading: the byte array Complement prints was real evidence about *what*
+was extra and no evidence about *why*, and a two-server local reproduction settled it in one run —
+one member event, and both servers naming the join identically, which is what derived event IDs are
+for. And the task proposing to suppress no-op state writes would have broken the `world_readable`
+subtest, which *expects* a second history-visibility event when the value changes; it is closed
+without being done.
+
+One divergence kept on purpose: the specification's `public_chat` row says `guest_access: forbidden`,
+Synapse emits the event only when guests may join, and Complement's expected event list is built
+around Synapse. We follow the table (AGENTS §2), so the `shared` subtest is off by exactly that
+event; recorded as T-4048 with the source evidence rather than worked around.
+
+Not measured yet: the MSC-included tally, which is the number this ledger tracks. Seven behaviours
+moved at once; the run that says nothing else regressed is T-4050.
+
 ## 2026-11-08 — federation visibility, and a duplicated membership event it exposed
 
 Commit `206e508`. `rooms.Service.VisibilityToPeer` decides, per event and per peer, whether the

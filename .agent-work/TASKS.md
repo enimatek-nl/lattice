@@ -632,65 +632,75 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
       history page walking `leave` -> `invite` -> `join` — and fails when the field is switched off.
       Complement unchanged by the threading: `TestMembershipOnEvents`, `TestGetRoomMembers(AtPoint)`
       and `tests/csapi` `TestSync` (`msc4115state.log`).
-- [ ] T-4043 does an identical state write make a new event? It has to be decided, not inherited.
-      Measured 2026-11-06 in `.agent-work/next/gme3.log`: this server stores one. The room's preset
-      sets `m.room.history_visibility: world_readable` for a public room, the test writes
-      `world_readable` again, and `TestInboundCanReturnMissingEvents` then finds one event too many
-      (`federation_room_get_missing_events_test.go:471: extra events returned`). The `prev_content`
-      test in Complement tolerates either answer ("whether this server stores the repeated write at
-      all is this server's choice"); this one does not. So the options are: do not create an event
-      when type, state_key and content match the current state (and answer the client's `PUT` with
-      the existing event's ID — say which, in the API docs, because a client is told an event ID it
-      did not create), or keep creating and record that Complement's federation expectations assume
-      otherwise. Whichever way this goes it is a design decision for `DECISIONS`-style recording,
-      not a tweak: it changes what a client's write means.
-- [x] T-4044 (done 2026-11-06, commit `206e508`) history a peer was not entitled to is handed over
-      without its body. `rooms.Service.VisibilityToPeer` reads `m.room.history_visibility` out of the
-      state snapshot the event was sent against and answers for the *peer*: `world_readable` to
-      anybody; `shared` (and an absent setting) to a member for the whole history including what
-      came before they arrived; `joined`/`invited` only while that peer had a joined (or invited, for
-      `invited`) user here. No snapshot for a moment that depends on it → trimmed, because "we do not
-      know who was here" is not "the asker was". `redaction.Apply` does the trimming through the room
-      version's rules, so the graph fields and signatures survive and the peer can still place and
-      verify the event; a room whose version this server cannot apply rules to is refused rather than
-      guessed at. Evidence that the rule works: in `TestInboundCanReturnMissingEvents` the events
-      written before Charlie arrived now arrive `redacted:true` for `invited` and `joined`
-      (`.agent-work/next/gme4.log`) where they arrived whole before. Still to do with it: the same
-      decision belongs on `GET /event`, on backfill and on the outbound PDU fan-out, which is
-      T-4047.
-- [ ] T-4046 this server holds **two** `m.room.member` events for the same remote user after a
-      federated join, and the second one is in the room's history where it should not be.
-      Measured 2026-11-06 in `.agent-work/next/gme4.log`: `TestInboundCanReturnMissingEvents`
-      objects with `extra events returned` (`federation_room_get_missing_events_test.go:471`) in all
-      three subtests whose expected count was met otherwise, and the extra event — decoded from the
-      byte array the test prints — is `m.room.member` with `state_key
-      @charlie:host.docker.internal:1024` at **depth 8**, unredacted in the `world_readable` case and
-      trimmed in `invited`/`joined` (so T-4044 is working on it too). Charlie's join is also the
-      `latest_events` seed of the very request, so either this server stored a second member event
-      for him, or the join's event ID as it knows it differs from the one the peer named — and the
-      walk did descend from the seed, which means the seed was found, which makes the duplicate the
-      stronger reading. Start where the join handshake persists: `internal/api/federation/joins.go`
-      (`handleSendJoin` → the accept path), and ask whether the room's state ends up with one entry
-      while the graph carries two. This is worth more than the test that caught it: a duplicated
-      membership event is a claim that a user joined twice, and it reaches state resolution,
-      `/members`, member counts and join rules, not only the history walk. Do not fix it by
-      filtering member events in the read path; find which write is wrong.
+- [x] T-4043 (closed without doing it, 2026-11-06) does an identical state write make a new event?
+      It does here, and it should: making it not so would have broken the case it was opened for.
+      The event this task was opened on was not a no-op write at all — it was the walk's own
+      `latest_events` ceiling being returned as part of the answer (T-4046), and Complement's
+      `world_readable` subtest, which now passes, *expects* a second `m.room.history_visibility`
+      event when the value actually changes. Leaving this alone is the correct outcome; the question
+      is closed rather than parked. If no-op state writes ever need suppressing, it is a decision
+      about what a client's `PUT` means and needs its own task, not a side-effect of this one.
+- [ ] T-4048 the `public_chat` preset writes `m.room.guest_access: forbidden`; Complement expects
+      no such event. The specification's preset table for `createRoom` gives
+      `public_chat` → join_rule `public`, history_visibility `shared`, guest_access `forbidden`, and
+      a room with no guest-access event defaults to `can_join`, so the table can only be honoured by
+      writing the event. Synapse does not: its preset carries `guest_can_join`, and
+      `_send_events_for_new_room` emits `m.room.guest_access` **only when that is true** — so a
+      Synapse `public_chat` room has no guest-access event at all, and Complement's
+      `TestInboundCanReturnMissingEvents` counts its expected events around that absence (measured in
+      `synapse/handlers/room.py`, develop, 2026-11-06). The consequence today: that test's four
+      subtests are three green and one off by exactly this event. Kept because the specification
+      outranks another server's preset, per AGENTS §2. Two follow-ups: check what Complement's guest
+      access tests expect of a `public_chat` room when guest support exists here (T-4049), and
+      revisit if evidence shows the table's `guest_access` column is descriptive rather than
+      normative.
+- [ ] T-4049 guest access is not implemented as a module. The state event is now written and read
+      for the directory's `guest_can_join`, but there is no `m.guest` registration, no guest
+      access-token handling, and no "a guest may read a `world_readable` room without joining" path —
+      which is also what the room-preview and `/initialSync`-style flows depend on. Task it when the
+      Client-Server surface it belongs to is next.
+- [x] T-4046 (done 2026-11-06, commit `5a381a4`, and the diagnosis in its title was **wrong**) what
+      `TestInboundCanReturnMissingEvents` called an extra event was `get_missing_events` answering
+      with its own ceiling. The record here first read the byte array Complement prints — a second
+      `m.room.member` for the joiner, at depth 8 — as proof that a federated join stored the
+      membership twice. It did not. `TestFederatedJoinLeavesOneMemberEventForTheRemoteUser`
+      reproduces the same handshake between two local servers and finds exactly one member event for
+      the remote user, and both servers name the join event identically, which is the point of
+      content-derived event IDs. The actual bug was in `EventsBetween`: an event named in
+      `latest_events` was queued as the starting point and then appended to the answer as well. The
+      question a peer asks is "what are the previous events of these", so the ceiling is descended
+      from and not returned. Worth keeping the lesson next to the correction: the byte array was
+      real evidence about *what* was extra and no evidence at all about *why*, and the two-server
+      reproduction settled it in one run where reading the log had sent an investigation off to the
+      join handshake.
+- [ ] T-4050 the MSC-gated tally has not been re-measured since the preset changes. The **default**
+      Complement suite is now fully green (2026-11-06, `.agent-work/next/tally-20261106.log`:
+      `ok complement/tests`, `ok complement/tests/csapi`, exit 0; 15 MSC packages had no tests to
+      run because `COMPLEMENT_LOCAL_MSCS` was not set). The number the ledger tracks — the run with
+      the MSC suites included, last counted in the hundreds of failures — has not been taken since
+      the preset contents, the room-creation order, `join_rule` in the directory, the guest-access
+      read, the walk's ceiling and the federation visibility rule all moved together. Take that run
+      next and separate "MSC not implemented" from "previously green, now red": a change that is only
+      safe because nothing else was measured is not safe.
+
 - [ ] T-4047 the visibility decision is applied on one read path only. `get_missing_events` trims;
       `GET /event`, backfill (when it exists) and the outbound fan-out of PDUs do not, and
       `handleGetEvent` additionally serves `stored.JSON` unconditionally instead of the redacted form
       (`internal/api/federation/transactions.go:handleGetEvent`), so a redaction applied here is not
       reflected to peers on that path. Move the decision next to the single place federation reads
       an event, and test each path.
-- [ ] T-4045 what does the `public_chat` preset set `history_visibility` to? Our preset says
-      `world_readable` (`internal/rooms/service.go:presetState`, recorded as an interpretation
-      decision). Complement's expectations in `TestInboundCanReturnMissingEvents` are consistent
-      with a public room starting at `shared`: for `shared` it expects exactly one
-      `m.room.history_visibility` event, for `world_readable` two. Read the Client-Server API's
-      preset table in the pinned specification and settle it from the text — this is the kind of
-      thing to decide from the specification rather than from what another server does, and if the
-      answer contradicts our documented decision, the decision record has to be corrected rather
-      than quietly changed in code.
-- [ ] T-4042 `GET /rooms/{roomID}/context/{eventID}` and `GET /rooms/{roomID}/relations/{eventID}`
+- [x] T-4045 (done 2026-11-06, commit `5a381a4`) what does the `public_chat` preset set
+      `history_visibility` to? **`shared`.** The Client-Server API gives the presets as a table —
+      `private_chat`: invite / shared / can_join; `trusted_private_chat`: invite / shared /
+      can_join, invitees at the creator's power level; `public_chat`: public / **shared** /
+      forbidden — and this server's earlier reading, recorded in `docs/requirements.md` as an
+      interpretation decision, claimed the contents were implementation-defined and started public
+      rooms `world_readable`. Both halves were wrong: the table is normative, and its public row is
+      `shared`. The correction is in the code and in the decision record, which says plainly that the
+      earlier entry was wrong rather than quietly replacing it. Two more facts came out of the same
+      reading and are fixed in the same commit: a room created with `visibility: public` and no named
+      preset takes the `public_chat` preset (it was getting an invite-only room listed as walk-in),
+      and `GET /publicRooms` entries were missing `join_rule`, which the response requires.- [ ] T-4042 `GET /rooms/{roomID}/context/{eventID}` and `GET /rooms/{roomID}/relations/{eventID}`
       do not exist: `/context` answers `M_UNRECOGNIZED` (measured 2026-11-06 while writing the
       membership test, which is why that test checks `/state` and `/messages` instead). Worth
       recording because **Complement in this checkout never calls `/context`** — `grep -rn

@@ -1,0 +1,66 @@
+== building complement-lattice:latest
+Emulate Docker CLI using podman. Create /etc/containers/nodocker to quiet msg.
+[1/2] STEP 1/6: FROM docker.io/library/golang:1.26-alpine AS build
+[1/2] STEP 2/6: WORKDIR /src
+--> Using cache 41f8576e376f5a915c0cd6832b08f4051ae37a129db82b3671a7e094432d4207
+--> 41f8576e376f
+[1/2] STEP 3/6: COPY go.mod go.sum ./
+--> Using cache bd7c2a0c59707b6662d00c9867471257f5be93d0ac29d01409bae5efe586c854
+--> bd7c2a0c5970
+[1/2] STEP 4/6: RUN go mod download
+--> Using cache f930c821bfaf6d5986c6d3bd25a3323d5dba266132dfa98a6e80e4f481762d50
+--> f930c821bfaf
+[1/2] STEP 5/6: COPY . .
+--> 390396065ff2
+[1/2] STEP 6/6: RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/lattice ./cmd/lattice
+--> 6f4f7008c7b3
+[2/2] STEP 1/10: FROM docker.io/library/alpine:3.20
+[2/2] STEP 2/10: RUN apk add --no-cache ca-certificates && update-ca-certificates
+--> Using cache 03e153230bb2614173f0c22b65ec72ac40d2eceb237ba66bd1c74a192c4ca588
+--> 03e153230bb2
+[2/2] STEP 3/10: COPY --from=build /out/lattice /usr/local/bin/lattice
+--> Using cache fb9b7e28a2ab0d467b3170065291bb2bff304a56e06f7212b5d3335f97d3220b
+--> fb9b7e28a2ab
+[2/2] STEP 4/10: COPY deploy/complement/entrypoint.sh /entrypoint.sh
+--> Using cache a400bfe9df44132751a34d9fa9a912c67f2111a36ff3d87b5ffc41c7c0334d47
+--> a400bfe9df44
+[2/2] STEP 5/10: RUN chmod 0755 /entrypoint.sh
+--> Using cache 6a5dff4b6a1b19f86917364f1ee9c2a1c22ef0122541354f15ced552a6f4004d
+--> 6a5dff4b6a1b
+[2/2] STEP 6/10: ENV LATTICE_DATA_DIR=/data
+--> Using cache 61b1061d2ba4b0608c59422024b5470cfaa739b9ea1382f6e54c816229681bd4
+--> 61b1061d2ba4
+[2/2] STEP 7/10: VOLUME ["/data"]
+--> Using cache 5529b2f9f192b3625ef7594bebecc0ee6f24d2d59b5e353120566cd5df8e8328
+--> 5529b2f9f192
+[2/2] STEP 8/10: EXPOSE 8008 8448
+--> Using cache 0e410328b2811b3c69042e475249ba423887a6334f521b42ea44054ffa78a918
+--> 0e410328b281
+[2/2] STEP 9/10: HEALTHCHECK --interval=5s --timeout=5s --start-period=5s --retries=5 	CMD ["/usr/local/bin/lattice", "healthcheck", "-addr", "127.0.0.1:8008"]
+--> Using cache e60e689855f181f9b8bde6424eb7b0d573e893c1eb012dc38a17fe1bb0bcefb2
+--> e60e689855f1
+[2/2] STEP 10/10: ENTRYPOINT ["/entrypoint.sh"]
+--> Using cache 21dcc77ce66925f8a99df1aff24774a633a9b553fe31037c849b9d5606e359f1
+[2/2] COMMIT complement-lattice:latest
+--> 21dcc77ce669
+Successfully tagged localhost/complement-lattice:latest
+21dcc77ce66925f8a99df1aff24774a633a9b553fe31037c849b9d5606e359f1
+!! 336 anonymous volumes in the podman store; deploy failures below may be lock exhaustion, not test failures (see the comment above for how to clear them)
+== running Complement (filter: TestVersionStructure|TestUnknownEndpoints|TestRegistration|TestLogin|TestLogout|TestServerCapabilities|TestDeviceManagement|TestCanRegisterAdmin, packages in parallel: 2)
+ok  	github.com/matrix-org/complement/tests	6.120s
+ok  	github.com/matrix-org/complement/tests/csapi	13.638s
+ok  	github.com/matrix-org/complement/tests/msc2836	1.540s [no tests to run]
+ok  	github.com/matrix-org/complement/tests/msc3389	3.373s [no tests to run]
+ok  	github.com/matrix-org/complement/tests/msc3391	2.334s [no tests to run]
+ok  	github.com/matrix-org/complement/tests/msc3757	1.740s [no tests to run]
+ok  	github.com/matrix-org/complement/tests/msc3874	3.865s [no tests to run]
+ok  	github.com/matrix-org/complement/tests/msc3890	2.205s [no tests to run]
+ok  	github.com/matrix-org/complement/tests/msc3902	1.772s [no tests to run]
+ok  	github.com/matrix-org/complement/tests/msc3930	1.354s [no tests to run]
+ok  	github.com/matrix-org/complement/tests/msc3967	3.009s [no tests to run]
+ok  	github.com/matrix-org/complement/tests/msc4140	1.549s [no tests to run]
+ok  	github.com/matrix-org/complement/tests/msc4155	2.219s [no tests to run]
+ok  	github.com/matrix-org/complement/tests/msc4222	1.729s [no tests to run]
+ok  	github.com/matrix-org/complement/tests/msc4242	3.206s [no tests to run]
+ok  	github.com/matrix-org/complement/tests/msc4306	1.914s [no tests to run]
+ok  	github.com/matrix-org/complement/tests/msc4429	1.450s [no tests to run]
