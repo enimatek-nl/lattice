@@ -698,7 +698,7 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
       `/make_join` and `/send_join`. Then MSC4242 (four tests: rejection cascades across a rejoin) and
       `TestPartialStateJoin` on their own.
 
-- [ ] T-4047 the visibility decision is applied on one read path only. `get_missing_events` trims;
+- [x] T-4047 (partly, 2026-11-06, commit `80f9a82`) the visibility decision, on the read paths. `get_missing_events` and `GET /event` now both go through `pduForPeer`: the room's own redaction first, then the asking server's entitlement at the moment of the event. `GET /event_auth` is deliberately not trimmed (an auth chain is the permissions, not history; the reason is recorded at the endpoint). Still open: the outbound fan-out of PDUs, and backfill when it exists.
       `GET /event`, backfill (when it exists) and the outbound fan-out of PDUs do not, and
       `handleGetEvent` additionally serves `stored.JSON` unconditionally instead of the redacted form
       (`internal/api/federation/transactions.go:handleGetEvent`), so a redaction applied here is not
