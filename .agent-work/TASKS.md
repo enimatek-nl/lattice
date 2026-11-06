@@ -616,25 +616,33 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
       sync path before and after rather than assuming it is slow, and note that a chunk is where
       the withholding decision is *also* better made (a client seeing half of a redaction pair in
       one timeline is the failure `Withheld` exists to prevent).
-- [ ] T-4038 put `unsigned.membership` on the read paths that still serve events to no particular
-      reader. Settled by reading the specification instead of another server: the property lives on
-      the **client event format** — `ClientEventWithoutRoomID.unsigned.membership`, added in Matrix
-      1.11, matrix-org/matrix-spec#1847 — so it is not an endpoint list and `/context`,
-      `/relations`, `/state`, `/aliases` and the room-directory reads are inside it. What is
-      outside it, explicitly: events pushed to an application service over
-      `PUT /_matrix/app/v1/transactions/{txnId}`, where there is no requesting user.
-      Mechanically: `rooms.Service.eventJSON` takes no reader and is called from ~12 places
-      (`reads.go` x5, `history.go`, `membership.go`, `aliases.go` x3, `directory.go` x2); some of
-      those already have a `requester` in scope and some do not. Thread it, and where a read
-      genuinely has no requesting user (application-service transaction delivery, server-to-server)
-      keep the reader-free `Serve` and say so in the comment. Two tests to write alongside: the
-      field on a `/context` chunk, and the field on `/relations` — Synapse has a known gap there
-      (element-hq/synapse#17487 omits it in relationship aggregation), so an implementation
-      reference is not a substitute for the spec sentence.
-      Note the permission the spec grants, since it changes what "expensive" costs are acceptable:
-      a server "MAY omit it if necessary (for example, if calculating the value is expensive)".
-      Ours is populated; T-4040 keeps that affordable.
-- [ ] T-4034 intermittent, not constant: `SendEventSynced waiting for event ID …` appears in some
+- [x] T-4038 (done 2026-11-06, commit `134b25c`) `unsigned.membership` on the remaining
+      client-facing read paths. Settled by reading the specification rather than another server: the
+      property is defined on the **client event format** — `ClientEventWithoutRoomID.unsigned.membership`,
+      added in Matrix 1.11, matrix-org/matrix-spec#1847 — so it is not an endpoint list. The value is
+      the requesting user's `m.room.member` state at the point of the event "including any changes
+      caused by the event", and `leave` where they had none; the one documented place it is not
+      populated is events pushed to an application service, where there is no requesting user.
+      `rooms.Service.eventJSON` is now explicitly the reader-free helper for calls that ask an event
+      a question for themselves (join rule, power levels, canonical-alias bookkeeping, member counts,
+      the room directory — no reader, and a per-event snapshot lookup there would be wasted work);
+      `/state`, `/state/{type}/{key}`, `/members` and the at-point roster go through `eventJSONFor`.
+      `TestServedStateAndHistoryCarryTheReadersMembership` covers the shape — `/state` answering
+      `leave` for the room's creation and `join` for a topic written after the reader joined, a
+      history page walking `leave` -> `invite` -> `join` — and fails when the field is switched off.
+      Complement unchanged by the threading: `TestMembershipOnEvents`, `TestGetRoomMembers(AtPoint)`
+      and `tests/csapi` `TestSync` (`msc4115state.log`).
+- [ ] T-4042 `GET /rooms/{roomID}/context/{eventID}` and `GET /rooms/{roomID}/relations/{eventID}`
+      do not exist: `/context` answers `M_UNRECOGNIZED` (measured 2026-11-06 while writing the
+      membership test, which is why that test checks `/state` and `/messages` instead). Worth
+      recording because **Complement in this checkout never calls `/context`** — `grep -rn
+      "context/" tests/` hits only comments in `room_timestamp_to_event_test.go` — so this gap
+      contributes nothing to the failure tally and would be invisible if left alone. The client
+      half of `/messages` is already there (`rooms.History`), so `/context` is the same page centred
+      on an event plus a `state` chunk and `prev_batch`/`next_batch` tokens; `/relations` needs the
+      event-relation index and the aggregation rules (chunk, `recursion_type`, `rel_type`,
+      `include_original`), which is the larger of the two. Both have to answer `unsigned.membership`
+      for the reader like every other client event.- [ ] T-4034 intermittent, not constant: `SendEventSynced waiting for event ID …` appears in some
       runs of `room_members_test.go:74`/`:88` and not in others (`.agent-work/next/mem1.log` and
       `mem2.log` show it; `prevbatch1.log` does not, with the same blueprint). So a sent event
       sometimes does not reach the sender's own `/sync` in time. Reproduce before theorising:

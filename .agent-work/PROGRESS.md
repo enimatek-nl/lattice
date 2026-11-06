@@ -1,5 +1,30 @@
 # Progress
 
+## 2026-11-08 — the membership field on the state reads, and a gap Complement cannot see
+
+Commit `134b25c`. `unsigned.membership` was reaching clients only through `/sync`, `/messages` and
+`/event`; the specification puts the property on the **client event format** itself
+(`ClientEventWithoutRoomID.unsigned`, added in Matrix 1.11), so `/state`, `/state/{type}/{key}`,
+`/members` and the at-point roster now answer it too, and `rooms.eventJSON` has been renamed in
+meaning: it is the reader-free helper for the seven places that ask an event a question for
+themselves (join rule, power levels, alias bookkeeping, member counts, directory scans), and
+`eventJSONFor` is the one that has a reader.
+
+The new test is the interesting part because it forces the semantics into the open rather than
+restating a field name: `/state` returns a **mixture of moments** — the room's creation and its
+power levels say `leave` about a user who joined later, while a topic written after they joined says
+`join` — and a history page walked oldest first walks `leave` -> `invite` -> `join`, with a user's
+own member event dated by the change it causes (their invitation says `invite` about them).
+Verified to fail when the field is switched off. Complement unchanged: `TestMembershipOnEvents`,
+`TestGetRoomMembers(AtPoint)`, `tests/csapi` `TestSync` (`msc4115state.log`).
+
+And one thing the 143-failure tally does not contain: `GET /rooms/{roomID}/context/{eventID}`
+answers `M_UNRECOGNIZED`, and `relations` likewise — neither endpoint exists. Complement in this
+checkout never calls `/context` (the string appears only in comments in
+`room_timestamp_to_event_test.go`), so a missing Matrix endpoint contributes nothing to the count.
+That is worth saying out loud before the tally is treated as a measure of coverage: the number
+counts Complement's assertions, not the specification. Task T-4042.
+
 ## 2026-11-08 — a full-suite number that means something: 76 passing, 143 failing, zero lock errors
 
 `.agent-work/next/gate5.log`, tree `4502f1e`, `RUN=.`, `-p 2`, volume store clean, and the log
