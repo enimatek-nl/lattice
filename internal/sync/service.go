@@ -612,6 +612,7 @@ func (s *Service) room(ctx context.Context, roomID string, since Token, until in
 	// `full_state` still limits the timeline by `since`; only the state is widened.
 	// On a first sync there is no window, so the timeline is the most recent events.
 	accepted := make([]Event, 0, len(seen))
+	newest := int64(0)
 	for _, event := range seen {
 		if !filter.AllowsTimeline(event.Type) {
 			continue
@@ -626,6 +627,7 @@ func (s *Service) room(ctx context.Context, roomID string, since Token, until in
 			return roomUpdate{}, err
 		}
 		accepted = append(accepted, body)
+		newest = event.StreamOrdering
 	}
 	if len(accepted) > limit {
 		accepted = accepted[len(accepted)-limit:]
@@ -633,10 +635,17 @@ func (s *Service) room(ctx context.Context, roomID string, since Token, until in
 
 	timeline := Events{Events: accepted, Limited: total > int64(len(accepted))}
 	if len(accepted) > 0 {
-		// prev_batch names the position just before the oldest event returned, which is
-		// where pagination continues from.
-		oldest := seen[len(seen)-len(accepted)]
-		timeline.PrevBatch = Token(oldest.StreamOrdering).String()
+		// prev_batch names the newest end of the range the client has just been given, which is
+		// where a client walks back from. Naming the oldest end instead — which is what this
+		// did — makes pagination look tidy, because the page that follows does not repeat an
+		// event the client already holds, but it puts the token before most of the state the
+		// client has been shown: a client that asks who was in the room at the point its own
+		// batch began is told nobody was, when it has just been shown the joins. The Client-Server
+		// API does not settle which end the token names (matrix-org/matrix-spec#595 has been open
+		// on this since 2020), so the end that the ecosystem's servers and tests agree on is the
+		// one used here, and a client that sees an event twice on the way back has the cheaper
+		// problem than a client told a history that never happened.
+		timeline.PrevBatch = Token(newest).String()
 	} else {
 		timeline.PrevBatch = Token(position).String()
 	}
