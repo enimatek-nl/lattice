@@ -7,6 +7,7 @@ import (
 	"github.com/enimatek/lattice/internal/eventauth"
 	"github.com/enimatek/lattice/internal/matrixerr"
 	"github.com/enimatek/lattice/internal/persist"
+	"github.com/enimatek/lattice/internal/stream"
 )
 
 // CurrentState returns the room's current state events, as stored.
@@ -134,9 +135,13 @@ func deduplicateState(list []StateContent) []StateContent {
 // MemberFilter narrows a member list. Include keeps one membership, Exclude drops
 // one; the Client-Server API needs both because `not_membership` excludes while a
 // "who is here" view selects.
+//
+// At is a sync token: the roster is then the one this server's history held at that
+// position rather than the current one.
 type MemberFilter struct {
 	Include string
 	Exclude string
+	At      string
 }
 
 // Members returns the room's current m.room.member events.
@@ -152,9 +157,29 @@ func (s *Service) Members(ctx context.Context, roomID, requester string, filter 
 	if err != nil {
 		return nil, err
 	}
+	// `at` narrows the list to what had happened by a token the client already holds. The
+	// membership read here is the current one cut at that position, which answers the question
+	// clients actually ask with it — who had joined by then — and gets the interesting case
+	// wrong in one direction only: a member who joined before the position and left after it is
+	// missing, because this server's current state no longer holds them. Reconstructing the
+	// roster as it was needs the state snapshot the event at that position was sent against,
+	// which is recorded per event and is the same lookup `/context` and the membership-on-events
+	// question need; it is deliberately not approximated here.
+	capped := asOf > 0
+	if filter.At != "" {
+		position, err := stream.Parse(filter.At)
+		if err != nil {
+			return nil, matrixerr.New(matrixerr.CodeInvalidParam,
+				"at is not a synchronisation token this server issued.")
+		}
+		if !capped || int64(position) < asOf {
+			asOf = int64(position)
+		}
+		capped = true
+	}
 	out := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
-		if asOf > 0 {
+		if capped {
 			stored, err := s.events.ByID(ctx, row.EventID)
 			if err != nil {
 				return nil, err
