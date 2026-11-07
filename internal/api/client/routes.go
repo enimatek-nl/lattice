@@ -193,6 +193,8 @@ func Register(r *httpserver.Router, d *Deps, requireAuth func(http.Handler) http
 	versionedV1("GET", "/rooms/{roomID}/relations/{eventID}", d.handleRelations)
 	versionedV1("GET", "/rooms/{roomID}/relations/{eventID}/{relType}", d.handleRelations)
 	versionedV1("GET", "/rooms/{roomID}/relations/{eventID}/{relType}/{eventType}", d.handleRelations)
+	// The room's threads: the same index, read across instead of down one event.
+	versionedV1("GET", "/rooms/{roomID}/threads", d.handleThreads)
 	versioned("PUT", "/rooms/{roomID}/redact/{eventID}/{txnID}", d.handleRedact)
 
 	// The room directory: which rooms this server advertises, and who may change that.

@@ -153,6 +153,18 @@ fi
 # reached unrun — which reads as "these tests fail" and is really "these tests never
 # ran". COMPLEMENT_TEST_TIMEOUT sets the budget; a run that hits it is reported as an
 # unfinished run rather than a tally.
+# json_events turns `go test -json` output into one valid JSON event per line.
+#
+# The stream is usually clean, but when several packages finish in the same instant go test can
+# glue two events onto one line, and jq — which stops at the first thing it cannot parse — then
+# takes the whole tally down with it: run 20261107o ran all 220 tests and reported nothing, because
+# one line at offset 24232 held two events. Splitting the joins recovers them; `fromjson?` drops
+# anything still unparseable instead of stopping, and the script counts what it dropped and says so
+# next to the tally. A tally that lost events is still quotable, if it says how much it lost.
+json_events() {
+	sed -u -E 's/\}(\{"Time":)/}\n\1/g' | jq -R -c --unbuffered 'fromjson? // empty'
+}
+
 timeout="${COMPLEMENT_TEST_TIMEOUT:-30m}"
 label="${COMPLEMENT_LABEL:-$(date -u +%Y%m%dT%H%M%SZ)}"
 run_log="$repo_root/.agent-work/next/complement-run-$label.log"
@@ -181,9 +193,16 @@ if command -v jq >/dev/null 2>&1 && [[ "${COMPLEMENT_NO_JSON:-}" != 1 ]]; then
 		tee "$run_log" |
 		jq --unbuffered -r 'select(.Action=="output") | ((.Package // "-") | sub("^github\\.com/matrix-org/complement/?"; "")) + " | " + .Output' || exit_code=$?
 
-	jq -r 'select(.Test != null and (.Action=="pass" or .Action=="fail" or .Action=="skip") and ((.Test | contains("/")) | not)) |
-		"\(.Action)\t\((.Package // "-") | sub("^github\\.com/matrix-org/complement/?"; ""))\t\(.Test)"' "$run_log" |
+	json_events < "$run_log" |
+		jq -r 'select(.Test != null and (.Action=="pass" or .Action=="fail" or .Action=="skip") and ((.Test | contains("/")) | not)) |
+		"\(.Action)\t\((.Package // "-") | sub("^github\\.com/matrix-org/complement/?"; ""))\t\(.Test)"' |
 		sort -u > "$results"
+	# How much of the stream had to be thrown away on the way to that table.
+	raw_events=$(wc -l < "$run_log")
+	kept_events=$(json_events < "$run_log" | wc -l)
+	if [[ "$kept_events" -lt "$raw_events" ]]; then
+		echo "!! $((raw_events - kept_events)) lines of $run_log are not one JSON event each; they were split or dropped, and $kept_events events were read. A tally below covers those events, not every line the run wrote."
+	fi
 	awk -F'\t' '$1=="pass"{print $3 > "'"$passes"'"} $1=="fail"{print $3 > "'"$failures"'"}' "$results"
 else
 	echo "!! jq not found: falling back to plain output, so the pass/failure lists carry no package name and a test name shared by two packages is counted once."
@@ -229,19 +248,42 @@ if grep -q 'panic: test timed out' "$run_log"; then
 	echo "!! THIS RUN IS INCOMPLETE: a package hit its per-package timeout ($packages). Tests after the one it reached never ran; the numbers above are a floor, not a tally. Raise COMPLEMENT_TEST_TIMEOUT before quoting them."
 fi
 # The third way a podman run lies about the protocol: a federation test whose peer name resolved
-# to another deployment's container. It does not look like a DNS problem in a test's output — it
-# looks like a signature problem: the peer's certificate names somebody else, its keys come back
-# from the wrong server, and every request signed by the real peer is then refused. Count it here,
-# because a tally printed next to that is a measurement of the network namespace.
+# into another deployment's container. It does not read as a DNS problem in a test's output. It reads
+# as a signature problem: the peer's certificate names somebody else, the TLS handshake refuses the
+# certificate, keys come back from the wrong server, and every request the real peer signed is then
+# refused. Run 20261107m counted 8 wrong-name certificates and came out nine two-server tests worse
+# than the run before it, while those same nine pass on their own; run 20261107h counted none. So
+# the fingerprints are counted here, kept apart rather than added into one number, because they mean
+# different things: the first three are the container network talking over the protocol, a 401 on a
+# federation template can be a room legitimately refusing somebody, and a deployment whose image was
+# never built is the runtime declining to start at all.
+output_lines=$(mktemp "${TMPDIR:-/tmp}/complement-output.XXXXXX")
 if command -v jq >/dev/null 2>&1; then
-	mismatches=$(jq -r 'select(.Action=="output") | .Output' "$run_log" 2>/dev/null |
-		grep -cE 'certificate is valid for [^,]*, not|answered the (join|knock|leave) template with 401|not signed by a server this server trusts' || true)
+	json_events < "$run_log" | jq -r 'select(.Action=="output") | .Output' > "$output_lines" 2>/dev/null || true
 else
-	mismatches=$(grep -cE 'certificate is valid for [^,]*, not|answered the (join|knock|leave) template with 401|not signed by a server this server trusts' "$run_log" || true)
+	cp "$run_log" "$output_lines"
 fi
-if [[ "${mismatches:-0}" -gt 0 ]]; then
-	echo "!! $mismatches lines in this run say a peer's name resolved somewhere else (a certificate for another server, or a federation request refused as unsigned). Federation failures below are contaminated by the container network — see the stale-DNS note above — and the two-server tests should be re-run alone (PARALLEL=1) before their result is believed."
+count_in_log() { grep -cE "$1" "$output_lines" || true; }
+cert_mismatch=$(count_in_log 'certificate is valid for')
+bad_handshake=$(count_in_log 'tls: bad certificate')
+unsigned_peer=$(count_in_log 'not signed by a server this server trusts|certificate signed by unknown authority')
+template_401=$(count_in_log 'answered the (join|knock|leave) template with 401')
+unbuilt_image=$(count_in_log 'No images have been built for blueprint')
+namespace_confusion=$((cert_mismatch + bad_handshake + unsigned_peer))
+if [[ $((namespace_confusion + template_401)) -gt 0 ]]; then
+	echo "== federation fingerprints in this run, counted from its own log:"
+	printf '   %5d  a certificate naming another server (certificate is valid for X, not Y)\n' "$cert_mismatch"
+	printf '   %5d  a TLS handshake refusing what a peer presented (tls: bad certificate)\n' "$bad_handshake"
+	printf '   %5d  a peer refusing a request as unsigned (not signed by a server this server trusts)\n' "$unsigned_peer"
+	printf '   %5d  a federation template answered 401, which a room may legitimately do\n' "$template_401"
 fi
+if [[ "$namespace_confusion" -gt 0 ]]; then
+	echo "!! those first three are the container network, not this server: a peer server's name resolved into somebody else's deployment. The two-server failures above are contaminated — re-run them alone (PARALLEL=1) before believing them, and clear the stale per-network DNS records the note near the top of this script describes."
+fi
+if [[ "$unbuilt_image" -gt 0 ]]; then
+	echo "!! $unbuilt_image lines say a deployment had no built image: those tests never reached a homeserver, so their failure is the runtime and not the protocol."
+fi
+rm -f "$output_lines"
 if grep -qE 'failed to deployBaseImage|timed out checking for homeserver to be up' "$run_log"; then
 	echo "!! some deployments never started. Those failures are the container or the environment, not the protocol: check the image starts at all (podman run --rm <image>) and the volume/DNS warnings above."
 fi

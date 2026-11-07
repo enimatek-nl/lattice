@@ -178,7 +178,7 @@ func (s *Service) Relations(ctx context.Context, req RelationsRequest) (Relation
 // not of what the requester may read — a count that changed per reader would let someone measure
 // the room through the visibility rules.
 func (s *Service) RelationCount(ctx context.Context, roomID, targetEventID, relType string) (int64, error) {
-	count, err := s.relations.CountForTarget(ctx, roomID, targetEventID, relType)
+	count, err := s.relations.CountForTarget(ctx, roomID, targetEventID, relType, nil, nil, 0)
 	if err != nil {
 		return 0, fmt.Errorf("rooms: cannot count the relations of %s: %w", targetEventID, err)
 	}

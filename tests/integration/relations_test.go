@@ -250,3 +250,179 @@ func sameIDs(got, want []string) bool {
 	}
 	return true
 }
+
+// threadEntry is one thread as the list presents it: the root event itself, with the thread's
+// last word and its count inside `unsigned.m.relations.m.thread`.
+type threadEntry struct {
+	EventID       string
+	Sender        string
+	LatestEventID string
+	Count         float64
+	Participated  bool
+	raw           map[string]any
+}
+
+// threadPage reads a /threads response.
+func threadPage(t *testing.T, res response) ([]threadEntry, map[string]any) {
+	t.Helper()
+	if res.status != http.StatusOK {
+		t.Fatalf("a threads request answered %d: %s", res.status, res.body)
+	}
+	body := res.decoded(t)
+	chunk, _ := body["chunk"].([]any)
+	entries := make([]threadEntry, 0, len(chunk))
+	for _, item := range chunk {
+		event, _ := item.(map[string]any)
+		if event == nil {
+			t.Fatalf("a thread in the chunk is not an event: %v", item)
+		}
+		entry := threadEntry{raw: event}
+		entry.EventID, _ = event["event_id"].(string)
+		entry.Sender, _ = event["sender"].(string)
+		unsigned, _ := event["unsigned"].(map[string]any)
+		if unsigned == nil {
+			t.Fatalf("a thread root carries no unsigned aggregation: %v", event)
+		}
+		relations, _ := unsigned["m.relations"].(map[string]any)
+		thread, _ := relations["m.thread"].(map[string]any)
+		if thread == nil {
+			t.Fatalf("a thread root carries no unsigned.m.relations.m.thread: %v", event)
+		}
+		latest, _ := thread["latest_event"].(map[string]any)
+		if latest == nil {
+			t.Fatalf("the thread aggregation carries no latest_event: %v", thread)
+		}
+		entry.LatestEventID, _ = latest["event_id"].(string)
+		entry.Count, _ = thread["count"].(float64)
+		entry.Participated, _ = thread["current_user_participated"].(bool)
+		entries = append(entries, entry)
+	}
+	return entries, body
+}
+
+// TestTheRoomThreadListFollowsTheNewestReply checks the question `/threads` answers: which
+// conversations are live. The ordering is the point — a thread is listed where its newest event
+// sits, not where it started — along with the two things a client shows next to it: which event
+// is the last word, and how many there are.
+func TestTheRoomThreadListFollowsTheNewestReply(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	_, token, _ := h.register(t, "threader", "pw-threader", "")
+	roomID := createRoom(t, h, token, map[string]any{"preset": "public_chat"})
+
+	threadOne := sendText(t, h, roomID, token, "root-1", "thread one root")
+	threadTwo := sendText(t, h, roomID, token, "root-2", "thread two root")
+	sendRelated(t, h, roomID, token, "reply-1", "m.room.message", fmt.Sprintf(
+		`{"msgtype":"m.text","body":"in one","m.relates_to":{"event_id":%q,"rel_type":"m.thread"}}`, threadOne))
+	replyTwo := sendRelated(t, h, roomID, token, "reply-2", "m.room.message", fmt.Sprintf(
+		`{"msgtype":"m.text","body":"in two","m.relates_to":{"event_id":%q,"rel_type":"m.thread"}}`, threadTwo))
+	// A root nobody has replied to is not a thread yet: nothing points at it, so there is no
+	// newest event to order it by.
+	sendText(t, h, roomID, token, "root-alone", "never a thread")
+
+	entries, _ := threadPage(t, h.get("/_matrix/client/v1/rooms/"+roomID+"/threads", token))
+	if len(entries) != 2 {
+		t.Fatalf("the room lists %d threads, want the two that have replies", len(entries))
+	}
+	if entries[0].EventID != threadTwo {
+		t.Errorf("the newest thread is %s, want the one replied to last (%s)", entries[0].EventID, threadTwo)
+	}
+	if entries[0].LatestEventID != replyTwo {
+		t.Errorf("thread two's last word is %s, want %s", entries[0].LatestEventID, replyTwo)
+	}
+	if entries[0].Count != 1 {
+		t.Errorf("thread two reports a count of %v, want 1", entries[0].Count)
+	}
+	if entries[1].EventID != threadOne {
+		t.Errorf("the older thread is %s, want %s", entries[1].EventID, threadOne)
+	}
+
+	// Replying to the older thread moves it to the top, and its total with it.
+	replyThree := sendRelated(t, h, roomID, token, "reply-3", "m.room.message", fmt.Sprintf(
+		`{"msgtype":"m.text","body":"back in one","m.relates_to":{"event_id":%q,"rel_type":"m.thread"}}`, threadOne))
+	entries, _ = threadPage(t, h.get("/_matrix/client/v1/rooms/"+roomID+"/threads", token))
+	if entries[0].EventID != threadOne {
+		t.Fatalf("after a reply to thread one it is not at the top: %s", entries[0].EventID)
+	}
+	if entries[0].LatestEventID != replyThree {
+		t.Errorf("thread one's last word is %s, want %s", entries[0].LatestEventID, replyThree)
+	}
+	if entries[0].Count != 2 {
+		t.Errorf("thread one reports a count of %v, want 2", entries[0].Count)
+	}
+
+	// Whether the reader has taken part in a thread is the other thing a client highlights, and
+	// it is asked per reader: alice started both threads, so both are hers; someone who only
+	// joined and never spoke in them sees neither.
+	entries, _ = threadPage(t, h.get("/_matrix/client/v1/rooms/"+roomID+"/threads", token))
+	for _, entry := range entries {
+		if !entry.Participated {
+			t.Errorf("the reader who started and replied in %s is told they did not take part", entry.EventID)
+		}
+	}
+	bob, bobToken, _ := h.register(t, "lurker", "pw-lurker", "")
+	h.mustStatus(t, h.post(t, "/_matrix/client/v3/join/"+roomID, map[string]any{}, bobToken), http.StatusOK)
+	entries, _ = threadPage(t, h.get("/_matrix/client/v1/rooms/"+roomID+"/threads", bobToken))
+	if len(entries) != 2 {
+		t.Fatalf("%s sees %d threads, want both", bob, len(entries))
+	}
+	for _, entry := range entries {
+		if entry.Participated {
+			t.Errorf("a reader who never spoke in %s is told they did", entry.EventID)
+		}
+	}
+
+	// The MSC3440 type lists choose which events count as part of a thread, so they decide
+	// which threads there are at all.
+	entries, _ = threadPage(t, h.get("/_matrix/client/v1/rooms/"+roomID+"/threads?include=m.dummy", token))
+	if len(entries) != 0 {
+		t.Errorf("including only m.dummy lists %d threads, want none", len(entries))
+	}
+	entries, _ = threadPage(t, h.get("/_matrix/client/v1/rooms/"+roomID+"/threads?exclude=m.room.message", token))
+	if len(entries) != 0 {
+		t.Errorf("excluding m.room.message lists %d threads, want none", len(entries))
+	}
+
+	// Paging walks the list in order and stops promising more at the end.
+	entries, body := threadPage(t, h.get("/_matrix/client/v1/rooms/"+roomID+"/threads?limit=1", token))
+	if len(entries) != 1 {
+		t.Fatalf("limit=1 returned %d threads", len(entries))
+	}
+	next, _ := body["next_batch"].(string)
+	if next == "" {
+		t.Fatalf("one thread out of two answers no next_batch: %v", body)
+	}
+	entries, body = threadPage(t, h.get("/_matrix/client/v1/rooms/"+roomID+"/threads?limit=1&from="+next, token))
+	if len(entries) != 1 {
+		t.Fatalf("the second page holds %d threads, want the other one", len(entries))
+	}
+	if entries[0].EventID != threadTwo {
+		t.Errorf("the second page lists %s, want %s", entries[0].EventID, threadTwo)
+	}
+	if more, ok := body["next_batch"]; ok && more != "" {
+		t.Errorf("the last page still promises next_batch=%v", more)
+	}
+
+	// A nonsense token and a nonsense type list are said plainly.
+	if res := h.get("/_matrix/client/v1/rooms/"+roomID+"/threads?from=not-a-token", token); res.status != http.StatusBadRequest {
+		t.Errorf("a bad pagination token answered %d (%s), want 400", res.status, res.body)
+	}
+	// A type that is well formed but unknown is not an error: it is a name this room happens
+	// not to use, and the answer is an empty list. A type that is not a name at all is the
+	// client's mistake, and says so.
+	if res := h.get("/_matrix/client/v1/rooms/"+roomID+"/threads?include=m.room.messege", token); res.status != http.StatusOK {
+		t.Errorf("an unknown but well formed include answered %d (%s), want 200 with an empty list", res.status, res.body)
+	}
+	if res := h.get("/_matrix/client/v1/rooms/"+roomID+"/threads?include=m.", token); res.status != http.StatusBadRequest {
+		t.Errorf("an m. event type with no name answered %d (%s), want 400", res.status, res.body)
+	}
+	// MSC3440's own names are not type names and are not refused: ".*" asks for every event in
+	// a thread, and ".*non-timeline" asks about events this server's thread index never holds.
+	if entries, _ := threadPage(t, h.get("/_matrix/client/v1/rooms/"+roomID+"/threads?include=.*", token)); len(entries) != 2 {
+		t.Errorf("include=.* lists %d threads, want both", len(entries))
+	}
+	res := h.get("/_matrix/client/v1/rooms/"+roomID+"/threads?exclude=.*non-timeline", token)
+	if res.status != http.StatusOK {
+		t.Errorf("exclude=.*non-timeline answered %d (%s), want 200", res.status, res.body)
+	}
+}
