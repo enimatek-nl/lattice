@@ -60,16 +60,23 @@ func (d *Deps) handleInvite(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		RoomVersion string         `json:"room_version"`
 		InviteEvent map[string]any `json:"invite_event"`
+		Event       map[string]any `json:"event"`
 	}
 	// The v2 body names the event and the room version; the v1 body is the event itself, with
-	// no envelope. Reading either into one shape keeps the checks that follow — which are the
-	// same for both — from drifting apart.
+	// no envelope, or the event under an `event` key. Reading any of them into one shape keeps the
+	// checks that follow — which are the same for all three — from drifting apart. The `event` key
+	// is read as well as `invite_event` because gomatrixserverlib, which is what Dendrite and
+	// Complement send, writes that name; an invite whose only key is `invite_event` is what this
+	// server sends, and it accepts both coming in.
 	if err := json.Unmarshal(body, &request); err != nil {
 		matrixerr.Write(w, http.StatusBadRequest, matrixerr.New(matrixerr.CodeNotJSON,
 			"The invite request is not readable JSON."))
 		return
 	}
 	event := request.InviteEvent
+	if event == nil {
+		event = request.Event
+	}
 	if event == nil {
 		if err := json.Unmarshal(body, &event); err != nil || event == nil {
 			matrixerr.Write(w, http.StatusBadRequest, matrixerr.New(matrixerr.CodeNotJSON,
