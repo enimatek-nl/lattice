@@ -39,10 +39,11 @@ Specification: Matrix v1.19 (`docs/specification-version.md`).
 | State | `PUT /v3/rooms/{roomID}/state/{eventType}[/{stateKey}]`, including the empty state key and rejection of deeper paths | implemented | yes | not verified |
 | Rooms | join / invite / knock / leave, `GET /state`, `/members`, `/messages`, `/event/{eventID}`, redaction (`PUT /redact/{eventID}/{txn}`), aliases, directory, upgrades | implemented | `tests/integration/redaction_test.go`, `tests/integration/history_test.go`, Complement `TestRedact`/`TestPowerLevels` | still missing: `GET /rooms/{roomID}/context/{eventID}` (T-2015), `GET /rooms/{roomID}/event_auth/{eventID}` (T-2016), `GET /_matrix/federation/v1/state_ids` |
 | Sync / messages | `GET /sync` (incremental, `since`, long-poll, joined/invited/left sections, `device_lists`, account data in both scopes, limited timelines, `prev_batch`, MSC4222 `state_after` with `lazy_load_members`), `GET /rooms/{id}/messages` | implemented — MSC4222's `GET /rooms/{id}/members` stream is not (T-4068) | `tests/integration/sync_test.go`, `tests/integration/history_test.go`, `tests/integration/statresolution_test.go`, `tests/integration/stateafter_test.go` | **verified**: `TestSync` (`tests/csapi`), `TestSync` (`tests/msc4222`, both subtests — a different test with the same name; only the qualified results table tells them apart, T-4066), `TestSyncLeaveSection`, `TestGappedSyncLeaveSection`, `TestSyncTimelineGap`, `TestCumulativeJoinLeaveJoinSync`, `TestOlderLeftRoomsNotInLeaveSection`, `TestRoomMessagesLazyLoading`, `TestRoomMessagesLazyLoadingLocalUser`, `TestSyncOmitsStateChangeOnFilteredEvents` (T-4070: a state event a filtered batch hides must still be in the state section). Still red through sync: the presence section (T-3001e), the filter fields that narrow by sender, URL and event fields rather than type (T-4020), and the two-server cases that need the handshake pieces below |
+| Relations, threads | `GET /rooms/{roomID}/relations/{eventID}[/{relType}[/{eventType}]]` and `GET /rooms/{roomID}/threads`, both under `v3` and `v1`: what relates to an event, filtered by relation and event type, walked in either direction with tokens; and the room's conversations, ordered by each thread's newest event. The relation claim stays in the event's content — `event_relations` is an index over it, written where the event is stored and dropped where a redaction takes the content | implemented | yes | **verified** (`TestRelations`, `TestRelationsPagination`, `TestRelationsPaginationSync`, `TestThreadsEndpoint`, run 20261107r-threads) |
 | E2EE device keys | `POST /keys/upload`, `POST /keys/query` (asking a peer for a user who lives elsewhere), `POST /keys/claim`, `GET /keys/changes` (the same addressed rows the sync `device_lists` section reads, asked as a token range), federation `user/keys/query` | implemented — cross-signing and key backup are not (T-3008e) | `tests/integration/keys_test.go`, `tests/integration/federationdevicekeys_test.go`, `tests/integration/keyschanges_test.go` | **verified**: `TestUploadKey`, `TestUploadKeyIdempotency`, `TestUploadKeyIdempotencyOverlap`, `TestKeyClaimOrdering`, `TestKeysQueryWithDeviceIDAsObjectFails`, `TestKeyChangesLocal` (T-4072). Red: `TestFederationKeyUploadQuery` (T-4008's device-list EDUs), `TestE2EKeyBackupReplaceRoomKeyRules` (key backup, T-3008e) |
 | Account | whoami, devices, sessions, profile; `account_data` in both scopes (user, and user-per-room) with write, read and MSC3391 removal reaching `/sync` | partial — no `POST /account/password`, no `POST /account/deactivate` | `tests/integration/auth_test.go`, `tests/integration/direct_test.go`, `tests/integration/pushrules_test.go`, `tests/integration/accountdata_test.go` | **verified**: `TestAddAccountData` (both subtests), `TestRemovingAccountData` (all four subtests — DELETE and empty PUT, user and room scope) from the targeted run `.agent-work/next/complement-run-acctdata4.log`, not from a full suite run. Still red: `TestChangePassword`, `TestDeactivateAccount` (no `/account/password`, no `/account/deactivate`) |
 | Presence | `GET`/`PUT /presence/{userID}/status` for one user, and the `presence` section of `/sync` for users who share a room | partial — there is no idle timeout, so a user who stops asking stays online (T-3001e) | `tests/integration/presence_test.go` | `TestPresence` and `TestPresenceSyncDifferentRooms` pass; `TestRemotePresence` is red (no `m.presence` EDU, T-4008) |
-| Directory, aliases, spaces | `/publicRooms` (both listeners), `/directory/room/{alias}`, `/rooms/{id}/aliases`, `/hierarchy` (both directions), `/room_summary/{id}` | implemented | `tests/integration/aliases_test.go`, `tests/integration/hierarchy_test.go`, `tests/integration/directory_test.go` | **verified**: `TestRoomAlias`, `TestRoomCanonicalAlias`, `TestRoomDeleteAlias`, `TestPublicRooms`, `TestRoomSummary`, `TestClientSpacesSummaryJoinRules`, `TestFederatedClientSpaces`. Red: `TestRemoteAliasRequestsUnderstandUnicode` (no federation `/query/directory`), the user directory (`TestRoomSpecificUsername*`, T-4058), and `/search` plus `/relations`/`/threads`, which are not implemented at all |
+| Directory, aliases, spaces | `/publicRooms` (both listeners), `/directory/room/{alias}`, `/rooms/{id}/aliases`, `/hierarchy` (both directions), `/room_summary/{id}` | implemented | `tests/integration/aliases_test.go`, `tests/integration/hierarchy_test.go`, `tests/integration/directory_test.go` | **verified**: `TestRoomAlias`, `TestRoomCanonicalAlias`, `TestRoomDeleteAlias`, `TestPublicRooms`, `TestRoomSummary`, `TestClientSpacesSummaryJoinRules`, `TestFederatedClientSpaces`. Red: `TestRemoteAliasRequestsUnderstandUnicode` (no federation `/query/directory`), the user directory (`TestRoomSpecificUsername*`, T-4058), and `/search`, which is not implemented at all (`/relations` and `/threads` are — see the row above; `TestRelations*` and `TestThreadsEndpoint` went green in run 20261107r-threads) |
 | Refresh tokens | `refresh_token` | not implemented | refusal tested | `TestTxnIdWithRefreshToken` fails on our 400 `M_INVALID_PARAM` — an explicit refusal, not a silent ignore |
 | Push rules | the whole read/write `/pushrules` API, the default rule set, delivery to the client through `account_data` in `/sync`, and an evaluator for every condition kind in the specification | partial — the evaluator exists but nothing evaluates rules as events are persisted, so the unread and highlight counts a client is told are zero (T-3005a) | `tests/unit/pushrules_test.go`, `tests/integration/pushrules_test.go` | **verified**: `TestPushRuleCacheHealth`, `TestPushSync`, `TestPushRuleRoomUpgrade` (flaky: red in some runs). Red: `TestPollsLocalPushRules`, and pushers, the push gateway and `GET /notifications` are absent |
 
@@ -212,6 +213,73 @@ membership, alias and M1-regression subset, and it is reported as such.
    pages are what the project's precedence rules make normative; the divergence is recorded here so
    that a version 1 room that disagrees between servers is investigated rather than assumed away.
    Interoperability against Synapse on such a room is not tested.
+
+## Full run 2026-11-07o — the tally was lost and recovered, and the runner was fixed for it
+
+`RUN='.*' COMPLEMENT_LABEL=20261107o COMPLEMENT_TEST_TIMEOUT=50m PARALLEL=2 scripts/complement.sh -v`
+at tree `3bbb493`. The run finished — 104,803 lines of log, every package reported — and the script
+printed **no tally at all**. `go test -json` had glued two events onto one line at offset 24232, the
+`jq` reading the log stopped there, and with `set -euo pipefail` that took the rest of the script
+down with it. This is worth recording as a runner fault rather than a result: a suite that ran
+completely and reported nothing looks, from the outside, exactly like a suite that was never run.
+
+Re-deriving the results from the same log, after teaching the runner to split glued lines and to
+skip anything still unparseable instead of stopping: **123 passing, 98 failing, 1 skipped** (222
+qualified results; 2 of 104,803 log lines could not be read as events and were dropped). Against
+20261107h: `TestChangePassword`, `TestDeactivateAccount`, `TestRoomReadMarkers`, `TestRoomReceipts`
+newly green — the two features those runs were about — and four two-server tests newly red.
+
+| Newly red | What the log says | Isolated (run 20261107p-relationscheck, `PARALLEL=1`) |
+| --- | --- | --- |
+| `TestDeviceListsUpdateOverFederationOnRoomJoin` | `Deploy: No images have been built for blueprint 1_servers` — the test never reached a homeserver | passes |
+| `TestFederatedClientSpaces` | the room's own two servers; the peer's name resolved into another deployment | passes |
+| `TestRestrictedRoomsLocalJoinNoCreatorsUsesPowerLevelsV11` | `Get "https://10.89.2.13…"` refused and the join answered 500 (`M_UNKNOWN`, still T-4071) | passes |
+| `TestRestrictedRoomsRemoteJoinFailOverInMSC3787Room` | `tls: bad certificate` on the way to `hs1`, and the same 500 | **fails alone too** — the one of the four that is this server's to fix |
+
+Fingerprints counted from that log: 4 wrong-name certificates, 3 refused TLS handshakes, 4 peers
+refusing a request as unsigned. 20261107h, the cleanest full run on record, counts 0, 1 and 0. So
+the parallel run is still talking over itself, less than 20261107m did and more than 20261107h.
+
+Lists: `.agent-work/complement-{passes,failures}-20261107o.txt`; table
+`.agent-work/next/complement-results-20261107o.tsv`; log `.agent-work/next/complement-run-20261107o.log`.
+
+## Targeted run 2026-11-07p-relationscheck — the four suspects alone, and the first look at `/relations`
+
+`RUN='TestRelations.*|TestThreadsEndpoint|TestDeviceListsUpdateOverFederationOnRoomJoin|TestFederatedClientSpaces|TestRestrictedRoomsLocalJoinNoCreatorsUsesPowerLevelsV11|TestRestrictedRoomsRemoteJoinFailOverInMSC3787Room'`
+at tree `d299829`, `PARALLEL=1`: **6 passing, 2 failing.**
+
+- Newly green at the first attempt: `TestRelations`, `TestRelationsPagination`,
+  `TestRelationsPaginationSync` — the relation endpoint, its two path filters and its tokens.
+- `TestThreadsEndpoint` red: the response was a `{event, latest_event, total}` triple, which is what
+  MSC3440's draft spells, while Complement reads `unsigned.m.relations.m.thread.latest_event`
+  inside the root event, which is what every implementation serves. Fixed in `69eab4f`, not by
+  touching the assertion.
+- `TestDeviceListsUpdateOverFederationOnRoomJoin`, `TestFederatedClientSpaces` and
+  `TestRestrictedRoomsLocalJoinNoCreatorsUsesPowerLevelsV11` pass alone, which is the evidence that
+  their failure in 20261107o is the deployment and not the protocol.
+- `TestRestrictedRoomsRemoteJoinFailOverInMSC3787Room` fails alone: `hs1` is contacted at an
+  address, the handshake is refused, and this server answers the join with 500 `M_UNKNOWN`. That is
+  T-4071 (a retryable federation failure answered as a server fault) with a container-network cause
+  underneath it.
+
+## Targeted run 2026-11-07r-threads — relations and threads together
+
+Same filter as above narrowed to the four relation tests, tree `69eab4f`, `PARALLEL=1`:
+**4 passing, 0 failing** — `TestRelations`, `TestRelationsPagination`, `TestRelationsPaginationSync`
+and `TestThreadsEndpoint`. Four tests green that were never attempted before, with no assertion
+changed and no test skipped. A thread as an endpoint does not on its own help
+`TestThreadReceiptsInSyncMSC4102`: that one wants a *receipt* to carry a thread position, which is
+the half of T-4083 that MSC2028 leaves open.
+
+Runner changes along the way, all of them about reading a run honestly rather than running one:
+
+- `json_events` splits the events `go test -json` glues onto one line and drops what is still not
+  JSON, and the script says how many lines it dropped. Without it a finished run reports nothing.
+- Federation fingerprints are counted from the log and printed next to the tally, kept apart
+  because they mean different things: a certificate naming another server, a TLS handshake refused,
+  a peer refusing a request as unsigned (those three are the container network), a federation
+  template answered 401 (which a room may legitimately do), and a deployment whose image was never
+  built (which is the runtime declining to start).
 
 ## Latest full run (2026-11-07m — after the volume cleanup; contaminated by a stale podman DNS record)
 

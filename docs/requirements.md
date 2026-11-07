@@ -264,6 +264,15 @@ set aside, and the asking server still answers for its own user out of its own s
 including what the first attempt got wrong, is in `.agent-work/TASKS.md` (T-4051) and
 `.agent-work/PROGRESS.md`.
 
+### 6.6 Event relations and threads (added during M4)
+
+| ID | Source | Requirement | Level | Status | Evidence |
+| --- | --- | --- | --- | --- | --- |
+| REQ-REL-001 | CS §Relations (`/relations`) | Return the events that relate to a given event, optionally filtered by relation type and event type, with pagination tokens | MUST | implemented+tested. `GET /rooms/{roomID}/relations/{eventID}[/{relType}[/{eventType}]]`, served under both the v3 and the v1 prefix the specification introduces it under | `internal/rooms/relations.go`, `tests/integration/relations_test.go` (`TestWhatRelatesToAnEventIsListed`, `TestRelationsPaginateInBothDirections`); Complement `TestRelations`, `TestRelationsPagination`, `TestRelationsPaginationSync` (run 20261107r-threads) |
+| REQ-REL-002 | Room Versions §Handling redactions | A redaction takes the event's content, so it also takes the event's claim to relate to another: the relation stops being listed | MUST | implemented+tested. The index row is dropped where the redaction is applied, in the same place the redacted form is stored | `internal/rooms/redaction.go`; `tests/integration/relations_test.go` (`TestRelationsRespectWhoMayReadTheRoom`) |
+| REQ-REL-003 | CS §Relations, MSC3440 | A room's threads, newest by each thread's newest event, each carrying its last word, its size, and whether the reader took part | SHOULD | implemented+tested. `GET /rooms/{roomID}/threads`; a thread is an aggregate over the relation index rather than a stored thing, so a root with no reply is not a thread yet. The aggregation travels inside the root's `unsigned.m.relations.m.thread`, which is what implementations and clients read, rather than the sibling `event`/`latest_event`/`total` object the draft sketched | `internal/rooms/threads.go`, `internal/persist/relation.go`; `tests/integration/relations_test.go` (`TestTheRoomThreadListFollowsTheNewestReply`); Complement `TestThreadsEndpoint` (run 20261107r-threads) |
+| REQ-REL-004 | MSC3440 `include`/`exclude` | The type lists choose which events count as part of a thread — and so which threads there are and how big they are — not only which ones are printed | SHOULD | implemented+tested, including the two names the proposal spells that are not event types (`.*`, `.*non-timeline`) | `internal/api/client/relations.go`, `internal/persist/relation.go` (`applyTypeLists`); `tests/integration/relations_test.go` |
+
 ## 7. Operational requirements
 
 | ID | Source | Requirement | Level | Status | Tests |
