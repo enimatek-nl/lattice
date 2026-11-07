@@ -7,110 +7,15 @@ import (
 
 	"github.com/enimatek/lattice/internal/eventauth"
 	"github.com/enimatek/lattice/internal/events"
-	"github.com/enimatek/lattice/internal/matrixerr"
 	"github.com/enimatek/lattice/internal/matrixid"
 	"github.com/enimatek/lattice/internal/persist"
-	"github.com/enimatek/lattice/internal/roomversion"
 )
 
-// JoinTemplate is the template a resident server hands to a server whose user wants to
-// join: an unsigned `m.room.member` event carrying what the joining server cannot invent —
-// where this room's history currently ends, which state authorises a join here, and how deep
-// the event will sit.
-//
-// The joining server adds `origin`, `origin_server_ts` and `event_id` and signs it. What is
-// returned here must not be edited by that server: `prev_events` and `auth_events` are part
-// of what the event ID is computed from, so changing them renames the event in front of every
-// other server in the room.
-//
-// It is returned unsigned on purpose. An event ID and hashes from the resident server would
-// be a verdict on an event the joining server has not agreed to yet — the join event has to
-// be signed by the server that speaks for the user.
-//
-// The authorisation check runs here, before the template is handed over, because a joining
-// server that learns the room forbids its user only after signing an event has done work for
-// nothing. The specification puts the same check on both halves of the handshake.
+// JoinTemplate is the template a resident server hands to a server whose user wants to join.
+// It is [Service.MembershipTemplate] asked for a join, and it exists because the join endpoints
+// and the outbound join path all name the same thing.
 func (s *Service) JoinTemplate(ctx context.Context, roomID, userID string) (map[string]any, string, error) {
-	if err := matrixid.UserValid(userID); err != nil {
-		return nil, "", matrixerr.Newf(matrixerr.CodeInvalidParam, "%q is not a valid user ID.", userID)
-	}
-	if err := matrixid.RoomIDValid(roomID); err != nil {
-		return nil, "", matrixerr.Newf(matrixerr.CodeInvalidParam, "%q is not a valid room ID.", roomID)
-	}
-	room, err := s.rooms.ByRoomID(ctx, roomID)
-	if err != nil {
-		if notFound(err) {
-			return nil, "", matrixerr.Newf(matrixerr.CodeNotFound, "Room %q is not known to this server.", roomID)
-		}
-		return nil, "", fmt.Errorf("rooms: cannot load the room for a join template: %w", err)
-	}
-	rules, ok := roomversion.Get(room.RoomVersion)
-	if !ok {
-		return nil, "", matrixerr.Newf(matrixerr.CodeIncompatibleRoomVersion,
-			"Room %q uses room version %s, which this server cannot authorise a join in.",
-			roomID, room.RoomVersion).WithExtra(map[string]any{"room_version": room.RoomVersion})
-	}
-
-	snapshot, err := s.loadState(ctx, roomID)
-	if err != nil {
-		return nil, "", err
-	}
-	prev, err := s.prevEvents(ctx, roomID)
-	if err != nil {
-		return nil, "", err
-	}
-	depth, err := s.depth(ctx, prev)
-	if err != nil {
-		return nil, "", err
-	}
-
-	event := map[string]any{
-		"type":             eventauth.TypeMember,
-		"room_id":          roomID,
-		"sender":           userID,
-		"state_key":        userID,
-		"content":          map[string]any{"membership": eventauth.MembershipJoin},
-		"prev_events":      toAnySlice(prev),
-		"auth_events":      []any{},
-		"depth":            depth,
-		"origin":           s.name,
-		"origin_server_ts": s.now().UnixMilli(),
-	}
-	// A restricted room needs a resident voice on the join event before the event is named and
-	// signed: rule 4.2 of the room version requires the event to be signed by the homeserver of
-	// the user the join names as its authoriser, and the authoriser has to be in the event's
-	// auth chain for a receiving server to be able to check it without replaying the room.
-	// Deciding this after the event ID is computed would rename the event in front of everyone.
-	authoriser, err := s.RestrictedJoin(ctx, roomID, userID)
-	if err != nil {
-		return nil, "", err
-	}
-	if authoriser != "" {
-		content, _ := event["content"].(map[string]any)
-		content[eventauth.JACSKey] = authoriser
-	}
-	event["auth_events"] = toAnySlice(eventauth.SelectEventIDs(rules, event, snapshot))
-	if err := s.nameAndReference(event, ctx, rules, nil); err != nil {
-		return nil, "", err
-	}
-
-	// The template is not an event yet, so rule 4.2's signature is not something it can carry:
-	// the server that speaks for the joining user seals it, and this server adds its own at
-	// /send_join, where the signature is checked for real before the join is stored.
-	templateOpts := s.authOpts(ctx, rules)
-	templateOpts.AllowUnsignedTemplate = true
-	if err := eventauth.Check(rules, event, snapshot, templateOpts); err != nil {
-		failure, reason := "the room's own rules", ""
-		if detail, ok := eventauth.AsFailure(err); ok {
-			failure = detail.Rule
-		}
-		reason = fmt.Sprintf("%s does not let %s join this room.", failure, userID)
-		s.log.Debug("rooms: a join template was refused",
-			"room_id", roomID, "user_id", userID, "rule", failure, "reason", reason)
-		return nil, "", matrixerr.New(matrixerr.CodeForbidden, "You are not allowed to join this room.").
-			WithExtra(map[string]any{"rule": failure, "reason": reason})
-	}
-	return event, room.RoomVersion, nil
+	return s.MembershipTemplate(ctx, roomID, userID, eventauth.MembershipJoin)
 }
 
 // StatePDUs returns the room's current state as the bytes each event arrived with.

@@ -22,6 +22,9 @@ import (
 type JoinAcceptor interface {
 	// JoinTemplate builds the unsigned join event a joining server will sign.
 	JoinTemplate(ctx context.Context, roomID, userID string) (map[string]any, string, error)
+	// MembershipTemplate builds the same shape for a leave or a knock: the room's answer to
+	// "what would a <membership> by this user look like here", which the asking server signs.
+	MembershipTemplate(ctx context.Context, roomID, userID, membership string) (map[string]any, string, error)
 	// StatePDUs is the room's current state as signed bytes.
 	StatePDUs(ctx context.Context, roomID string) ([]json.RawMessage, error)
 	// AuthChainPDUs and AuthChainIDs walk the events that authorise a set of events.
@@ -66,26 +69,7 @@ func (d *Deps) handleMakeJoin(w http.ResponseWriter, r *http.Request) {
 		d.answerServiceError(w, "make_join", roomID, err)
 		return
 	}
-	// `ver` is repeated once per room version and names the versions the *asking* server can
-	// speak — it is not that server's guess about which version this room is, and a first value
-	// taken from an unordered list proves nothing about the rest of it. What decides the answer is
-	// whether this room's version is in the list: if it is, the template is handed over in the
-	// room's own version and the response names that version, so the asker signs what the room
-	// actually uses; if it is not, no template would help, because the asker cannot authorise the
-	// join it is about to sign. Then the useful answer is the room's version itself, which is what
-	// M_INCOMPATIBLE_ROOM_VERSION carries it in.
-	//
-	// A server that names no versions has said nothing about what it can speak, and the
-	// specification's documented default for that case is the version 1 room format — a legacy
-	// artifact. Refusing on that default would mean every modern room is unjoinable by a server
-	// that simply asks, so silence is answered in the room's own version.
-	if asked := r.URL.Query()["ver"]; len(asked) > 0 && !slices.Contains(asked, roomVersion) {
-		d.Log.Debug("federation: a join was asked by a server that does not list the room's "+
-			"room version among the versions it can speak",
-			"room_id", roomID, "room_version", roomVersion, "asked_versions", strings.Join(asked, ","))
-		matrixerr.Write(w, http.StatusBadRequest, matrixerr.Newf(matrixerr.CodeIncompatibleRoomVersion,
-			"Your homeserver does not support the features required to join this room: %q uses room version %s.",
-			roomID, roomVersion).WithExtra(map[string]any{"room_version": roomVersion}))
+	if d.refusedOnRoomVersion(w, r, roomID, roomVersion) {
 		return
 	}
 	origin, _ := r.Context().Value(originContextKey{}).(string)
@@ -96,6 +80,51 @@ func (d *Deps) handleMakeJoin(w http.ResponseWriter, r *http.Request) {
 		"event":        template,
 		"room_version": roomVersion,
 	})
+}
+
+// refusedOnRoomVersion answers a membership handshake this server cannot take part in because of
+// its room version, and says whether it answered.
+//
+// The `ver` query parameter is repeated once per room version and names the versions the *asking*
+// server can speak — it is not that server's guess about which version this room is, and a first
+// value taken from an unordered list proves nothing about the rest of it. What decides the answer is
+// whether this room's version is in the list: if it is, the template is handed over in the room's own
+// version and the response names that version, so the asker signs what the room actually uses; if it
+// is not, no template would help, because the asker cannot authorise the event it is about to sign.
+// The useful answer then is the room's version itself, which is what M_INCOMPATIBLE_ROOM_VERSION
+// carries it in.
+//
+// A server that names no versions has said nothing about what it can speak, and the specification's
+// documented default for that case is the version 1 room format — a legacy artifact. Refusing on that
+// default would make every modern room unjoinable by a server that simply asks, so silence is answered
+// in the room's own version.
+//
+// The room's own version is checked on its own as well: a template written in a format this server
+// cannot compute hashes in is not a template, and an asker that named a version it cannot speak will
+// still be told which one that is rather than handed an event its build step cannot sign.
+func (d *Deps) refusedOnRoomVersion(w http.ResponseWriter, r *http.Request, roomID, roomVersion string) bool {
+	asked := r.URL.Query()["ver"]
+	if len(asked) > 0 && !slices.Contains(asked, roomVersion) {
+		d.Log.Debug("federation: a membership handshake was asked by a server that does not list "+
+			"the room's room version among the versions it can speak",
+			"room_id", roomID, "room_version", roomVersion, "asked_versions", strings.Join(asked, ","))
+		matrixerr.Write(w, http.StatusBadRequest, matrixerr.Newf(matrixerr.CodeIncompatibleRoomVersion,
+			"Your homeserver does not support the features required to use this room: %q uses room version %s.",
+			roomID, roomVersion).WithExtra(map[string]any{"room_version": roomVersion}))
+		return true
+	}
+	if _, ok := roomversion.Get(roomVersion); !ok {
+		// The room's own version is the one that matters: a template written in a format this
+		// server cannot compute hashes in is not a template, and the asking server has to be told
+		// which version it cannot speak rather than handed something that will fail its build.
+		d.Log.Debug("federation: a membership handshake was refused because this server cannot speak the room's version",
+			"room_id", roomID, "room_version", roomVersion)
+		matrixerr.Write(w, http.StatusBadRequest, matrixerr.Newf(matrixerr.CodeIncompatibleRoomVersion,
+			"Room %q uses room version %s, which this server cannot handle.",
+			roomID, roomVersion).WithExtra(map[string]any{"room_version": roomVersion}))
+		return true
+	}
+	return false
 }
 
 // handleSendJoin implements PUT /_matrix/federation/v2/send_join/{roomId}/{eventId}.
@@ -113,7 +142,11 @@ func (d *Deps) handleMakeJoin(w http.ResponseWriter, r *http.Request) {
 // This server signs the event as well before storing it. That is not decoration: the resident
 // server is the one attesting that this join was accepted into the room, and every other
 // server in the room sees the event with that signature on it.
-func (d *Deps) handleSendJoin(w http.ResponseWriter, r *http.Request) {
+//
+// The `v2` flag is which spelling of the endpoint the request arrived on, because the two answer
+// differently; it is passed in from the route rather than read back out of the path, so a handler
+// cannot be handed one URL and answer as if it were the other.
+func (d *Deps) handleSendJoin(w http.ResponseWriter, r *http.Request, v2 bool) {
 	roomID := r.PathValue("roomId")
 	eventID := r.PathValue("eventId")
 	if roomID == "" || eventID == "" {
@@ -131,7 +164,10 @@ func (d *Deps) handleSendJoin(w http.ResponseWriter, r *http.Request) {
 			"The join event could not be read."))
 		return
 	}
-	event, err := events.Parse(body)
+	// v1 wraps the event in an `event` key; v2 puts the event in the body itself. Both are read
+	// into the same event, because everything that follows is a check of the event — its room ID,
+	// its event ID, its signatures — and not of the envelope around it.
+	event, err := membershipFromBody(body)
 	if err != nil {
 		matrixerr.Write(w, http.StatusBadRequest, matrixerr.New(matrixerr.CodeBadRequest,
 			"The join event is not readable."))
@@ -149,7 +185,7 @@ func (d *Deps) handleSendJoin(w http.ResponseWriter, r *http.Request) {
 			roomID, room.RoomVersion).WithExtra(map[string]any{"room_version": room.RoomVersion}))
 		return
 	}
-	if problem := d.joinEventProblem(event, roomID, eventID, rules); problem != "" {
+	if problem := d.membershipEventProblem(event, roomID, eventID, rules, eventauth.MembershipJoin); problem != "" {
 		d.Log.Warn("federation: a send_join did not match the join it was offered as",
 			"room_id", roomID, "event_id", eventID, "problem", problem)
 		matrixerr.Write(w, http.StatusBadRequest, matrixerr.New(matrixerr.CodeInvalidParam, problem))
@@ -254,6 +290,20 @@ func (d *Deps) handleSendJoin(w http.ResponseWriter, r *http.Request) {
 			"The server encountered an internal error."))
 		return
 	}
+	// Version 1 of this endpoint answers with the state and nothing else: the joining server has
+	// the event already, since it built it, and `auth_chain` and `servers_in_room` arrived with
+	// version 2. Handing back the v2 shape on a v1 URL is harmless to a client that ignores the
+	// extras and misleading to one that reads this server's supported versions from the answer.
+	if !v2 {
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{
+			"state":            state,
+			"origin":           d.Cfg.ServerName,
+			"origin_server_ts": time.Now().UTC().UnixMilli(),
+		})
+		d.Log.Info("federation: a remote user joined a room this server holds over the v1 endpoint",
+			"room_id", roomID, "event_id", accepted, "sender", event["sender"])
+		return
+	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"event":            event,
 		"state":            state,
@@ -266,43 +316,51 @@ func (d *Deps) handleSendJoin(w http.ResponseWriter, r *http.Request) {
 		"room_id", roomID, "event_id", accepted, "sender", event["sender"])
 }
 
-// joinEventProblem checks the path against the event, and the event against what a join has
-// to be. The specification lists these checks for the joining side as well; a resident server
-// that skips them stores an event whose URL promises something else.
-func (d *Deps) joinEventProblem(event map[string]any, roomID, eventID string, rules roomversion.Rules) string {
+// membershipEventProblem checks the path against the event, and the event against what a
+// membership change of the expected kind has to be. The specification lists these checks for the
+// asking side as well; a resident server that skips them stores an event whose URL promises
+// something else.
+//
+// The membership is a parameter because the three send_* endpoints are the same endpoint written
+// three times over in the wild, and the only thing that separates a legitimate leave from a forged
+// join submitted to `/send_leave` is the membership the event claims. Answering "OK" to the wrong
+// one is how a server ends up holding a join it never authorised — which is exactly what
+// `TestCannotSendNonLeaveViaSendLeaveV1` and its siblings probe. A wrong membership is a bad
+// request, not a permission decision, so the caller answers 400 M_INVALID_PARAM rather than 403.
+func (d *Deps) membershipEventProblem(event map[string]any, roomID, eventID string, rules roomversion.Rules, membership string) string {
 	if kind, _ := event["type"].(string); kind != eventauth.TypeMember {
-		return "A join has to be an m.room.member event."
+		return "A " + membership + " has to be an m.room.member event."
 	}
 	if got, _ := event["room_id"].(string); got != roomID {
-		return "The join event belongs to a different room than the one it was sent to."
+		return "The membership event belongs to a different room than the one it was sent to."
 	}
 	sender, _ := event["sender"].(string)
 	stateKey, _ := event["state_key"].(string)
 	if sender == "" || sender != stateKey {
-		return "A join event speaks for the user named in both sender and state_key."
+		return "A " + membership + " event speaks for the user named in both sender and state_key."
 	}
 	domain, err := matrixid.UserDomain(sender)
 	if err != nil {
-		return "The join event's sender is not a valid user ID."
+		return "The membership event's sender is not a valid user ID."
 	}
 	content, _ := event["content"].(map[string]any)
-	if membership, _ := content["membership"].(string); membership != eventauth.MembershipJoin {
-		return "The event is not a join."
+	if claimed, _ := content["membership"].(string); claimed != membership {
+		return "The event is not a " + membership + "."
 	}
 	if origin, _ := event["origin"].(string); origin != "" && origin != domain {
 		// The user's server is the one that speaks for the user. An event from another
 		// server on their behalf is how a stranger would join somebody.
-		return "The join event names a server other than its sender's."
+		return "The membership event names a server other than its sender's."
 	}
-	// The joining server puts the ID it computed in the URL. Recomputing it is what makes
-	// that claim mean something: under every other server's hash this content makes one ID,
-	// and an event filed under a different one is a different event.
+	// The asking server puts the ID it computed in the URL. Recomputing it is what makes that
+	// claim mean something: under every other server's hash this content makes one ID, and an
+	// event filed under a different one is a different event.
 	computed, err := events.EventID(rules, event)
 	if err != nil {
-		return "The join event's ID cannot be computed from its content."
+		return "The membership event's ID cannot be computed from its content."
 	}
 	if computed != eventID {
-		return "The join event is not the event its event ID names."
+		return "The membership event is not the event its event ID names."
 	}
 	return ""
 }
