@@ -21,6 +21,21 @@ import (
 // holds it; the client's hints are how a room whose creator has gone quiet is still joined.
 type RemoteJoin interface {
 	Join(ctx context.Context, roomID, userID string, destinations []string) (RemoteJoinResult, error)
+	// Knock and Leave carry the two membership changes that a user speaks for themselves: the
+	// same two halves, asked of a server that holds the room. A server that does not hold a room
+	// cannot place an event in a history it has never seen, so a departure invented here would be
+	// resolved away by every server in the room and the user would silently still be in it.
+	Knock(ctx context.Context, roomID, userID string, destinations []string) (RemoteMembershipResult, error)
+	Leave(ctx context.Context, roomID, userID string, destinations []string) (RemoteMembershipResult, error)
+}
+
+// RemoteMembershipResult says what a completed remote knock or leave brought back.
+type RemoteMembershipResult struct {
+	// EventID is this server's own membership event.
+	EventID string
+	// RoomState counts the room's own events the resident server handed over. A knock brings the
+	// room's identity with it; a leave brings nothing.
+	RoomState int
 }
 
 // RemoteJoinResult says what a completed remote join brought here.
@@ -58,12 +73,6 @@ func (s *Service) roomKnown(ctx context.Context, roomID string) (bool, error) {
 	return false, nil
 }
 
-// joinRemote takes a local user into a room this server does not hold.
-//
-// The room's ID is checked before anything is sent. A room ID whose name is this server's own
-// is a room this server should know about; if it does not, it is not somebody else's room, and
-// asking a stranger to hand one over would let that stranger invent a room under this server's
-// name and have this server store it.
 // joinThroughNeighbours carries out over federation a join this server could not authorise in a room
 // it does hold.
 //
@@ -116,7 +125,7 @@ func (s *Service) joinThroughNeighbours(ctx context.Context, change MembershipCh
 		return "", false
 	}
 	change.Via = others
-	eventID, err := s.joinRemote(ctx, change)
+	eventID, err := s.carryRemote(ctx, change)
 	if err != nil {
 		s.log.Warn("rooms: a join this server could not authorise failed over and failed there too",
 			slog.String("room_id", change.RoomID), slog.String("user_id", change.Target),
@@ -126,7 +135,13 @@ func (s *Service) joinThroughNeighbours(ctx context.Context, change MembershipCh
 	return eventID, true
 }
 
-func (s *Service) joinRemote(ctx context.Context, change MembershipChange) (string, error) {
+// carryRemote takes a local user's join, knock or leave to a room this server does not hold.
+//
+// The room's ID is checked before anything is sent. A room ID whose name is this server's own is a
+// room this server should know about; if it does not, it is not somebody else's room, and asking a
+// stranger to hand one over would let that stranger invent a room under this server's name and have
+// this server store it.
+func (s *Service) carryRemote(ctx context.Context, change MembershipChange) (string, error) {
 	if s.remoteJoin == nil {
 		return "", ErrRemoteJoinUnavailable
 	}
@@ -139,6 +154,28 @@ func (s *Service) joinRemote(ctx context.Context, change MembershipChange) (stri
 	}
 	// The user's own extras (the Client-Server API copies a join body's keys into the event)
 	// travel with the ask; the federation handshake supplies the room's own shape around them.
+	switch change.Membership {
+	case eventauth.MembershipKnock, eventauth.MembershipLeave:
+		var (
+			eventID  string
+			roomSize int
+			err      error
+		)
+		if change.Membership == eventauth.MembershipKnock {
+			result, knockErr := s.remoteJoin.Knock(ctx, change.RoomID, change.Target, change.Via)
+			eventID, roomSize, err = result.EventID, result.RoomState, knockErr
+		} else {
+			result, leaveErr := s.remoteJoin.Leave(ctx, change.RoomID, change.Target, change.Via)
+			eventID, roomSize, err = result.EventID, result.RoomState, leaveErr
+		}
+		if err != nil {
+			return "", err
+		}
+		s.log.Info("rooms: a local user's "+change.Membership+" was carried to a room held elsewhere",
+			slog.String("room_id", change.RoomID), slog.String("user_id", change.Target),
+			slog.String("event_id", eventID), slog.Int("room_state_events", roomSize))
+		return eventID, nil
+	}
 	result, err := s.remoteJoin.Join(ctx, change.RoomID, change.Target, change.Via)
 	if err != nil {
 		return "", err
@@ -150,10 +187,25 @@ func (s *Service) joinRemote(ctx context.Context, change MembershipChange) (stri
 	return result.EventID, nil
 }
 
-// joinElsewhere asks whether a membership change has to leave this server. It answers whether
-// the caller should hand the change to the federation stack rather than write an event here.
-func (s *Service) joinElsewhere(ctx context.Context, change MembershipChange) (bool, error) {
-	if change.Membership != eventauth.MembershipJoin {
+// carriedElsewhere asks whether a membership change has to leave this server. It answers whether the
+// caller should hand the change to the federation stack rather than write an event here.
+//
+// Three memberships qualify: a join, a knock and a leave — and they qualify for the same reason.
+// Each speaks for the user it is about, so this server can only sign it, not place it; and each is
+// asked by a server that cannot see where the room's history ends. A kick or a ban is not that kind
+// of change: it is this server acting in a room this server holds, which is why the room not being
+// known here makes no sense for it and the local path's refusals are the right answer.
+//
+// A change about somebody else is never carried: this server does not speak for a user who lives
+// elsewhere, and a `make_leave` asked on their behalf is a request to sign a departure the user did
+// not ask for.
+func (s *Service) carriedElsewhere(ctx context.Context, change MembershipChange) (bool, error) {
+	switch change.Membership {
+	case eventauth.MembershipJoin, eventauth.MembershipKnock, eventauth.MembershipLeave:
+	default:
+		return false, nil
+	}
+	if change.Sender != change.Target {
 		return false, nil
 	}
 	known, err := s.roomKnown(ctx, change.RoomID)

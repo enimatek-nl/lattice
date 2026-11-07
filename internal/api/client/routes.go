@@ -145,6 +145,12 @@ func Register(r *httpserver.Router, d *Deps, requireAuth func(http.Handler) http
 	versioned("POST", "/join/{roomIDOrAlias}", d.handleJoin)
 	versioned("POST", "/rooms/{roomID}/join", d.handleJoin)
 	versioned("POST", "/rooms/{roomID}/leave", d.handleLeave)
+	// Knocking has both spellings a join has: the room can be named by ID or by alias, and the
+	// servers that can be asked for it are named in the query. A client that knocks on a room this
+	// server does not hold is asking for the same two-half handshake over federation that a join is,
+	// so answering only `/rooms/{roomID}/knock` would leave `/knock/{roomID}` — the spelling the
+	// specification puts the `via` and `server_name` parameters on — unreachable.
+	versioned("POST", "/knock/{roomIDOrAlias}", d.handleKnock)
 	versioned("POST", "/rooms/{roomID}/knock", d.handleKnock)
 	versioned("POST", "/rooms/{roomID}/invite", d.handleInvite)
 	versioned("POST", "/rooms/{roomID}/kick", d.handleKick)

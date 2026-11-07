@@ -76,10 +76,10 @@ func (s *Service) SetMembership(ctx context.Context, change MembershipChange) (s
 	// by a server that does hold the room, and this server's part is to speak for its own
 	// user and sign. Deciding that here, before any event is built, keeps a half-written
 	// membership event out of a local room.
-	if elsewhere, err := s.joinElsewhere(ctx, change); err != nil {
+	if elsewhere, err := s.carriedElsewhere(ctx, change); err != nil {
 		return "", err
 	} else if elsewhere {
-		return s.joinRemote(ctx, change)
+		return s.carryRemote(ctx, change)
 	}
 
 	// A local action only. Deciding this here, before any event is built, keeps a
