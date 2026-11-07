@@ -170,6 +170,12 @@ func Register(r *httpserver.Router, d *Deps, requireAuth func(http.Handler) http
 	versioned("GET", "/rooms/{roomID}/members", d.handleMembers)
 	versioned("GET", "/rooms/{roomID}/joined_members", d.handleJoinedMembers)
 	versioned("GET", "/rooms/{roomID}/messages", d.handleRoomMessages)
+	// Read receipts and the markers that move them. A receipt is a statement by one user about
+	// how far they have read: it is not an event, and it reaches other sessions of that user as
+	// an ephemeral `m.receipt` rather than through the room's timeline.
+	versioned("POST", "/rooms/{roomID}/receipt/{receiptType}/{eventID}", d.handleReceipt)
+	versioned("PUT", "/rooms/{roomID}/receipt/{receiptType}/{eventID}", d.handleReceipt)
+	versioned("POST", "/rooms/{roomID}/read_markers", d.handleReadMarkers)
 	versioned("GET", "/rooms/{roomID}/event/{eventID}", d.handleRoomEvent)
 	versioned("PUT", "/rooms/{roomID}/redact/{eventID}/{txnID}", d.handleRedact)
 

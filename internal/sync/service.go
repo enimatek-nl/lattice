@@ -178,8 +178,11 @@ const (
 	summaryInvitedMemberCount = "m.invited_member_count"
 )
 
-// UnreadNotifications counts what the client has not seen. Read receipts are not
-// implemented, so the honest answer is zero, not a guess.
+// UnreadNotifications counts what the client has not seen. Read receipts exist now (they are
+// delivered as ephemeral `m.receipt` events), but the count is still zero rather than a guess:
+// MSC784's rules for what counts as unread, and the read marker that MSC2860 would make the
+// starting point, are T-3005a. The raw material is the row behind
+// [Service.receiptEvents], which is also why the count is a task and not a mystery.
 type UnreadNotifications struct {
 	NotificationCount int `json:"notification_count"`
 	HighlightCount    int `json:"highlight_count"`
@@ -357,7 +360,8 @@ func (s *Service) build(ctx context.Context, userID string, since Token, filter 
 			// A joined room is interesting when something happened in it, or when the user
 			// changed something of their own about it: a tag or an annotation written while
 			// the room sat quiet is news about that room, and it has nowhere else to go.
-			if !included(room, req) && len(roomAccountDataByRoom[membership.RoomID]) == 0 {
+			if !included(room, req) && len(roomAccountDataByRoom[membership.RoomID]) == 0 &&
+				len(room.ephemeral) == 0 {
 				continue
 			}
 			if result.Rooms.Join == nil {
@@ -365,9 +369,10 @@ func (s *Service) build(ctx context.Context, userID string, since Token, filter 
 			}
 			section := JoinedRoom{
 				Timeline: room.timeline,
-				// Ephemeral events (receipts, typing) and account data are not stored
-				// yet, so the honest answer is an empty list, not a missing field.
-				Ephemeral:           Events{Events: []Event{}},
+				// Read receipts arrive as ephemeral events. Typing has nowhere to come
+				// from yet (T-4008), so a room with no receipts answers an empty list
+				// rather than a missing field.
+				Ephemeral:           eventsOrEmpty(room.ephemeral),
 				AccountData:         roomAccountData(roomAccountDataByRoom, membership.RoomID),
 				UnreadNotifications: UnreadNotifications{},
 				HighlightCount:      0,
@@ -611,6 +616,9 @@ type roomUpdate struct {
 	// stateAfter is the same room's state read at the newest event of the timeline batch.
 	// It is set only when the client asked for it, and then `state` is left empty.
 	stateAfter *Events
+	// ephemeral holds the room's ephemeral events for this window — read receipts today,
+	// typing when EDUs carry anything (T-4008). They are not part of the room's graph.
+	ephemeral []Event
 	// total counts every event in the window, before filtering and truncation. It is
 	// what makes the `limited` flag mean something.
 	total int64
@@ -700,6 +708,23 @@ func (s *Service) room(ctx context.Context, userID, roomID string, since Token, 
 		return roomUpdate{}, err
 	}
 	update := roomUpdate{timeline: timeline, state: stateEvents, total: total}
+	// A room the user is still in also carries the receipts that moved inside this window.
+	// A room they have left does not: a receipt is a statement about reading a room, and the
+	// window for a room one is out of closed when the membership event did it.
+	if until == 0 {
+		receiptSince, receiptUntil := int64(0), int64(0)
+		if req.HasSince {
+			// An incremental sync is asked "what moved since my token", which is the same
+			// question for a receipt as for an event. A first sync has no window and is
+			// given the current answer instead.
+			receiptSince, receiptUntil = int64(since), position
+		}
+		receipts, err := s.receiptEvents(ctx, roomID, receiptSince, receiptUntil)
+		if err != nil {
+			return roomUpdate{}, err
+		}
+		update.ephemeral = receipts
+	}
 	// Read alongside the ordinary state section rather than instead of it: the section a
 	// joined room answers with is the client's choice. A room the user has left is not
 	// asked for — its batch ends at the event that took them out, so the state as of that
@@ -712,6 +737,14 @@ func (s *Service) room(ctx context.Context, userID, roomID string, since Token, 
 		update.stateAfter = after
 	}
 	return update, nil
+}
+
+// eventsOrEmpty keeps a list that has nothing in it a JSON array rather than a null.
+func eventsOrEmpty(events []Event) Events {
+	if events == nil {
+		return Events{Events: []Event{}}
+	}
+	return Events{Events: events}
 }
 
 // stateEvents returns the room's state as the client needs it.
