@@ -96,6 +96,12 @@ func (s *Service) filter(ctx context.Context, userID, raw string) (Filter, error
 		return Filter{}, nil
 	}
 	if strings.HasPrefix(strings.TrimSpace(raw), "{") {
+		// The same check the create door runs. A filter given inline to /sync is the same
+		// document, and a client that is told its filter is wrong once and not told again
+		// has been trained to distrust the answer it did get.
+		if err := ValidateFilter([]byte(raw)); err != nil {
+			return Filter{}, err
+		}
 		var filter Filter
 		if err := json.Unmarshal([]byte(raw), &filter); err != nil {
 			return Filter{}, matrixerr.New(matrixerr.CodeInvalidParam,
@@ -127,9 +133,12 @@ func (s *Service) filter(ctx context.Context, userID, raw string) (Filter, error
 }
 
 // SaveFilter stores a filter for a user and returns its ID.
+//
+// The document is checked before it is kept: a filter this server accepted while unable to make
+// sense of it would answer every later /sync with fewer events than the client meant to ask for.
 func (s *Service) SaveFilter(ctx context.Context, userID string, body []byte) (int64, error) {
-	if !json.Valid(body) {
-		return 0, matrixerr.New(matrixerr.CodeInvalidParam, "A filter must be a JSON object.")
+	if err := ValidateFilter(body); err != nil {
+		return 0, err
 	}
 	filter := &persist.Filter{UserID: userID, Body: string(body)}
 	if err := s.filters.Save(ctx, filter); err != nil {
