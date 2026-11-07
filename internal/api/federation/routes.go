@@ -86,7 +86,26 @@ func Register(r *httpserver.Router, d *Deps) {
 	// claims the newer version is unavailable.
 	r.Handle("GET", "/_matrix/federation/v1/make_join/{roomId}/{userId}", d.requireCredential(d.handleMakeJoin))
 	r.Handle("GET", "/_matrix/federation/v3/make_join/{roomId}/{userId}", d.requireCredential(d.handleMakeJoin))
-	r.Handle("PUT", "/_matrix/federation/v2/send_join/{roomId}/{eventId}", d.requireCredential(d.handleSendJoin))
+	// Version 1 of `/send_join` wraps the event in an `event` key and answers with the room's state
+	// alone. It is registered rather than left to 404 because the clients that fall back to it on a
+	// 404 fall back to a response format this server would rather describe than imitate, and because
+	// a peer that asks a question on a v1 URL has to be answered on the terms it asked in.
+	r.Handle("PUT", "/_matrix/federation/v1/send_join/{roomId}/{eventId}",
+		d.requireCredential(func(w http.ResponseWriter, r *http.Request) { d.handleSendJoin(w, r, false) }))
+	r.Handle("PUT", "/_matrix/federation/v2/send_join/{roomId}/{eventId}",
+		d.requireCredential(func(w http.ResponseWriter, r *http.Request) { d.handleSendJoin(w, r, true) }))
+
+	// Leaving and knocking are the join handshake asked of a room the asker does not hold: the
+	// resident server describes the membership change, the asker's server signs that description,
+	// and the resident server decides whether its copy of the room permits it. Rejecting an invite
+	// and rescinding a knock both go through `/make_leave` for the same reason — a server that has
+	// no copy of the room cannot know which of its events the departure should cite.
+	r.Handle("GET", "/_matrix/federation/v1/make_leave/{roomId}/{userId}", d.requireCredential(d.handleMakeLeave))
+	r.Handle("PUT", "/_matrix/federation/v1/send_leave/{roomId}/{eventId}", d.requireCredential(d.handleSendLeave))
+	r.Handle("PUT", "/_matrix/federation/v2/send_leave/{roomId}/{eventId}", d.requireCredential(d.handleSendLeave))
+	r.Handle("GET", "/_matrix/federation/v1/make_knock/{roomId}/{userId}", d.requireCredential(d.handleMakeKnock))
+	r.Handle("PUT", "/_matrix/federation/v1/send_knock/{roomId}/{eventId}", d.requireCredential(d.handleSendKnock))
+	r.Handle("PUT", "/_matrix/federation/v2/send_knock/{roomId}/{eventId}", d.requireCredential(d.handleSendKnock))
 
 	// What a room's state is, and what authorises it, in a form a server that has never seen
 	// the room can check for itself.
