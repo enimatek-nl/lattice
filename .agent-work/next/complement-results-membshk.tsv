@@ -1,0 +1,9 @@
+fail	tests/msc4242	TestMSC4242JoinLeaveRejoinPublicRoom
+fail	tests	TestKnocking
+fail	tests	TestKnockingInMSC3787Room
+pass	tests	TestCannotSendKnockViaSendKnockInMSC3787Room
+pass	tests	TestCannotSendNonJoinViaSendJoinV1
+pass	tests	TestCannotSendNonJoinViaSendJoinV2
+pass	tests	TestCannotSendNonKnockViaSendKnock
+pass	tests	TestCannotSendNonLeaveViaSendLeaveV1
+pass	tests	TestCannotSendNonLeaveViaSendLeaveV2

@@ -1,0 +1,3 @@
+TestMSC4242JoinLeaveRejoinPublicRoom
+TestKnocking
+TestKnockingInMSC3787Room

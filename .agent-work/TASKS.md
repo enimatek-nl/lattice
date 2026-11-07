@@ -1194,3 +1194,100 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
       (`TestDeviceListUpdates`, `TestDeviceListsUpdateOverFederation`,
       `TestE2EKeyBackupReplaceRoomKeyRules`) are the already-recorded device-list announcement and
       key-backup gaps (T-4064, T-4008, T-3008e), unchanged by this work.
+
+- [x] T-4074 the membership handshakes a room holds and this server does not: `/make_leave`,
+      `/send_leave` (v1 and v2), `/make_knock`, `/send_knock` (v1 and v2), the outbound halves, and
+      `POST /knock/{roomIDOrAlias}`. Six Complement tests and a cluster of leave/forget tests were
+      red for the missing endpoints.
+
+      The three handshakes are one shape, so the room service writes one template —
+      `MembershipTemplate(ctx, room, user, membership)` — and `JoinTemplate` is that asked for a
+      join. The differences are the room's business rather than the endpoint's: a restricted room
+      needs its join authoriser named before the event is named, so that step runs only for a join,
+      and a refusal says which thing the room did not let the user do (`verbOf`).
+
+      On the endpoints: `make_leave` answers under both `event` and `membership_event`, because the
+      specification and gomatrixserverlib — what Dendrite and Complement's own federation server
+      decode with — disagree, and an answer under one name reads to the other reader as "not
+      implemented". `send_leave` and `send_knock` take the bare event or the v1 `event` envelope,
+      check the path against the event (room ID, sender/state_key, the membership claimed, the
+      origin, and the event ID recomputed from the content), and answer **400 `M_INVALID_PARAM`, not
+      403**, when the event claims a membership the endpoint is not for: that is a request which does
+      not mean its URL, not a permission the room withheld, and 403 invites a peer to go find a more
+      obliging resident server in the same room. `send_join` now answers the v1 URL too (v1 body
+      wrapped, v1 answer without `event`/`auth_chain`/`servers_in_room`) and shares those path
+      checks, which are the same function with the membership as a parameter. A knock's second half
+      is `knock_room_state`: full PDUs so the knocker can check rather than believe, minus the
+      room's membership events, which is precisely what knocking does not grant.
+
+      Also in this window, because the knock tests stopped at the invite in front of them: an invite
+      names its event under both `invite_event` (specification) and `event` (gomatrixserverlib, which
+      rejects a v2 body without that key outright). Lattice sent only the first, so to a large part
+      of the federation its invites carried no event at all. Inbound reads either spelling now; the
+      invite endpoint had no test of a peer's request in it, and has one.
+
+      Verification: `tests/integration/federationmembership_test.go` (a leave end to end, an invite
+      rejected by a server that has never held the room, a knock with `knock_room_state` checked for
+      `m.room.create`, for full PDUs and for the absence of membership, a knock template refused at
+      an invite-only room, and seven wrong-membership requests across `send_leave`/`send_knock`/
+      `send_join` v1 and v2 — all 400), `tests/integration/federationinvite_test.go`
+      (countersigning a peer-spelled invite, with the room's real signed state bundled in
+      `unsigned.invite_room_state`, and the invited user then able to read the invitation),
+      `tests/integration/knockrestricted_test.go`, and the whole Go suite green.
+      Targeted Complement `.agent-work/next/complement-run-membshk3.log`
+      (`.agent-work/next/complement-results-membshk3.tsv`): 2 passing, 4 failing in that subset, of
+      which the four `TestCannotSend*Via*` validation tests and `TestFederationRejectInvite` and
+      `TestRoomsInvite` are green, and `TestKnocking`'s local half went from 3 passing of 13
+      subtests to 12 of 13.
+
+- [ ] T-4075 a knocked-on room is invisible to the user who knocked on it. `POST /knock/{roomID}`
+      against a room held elsewhere now reaches the room — the resident server records the knock and
+      the room's other members see the membership — but the knocking user's own server keeps nothing:
+      her `/sync` has no `rooms.knock` entry for the room, so the knock she just made cannot be seen,
+      rescinded or followed up from her side.
+
+      The tempting fix is wrong and was tried. Storing what `/send_knock` hands back as a join's
+      bundle cannot work: `knock_room_state` deliberately carries no `m.room.member` events, and in
+      every room version with knock the member event of whoever wrote a state event is one of that
+      event's auth events. Given the full PDUs, nothing in the set can be authorised — including this
+      server's own knock event — so all seven events sit unresolved forever. The log records what
+      arrived (`internal/federation/membership.go`, at the return that does not store it).
+
+      What is needed is a knock's own record — the shape an invite-hanging room is for an invitee:
+      the room row, this server's signed knock event, and the stripped state as an unverified picture
+      of the room, never as a history. Then `/sync`'s `rooms.knock.<room>.knock_state` (which
+      Complement reads through `client.SyncKnockedOn`) has something to answer with.
+      Complement: `TestKnocking/Users_in_the_room_see_a_user's_membership_update_when_they_knock#01`
+      and the four subtests after it in
+      `.agent-work/next/complement-run-membshk3.log`.
+
+- [ ] T-4076 what a first sync's `state` section is. Complement's knock test reads the room's
+      current member events out of `rooms.join.<room>.state` and expects the reason of the **first**
+      knock, which only holds if `state` is the state *at the start of the returned timeline* rather
+      than the state as it is now. The specification's wording is "state events relevant to the room,
+      sent up to the start of the timeline", and MSC4222 (`state_after`) exists precisely because
+      servers got these two the wrong way round; this server answers `state` as current state (see
+      the conditional subtraction in `internal/sync/service.go` and the MSC4222 read in
+      `internal/sync/stateafter.go`).
+      This is not a free flip: `TestSyncOmitsStateChangeOnFilteredEvents` was reddened by an earlier
+      shape of the same question, and it is green now. Decide it against both tests, in that order of
+      evidence, and note that a server that gets this wrong is still interoperable — which is why the
+      fix has to be argued and not guessed.
+      Complement: `TestKnocking/Users_in_the_room_see_a_user's_membership_update_when_they_knock`
+      (`content.reason` of the wrong knock) in `.agent-work/next/complement-run-membshk3.log`.
+
+- [ ] T-4077 `POST /rooms/{roomID}/forget`, and the difference between leaving and forgetting.
+      Lattice has no `/forget` at all: the endpoint answers 404 `M_UNRECOGNIZED`. Behind it is a
+      policy this server has not decided — a *left* room stays readable to the departed member
+      (state, `/members`, `/messages`: SPEC-216), and *forgetting* is what takes that away. Today a
+      left room is not readable, which is the automatic-forget behaviour, and the two Complement
+      tests that pin the distinction are red together:
+      `TestRoomForget` (400 `M_UNKNOWN` while still joined; 200 after leaving; `/messages` then 403;
+      the room gone from the room lists; MSC4323's forget-while-joined gated on the capability) and
+      `TestLeftRoomFixture` (a departed member reading `m.room.name`, a state event that no longer
+      exists, `/members` showing herself as `leave` and not the member who joined later, and
+      `/messages` from her old sync token).
+      Start from the persistence side: forgetting is a per-user fact about a room, so it needs a row
+      that `/sync`, the room lists and the history reads all consult — not a deletion of the room.
+      Related: T-2015 (`/context`), T-3001 (history visibility), T-4074 (a leave that reaches a room
+      held elsewhere, now done).

@@ -2646,3 +2646,47 @@ contaminated and should be replaced by this one in the compliance matrix — rea
 `grep -E '^(ok|FAIL)\s+github'` for packages and `grep -E '^--- FAIL'` for top-level tests, and
 check it did not die of `num_locks` before believing any number:
 `grep -c 'exceeded num_locks' gate5.log` should be 0.
+
+## 2026-11-07 (late) — the membership handshakes a room holds and this server does not (T-4074)
+
+Commits `fba8603`, `528ca8c`, `7aceddc`, `24adc22`. Four Complement tests were in the failing list
+for a handshake this server simply did not serve — `TestCannotSendNonLeaveViaSendLeaveV1/V2`,
+`TestCannotSendNonKnockViaSendKnock`, `TestCannotSendKnockViaSendKnockInMSC3787Room` — and the two
+big knock tests stopped before their first assertion.
+
+**What was built.** One template in the room service for all three memberships
+(`MembershipTemplate(ctx, room, user, membership)`), with `JoinTemplate` now that asked for a join;
+the differences are the room's, not the endpoint's — a restricted room's authoriser is chosen only
+for a join, because it has to be in the event before the event is named. Inbound
+`/make_leave`, `/send_leave` (v1+v2), `/make_knock`, `/send_knock` (v1+v2), and `/v1/send_join`
+which gmsl clients fall back to and Complement probes directly; a wrong membership there is
+answered **400, not 403**, because the endpoints differ only in what they accept and a 403 tells the
+peer to go ask a friendlier resident server about the same room. Outbound: the same two halves run
+from this side for a knock or a leave, and `POST /knock/{roomIDOrAlias}` exists so a client can ask
+for them. `roomversion`'s refusal rule and the path-vs-event checks are now shared functions rather
+than three copies with different words in them.
+
+**Two interoperability facts, recorded where the code does the compromise.** The event field of a
+v2 `/invite` body is `invite_event` in the specification and `event` in gomatrixserverlib, which
+rejects a body without the latter outright — so lattice writes both names and reads either, and
+until this window nothing in this repo tested a peer's invite request at all. The same disagreement
+exists for `/make_leave` (`membership_event` vs `event`), and both names go out.
+
+**One thing tried and reverted, with the reason kept next to the code.** Handing a knock's
+`knock_room_state` to the bundle ingester cannot work: the stripped state deliberately carries no
+`m.room.member` events, and in every room version with knock the writer's member event is one of the
+auth events of the state events around it. Measured, not theorised — all seven events in the bundle,
+including this server's own signed knock, came back unresolved. The log records the handover; the
+missing piece is a knock's own record (an invite-hanging shape for a knock), and that is T-4075.
+
+**Verification.** `tests/integration/federationmembership_test.go`,
+`federationinvite_test.go`, `knocksync_test.go`, `knockrestricted_test.go`; `go test ./tests/...`
+green. Targeted Complement run `membshk3`
+(`.agent-work/next/complement-run-membshk3.log`, table
+`.agent-work/next/complement-results-membshk3.tsv`): all six `TestCannotSend*` validation tests and
+`TestFederationRejectInvite`/`TestRoomsInvite` green, and `TestKnocking`'s local half went from 3 of
+13 subtests to 12 of 13. Its remaining subtest, and the federated half's first failure, are separate
+and recorded: T-4076 (what a first sync's `state` section is — current state vs the state at the
+start of the returned timeline, which is exactly the ambiguity MSC4222 exists for) and T-4075.
+`TestRoomForget` and `TestLeftRoomFixture` are red for a policy this server has not decided —
+leaving versus forgetting a room — and that is T-4077; `/forget` answers 404 `M_UNRECOGNIZED` today.

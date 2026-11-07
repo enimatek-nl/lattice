@@ -213,6 +213,31 @@ membership, alias and M1-regression subset, and it is reported as such.
    that a version 1 room that disagrees between servers is investigated rather than assumed away.
    Interoperability against Synapse on such a room is not tested.
 
+## Latest full run (2026-11-07c — T-4074 the membership handshakes closed, T-4075/T-4076/T-4077 opened)
+
+`RUN='.*' COMPLEMENT_LABEL=20261107c COMPLEMENT_TEST_TIMEOUT=40m scripts/complement.sh -v`, Complement
+`7b38a63c9db3`, image built at tree `24adc22` (leave/knock handshakes, the invite spelling fix and the
+room-version/knock-restricted tests in that commit). No name appears in both lists; no `exceeded
+num_locks`; no package hit its 40-minute budget.
+
+| Field | Value |
+| --- | --- |
+| Tally | **118 passing, 101 failing, 1 skipped** (previously 109 / 110 / 1, the same 220-test universe) |
+| Newly passing | `TestCannotSendNonJoinViaSendJoinV1`, `TestCannotSendNonLeaveViaSendLeaveV1`, `TestCannotSendNonLeaveViaSendLeaveV2`, `TestCannotSendNonKnockViaSendKnock`, `TestCannotSendKnockViaSendKnockInMSC3787Room` (the `send_*` endpoints answer 400 for a membership the endpoint is not for, T-4074); `TestEventAuth` and `TestIsDirectFlagFederation`, both of which drive a Complement server rejecting an invite, i.e. `/make_leave` + `/send_leave` reaching this server (T-4074); `TestKeyChangesLocal` (`GET /keys/changes`, T-4072, and the `r0` prefix, T-4073 — green in the earlier `r0keys` run and in this one); `TestPushRuleRoomUpgrade`, which is the flaky test of T-4071 and passing does not close it — see below |
+| Newly failing | none |
+| Split | csapi 71/106, `tests` (server-server) 43/91 with the run's one skip, MSC packages 4/23 |
+| Still red in the cluster this run worked on | `TestKnocking` and `TestKnockingInMSC3787Room`. Their local halves went from 3 passing of 13 subtests to 12 of 13 in the targeted run `membshk3`; what is left there is one question about what a first sync's `state` section is (T-4076) and the fact that a knocked-on remote room is invisible to the user who knocked on it (T-4075). `TestRoomForget` and `TestLeftRoomFixture` are leaving-versus-forgetting, T-4077 |
+| `TestPushRuleRoomUpgrade`, stated honestly | green in this run and green in the solo re-run `pushup4` (`RUN=TestPushRuleRoomUpgrade`, 1 passing, 0 failing); it failed twice in the 2026-11-07b window, once on a cached negative answer of "no keys recorded" and once on a peer name resolving to a deleted deployment (`certificate is valid for hs2, not hs1`). T-4071 stays open: the 500 `M_UNKNOWN` a client gets for a retryable federation failure is still wrong regardless of the flake |
+| Environment checks | 1355 anonymous volumes and one stale `aardvark-dns` record (`complement_msc3902_1_servers`) reported by the runner before it started; neither produced a deploy failure in this run's log, but both are still there for the next one, and clearing them is an operator's call (the commands are in `scripts/complement.sh`) |
+| Complement assertions changed | none |
+
+Lists: `.agent-work/complement-passes-20261107c.txt`, `.agent-work/complement-failures-20261107c.txt`;
+qualified table: `.agent-work/next/complement-results-20261107c.tsv`;
+log: `.agent-work/next/complement-run-20261107c.log`.
+Targeted run quoted above: `.agent-work/next/complement-run-membshk3.log` with
+`.agent-work/next/complement-results-membshk3.tsv` (2 passing, 4 failing in that subset);
+the `pushup4` re-run: `.agent-work/next/complement-run-pushup4.log`.
+
 ## Latest full run (2026-11-07b — T-4067 MSC4222 closed, T-4069 and T-4070 closed)
 
 `RUN='.*' COMPLEMENT_LABEL=20261107b COMPLEMENT_TEST_TIMEOUT=40m scripts/complement.sh -v`, Complement
