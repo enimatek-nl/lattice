@@ -501,22 +501,38 @@ T-4009c is split rather than closed: the invite half is done (see PROGRESS 2026-
 
 - [x] T-4023, T-4024 are done (PROGRESS 2026-11-08, commit `fcc4dae`). Two gaps opened by that
       work:
-- [ ] T-4027 Room-scoped account data: `PUT`/`DELETE /rooms/{roomID}/account_data/{type}`, stored
-      per user per room, and shown in sync under `rooms.join.<room>.account_data`. Complement's
-      `TestAddAccountData/Can_add_room_account_data` and half of `TestRemovingAccountData` wait on
-      it. It needs a table of its own (the value is per user *and* per room, unlike `account_data`)
-      and a sync section, so it is a task of its own rather than a copy of the user-scoped one.
-- [ ] T-4028 `DELETE /user/{userID}/account_data/{type}`. Complement deletes account data both
-      ways — with DELETE and with an empty PUT — and only the PUT half exists. The empty PUT
-      already erases the content; the DELETE verb should do the same and answer `{}`.
-
-- [ ] T-4029 MSC3391's other half: a removal has to reach sync. `DELETE
-      /user/{userID}/account_data/{type}` is implemented (commit after `fcc4dae`), but a deleted
-      row vanishes from the store, so an incremental sync says nothing and the client keeps what
-      it had. The specification shows the removed type in the account data array with an empty
-      content object, so the store needs a removal that is itself positionable in the stream —
-      a row marked removed, whose reads report M_NOT_FOUND and whose sync entry carries `{}`.
-      Complement: `TestRemovingAccountData` in `tests/msc3391`.
+- [x] T-4027, T-4028, T-4029 are done together (PROGRESS 2026-11-07, the commit that adds
+      `tests/integration/accountdata_test.go`), because a removal that does not reach `/sync` and a
+      room-scoped value nobody can read are the same store problem: account data needs a scope
+      (user, or user+room) and a removal that is itself a position in the stream.
+      Store: `account_data` gains `room_id` (empty means the user's own scope) and `deleted`, and the
+      unique index becomes `(user_id, room_id, data_type)` — the old `(user_id, data_type)` index is
+      dropped, because keeping it would let one row per user per type survive the widening. Reads of
+      a removed row answer `M_NOT_FOUND`; a removal writes a row rather than deleting one, so it
+      carries a stream position an incremental sync can point at. `internal/users/accountdata.go`
+      decides removal from the request: an object with no members *is* the removal (MSC3391), so
+      `PUT {}` and `DELETE` both tombstone and both answer `{}`.
+      Sync: one read of both scopes per sync, split into the top-level list and a list per room; a
+      removed type is carried to a client that has something to forget (`since != 0`) as an entry
+      with `{}` content and omitted for an initial sync, where there is nothing to forget. A room
+      whose only change is its room account data is now included in the response — otherwise the
+      value is written and never delivered.
+      Paths: the short form `/rooms/{roomID}/account_data/{type}` and the MSC3391 nesting
+      `/user/{userID}/rooms/{roomID}/account_data/{type}`, both under `v3` and `r0`, plus the
+      unstable `/_matrix/client/unstable/org.matrix.msc3391` spellings. Both spellings of the room
+      form are not decoration: Complement's `MustSetRoomAccountData` writes through the *user*-nested
+      path at the stable prefix, so a server that registers only the short form answers a spec-writing
+      client `M_UNRECOGNIZED`. Where the path names the user the caller must be that user; where it
+      does not, the access token names them.
+      Detail worth keeping: `m.direct` (which is account data, and which room DM clients depend on)
+      now reads a removed row as an empty map rather than as a value that was deleted from nowhere.
+      GORM detail that cost a test: `Assign(struct)` applies update semantics and skips zero fields, so
+      clearing a tombstone left `deleted = true`; the write passes a map instead.
+      Verification: `tests/integration/accountdata_test.go` (round trip through the room scope, and
+      six removal dialects — empty PUT, stable DELETE, unstable MSC3391 DELETE, user and room scopes —
+      each asserted as GET 404, absent from an initial sync, present with `{}` in an incremental one);
+      Complement `TestAddAccountData` (both subtests), `TestRemovingAccountData` (all four subtests)
+      green, both red before (`.agent-work/next/complement-run-acctdata4.log`).
 
 ## M2/M3 gate run (2026-11-08, `.agent-work/next/gate.log`: 19 pass, 13 fail)
 
@@ -1009,3 +1025,29 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
       described rooms, events, sync and federation as unimplemented; it carries the measured position
       instead. `docs/compliance-matrix.md`'s "Last updated" line now says how to read the dated
       sections below it.
+
+- [x] T-4066 a pass/failure list that cannot tell two tests apart. The lists
+      `scripts/complement.sh` cuts are bare top-level names, and Complement defines the same name in
+      more than one package: `TestSync` exists in `tests/csapi` and in `tests/msc4222`. In every
+      recorded full run one of them passed and the other failed, so the pair appeared in *both* lists
+      and the prose had no way to say which server behaviour each one was evidence about — the
+      compliance matrix cited "`TestSync` verified" and "still red through sync: MSC4222
+      `state_after`" in adjacent columns of one row, both about the same string. The runner now asks
+      `go test -json`, writes `.agent-work/next/complement-results-<label>.tsv` — action, package,
+      test — beside the bare lists the matrix cites, prints the log with the package on every line
+      (which is what makes a `-p 2` run readable at all), and prints the qualified pairs whenever a
+      name lands in both lists. `jq` is used when present; without it the script says out loud that
+      the lists are not package-qualified. Also: a run from which nothing could be derived (a broken
+      renderer, a `go test` that died at a flag) used to print "0 passing, 0 failing" as if that were
+      a result; it now says no results were derived. Found while reading this run's own list: the
+      `TestSync` failure in `.agent-work/complement-failures-20261113e.txt` is `tests/msc4222`'s, not
+      the stable sync suite's — which is why the matrix row that said "MSC4222 `state_after` (T-3001f)"
+      pointed at a task about sync filters' presence section. It points at T-4067 now.
+
+- [ ] T-4067 MSC4222 `state_after`: `/sync` answers `use_state_after=true` (and the unstable
+      `org.matrix.msc4222.use_state_after`) by replacing a joined room's `state` with the state as of
+      the *last* event in the timeline chunk, and under a `lazy_load_members` filter that chunk's
+      member events for every timeline sender. Complement: `tests/msc4222`'s `TestSync`, both
+      subtests (public room, and a private room where the invitee joins without speaking). This is
+      the whole of that package, and it is the only red thing in the run named after it; the stable
+      `tests/csapi` `TestSync` is green.

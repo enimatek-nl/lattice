@@ -173,9 +173,26 @@ func Register(r *httpserver.Router, d *Deps, requireAuth func(http.Handler) http
 
 	// A user's account data: their own documents, read and written by them alone. `m.direct`
 	// lives here, and so does everything the server stores without interpreting.
+	// Account data: the user's own scope, and the same store scoped to one room.
 	versioned("GET", "/user/{userID}/account_data/{type}", d.handleAccountDataGet)
 	versioned("PUT", "/user/{userID}/account_data/{type}", d.handleAccountDataPut)
 	versioned("DELETE", "/user/{userID}/account_data/{type}", d.handleAccountDataDelete)
+	versioned("GET", "/rooms/{roomID}/account_data/{type}", d.handleRoomAccountDataGet)
+	versioned("PUT", "/rooms/{roomID}/account_data/{type}", d.handleRoomAccountDataPut)
+	versioned("DELETE", "/rooms/{roomID}/account_data/{type}", d.handleRoomAccountDataDelete)
+	// The same store, spelled with the user in front of the room. MSC3391 and Synapse write
+	// room account data this way, and clients follow them; a homeserver that answers only the
+	// short form tells those clients the endpoint does not exist.
+	versioned("GET", "/user/{userID}/rooms/{roomID}/account_data/{type}", d.handleRoomAccountDataGet)
+	versioned("PUT", "/user/{userID}/rooms/{roomID}/account_data/{type}", d.handleRoomAccountDataPut)
+	versioned("DELETE", "/user/{userID}/rooms/{roomID}/account_data/{type}", d.handleRoomAccountDataDelete)
+	// MSC3391's removal endpoints are still published under their unstable prefix, and both
+	// spellings answer: a feature that is only reachable under one name is a feature half of
+	// the clients do not have. The room form nests under the user, which is how the MSC
+	// writes it, and not under /rooms/, which is how the stable endpoints would.
+	unstable := "/_matrix/client/unstable/org.matrix.msc3391"
+	r.Handle("DELETE", unstable+"/user/{userID}/account_data/{type}", authed(d.handleAccountDataDelete))
+	r.Handle("DELETE", unstable+"/user/{userID}/rooms/{roomID}/account_data/{type}", authed(d.handleRoomAccountDataDelete))
 
 	// Room aliases.
 	versioned("PUT", "/directory/room/{roomAlias}", d.handleAliasPut)

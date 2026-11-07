@@ -1,5 +1,47 @@
 # Progress
 
+## 2026-11-07 — account data a user can take back, and a run that names the package each result came from
+
+**Room account data, and what a removal means.** `account_data` was a value per user per type. The
+specification wants a value per user per room per type as well (`/rooms/{roomID}/account_data/{type}`),
+and MSC3391 wants a way to take a value back — both were missing, which is why
+`TestAddAccountData/Can_add_room_account_data` and all of `TestRemovingAccountData` were red. The store
+gains `room_id` and `deleted`, and the unique index widens to `(user_id, room_id, data_type)` — the old
+narrower index is dropped rather than kept, or one row per user per type survives the change. A removal
+is not a hole: the row stays, marked removed, because the removal has to have a place in the stream for
+an incremental sync to point at. Reads answer `M_NOT_FOUND`; the sync entry carries the type with `{}`
+content, and only to a client that has something to forget — an initial sync (`since` absent) omits it,
+because there is nothing there to erase. `PUT {}` and `DELETE` are the same act, which is what MSC3391
+says and what Complement does both ways.
+
+Two things the writing taught. First, both spellings of the room path have to be registered:
+Complement's `MustSetRoomAccountData` writes through `/user/{userID}/rooms/{roomID}/account_data/{type}`
+at the *stable* prefix, the MSC3391 nesting, not the shorter `/rooms/{roomID}/account_data/{type}` —
+a server that registers only the short form answers a spec-following client `M_UNRECOGNIZED`, and the
+404 looked like a missing store rather than a missing route. Second, a room whose only change is its
+own account data was being left out of the sync response entirely, so the value was accepted and never
+delivered. `m.direct` also had to learn that a removed row reads as an empty map. (GORM detail kept
+because it cost a test: `Assign(struct)` uses update semantics and skips zero fields, so clearing a
+tombstone left `deleted = true`; the write passes a map.)
+
+**A list that could not tell two tests apart.** `scripts/complement.sh` cuts the pass and failure lists
+from the run log, and those lists are bare top-level names. Complement defines `TestSync` twice — in
+`tests/csapi` and in `tests/msc4222` — so every recorded full run carried the same string in *both*
+lists, and the compliance matrix row that said "`TestSync` verified" and the row that said "still red
+through sync: MSC4222 `state_after`" were both talking about that one string, with a task pointer that
+belonged to neither. The runner now drives `go test -json`, writes a qualified table
+(action, package, test) next to the bare lists the matrix cites, puts the package on every line of the
+rendered log — which is also what makes a `-p 2` run readable — and prints the qualified pairs whenever
+a name appears in both lists. It also refuses to look like a result when it is not one: a run from which
+no results could be derived, because the renderer broke or `go test` died on a flag, used to print "0
+passing, 0 failing"; it now says no results were derived.
+
+Verification: `go test ./tests/...` green, `golangci-lint` 0 issues; Complement
+`TestAddAccountData` 2/2, `TestRemovingAccountData` 4/4, `tests/csapi` `TestSync` 9/9, from
+`RUN='TestAddAccountData|TestRemovingAccountData|TestSync$'` with label `acctdata4`
+(`.agent-work/next/complement-run-acctdata4.log`, `.../complement-results-acctdata4.tsv`).
+`tests/msc4222`'s `TestSync` is still red, unchanged: MSC4222 `state_after` is T-4067.
+
 ## 2026-11-07 — an image that ships, a runner that cannot misreport itself, and a room allowed to remove somebody who lives elsewhere
 
 Three kinds of work, one honest.

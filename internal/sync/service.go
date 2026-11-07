@@ -289,6 +289,15 @@ func (s *Service) build(ctx context.Context, userID string, since Token, filter 
 	// Presence is not room data, but the room is what decides who may see it — and for
 	// device list changes the room is the only way to answer, because the member list of
 	// a room no longer contains the user who left.
+	// The user's own data is read before the rooms, because it carries both scopes: the
+	// values at the top of the response and the ones that belong to a room. A client waiting
+	// for something new is waiting for news about itself too, and a value it just set in a
+	// room is news about that room.
+	accountEvents, roomAccountDataByRoom, err := s.accountScopes(ctx, userID, int64(since))
+	if err != nil {
+		return nil, false, err
+	}
+
 	var fellowMembers []string
 	for _, membership := range memberships {
 		membershipValue := membershipValueOf(membership)
@@ -314,7 +323,10 @@ func (s *Service) build(ctx context.Context, userID string, since Token, filter 
 			// A joined room is interesting when something happened in it. If nothing
 			// did, reporting it again would make a client re-read a room it already has
 			// and would make "unchanged rooms are omitted" untrue.
-			if !included(room, req) {
+			// A joined room is interesting when something happened in it, or when the user
+			// changed something of their own about it: a tag or an annotation written while
+			// the room sat quiet is news about that room, and it has nowhere else to go.
+			if !included(room, req) && len(roomAccountDataByRoom[membership.RoomID]) == 0 {
 				continue
 			}
 			if result.Rooms.Join == nil {
@@ -326,7 +338,7 @@ func (s *Service) build(ctx context.Context, userID string, since Token, filter 
 				// Ephemeral events (receipts, typing) and account data are not stored
 				// yet, so the honest answer is an empty list, not a missing field.
 				Ephemeral:           Events{Events: []Event{}},
-				AccountData:         Events{Events: []Event{}},
+				AccountData:         roomAccountData(roomAccountDataByRoom, membership.RoomID),
 				UnreadNotifications: UnreadNotifications{},
 				HighlightCount:      0,
 				Summary: map[string]any{
@@ -372,7 +384,7 @@ func (s *Service) build(ctx context.Context, userID string, since Token, filter 
 				Timeline:    room.timeline,
 				State:       state,
 				Ephemeral:   Events{Events: []Event{}},
-				AccountData: Events{Events: []Event{}},
+				AccountData: roomAccountData(roomAccountDataByRoom, membership.RoomID),
 			}
 		default:
 			// An unrecognised membership value in our own storage is a storage fault,
@@ -382,13 +394,7 @@ func (s *Service) build(ctx context.Context, userID string, since Token, filter 
 		}
 	}
 
-	// The user's own data counts as a change: a client waiting for something new is
-	// waiting for news about itself too, and a ruleset the user just edited is news.
-	accountData, err := s.accountEvents(ctx, userID, int64(since))
-	if err != nil {
-		return nil, false, err
-	}
-	result.AccountData = Events{Events: accountData}
+	result.AccountData = Events{Events: accountEvents}
 
 	// Presence counts as a change: a client long-polling for news about a room is also
 	// waiting to hear that somebody it shares a room with came back.
@@ -398,13 +404,17 @@ func (s *Service) build(ctx context.Context, userID string, since Token, filter 
 	}
 	result.Presence = Events{Events: presenceEvents}
 
+	// A room-scoped value with no event beside it is still news: the client that set a tag
+	// or an annotation while a room sat quiet expects the next sync to carry it.
+	roomAccountChanges := len(roomAccountDataByRoom) > 0
+
 	if lists := s.deviceListsFor(ctx, userID, int64(since), int64(position)); lists != nil {
 		result.DeviceLists = lists
 	}
 
 	changed := result.Rooms.Join != nil || result.Rooms.Invite != nil ||
 		result.Rooms.Leave != nil || result.Rooms.Knock != nil ||
-		len(accountData) > 0 || len(presenceEvents) > 0
+		len(accountEvents) > 0 || roomAccountChanges || len(presenceEvents) > 0
 	return result, changed, nil
 }
 
