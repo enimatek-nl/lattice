@@ -2,12 +2,12 @@ package rooms
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
 
 	"github.com/enimatek/lattice/internal/eventauth"
+	"github.com/enimatek/lattice/internal/eventfilter"
 	"github.com/enimatek/lattice/internal/matrixerr"
 	"github.com/enimatek/lattice/internal/redaction"
 	"github.com/enimatek/lattice/internal/stream"
@@ -32,10 +32,10 @@ type HistoryRequest struct {
 	Dir string
 	// Limit is the maximum number of events; zero means the default.
 	Limit int
-	// LazyMembers asks for the member events of the senders in this page instead of the
-	// room's state, which is how a client fills in display names without downloading the
-	// whole state at every page.
-	LazyMembers bool
+	// Filter is the room event filter the client sent: the type, sender and room lists and
+	// `contains_url` decide what belongs in the page, and `lazy_load_members` decides which
+	// member events come with it.
+	Filter eventfilter.RoomEventFilter
 }
 
 // HistoryPage is the response.
@@ -46,8 +46,13 @@ type HistoryPage struct {
 	// value given in `from`; when the client sent no `from`, it is the position this
 	// server started from, which the client can hand straight back.
 	Start string `json:"start"`
-	// End is the token to continue from. It is omitted when there is nothing further
-	// this requester may see, which is how a client knows to stop paginating.
+	// End is the token to continue from. It is omitted when there is nothing further this
+	// requester may see, which is how a client knows to stop paginating. The specification is
+	// explicit, and Complement's own pagination loop depends on it: "If no further events are
+	// available (either because we have reached the start of the timeline, or because the user
+	// does not have permission to see any more events), this property is omitted from the
+	// response." A page trimmed by a filter still answers a token while the room holds
+	// anything further back, whether the filter would keep it or not.
 	End string `json:"end,omitempty"`
 }
 
@@ -150,7 +155,12 @@ func (s *Service) History(ctx context.Context, roomID, requester string, req His
 	}
 	reachedStop := false
 	hiddenByHorizon := false
-	for _, event := range raw {
+	// lastSeen is how far into the window this page's last event sits. The filter can drop
+	// events the window held, so the page's length is no longer an index into it, and where
+	// the page really stopped is what `end` has to name.
+	lastSeen := -1
+	for rawIndex := range raw {
+		event := raw[rawIndex]
 		if len(page.Chunk) == limit {
 			break
 		}
@@ -175,17 +185,24 @@ func (s *Service) History(ctx context.Context, roomID, requester string, req His
 			}
 			return HistoryPage{}, err
 		}
+		// The filter is applied to the event in its client form, so that it sees the same
+		// content the client would: a redacted event has no URL to match on, because the URL
+		// is gone from what the client is allowed to read.
+		if !req.Filter.AllowsIn(roomID, body) {
+			continue
+		}
 		page.Chunk = append(page.Chunk, body)
+		lastSeen = rawIndex
 	}
 	// `end` is only worth handing back while there is something further this requester
 	// may read: a short page means the timeline ended in that direction, reaching `to`
 	// means the client asked for this page and no more, and a page whose remaining
 	// events were withheld means the requester has reached their limit.
-	if len(raw) > len(page.Chunk) && !reachedStop && !hiddenByHorizon {
-		page.End = stream.Position(raw[len(page.Chunk)-1].StreamOrdering).String()
+	if lastSeen >= 0 && len(raw) > lastSeen+1 && !reachedStop && !hiddenByHorizon {
+		page.End = stream.Position(raw[lastSeen].StreamOrdering).String()
 	}
 
-	if err := s.historyState(ctx, roomID, requester, page.Chunk, req.LazyMembers, &page); err != nil {
+	if err := s.historyState(ctx, roomID, requester, page.Chunk, req.Filter.LazyLoadMembers, &page); err != nil {
 		return HistoryPage{}, err
 	}
 	return page, nil
@@ -307,19 +324,9 @@ func (s *Service) requireHistoryAccess(ctx context.Context, roomID, requester st
 	return s.requireMembership(ctx, roomID, requester, membershipAny)
 }
 
-// ParseHistoryFilter reads the `filter` parameter of a `/messages` request. It accepts an
-// inline JSON object, which is how clients send it here, and ignores everything except
-// `lazy_load_members`, which is the part of a room event filter this endpoint acts on.
-func ParseHistoryFilter(raw string) (bool, error) {
-	if raw == "" {
-		return false, nil
-	}
-	var filter struct {
-		LazyLoadMembers *bool `json:"lazy_load_members"`
-	}
-	if err := json.Unmarshal([]byte(raw), &filter); err != nil {
-		return false, matrixerr.New(matrixerr.CodeInvalidParam,
-			"The filter parameter is not a JSON object.")
-	}
-	return filter.LazyLoadMembers != nil && *filter.LazyLoadMembers, nil
+// ParseHistoryFilter reads the `filter` parameter of a `/messages` request, which the
+// specification defines as a room event filter written inline: here it is the whole parameter,
+// where in a sync it is the `room.timeline` part of a larger document.
+func ParseHistoryFilter(raw string) (eventfilter.RoomEventFilter, error) {
+	return eventfilter.ParseRoomEventFilter(raw)
 }

@@ -31,11 +31,13 @@ func (d *Deps) handleRoomEvent(w http.ResponseWriter, r *http.Request) {
 //
 // The `filter` parameter is accepted as an inline JSON object only. The specification
 // also allows a stored filter ID here; this server's filter store holds the sync filter
-// shape, and reading a stored filter as a room event filter would silently ignore fields
-// it does not understand, so an ID is refused instead.
+// document, whose event filters sit under `room.timeline`, so reading a stored filter as
+// the room event filter this endpoint wants would silently ignore half of it — an ID is
+// refused instead. Inline, the type, sender, room and `contains_url` lists are all
+// applied, and a filter of a shape this server cannot read is refused rather than kept.
 func (d *Deps) handleRoomMessages(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
-	lazyMembers, err := rooms.ParseHistoryFilter(query.Get("filter"))
+	filter, err := rooms.ParseHistoryFilter(query.Get("filter"))
 	if err != nil {
 		d.serviceError(w, err)
 		return
@@ -51,11 +53,11 @@ func (d *Deps) handleRoomMessages(w http.ResponseWriter, r *http.Request) {
 		limit = value
 	}
 	page, err := d.Rooms.History(r.Context(), pathValue(r, "roomID"), auth.UserID(r), rooms.HistoryRequest{
-		From:        query.Get("from"),
-		To:          query.Get("to"),
-		Dir:         query.Get("dir"),
-		Limit:       limit,
-		LazyMembers: lazyMembers,
+		From:   query.Get("from"),
+		To:     query.Get("to"),
+		Dir:    query.Get("dir"),
+		Limit:  limit,
+		Filter: filter,
 	})
 	if err != nil {
 		d.serviceError(w, err)

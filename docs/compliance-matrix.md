@@ -213,6 +213,26 @@ membership, alias and M1-regression subset, and it is reported as such.
    that a version 1 room that disagrees between servers is investigated rather than assumed away.
    Interoperability against Synapse on such a room is not tested.
 
+## Targeted run (2026-11-07g-msgfilter — T-4080 closed)
+
+`RUN='^TestRoomImageRoundtrip$|^TestSendAndFetchMessage$|^TestFetchMessagesFromNonExistentRoom$|^TestSendMessageWithTxn$|^TestRoomMessagesLazyLoading$|^TestRoomMessagesLazyLoadingLocalUser$|^TestMessagesOverFederation$|^TestFilter$|^TestSyncFilter$|^TestSync$|^TestFilterMessagesByRelType$' COMPLEMENT_LABEL=20261107g-msgfilter COMPLEMENT_TEST_TIMEOUT=25m scripts/complement.sh -v`
+— the `/messages` and filter families, including the federation pagination test that is the reason
+`end` is still omitted at the end of a timeline.
+
+| Field | Value |
+| --- | --- |
+| Tally | **10 passing, 2 failing, 0 skipped** (twelve names, thirteen results: `TestSync` in two packages) |
+| Newly passing | `TestRoomImageRoundtrip` — `filter={"contains_url":true}` selects the media event, which is what makes its `chunk` of 1 and its `end` token both true; `contains_url` was read nowhere in this server before |
+| Unchanged | `TestFilter`, `TestSyncFilter`, `TestSync` (csapi and msc4222), `TestRoomMessagesLazyLoading`, `TestRoomMessagesLazyLoadingLocalUser`, `TestSendAndFetchMessage`, `TestSendMessageWithTxn`, `TestFetchMessagesFromNonExistentRoom` |
+| Still failing, same reason as in 20261107c | `TestFilterMessagesByRelType` (MSC3874 `rel_types` on `/messages`), `TestMessagesOverFederation` (its backfill subtest waits on `SendEventSynced` for events that never arrive — the `/get_missing_events` and backfill gap, T-4009b2/T-4007) |
+| A change that was made and taken back out | every page answering `end`: the reference servers do, and one Complement test asserts the key, but the specification omits it when nothing further is available and `TestMessagesOverFederation` paginates "until no `end` property is returned". It would have traded one test for the other; the filter was the gap. The quotation is recorded in `internal/rooms/history.go` |
+| Complement assertions changed | none |
+
+Lists: `.agent-work/complement-passes-20261107g-msgfilter.txt`,
+`.agent-work/complement-failures-20261107g-msgfilter.txt`; table
+`.agent-work/next/complement-results-20261107g-msgfilter.tsv`; log
+`.agent-work/next/complement-run-20261107g-msgfilter.log`.
+
 ## Targeted run (2026-11-07e-filters — T-4079 closed)
 
 `RUN='^TestFilter$|^TestSyncFilter$|^TestRoomMessagesLazyLoading$|^TestRoomMessagesLazyLoadingLocalUser$|^TestSync$|^TestSearch$|^TestPublicRooms$|^TestFilterMessagesByRelType$|^TestRoomImageRoundtrip$|^TestMediaConfig$|^TestSendAndFetchMessage$|^TestSendMessageWithTxn$' COMPLEMENT_LABEL=20261107e-filters COMPLEMENT_TEST_TIMEOUT=25m scripts/complement.sh -v`
