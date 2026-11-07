@@ -104,15 +104,27 @@ func (d *Deps) handleKnock(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// A knock names its room the way a join does — by ID or by alias — and names the servers that
+	// may be asked in the query, because a room ID carries the name of whoever created it, which is
+	// not always somebody who still holds it.
+	identifier := pathValue(r, "roomIDOrAlias")
+	if identifier == "" {
+		identifier = r.PathValue("roomID")
+	}
+	roomID, ok := d.resolveRoomIdentifier(w, r, identifier)
+	if !ok {
+		return
+	}
 	userID := auth.UserID(r)
 	if _, err := d.Rooms.SetMembership(r.Context(), rooms.MembershipChange{
-		RoomID:     r.PathValue("roomID"),
+		RoomID:     roomID,
 		Target:     userID,
 		Sender:     userID,
 		DeviceID:   auth.DeviceID(r),
 		Membership: eventauth.MembershipKnock,
 		Reason:     reasonOf(extra),
 		Extra:      extra,
+		Via:        viaServers(r),
 	}); err != nil {
 		d.serviceError(w, err)
 		return

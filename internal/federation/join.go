@@ -139,6 +139,32 @@ func (r *RemoteRefusal) Error() string {
 	return fmt.Sprintf("%s refused the join: %s", r.Server, r.Message)
 }
 
+// toMembershipError words a resident server's refusal for a leave or a knock. It is the join's
+// answer with the membership changed, because the room's verdict is about the membership the user
+// asked for: a server that reports "the homeserver holding this room did not let them join" for a
+// knocked-on room tells the client something that did not happen.
+func (r *RemoteRefusal) toMembershipError(membership string) error {
+	code := matrixerr.CodeForbidden
+	if matrixerr.Code(r.ErrCode) == matrixerr.CodeNotFound {
+		code = matrixerr.CodeNotFound
+	}
+	return matrixerr.Newf(code, "The homeserver holding this room did not let %s %s: %s",
+		r.Server, verbOf(membership), r.Message)
+}
+
+// verbOf words a membership the way a sentence about it reads: a user joins a room, leaves a room,
+// and knocks on one.
+func verbOf(membership string) string {
+	switch membership {
+	case eventauth.MembershipKnock:
+		return "knock on"
+	case eventauth.MembershipLeave:
+		return "leave"
+	default:
+		return "join"
+	}
+}
+
 func (r *RemoteRefusal) toMatrixError() error {
 	code := matrixerr.CodeForbidden
 	switch matrixerr.Code(r.ErrCode) {
@@ -298,67 +324,6 @@ func (j *Joiner) joinVia(ctx context.Context, destination, roomID, userID string
 		State:    len(pdusFrom(answer, "state")),
 		Outliers: len(outcome.Outliers),
 	}, nil
-}
-
-// makeJoin asks a resident server what a join by this user would look like, and checks the
-// answer before any signing is done.
-//
-// The checks are not paranoia. The template becomes an event this server signs, so a template
-// that names a different room, or a different user, is a request to sign somebody else's join.
-// An already-signed or already-hashed template is the same problem in another form: this server
-// would be adding its name to an event somebody else had already made.
-func (j *Joiner) makeJoin(ctx context.Context, destination, roomID, userID string) (map[string]any, string, error) {
-	target := "/_matrix/federation/v1/make_join/" + roomID + "/" + userID
-	response, err := j.Client.Do(ctx, destination, http.MethodGet, target, nil)
-	if err != nil {
-		return nil, "", err
-	}
-	if refusal := refusalFrom(destination, response); refusal != nil {
-		return nil, "", refusal
-	}
-	if response.StatusCode < 200 || response.StatusCode > 299 {
-		return nil, "", fmt.Errorf("federation: %s answered the join template with %d", destination, response.StatusCode)
-	}
-	var offer struct {
-		Event       map[string]any `json:"event"`
-		RoomVersion string         `json:"room_version"`
-	}
-	if err := json.Unmarshal(response.Body, &offer); err != nil {
-		return nil, "", fmt.Errorf("federation: %s answered the join template with something unreadable: %v", destination, err)
-	}
-	event := offer.Event
-	if event == nil {
-		return nil, "", fmt.Errorf("federation: %s answered the join template with no event", destination)
-	}
-	// The template becomes an event this server signs, so it has to be this user's join in
-	// this room and nobody else's.
-	if kind, _ := event["type"].(string); kind != eventauth.TypeMember {
-		return nil, "", fmt.Errorf("federation: %s offered a %s as a join", destination, kind)
-	}
-	if got, _ := event["room_id"].(string); got != roomID {
-		return nil, "", fmt.Errorf("federation: %s offered a join template for room %q", destination, got)
-	}
-	if got, _ := event["sender"].(string); got != userID {
-		return nil, "", fmt.Errorf("federation: %s offered a join by %s", destination, got)
-	}
-	if got, _ := event["state_key"].(string); got != userID {
-		return nil, "", fmt.Errorf("federation: %s offered a member event for %s", destination, got)
-	}
-	content, _ := event["content"].(map[string]any)
-	if membership, _ := content["membership"].(string); membership != eventauth.MembershipJoin {
-		return nil, "", fmt.Errorf("federation: %s offered a membership of %v", destination, content["membership"])
-	}
-	// An already-hashed or already-signed template would mean this server adding its name to
-	// an event somebody else had already made.
-	for _, key := range []string{"event_id", "signatures", "hashes"} {
-		if _, present := event[key]; present {
-			return nil, "", fmt.Errorf("federation: %s offered a join template that already carries %s", destination, key)
-		}
-	}
-	if offer.RoomVersion == "" {
-		return nil, "", fmt.Errorf("federation: %s offered a join template with no room version", destination)
-	}
-	return event, offer.RoomVersion, nil
 }
 
 // sendJoin hands the signed join to the resident server.

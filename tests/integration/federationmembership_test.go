@@ -359,3 +359,84 @@ func stateMembershipOf(t *testing.T, node *fedNode, roomID, target, token string
 	membership, _ := content["membership"].(string)
 	return membership
 }
+
+// The two tests below drive the same handshakes from the other side: a local user asks their own
+// server for a membership change in a room it does not hold, and that server has to carry the ask to
+// a server that does. Reading the room on the resident server afterwards is the point — a handshake
+// that only satisfies the asking server would look identical from the client's side and leave the
+// room believing something else.
+
+// TestAKnockOnARoomHeldElsewhereIsCarriedOverFederation asks hs2 to knock on a room hs1 holds.
+func TestAKnockOnARoomHeldElsewhereIsCarriedOverFederation(t *testing.T) {
+	t.Parallel()
+	hs1, hs2 := federationPair(t)
+
+	alice := hs1.registerUser(t, "host", "pw-host")
+	_, created := hs1.clientDo(t, http.MethodPost, "/_matrix/client/v3/createRoom",
+		map[string]any{"preset": "private_chat", "name": "doors ajar", "room_version": "10"}, alice)
+	roomID, _ := created["room_id"].(string)
+	if status, body := hs1.doWithStatus(t, http.MethodPut,
+		"/_matrix/client/v3/rooms/"+roomID+"/state/m.room.join_rules",
+		map[string]any{"join_rule": "knock"}, alice); status != http.StatusOK {
+		t.Fatalf("%s could not set the join rule to knock: %d %s", hs1.name, status, body)
+	}
+	bea := "@bea:" + hs2.name
+	beaToken := hs2.registerUser(t, "bea", "pw-bea")
+
+	// The `/knock/{roomID}` spelling, with the resident server named in the query: the room ID names
+	// hs1, and hs2 is asked to knock on a room it has never seen.
+	status, body := hs2.doWithStatus(t, http.MethodPost,
+		"/_matrix/client/v3/knock/"+roomID+"?server_name="+hs1.name,
+		map[string]any{"reason": "let me in"}, beaToken)
+	if status != http.StatusOK {
+		t.Fatalf("%s could not carry a knock to %s: %d %s", hs2.name, hs1.name, status, body)
+	}
+	if got := stateMembershipOf(t, hs1, roomID, bea, alice); got != "knock" {
+		t.Fatalf("membership of %s on %s after the knock = %q, want knock", bea, hs1.name, got)
+	}
+
+	// A room that does not take knocks refuses, and the refusal has to arrive as the room's verdict
+	// rather than as a failure of the transport. A 500 here would send the client retrying a question
+	// the room already answered.
+	_, closed := hs1.clientDo(t, http.MethodPost, "/_matrix/client/v3/createRoom",
+		map[string]any{"preset": "private_chat", "room_version": "10"}, alice)
+	closedRoom, _ := closed["room_id"].(string)
+	status, body = hs2.doWithStatus(t, http.MethodPost,
+		"/_matrix/client/v3/knock/"+closedRoom+"?server_name="+hs1.name,
+		map[string]any{"reason": "let me in"}, beaToken)
+	if status != http.StatusForbidden {
+		t.Errorf("knocking at an invite-only room: status %d, want 403 (body %s)", status, body)
+	}
+}
+
+// TestALeaveOfARoomHeldElsewhereIsCarriedOverFederation covers the case the absence of `/make_leave`
+// makes silent rather than visible: a user whose server has never held the room leaves it. The
+// departure has to be placed in a history this server cannot see, so it is written by this server's
+// signature and by another server's knowledge of where the room's history ends.
+func TestALeaveOfARoomHeldElsewhereIsCarriedOverFederation(t *testing.T) {
+	t.Parallel()
+	hs1, hs2 := federationPair(t)
+
+	alice := hs1.registerUser(t, "host", "pw-host")
+	_, created := hs1.clientDo(t, http.MethodPost, "/_matrix/client/v3/createRoom",
+		map[string]any{"preset": "public_chat", "name": "open doors"}, alice)
+	roomID, _ := created["room_id"].(string)
+	bea := "@bea:" + hs2.name
+	beaToken := hs2.registerUser(t, "bea", "pw-bea")
+
+	// hs2 is brought into the room by the join handshake rather than by its own client, so it holds
+	// no copy of the room and the leave below cannot be written from local knowledge.
+	joinHandshake(t, hs2, hs1, roomID, bea)
+	if got := stateMembershipOf(t, hs1, roomID, bea, alice); got != "join" {
+		t.Fatalf("membership after the join handshake = %q, want join", got)
+	}
+
+	status, body := hs2.doWithStatus(t, http.MethodPost,
+		"/_matrix/client/v3/rooms/"+roomID+"/leave", map[string]any{}, beaToken)
+	if status != http.StatusOK {
+		t.Fatalf("%s could not carry a leave to %s: %d %s", hs2.name, hs1.name, status, body)
+	}
+	if got := stateMembershipOf(t, hs1, roomID, bea, alice); got != "leave" {
+		t.Fatalf("membership of %s on %s after the leave = %q, want leave", bea, hs1.name, got)
+	}
+}

@@ -88,7 +88,19 @@ func (d *Deps) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
 		d.serviceError(w, err)
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"room_id": roomID})
+	answer := map[string]any{"room_id": roomID}
+	// The room's version travels with the answer because a client that asked for one has to be
+	// able to tell whether it got it, and a client that did not has to know which version it is
+	// about to speak — /send, /state and /context all behave differently in a room whose events are
+	// named by their hash. The room service decided which version this room is; the answer repeats
+	// that decision rather than recomputing it, so the two cannot drift.
+	if room, err := d.DB.Rooms.ByRoomID(r.Context(), roomID); err == nil {
+		answer["room_version"] = room.RoomVersion
+	} else {
+		d.Log.Warn("a room was created but its row could not be read back for the answer",
+			"room_id", roomID, "error", err)
+	}
+	httpx.WriteJSON(w, http.StatusOK, answer)
 }
 
 // sendBody is the content of the event a client wants to send. The body of
