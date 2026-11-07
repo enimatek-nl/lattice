@@ -214,6 +214,25 @@ membership, alias and M1-regression subset, and it is reported as such.
    that a version 1 room that disagrees between servers is investigated rather than assumed away.
    Interoperability against Synapse on such a room is not tested.
 
+## Latest full run (2026-11-07s — the cleanest on record, and the relations work measured in it)
+
+`RUN='.*' COMPLEMENT_LABEL=20261107s COMPLEMENT_TEST_TIMEOUT=50m PARALLEL=2 scripts/complement.sh -v`
+at tree `69eab4f`: **130 passing, 89 failing, 1 skipped** out of 220 top-level tests.
+
+| Field | Value |
+| --- | --- |
+| Federation fingerprints | **zero of every kind** — no wrong-name certificate, no refused TLS handshake, no peer refusing a request as unsigned, no federation template answered 401, no unbuilt deployment image. This is the first full run that reports that about itself; 20261107h counted 0/1/0 and said nothing, 20261107m counted 8/6/7, 20261107o counted 4/3/4 |
+| Log readability | every one of the 20,567 log lines was one JSON event; nothing was dropped, so the tally needs no caveat |
+| Newly passing against 20261107h | `TestChangePassword`, `TestDeactivateAccount`, `TestRoomReceipts`, `TestRoomReadMarkers` (the account and receipt work), `TestRelations`, `TestRelationsPagination`, `TestRelationsPaginationSync`, `TestThreadsEndpoint` (T-4086, four tests never attempted before), `TestPushRuleRoomUpgrade` (the T-4071 flake, green again) |
+| Newly failing against 20261107h | none |
+| Newly failing against 20261107o | none — the four two-server tests that went red there (`TestDeviceListsUpdateOverFederationOnRoomJoin`, `TestFederatedClientSpaces`, `TestRestrictedRoomsLocalJoinNoCreatorsUsesPowerLevelsV11`, `TestRestrictedRoomsRemoteJoinFailOverInMSC3787Room`) are green here |
+| What that says about 20261107o | those four are flaky, not broken: they were green in 20261107h, red in 20261107o with contamination beside them, green alone in 20261107p except `TestRestrictedRoomsRemoteJoinFailOverInMSC3787Room`, and green again here. That last one is red in isolation and green in two parallel runs, which makes it the flakiest thing in the suite rather than a confirmed server fault — the read of T-4071 it seemed to prove is not established |
+| The 98 remaining failures | unchanged in character: threads and pushers, search and the user directory, `/forget`, MSC3874 relation-type filters, typing and to-device EDUs, backfill gap filling, DNS-rebinding dial policy, room version 12, and T-4071 |
+| Complement assertions changed | none |
+
+Lists: `.agent-work/complement-{passes,failures}-20261107s.txt`; table
+`.agent-work/next/complement-results-20261107s.tsv`; log `.agent-work/next/complement-run-20261107s.log`.
+
 ## Full run 2026-11-07o — the tally was lost and recovered, and the runner was fixed for it
 
 `RUN='.*' COMPLEMENT_LABEL=20261107o COMPLEMENT_TEST_TIMEOUT=50m PARALLEL=2 scripts/complement.sh -v`
