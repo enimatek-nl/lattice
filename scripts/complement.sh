@@ -228,6 +228,20 @@ if grep -q 'panic: test timed out' "$run_log"; then
 	packages=$(grep -E 'panic: test timed out after' "$run_log" | sed -E 's/.*after ([^ ]+).*/\1/' | tr '\n' ' ')
 	echo "!! THIS RUN IS INCOMPLETE: a package hit its per-package timeout ($packages). Tests after the one it reached never ran; the numbers above are a floor, not a tally. Raise COMPLEMENT_TEST_TIMEOUT before quoting them."
 fi
+# The third way a podman run lies about the protocol: a federation test whose peer name resolved
+# to another deployment's container. It does not look like a DNS problem in a test's output — it
+# looks like a signature problem: the peer's certificate names somebody else, its keys come back
+# from the wrong server, and every request signed by the real peer is then refused. Count it here,
+# because a tally printed next to that is a measurement of the network namespace.
+if command -v jq >/dev/null 2>&1; then
+	mismatches=$(jq -r 'select(.Action=="output") | .Output' "$run_log" 2>/dev/null |
+		grep -cE 'certificate is valid for [^,]*, not|answered the (join|knock|leave) template with 401|not signed by a server this server trusts' || true)
+else
+	mismatches=$(grep -cE 'certificate is valid for [^,]*, not|answered the (join|knock|leave) template with 401|not signed by a server this server trusts' "$run_log" || true)
+fi
+if [[ "${mismatches:-0}" -gt 0 ]]; then
+	echo "!! $mismatches lines in this run say a peer's name resolved somewhere else (a certificate for another server, or a federation request refused as unsigned). Federation failures below are contaminated by the container network — see the stale-DNS note above — and the two-server tests should be re-run alone (PARALLEL=1) before their result is believed."
+fi
 if grep -qE 'failed to deployBaseImage|timed out checking for homeserver to be up' "$run_log"; then
 	echo "!! some deployments never started. Those failures are the container or the environment, not the protocol: check the image starts at all (podman run --rm <image>) and the volume/DNS warnings above."
 fi

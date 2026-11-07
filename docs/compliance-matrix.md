@@ -213,6 +213,30 @@ membership, alias and M1-regression subset, and it is reported as such.
    that a version 1 room that disagrees between servers is investigated rather than assumed away.
    Interoperability against Synapse on such a room is not tested.
 
+## Latest full run (2026-11-07m — after the volume cleanup; contaminated by a stale podman DNS record)
+
+`RUN='.*' COMPLEMENT_LABEL=20261107m COMPLEMENT_TEST_TIMEOUT=40m PARALLEL=2 scripts/complement.sh -v`
+at tree `ca6e6ef` — the first full run after the anonymous-volume store was cleared (0 volumes at the
+start, `exceeded num_locks` appears 0 times). **117 passing, 102 failing, 1 skipped.** It is *not* a
+cleaner measurement than 20261107h: five tests the tree fixed went green, and nine two-server tests
+went red on the container network rather than on the protocol.
+
+| Field | Value |
+| --- | --- |
+| Newly passing | `TestChangePassword`, `TestDeactivateAccount` (T-4081), `TestRoomReceipts`, `TestRoomReadMarkers` (T-4083), `TestPushRuleRoomUpgrade` (the T-4071 flake, green in this run and red in 20261107h — neither result closes that task) |
+| Newly failing | `TestFederatedClientSpaces`, `TestKnockRestrictedRoomsLocalJoinNoCreatorsUsesPowerLevelsV11`, `TestMediaFilenames`, `TestMediaWithoutFileNameCSMediaV1`, `TestRemotePngThumbnail`, `TestRestrictedRoomsLocalJoinNoCreatorsUsesPowerLevelsV11`, `TestRestrictedRoomsRemoteJoin`, `TestRestrictedRoomsRemoteJoinLocalUser`, `TestRestrictedRoomsSpacesSummaryFederation` — every one of them two-server |
+| What their server logs say | 32 × `answered the join template with 401`, 10 × the knock template, 2 × the leave template, 5 × `hs1 answered M_UNAUTHORIZED for media: The request is not signed by a server this server trusts`, and 8 × `certificate is valid for hs2, localhost, not hs1`. 20261107h and 20261107c contain none of the certificate lines and 2 and 0 of the 401-template lines respectively |
+| Why that is the network and not the tree | `$XDG_RUNTIME_DIR/containers/networks/aardvark-dns/complement_msc3902_1_servers` is still present although `podman network exists complement_msc3902_1_servers` says otherwise, and it maps `hs1` to **10.89.0.2, 10.89.1.2 and 10.89.2.2** — the addresses fresh deployments take now that the store has been emptied. A peer asked for `hs1` reaches another deployment's `hs2`, whose certificate says so, and everything the real peer signed is then refused |
+| Isolation re-run | `20261107n-regresscheck` (same nine names, `PARALLEL=1`): **9 passing, 0 failing** — every one of them green alone. A test that passes alone and fails under parallel deployments is a name-collision measurement, not a protocol one |
+| The measured position | 20261107h's **121 / 98 / 1** remains the last clean full-suite tally. T-4081 and T-4083 carry targeted runs (`20261107i-account`, `20261107k-receipts`) and are confirmed in this run too |
+| Runner | `scripts/complement.sh` now counts those contamination lines next to the tally (it prints the count and says the two-server results should be re-run at `PARALLEL=1`), and refuses to start above 1300 anonymous volumes. Verified against the stored logs: 2 for 20261107h, 51 for 20261107m |
+| Complement assertions changed | none |
+
+Lists: `.agent-work/complement-{passes,failures}-20261107m.txt`; table
+`.agent-work/next/complement-results-20261107m.tsv`; log `.agent-work/next/complement-run-20261107m.log`.
+Isolation run: `.agent-work/complement-{passes,failures}-20261107n-regresscheck.txt`,
+`.agent-work/next/complement-run-20261107n-regresscheck.log`.
+
 ## Latest full run (2026-11-07h — the three targeted fixes of 20261107d/e/g measured together; T-4071 seen again as a 500)
 
 `RUN='.*' COMPLEMENT_LABEL=20261107h COMPLEMENT_TEST_TIMEOUT=40m PARALLEL=2 scripts/complement.sh -v`, Complement
