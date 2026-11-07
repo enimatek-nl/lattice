@@ -2816,3 +2816,36 @@ with an unfiltered control sync beside it. `go test ./tests/...` green. Targeted
 failures (`TestFilterMessagesByRelType`, `TestMessagesOverFederation`) fail identically in 20261107c.
 Full-suite tally is still 20261107c's 118 / 101 / 1 — three targeted runs' worth of fixes are in the
 tree, and the next full run is what will re-measure them.
+
+## 2026-11-07 (night) — the three fixes measured at once, and an account that can end (20261107h, T-4081)
+
+**The full run.** `RUN='.*' COMPLEMENT_LABEL=20261107h COMPLEMENT_TEST_TIMEOUT=40m` at tree `8972306`:
+**121 passing, 98 failing, 1 skipped** — from 118 / 101 / 1. The four newly green are exactly the four
+the three targeted runs had claimed: `TestEvent`, `TestRequestEncodingFails`, `TestFilter`,
+`TestRoomImageRoundtrip`. Nothing else moved except one test, and that one moved the wrong way:
+
+```
+room_upgrade_test.go:193: CSAPI.Must: POST /_matrix/client/v3/join/%21ap5U…:hs1?server_name=hs1
+                          returned non-2xx code: 500 Internal Server Error
+```
+
+That is `TestPushRuleRoomUpgrade`, green in 20261107c, and the 500 is the defect T-4071 has been
+carrying: a retryable federation failure answered 500 `M_UNKNOWN`. It is reported as newly failing,
+because a test that fails on a known defect still failed. The environment warnings were there too
+(1696 anonymous volumes, the stale `complement_msc3902_1_servers` DNS record) and neither produced a
+deploy failure in this log — clearing both remains an operator's call, the commands are in the runner.
+
+**An account can change its password and end itself** (`0d449ad`, T-4081): `POST /account/password`
+and `POST /account/deactivate`, both behind a User-Interactive Auth `m.login.password` stage. Two
+things in that are worth more than the endpoints:
+
+- a password change ends every *other* session and keeps the one that asked, which needed a
+  revoke-except in the token store — revoking all and re-minting would swap the caller's token under
+  it and send it to the login door with the password it had just proved;
+- deactivation clears the password hash, so login's two checks had to change order: a caller who
+  tries a deactivated account's real password needs `M_USER_DEACTIVATED`, not "wrong password".
+
+Targeted run `20261107i-account`: **6 passing, 1 failing** — `TestChangePassword` and
+`TestDeactivateAccount` newly green, the login/logout/registration/device families unchanged, and
+`TestChangePasswordPushers` still red because `POST /pushers/set` does not exist here at all. That is
+T-4082, the next door.

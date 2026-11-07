@@ -1397,3 +1397,52 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
       `TestMessagesOverFederation`, which fails in this run exactly as it does in 20261107c —
       `SendEventSynced waiting for event ID …` in the backfill subtest, T-4009b2/T-4007 — so it is
       not a consequence of applying filters.
+
+- [x] T-4081 an account can change its password, and an account can end. `POST /account/password`
+      and `POST /account/deactivate` were 404 `M_UNRECOGNIZED`, which is why `TestChangePassword` and
+      `TestDeactivateAccount` were in every failure list.
+
+      Both are guarded by User-Interactive Auth with an `m.login.password` stage, and the guard is
+      the point: the session that is asking is the thing that may have been stolen. A password change
+      takes the old password away (the hash it was checked against is gone), keeps the session that
+      asked, and ends every other token unless the client passed `logout_devices: false`. "End every
+      other token" is why the token store gained a revoke-except: revoking everything and minting a
+      fresh token would change the caller's token under its feet, and the client would be sent to the
+      login door by the call that just proved its password.
+
+      Deactivation drops the password hash and marks the account. The account row stays, because this
+      server's rooms, membership events and keys name it: what the specification promises is that the
+      account cannot be used again, not that the server forgets it ever existed. Login then answers
+      **403 M_USER_DEACTIVATED** rather than "wrong password" — the order of those two checks was
+      reversed, because after a deactivation there is no hash to compare and the caller needs the
+      truth about the account, not about the password.
+
+      Verification: `tests/integration/passworddeactivate_test.go` (the challenge offers the stage;
+      the wrong password leaves the first password working; a change with no new password is 400; the
+      old password is 403 and the new one 200 afterwards; the asking session still works and the
+      other is `M_UNKNOWN_TOKEN` while its *device* remains listed; `logout_devices:false` keeps it;
+      deactivation ends login and the token that did it). Targeted Complement run `20261107i-account`
+      (`.agent-work/next/complement-run-20261107i-account.log`, table
+      `.agent-work/next/complement-results-20261107i-account.tsv`): **6 passing, 1 failing** —
+      `TestChangePassword` and `TestDeactivateAccount` newly green, `TestLogin`/`TestLogout`/
+      `TestRegistration`/`TestDeviceManagement` unchanged. `TestChangePasswordPushers` stays red:
+      `POST /pushers/set` is a 404, which is T-4082.
+
+- [ ] T-4082 pushers: `POST /pushers/set`, `GET /pushers`, and what a pusher is for.
+      `TestChangePasswordPushers` (`tests/csapi/account_change_password_pushers_test.go`) fails at
+      "CSAPI.MustDo POST …/pushers/set returned non-2xx code: 404" — this server has no pushers at
+      all, so it cannot record that a device wants its events POSTed to a push gateway, cannot list
+      them, and cannot expire them. Related and equally absent: `GET /notifications` (the badge a
+      mobile app reads) and the `org.matrix.msc3902.push`/`push_rules` additive rules that ride on
+      the same machinery, plus the rule that a password change expires the pushers of the sessions it
+      ends (`TestChangePasswordPushers`'s third assertion). Start with the storage: a pusher is a
+      per-device document with a pushkey, an `url` and `data`, and a `kind`; the reference behaviour
+      replaces a pusher with the same `(pushkey, app_id, user, device)` and gives it a token that a
+      gateway can use to ask for its removal.
+      Complement: `TestChangePasswordPushers` in
+      `.agent-work/next/complement-run-20261107i-account.log`.
+
+- [x] Full run 20261107h is recorded in `docs/compliance-matrix.md`: **121 passing, 98 failing,
+      1 skipped**, with `TestEvent`, `TestFilter`, `TestRequestEncodingFails` and
+      `TestRoomImageRoundtrip` newly green and `TestPushRuleRoomUpgrade` newly red on the 500 that
+      T-4071 is about.

@@ -213,6 +213,45 @@ membership, alias and M1-regression subset, and it is reported as such.
    that a version 1 room that disagrees between servers is investigated rather than assumed away.
    Interoperability against Synapse on such a room is not tested.
 
+## Latest full run (2026-11-07h — the three targeted fixes of 20261107d/e/g measured together; T-4071 seen again as a 500)
+
+`RUN='.*' COMPLEMENT_LABEL=20261107h COMPLEMENT_TEST_TIMEOUT=40m PARALLEL=2 scripts/complement.sh -v`, Complement
+`7b38a63c9db3`, image built at tree `8972306` (the size ceiling, the UTF-8 rule, the filter shape and
+the filter applied at both doors). The `/account/password` and `/account/deactivate` endpoints came
+after this run and are not in it.
+
+| Field | Value |
+| --- | --- |
+| Tally | **121 passing, 98 failing, 1 skipped** (previously 118 / 101 / 1, the same 220-test universe) |
+| Newly passing | `TestEvent` (413 `M_TOO_LARGE` at the storage funnel, T-4078), `TestRequestEncodingFails` (400 `M_NOT_JSON` for a body that is not UTF-8, T-4078), `TestFilter` (a filter whose fields are the wrong shape is refused, T-4079), `TestRoomImageRoundtrip` (`contains_url` honoured on `/messages`, T-4080) |
+| Newly failing | `TestPushRuleRoomUpgrade`, which passed in 20261107c. It failed on `POST /join/{roomID}?server_name=hs1` returning **500** (`room_upgrade_test.go:193`), which is the defect T-4071 records — a retryable federation failure answered 500 `M_UNKNOWN` — so this is the task's substance being reproduced, not a new problem |
+| Split | not re-cut per package for this run; the pass and failure lists are the qualified table's |
+| Environment | the runner reported 1696 anonymous volumes and one stale `aardvark-dns` record (`complement_msc3902_1_servers`) before it started; no `exceeded num_locks` in the log, no package hit its 40-minute budget, and no name appears in both lists |
+| Complement assertions changed | none |
+
+Lists: `.agent-work/complement-passes-20261107h.txt`, `.agent-work/complement-failures-20261107h.txt`;
+qualified table `.agent-work/next/complement-results-20261107h.tsv`; log
+`.agent-work/next/complement-run-20261107h.log`.
+
+## Targeted run (2026-11-07i-account — T-4081 closed)
+
+`RUN='^TestChangePassword$|^TestChangePasswordPushers$|^TestDeactivateAccount$|^TestLogin$|^TestLogout$|^TestDeviceManagement$|^TestRegistration$|^TestAccountData$|^TestWhoami$' COMPLEMENT_LABEL=20261107i-account COMPLEMENT_TEST_TIMEOUT=20m scripts/complement.sh -v`
+— the two new account endpoints and the account family they could disturb. `TestWhoami` and
+`TestAccountData` are not names in this Complement checkout, so seven of the nine ran.
+
+| Field | Value |
+| --- | --- |
+| Tally | **6 passing, 1 failing, 0 skipped** |
+| Newly passing | `TestChangePassword` (`POST /account/password`: UIA password stage, the old password stops opening the door, the new one does, the session that asked survives and the others are revoked), `TestDeactivateAccount` (`POST /account/deactivate`: the flow is offered, the wrong password is refused 401 `M_FORBIDDEN`, the account ends, and `/login` afterwards says 403) |
+| Still failing | `TestChangePasswordPushers`, which needs `POST /pushers/set`; the endpoint is a 404 and push delivery is not implemented at all — opened as T-4082 |
+| Regression check | `TestLogin`, `TestLogout`, `TestRegistration`, `TestDeviceManagement` green, as in 20261107h: the login door now names a deactivated account before it tests the password, and nothing else moved |
+| Complement assertions changed | none |
+
+Lists: `.agent-work/complement-passes-20261107i-account.txt`,
+`.agent-work/complement-failures-20261107i-account.txt`; table
+`.agent-work/next/complement-results-20261107i-account.tsv`; log
+`.agent-work/next/complement-run-20261107i-account.log`.
+
 ## Targeted run (2026-11-07g-msgfilter — T-4080 closed)
 
 `RUN='^TestRoomImageRoundtrip$|^TestSendAndFetchMessage$|^TestFetchMessagesFromNonExistentRoom$|^TestSendMessageWithTxn$|^TestRoomMessagesLazyLoading$|^TestRoomMessagesLazyLoadingLocalUser$|^TestMessagesOverFederation$|^TestFilter$|^TestSyncFilter$|^TestSync$|^TestFilterMessagesByRelType$' COMPLEMENT_LABEL=20261107g-msgfilter COMPLEMENT_TEST_TIMEOUT=25m scripts/complement.sh -v`
