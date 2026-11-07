@@ -138,30 +138,71 @@ fi
 timeout="${COMPLEMENT_TEST_TIMEOUT:-30m}"
 label="${COMPLEMENT_LABEL:-$(date -u +%Y%m%dT%H%M%SZ)}"
 run_log="$repo_root/.agent-work/next/complement-run-$label.log"
+results="$repo_root/.agent-work/next/complement-results-$label.tsv"
 mkdir -p "$repo_root/.agent-work/next"
-
-echo "== running Complement (filter: $filter, packages in parallel: $parallel, per-package timeout: $timeout)"
-echo "== raw output: $run_log"
-cd "$complement_dir"
-exit_code=0
-COMPLEMENT_BASE_IMAGE="$image" go test ./tests/... -run "$filter" -count=1 -p "$parallel" \
-	-timeout "$timeout" "${@:1}" 2>&1 | tee "$run_log" || exit_code=$?
 
 # Top-level results only. Subtests are counted inside their parent, exactly the way the
 # compliance matrix counts them, so a list cut here and a tally quoted there are the
 # same arithmetic.
 passes="$repo_root/.agent-work/complement-passes-$label.txt"
 failures="$repo_root/.agent-work/complement-failures-$label.txt"
-grep -E '^--- (PASS|FAIL|SKIP): ' "$run_log" | sed -E 's/^--- ([A-Z]+): ([^ ]+).*/\1 \2/' | sort -u |
-	awk '$1=="PASS"{print $2 > "'"$passes"'"} $1=="FAIL"{print $2 > "'"$failures"'"}'
+
+cd "$complement_dir"
+exit_code=0
+if command -v jq >/dev/null 2>&1 && [[ "${COMPLEMENT_NO_JSON:-}" != 1 ]]; then
+	# `go test -json`, so every result carries its package. Two packages can hold the same
+	# test name — `TestSync` exists in `csapi` and in `tests/msc4222` — and a list of bare
+	# names then silently reports one result for two tests, or one failure as if a passing
+	# test had failed. The qualified table is written alongside the bare lists the compliance
+	# matrix cites; the log is rendered with the package on each line, which is also what
+	# makes a parallel run readable at all.
+	echo "== running Complement (filter: $filter, packages in parallel: $parallel, per-package timeout: $timeout)"
+	echo "== raw output: $run_log (go test -json); qualified table: $results"
+	COMPLEMENT_BASE_IMAGE="$image" go test ./tests/... -run "$filter" -count=1 -p "$parallel" \
+		-timeout "$timeout" "${@:1}" -json 2>&1 |
+		tee "$run_log" |
+		jq --unbuffered -r 'select(.Action=="output") | ((.Package // "-") | sub("^github\\.com/matrix-org/complement/?"; "")) + " | " + .Output' || exit_code=$?
+
+	jq -r 'select(.Test != null and (.Action=="pass" or .Action=="fail" or .Action=="skip") and ((.Test | contains("/")) | not)) |
+		"\(.Action)\t\((.Package // "-") | sub("^github\\.com/matrix-org/complement/?"; ""))\t\(.Test)"' "$run_log" |
+		sort -u > "$results"
+	awk -F'\t' '$1=="pass"{print $3 > "'"$passes"'"} $1=="fail"{print $3 > "'"$failures"'"}' "$results"
+else
+	echo "!! jq not found: falling back to plain output, so the pass/failure lists carry no package name and a test name shared by two packages is counted once."
+	echo "== running Complement (filter: $filter, packages in parallel: $parallel, per-package timeout: $timeout)"
+	echo "== raw output: $run_log"
+	COMPLEMENT_BASE_IMAGE="$image" go test ./tests/... -run "$filter" -count=1 -p "$parallel" \
+		-timeout "$timeout" "${@:1}" 2>&1 | tee "$run_log" || exit_code=$?
+	grep -E '^--- (PASS|FAIL|SKIP): ' "$run_log" | sed -E 's/^--- ([A-Z]+): ([^ ]+).*/\1 \2/' | sort -u |
+		awk '$1=="PASS"{print $2 > "'"$passes"'"} $1=="FAIL"{print $2 > "'"$failures"'"}'
+fi
 [[ -f "$passes" ]] || : > "$passes"
 [[ -f "$failures" ]] || : > "$failures"
 
 passed=$(wc -l < "$passes" | tr -d ' ')
 failed=$(wc -l < "$failures" | tr -d ' ')
-skipped=$(grep -cE '^--- SKIP: ' "$run_log" || true)
+if [[ -f "$results" ]]; then
+	skipped=$(awk -F'\t' '$1=="skip"' "$results" | wc -l | tr -d ' ')
+else
+	skipped=$(grep -cE '^--- SKIP: ' "$run_log" || true)
+fi
 echo "== tally: $passed passing, $failed failing, $skipped skipped (top-level tests)"
 echo "== lists: $passes, $failures"
+
+# Neither a tally nor an unfinished one: nothing was derived at all. A broken renderer or a
+# `go test` that died before running anything looks, from the tally line alone, like a suite
+# of zero tests.
+if [[ "$((passed + failed + skipped))" -eq 0 && "$exit_code" -ne 0 ]]; then
+	echo "!! NO RESULTS DERIVED and go test exited $exit_code: nothing above is a tally. Check the renderer (jq) and the top of $run_log for a build or flag error."
+fi
+
+# A name in both lists is not one test that both passed and failed: it is two tests with
+# the same name in two packages. Say which, because otherwise the pair reads as a flake.
+both=$(comm -12 <(sort "$passes") <(sort "$failures"))
+if [[ -n "$both" ]]; then
+	echo "!! these names appear in both lists, because more than one Complement package defines them; each line below is one package's result, and the bare-name tally counts them once:"
+	echo "$both" | while read -r name; do awk -F'\t' -v n="$name" '$3==n{print "   " $1 "  " $2}' "$results"; done
+fi
 
 # A killed package is not a smaller suite; it is an unfinished one. Say so loudly, next
 # to the tally, because a tally printed on its own invites exactly the wrong reading.

@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/enimatek/lattice/internal/matrixerr"
+	"github.com/enimatek/lattice/internal/matrixid"
 	"github.com/enimatek/lattice/internal/persist"
 )
 
@@ -28,14 +29,33 @@ func NewAccountDataService(repo persist.AccountDataRepo) *AccountDataService {
 	return &AccountDataService{accountData: repo}
 }
 
-// Get returns one type of a user's account data, or an M_NOT_FOUND error when the user has
-// never written that type. An empty document the client wrote is a real answer and is
-// returned as such; only an unwritten type is missing.
+// Get returns one type of a user's own account data, or M_NOT_FOUND when there is none.
+//
+// "None" now has two shapes, and both answer 404: a type that was never written, and a type
+// that was removed. MSC3391 made an empty content object a removal rather than a stored
+// empty document, so the empty document a client could once write and read back is gone by
+// design — and a read that answered `{}` for a removed type would leave a client unable to
+// tell "you never had one" from "the one you had is gone", which is the difference that
+// makes a deletion mean anything on the other side of a sync.
 func (s *AccountDataService) Get(ctx context.Context, userID, dataType string) (json.RawMessage, error) {
+	return s.get(ctx, userID, "", dataType)
+}
+
+// GetRoom returns one type of a user's account data *within* a room. The room is not a
+// namespace decoration: room-scoped values are only ever read in that room's context, and
+// the same type name in two rooms is two different pieces of data.
+func (s *AccountDataService) GetRoom(ctx context.Context, userID, roomID, dataType string) (json.RawMessage, error) {
+	if err := matrixid.RoomIDValid(roomID); err != nil {
+		return nil, matrixerr.Newf(matrixerr.CodeInvalidParam, "%q is not a valid room ID.", roomID)
+	}
+	return s.get(ctx, userID, roomID, dataType)
+}
+
+func (s *AccountDataService) get(ctx context.Context, userID, roomID, dataType string) (json.RawMessage, error) {
 	if err := validAccountDataType(dataType); err != nil {
 		return nil, err
 	}
-	row, err := s.accountData.Get(ctx, userID, dataType)
+	row, err := s.accountData.GetScoped(ctx, userID, roomID, dataType)
 	if errors.Is(err, persist.ErrNotFound) {
 		return nil, matrixerr.Newf(matrixerr.CodeNotFound,
 			"No account data of type %q has been stored for this user.", dataType)
@@ -43,12 +63,32 @@ func (s *AccountDataService) Get(ctx context.Context, userID, dataType string) (
 	if err != nil {
 		return nil, fmt.Errorf("users: cannot read account data: %w", err)
 	}
+	if row.Deleted {
+		return nil, matrixerr.Newf(matrixerr.CodeNotFound,
+			"The account data of type %q was removed for this user.", dataType)
+	}
 	return json.RawMessage(row.Content), nil
 }
 
 // Put stores one type of a user's account data. Writing the same type again replaces it:
 // this is a current value, not a history, and sync reports the newest one.
 func (s *AccountDataService) Put(ctx context.Context, userID, dataType string, content json.RawMessage) error {
+	return s.put(ctx, userID, "", dataType, content)
+}
+
+// PutRoom stores one type of a user's account data within a room.
+func (s *AccountDataService) PutRoom(ctx context.Context, userID, roomID, dataType string, content json.RawMessage) error {
+	if err := matrixid.RoomIDValid(roomID); err != nil {
+		return matrixerr.Newf(matrixerr.CodeInvalidParam, "%q is not a valid room ID.", roomID)
+	}
+	return s.put(ctx, userID, roomID, dataType, content)
+}
+
+// put writes one scope's value, or removes it. MSC3391: a PUT whose content is an empty
+// object is a deletion, not a stored empty document. That is the only way a client on an old
+// API version can remove a type at all, and it is why the removal has to be remembered
+// rather than dropped: the client that already holds the value must be told to forget it.
+func (s *AccountDataService) put(ctx context.Context, userID, roomID, dataType string, content json.RawMessage) error {
 	if err := validAccountDataType(dataType); err != nil {
 		return err
 	}
@@ -61,19 +101,31 @@ func (s *AccountDataService) Put(ctx context.Context, userID, dataType string, c
 		return matrixerr.New(matrixerr.CodeInvalidParam,
 			"Account data is a JSON object, not null.")
 	}
-	if _, err := s.accountData.Put(ctx, userID, dataType, string(content)); err != nil {
+	if _, err := s.accountData.PutScoped(ctx, userID, roomID, dataType, string(content), len(object) == 0); err != nil {
 		return fmt.Errorf("users: cannot store account data: %w", err)
 	}
 	return nil
 }
 
-// Delete removes one type of a user's account data. A type that was never written is not an
-// error to remove: the client asked for a state of affairs, and it holds either way.
+// Delete removes one type of a user's own account data. A type that was never written is not
+// an error to remove: the client asked for a state of affairs, and it holds either way.
 func (s *AccountDataService) Delete(ctx context.Context, userID, dataType string) error {
+	return s.delete(ctx, userID, "", dataType)
+}
+
+// DeleteRoom removes one type of a user's account data within a room.
+func (s *AccountDataService) DeleteRoom(ctx context.Context, userID, roomID, dataType string) error {
+	if err := matrixid.RoomIDValid(roomID); err != nil {
+		return matrixerr.Newf(matrixerr.CodeInvalidParam, "%q is not a valid room ID.", roomID)
+	}
+	return s.delete(ctx, userID, roomID, dataType)
+}
+
+func (s *AccountDataService) delete(ctx context.Context, userID, roomID, dataType string) error {
 	if err := validAccountDataType(dataType); err != nil {
 		return err
 	}
-	if err := s.accountData.Delete(ctx, userID, dataType); err != nil {
+	if _, err := s.accountData.PutScoped(ctx, userID, roomID, dataType, "{}", true); err != nil {
 		return fmt.Errorf("users: cannot remove account data: %w", err)
 	}
 	return nil

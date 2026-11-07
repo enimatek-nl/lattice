@@ -529,6 +529,10 @@ func (s *Service) markDirect(ctx context.Context, creator, roomID string, invite
 		if !notFound(err) {
 			return err
 		}
+	} else if row.Deleted {
+		// The user removed their direct-room map. It is empty now, not the old map: an
+		// invitation opened as a direct message still records itself as one, but nothing the
+		// user deleted is resurrected by a later invitation.
 	} else if err := json.Unmarshal([]byte(row.Content), &mapping); err != nil {
 		// Account data is written by clients, so it can be anything a client put there. A
 		// mapping this server cannot read is replaced rather than obeyed: the alternative is a

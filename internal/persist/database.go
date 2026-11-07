@@ -137,7 +137,12 @@ func (d *Database) migrate(log *slog.Logger) error {
 		"CREATE UNIQUE INDEX IF NOT EXISTS idx_signing_keys_key_id ON signing_keys(key_id)",
 
 		// A user's account data is read by type, and sync reads it by position.
-		"CREATE UNIQUE INDEX IF NOT EXISTS idx_account_data_user_type ON account_data(user_id, data_type)",
+		// The old unique key was (user, type) and cannot hold a room-scoped value: two
+		// rooms annotated with the same type by the same user are two different pieces of
+		// data. Dropped by name, and only then replaced, because "IF NOT EXISTS" on the new
+		// name would leave the old constraint in force on an existing database.
+		"DROP INDEX IF EXISTS idx_account_data_user_type",
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_account_data_user_room_type ON account_data(user_id, room_id, data_type)",
 		"CREATE INDEX IF NOT EXISTS idx_account_data_user_stream ON account_data(user_id, stream_ordering)",
 
 		// Presence is one current row per user, read by position when sync asks what
