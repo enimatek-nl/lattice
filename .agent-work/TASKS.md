@@ -1152,3 +1152,45 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
       (csapi), which is red on the missing endpoint. Record the deprecated `user_id` parameter's
       handling explicitly: if it names someone other than the caller, the answer is not that
       someone's list.
+
+- [x] T-4072 is done, and it came with a route the client API was missing. `GET
+      /_matrix/client/v3/keys/changes` answers the range question the `device_lists` section of a
+      sync answers as "since my token": whose device lists did this user have to re-read, and
+      whose stopped being theirs to track. It reads the same addressed rows, so the two cannot
+      drift — the shared conversion is `e2ekeys.DeviceListSections`, used by the sync service as
+      well, which also keeps the one diagnostic the sync path had (a change row with a kind this
+      server never wrote is a storage fault, and the helper has no logger).
+      Bounds: both are required and both must be tokens this server issued. Filling in a bound
+      the server cannot read — a bare number, a token from another homeserver — would report
+      changes the client then believes it has already seen. The deprecated `user_id` parameter is
+      checked rather than ignored: naming another user does not make their addressed rows yours,
+      and the answer is 403 rather than a politely empty list.
+      Verification: `tests/integration/keyschanges_test.go` (the sync section and the range
+      endpoint agree in both directions, changed and left; a user's own upload is not reported
+      back to them; four malformed ranges are 400; `user_id` naming another user is 403 and
+      naming themselves is answered); Complement `TestKeyChangesLocal` green.
+      That test then exposed the second thing: it logs in through
+      `POST /_matrix/client/r0/login`, which this server answered 404 `M_UNRECOGNIZED`.
+
+- [x] T-4073 the legacy `r0` prefix is registered for the whole client API, not for the handful of
+      endpoints a Complement test happened to use. `r0` is the specification's own history — the
+      same endpoints published under an older prefix — and a server that answers it with
+      `M_UNRECOGNIZED` tells a client that follows the older text that the feature is missing.
+      Most of the room, membership, state, sync and account-data routes already had it; login,
+      registration, `whoami`, logout, `/devices`, `/keys/*`, `/pushrules` and the unauthenticated
+      reads (`/directory/room/{alias}`, `/profile/...`) were v3-only. The unauthenticated ones need
+      their own helper because the versioned one wraps authentication, and requiring a token at
+      login would make the first step of using a homeserver impossible.
+      The prefix is a prefix, not a catch-all: `GET /r0/notathing` is still 404 `M_UNRECOGNIZED`
+      and `PUT /r0/login` is still 405 with an `Allow` header.
+      Verification: `tests/integration/legacyprefix_test.go` (login under r0 issues a working
+      token for the same account; whoami, sync, devices, pushrules, keys/changes, publicRooms and
+      a profile read all answer under r0; unknown path 404, wrong method 405); Complement
+      `TestLogin`, `TestRegistration`, `TestLogout`, `TestDeviceManagement`, `TestProfile*`,
+      `TestPushRule*`, `TestVersionStructure`, `TestUnknownEndpoints`, `TestServerCapabilities`,
+      `TestUploadKey*`, `TestKeysQueryWithDeviceIDAsObjectFails`, `TestKeyChangesLocal` and both
+      `TestSync`s green in `.agent-work/next/complement-run-r0keys.log`
+      (`.agent-work/next/complement-results-r0keys.tsv`): 20 passing, 3 failing. Those three
+      (`TestDeviceListUpdates`, `TestDeviceListsUpdateOverFederation`,
+      `TestE2EKeyBackupReplaceRoomKeyRules`) are the already-recorded device-list announcement and
+      key-backup gaps (T-4064, T-4008, T-3008e), unchanged by this work.

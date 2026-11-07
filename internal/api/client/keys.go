@@ -7,6 +7,7 @@ import (
 	"github.com/enimatek/lattice/internal/e2ekeys"
 	"github.com/enimatek/lattice/internal/httpx"
 	"github.com/enimatek/lattice/internal/matrixerr"
+	"github.com/enimatek/lattice/internal/matrixid"
 	"github.com/enimatek/lattice/internal/sync"
 )
 
@@ -98,4 +99,64 @@ func (d *Deps) handleKeysClaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"one_time_keys": claimed})
+}
+
+// handleKeysChanges implements GET /_matrix/client/v3/keys/changes: the same fact the
+// `device_lists` section of a sync carries, asked as a range instead of as "since my token".
+//
+// Both bounds are required and both have to be tokens this server issued. A client that pastes
+// a bare number, or a token from another server, is told so: answering such a range by treating
+// the unreadable bound as "from the beginning" would report device list changes that the client
+// then believes it has already seen.
+//
+// The deprecated `user_id` parameter is checked rather than ignored. Naming another user does
+// not make their device list changes this caller's to read: the rows are addressed to the
+// observer, and the addressing is the permission.
+func (d *Deps) handleKeysChanges(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	fromRaw, toRaw := query.Get("from"), query.Get("to")
+	if fromRaw == "" || toRaw == "" {
+		matrixerr.Write(w, http.StatusBadRequest, matrixerr.New(matrixerr.CodeInvalidParam,
+			"/keys/changes needs both a from and a to token from a sync."))
+		return
+	}
+	from, err := sync.ParseToken(fromRaw)
+	if err != nil {
+		matrixerr.Write(w, http.StatusBadRequest, matrixerr.New(matrixerr.CodeInvalidParam,
+			"The from token is not one this server issued."))
+		return
+	}
+	to, err := sync.ParseToken(toRaw)
+	if err != nil {
+		matrixerr.Write(w, http.StatusBadRequest, matrixerr.New(matrixerr.CodeInvalidParam,
+			"The to token is not one this server issued."))
+		return
+	}
+	caller := auth.UserID(r)
+	if other := query.Get("user_id"); other != "" {
+		if err := matrixid.UserValid(other); err != nil {
+			matrixerr.Write(w, http.StatusBadRequest, matrixerr.Newf(matrixerr.CodeInvalidParam,
+				"%q is not a valid user ID.", other))
+			return
+		}
+		if other != caller {
+			matrixerr.Write(w, http.StatusForbidden, matrixerr.New(matrixerr.CodeForbidden,
+				"Device list changes are addressed to the user who asks for them."))
+			return
+		}
+	}
+	changed, left, err := d.E2EKeys.DeviceChanges(r.Context(), caller, int64(from), int64(to))
+	if err != nil {
+		d.serviceError(w, err)
+		return
+	}
+	// Both lists are always present. A missing key would read as "this server does not know
+	// about that section", which is a different claim from "nobody moved".
+	if changed == nil {
+		changed = []string{}
+	}
+	if left == nil {
+		left = []string{}
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"changed": changed, "left": left})
 }

@@ -23,6 +23,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/enimatek/lattice/internal/e2ekeys"
 	"github.com/enimatek/lattice/internal/eventauth"
 	"github.com/enimatek/lattice/internal/events"
 	"github.com/enimatek/lattice/internal/persist"
@@ -533,26 +534,13 @@ func (s *Service) deviceListsFor(ctx context.Context, userID string, since, unti
 		s.log.Warn("sync: cannot read the device list changes", "user_id", userID, "error", err)
 		return nil
 	}
-	var changed, left []string
-	seenChanged, seenLeft := map[string]bool{}, map[string]bool{}
+	// The same two lists `GET /keys/changes` answers with, from the same rows: the same fact
+	// asked two ways must not get two answers.
+	changed, left := e2ekeys.DeviceListSections(rows, userID)
 	for _, row := range rows {
-		// A user's own changes are not reported back to them.
-		if row.UserID == userID || row.UserID == "" {
-			continue
-		}
-		switch row.Kind {
-		case persist.DeviceListChanged:
-			if !seenChanged[row.UserID] {
-				seenChanged[row.UserID] = true
-				changed = append(changed, row.UserID)
-			}
-		case persist.DeviceListLeft:
-			if !seenLeft[row.UserID] {
-				seenLeft[row.UserID] = true
-				left = append(left, row.UserID)
-			}
-		default:
-			// A kind this server did not write is a storage fault worth knowing about.
+		// A kind this server did not write is a storage fault worth knowing about, and the
+		// shared read has no logger to tell.
+		if row.Kind != persist.DeviceListChanged && row.Kind != persist.DeviceListLeft {
 			s.log.Warn("sync: unknown device list change kind",
 				"room_id", row.RoomID, "user_id", row.UserID, "kind", row.Kind)
 		}

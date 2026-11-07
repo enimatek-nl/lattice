@@ -90,6 +90,15 @@ func Register(r *httpserver.Router, d *Deps, requireAuth func(http.Handler) http
 		r.Handle(method, "/_matrix/client/v3"+path, authed(h))
 		r.Handle(method, "/_matrix/client/r0"+path, authed(h))
 	}
+	// versionedOpen is the same for the endpoints that carry no token — resolving an alias,
+	// reading a profile, and the login and registration dance that happens before a token
+	// exists. Requiring a token there would make the first step of using a homeserver
+	// impossible, and requiring the current prefix would break the clients that still ask
+	// under r0.
+	versionedOpen := func(method, path string, h http.HandlerFunc) {
+		r.Handle(method, "/_matrix/client/v3"+path, h)
+		r.Handle(method, "/_matrix/client/r0"+path, h)
+	}
 
 	// Discovery and versions.
 	r.Handle("GET", "/_matrix/client/versions", d.handleVersions)
@@ -98,17 +107,12 @@ func Register(r *httpserver.Router, d *Deps, requireAuth func(http.Handler) http
 	r.Handle("GET", "/healthz", d.handleHealth)
 
 	// Authentication.
-	r.Handle("GET", "/_matrix/client/v1/login", d.handleLoginFlows)
-	r.Handle("GET", "/_matrix/client/v3/login", d.handleLoginFlows)
-	r.Handle("POST", "/_matrix/client/v1/login", d.handleLogin)
-	r.Handle("POST", "/_matrix/client/v3/login", d.handleLogin)
+	versionedOpen("GET", "/login", d.handleLoginFlows)
+	versionedOpen("POST", "/login", d.handleLogin)
 
-	r.Handle("GET", "/_matrix/client/v1/register", d.handleRegisterGet)
-	r.Handle("GET", "/_matrix/client/v3/register", d.handleRegisterGet)
-	r.Handle("POST", "/_matrix/client/v1/register", d.handleRegister)
-	r.Handle("POST", "/_matrix/client/v3/register", d.handleRegister)
-	r.Handle("GET", "/_matrix/client/v1/register/available", d.handleRegisterAvailable)
-	r.Handle("GET", "/_matrix/client/v3/register/available", d.handleRegisterAvailable)
+	versionedOpen("GET", "/register", d.handleRegisterGet)
+	versionedOpen("POST", "/register", d.handleRegister)
+	versionedOpen("GET", "/register/available", d.handleRegisterAvailable)
 
 	// Synapse-compatible shared-secret registration. This endpoint is not part of
 	// the Matrix specification; it exists because the Complement test harness
@@ -118,13 +122,13 @@ func Register(r *httpserver.Router, d *Deps, requireAuth func(http.Handler) http
 
 	// Session and device management.
 	r.Handle("GET", "/_matrix/client/v1/account/whoami", authed(d.handleWhoAmI))
-	r.Handle("GET", "/_matrix/client/v3/account/whoami", authed(d.handleWhoAmI))
-	r.Handle("POST", "/_matrix/client/v3/logout", authed(d.handleLogout))
-	r.Handle("POST", "/_matrix/client/v3/logout/all", authed(d.handleLogoutAll))
-	r.Handle("GET", "/_matrix/client/v3/devices", authed(d.handleDevicesList))
-	r.Handle("GET", "/_matrix/client/v3/devices/{deviceID}", authed(d.handleDeviceGet))
-	r.Handle("PUT", "/_matrix/client/v3/devices/{deviceID}", authed(d.handleDevicePut))
-	r.Handle("DELETE", "/_matrix/client/v3/devices/{deviceID}", authed(d.handleDeviceDelete))
+	versioned("GET", "/account/whoami", d.handleWhoAmI)
+	versioned("POST", "/logout", d.handleLogout)
+	versioned("POST", "/logout/all", d.handleLogoutAll)
+	versioned("GET", "/devices", d.handleDevicesList)
+	versioned("GET", "/devices/{deviceID}", d.handleDeviceGet)
+	versioned("PUT", "/devices/{deviceID}", d.handleDevicePut)
+	versioned("DELETE", "/devices/{deviceID}", d.handleDeviceDelete)
 
 	// Rooms and events.
 	versioned("POST", "/createRoom", d.handleCreateRoom)
@@ -200,8 +204,7 @@ func Register(r *httpserver.Router, d *Deps, requireAuth func(http.Handler) http
 	// Resolving an alias is how a client finds a room to join, and joining may be the
 	// first thing a new client does: requiring a token here would make it impossible
 	// to discover a room to join in the first place.
-	r.Handle("GET", "/_matrix/client/v3/directory/room/{roomAlias}", d.handleAliasGet)
-	r.Handle("GET", "/_matrix/client/r0/directory/room/{roomAlias}", d.handleAliasGet)
+	versionedOpen("GET", "/directory/room/{roomAlias}", d.handleAliasGet)
 	versioned("GET", "/rooms/{roomID}/aliases", d.handleRoomAliases)
 
 	// Capabilities.
@@ -210,27 +213,28 @@ func Register(r *httpserver.Router, d *Deps, requireAuth func(http.Handler) http
 	// Push rules. The specification's paths under /pushrules form a tree that Go's mux
 	// cannot express with a wildcard in the middle of a path, so one route per method
 	// catches the subtree and the handler walks the segments.
-	r.Handle("GET", "/_matrix/client/v3/pushrules/{rest...}", authed(d.handlePushRulesGet))
-	r.Handle("PUT", "/_matrix/client/v3/pushrules/{rest...}", authed(d.handlePushRulesPut))
-	r.Handle("DELETE", "/_matrix/client/v3/pushrules/{rest...}", authed(d.handlePushRulesDelete))
-	r.Handle("GET", "/_matrix/client/v3/pushrules", authed(d.handlePushRulesGet))
+	versioned("GET", "/pushrules/{rest...}", d.handlePushRulesGet)
+	versioned("PUT", "/pushrules/{rest...}", d.handlePushRulesPut)
+	versioned("DELETE", "/pushrules/{rest...}", d.handlePushRulesDelete)
+	versioned("GET", "/pushrules", d.handlePushRulesGet)
 
 	// Presence. The user ID in the path is a single segment: a colon inside a path
 	// segment needs no escaping, so the mux pattern expresses it directly.
 	// Device and one-time keys. `/keys/upload` answers to PUT as well as POST: the
 	// specification says POST, and clients written against older text send PUT.
-	r.Handle("POST", "/_matrix/client/v3/keys/upload", authed(d.handleKeysUpload))
-	r.Handle("PUT", "/_matrix/client/v3/keys/upload", authed(d.handleKeysUpload))
-	r.Handle("POST", "/_matrix/client/v3/keys/query", authed(d.handleKeysQuery))
-	r.Handle("POST", "/_matrix/client/v3/keys/claim", authed(d.handleKeysClaim))
+	versioned("POST", "/keys/upload", d.handleKeysUpload)
+	versioned("PUT", "/keys/upload", d.handleKeysUpload)
+	versioned("POST", "/keys/query", d.handleKeysQuery)
+	versioned("POST", "/keys/claim", d.handleKeysClaim)
+	// The device-list stream as a range query, for a client that wants to know whose keys
+	// moved between two tokens without replaying the syncs between them.
+	versioned("GET", "/keys/changes", d.handleKeysChanges)
 
 	// Profiles. The reads carry no token: a room's members ask them about each other. The writes are
 	// the account's alone, and the account layer also pushes the change out as fresh member events so
 	// that a room does not go on showing a name the person stopped using.
-	r.Handle("GET", "/_matrix/client/v3/profile/{userID}", d.handleProfileGet)
-	r.Handle("GET", "/_matrix/client/r0/profile/{userID}", d.handleProfileGet)
-	r.Handle("GET", "/_matrix/client/v3/profile/{userID}/{keyName}", d.handleProfileFieldGet)
-	r.Handle("GET", "/_matrix/client/r0/profile/{userID}/{keyName}", d.handleProfileFieldGet)
+	versionedOpen("GET", "/profile/{userID}", d.handleProfileGet)
+	versionedOpen("GET", "/profile/{userID}/{keyName}", d.handleProfileFieldGet)
 	versioned("PUT", "/profile/{userID}/{keyName}", d.handleProfileFieldPut)
 	versioned("DELETE", "/profile/{userID}/{keyName}", d.handleProfileFieldDelete)
 

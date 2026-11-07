@@ -1,5 +1,43 @@
 # Progress
 
+## 2026-11-07 — the device-list stream as an endpoint, and a prefix the specification left behind
+
+`GET /keys/changes` answers the question the `device_lists` section of a sync answers as "since
+my token", as a range instead: whose device lists did this user have to re-read between these two
+positions, and whose stopped being theirs to track. It is not a new feature so much as a second
+door onto rows that already exist — one row per observer per change, written at the moment the
+change happened, because permission to hear about a user is room membership *then* and cannot be
+worked out afterwards. The person who most needs to be told that a room's members are no longer
+theirs to track is the one no longer in that room, which is why the row names its observer rather
+than its room. The conversion from rows to the two lists is shared with the sync service, so the
+same fact cannot get two answers depending on which door a client used.
+
+Both bounds are required and both must be tokens this server issued: inventing a bound the server
+cannot read would report changes the client then believes it has already seen. The deprecated
+`user_id` parameter is checked rather than ignored, and the answer is 403 rather than an empty
+list — the rows are addressed, and the addressing is the permission.
+
+**Then a 404 that had nothing to do with keys.** Complement's `TestKeyChangesLocal` logs in
+through `POST /_matrix/client/r0/login`, and this server answered 404 `M_UNRECOGNIZED`. `r0` is
+the specification's own earlier prefix; the endpoints under it are the same endpoints. Most of the
+room, membership, state, sync and account-data routes already answered there, but login,
+registration, `whoami`, logout, `/devices`, `/keys/*`, `/pushrules` and the unauthenticated reads
+were `v3`-only — a hole that only a client old enough to ask under `r0`, or a test written by one,
+would find. The unauthenticated ones needed their own registration helper, because the versioned
+one wraps authentication, and requiring a token at login would make the first step of using a
+homeserver impossible. The prefix is a prefix and not a catch-all: an unknown path under it is
+still 404 and a known path with the wrong method still answers 405.
+
+Verification: `tests/integration/keyschanges_test.go` (the sync section and the range endpoint
+agree in both directions; a user's own upload is not reported back to them; four malformed ranges
+are 400; `user_id` naming another user is 403), `tests/integration/legacyprefix_test.go` (an `r0`
+login issues a working token for the same account; whoami, sync, devices, push rules,
+keys/changes, the room directory and a profile read answer under `r0`; unknown path 404, wrong
+method 405). `go test -race ./tests/...` and `golangci-lint` green. Complement: 20 passing, 3
+failing in `RUN='TestKeyChangesLocal|TestLogin|TestRegistration|TestLogout|TestDevice|TestProfile|TestPushRule|TestVersionStructure|TestUnknownEndpoints|TestCanRegisterAdmin|TestServerCapabilities|TestSync$|TestUploadKey|TestKeysQuery|TestE2E'`
+(label `r0keys`) — `TestKeyChangesLocal` green for the first time, and the three failures are the
+already-recorded device-list announcement and key-backup gaps (T-4064, T-4008, T-3008e), unchanged.
+
 ## 2026-11-07 — an event type nobody qualified, and a state section that stopped hiding behind the batch
 
 **A dot is a convention.** `PUT /rooms/{roomID}/send/{type}/{txn}` answered 400 for an event type
