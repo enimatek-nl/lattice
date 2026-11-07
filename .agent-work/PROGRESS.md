@@ -2912,3 +2912,11 @@ one full suite adds roughly 700 volumes, and the limit is 2048 locks. The fix is
 that delete other people's state, which is exactly why the runner names them instead of running
 them; they are in `scripts/complement.sh` and quoted in `docs/compliance-matrix.md`. That is the
 next thing a human has to do before another full run means anything (T-4084).
+
+**And one change to the runner, because the failure was foreseeable:** `scripts/complement.sh` now
+refuses to start when the anonymous-volume count is past 1300 — naming the count, podman's 2048
+lock ceiling, and this run — instead of running 220 tests and reporting the runtime's limits as
+failures. Checked against the actual state: with 2045 volumes it exits 1 before deploying anything.
+`COMPLEMENT_FORCE=1` keeps the door open for anyone who wants an unfinished result on purpose.
+Clearing the store is still an operator's two loops, unchanged, because they delete state that may
+belong to other projects.

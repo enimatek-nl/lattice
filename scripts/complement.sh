@@ -69,7 +69,25 @@ filter="${RUN:-TestVersionStructure|TestUnknownEndpoints|TestRegistration|TestLo
 parallel="${PARALLEL:-2}"
 if command -v podman >/dev/null 2>&1; then
 	volumes="$(podman volume ls --format '{{.Name}}' 2>/dev/null | grep -cE '^[0-9a-f]{64}$' || true)"
-	[[ "${volumes:-0}" -gt 300 ]] && echo "!! $volumes anonymous volumes in the podman store; deploy failures below may be lock exhaustion, not test failures (see the comment above for how to clear them)"
+	# A count over 300 is worth saying out loud. A count within one suite's reach of podman's lock
+	# table (2048) is worth refusing over: on 2026-11-07 a full suite started with 2038 volumes and
+	# came out "3 passing, 217 failing" because 63 homeservers never started. That number measures
+	# the runtime, not the server, and a run that cannot deploy is not a tally of the protocol. A
+	# suite of this size costs roughly 700 volumes, so the threshold is a suite and a half away.
+	if [[ "${volumes:-0}" -gt 300 ]]; then
+		echo "!! $volumes anonymous volumes in the podman store; deploy failures below may be lock exhaustion, not test failures (see the comment above for how to clear them)"
+	fi
+	if [[ "${volumes:-0}" -gt 1300 && "${COMPLEMENT_FORCE:-}" != 1 ]]; then
+		cat >&2 <<-EOF
+		!! REFUSING TO START: $volumes anonymous volumes, and podman's lock table holds 2048.
+		!! A suite this size adds about 700, so most deployments would fail and the run would
+		!! report the runtime rather than the server — see run 20261107l in docs/compliance-matrix.md.
+		!! Clear the store first: the loops are in this script's comment above. They delete state
+		!! that may belong to other projects, so they stay an operator's call. Re-run afterwards, or
+		!! set COMPLEMENT_FORCE=1 to run anyway and read the result as unfinished.
+		EOF
+		exit 1
+	fi
 fi
 # The other way a Podman run lies about the protocol: stale per-network DNS.
 #

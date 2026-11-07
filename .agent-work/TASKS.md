@@ -1507,6 +1507,12 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
       `scripts/complement.sh` and quoted in `docs/compliance-matrix.md` under "Run 2026-11-07l is
       not a tally".
 
-      Also worth changing here, and not an operator action: the runner could *count down* — refuse
-      to start a full suite over a threshold with a message, rather than discovering it 63
-      deployments in. That is a small change to `scripts/complement.sh`.
+      Done on the runner's side: `scripts/complement.sh` now refuses to start above 1300 anonymous
+      volumes — with the reason, the numbers and a pointer to run 20261107l — instead of
+      discovering the wall 63 deployments in. `COMPLEMENT_FORCE=1` still runs it, for the case where
+      someone wants the (unfinished) result anyway. Verified: with 2045 volumes in the store it
+      exits 1 without deploying anything.
+
+      Still open, and not a code change: the store has to be cleared by hand — the loops are named
+      in the script and quoted in `docs/compliance-matrix.md` — and until that is done, no full run
+      can be trusted. The measured position remains 20261107h: **121 / 98 / 1**.
