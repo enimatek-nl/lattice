@@ -2892,3 +2892,23 @@ too: it receipts inside a thread, and threads do not exist here yet.
 
 **Still honest about:** unread counts, which remain zero. The rows are there now; MSC784's counting
 rules and MSC2860's marker are T-3005a.
+
+## 2026-11-07 (later still) — a full run that measured the runtime, not the server (20261107l)
+
+The second full run of the day, started at `d298624` to re-measure everything after the account and
+receipt work, ended **3 passing, 217 failing**. It is not a protocol result and is recorded as a
+broken run rather than as a tally: 279 lines of `allocating lock for new volume: allocation failed;
+exceeded num_locks (2048)`, 63 deployments that never started, and the runner's own warning printed
+before the first test — 2038 anonymous volumes in the podman store, up from 1355 at the start of the
+day and 594 at the start of the week.
+
+Nothing about the tree is being blamed, and nothing about the 217 is being believed. The measured
+position stays **20261107h: 121 / 98 / 1**, with the account endpoints (T-4081, `TestChangePassword`
+and `TestDeactivateAccount` green) and the receipts (T-4083, `TestRoomReceipts` and
+`TestRoomReadMarkers` green) carrying targeted runs of their own.
+
+What the run *did* establish is that the leak has a doubling time and will eat any run from now on:
+one full suite adds roughly 700 volumes, and the limit is 2048 locks. The fix is two shell loops
+that delete other people's state, which is exactly why the runner names them instead of running
+them; they are in `scripts/complement.sh` and quoted in `docs/compliance-matrix.md`. That is the
+next thing a human has to do before another full run means anything (T-4084).

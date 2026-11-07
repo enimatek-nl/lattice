@@ -1490,3 +1490,23 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
       T-4020/T-4024 cluster).
       Unread counts are still zero on purpose: MSC784's counting rules and MSC2860's read marker
       are T-3005a, and the rows behind this are now the raw material for it.
+
+- [ ] T-4084 the podman volume store has to be cleared before another full run means anything.
+      Run `20261107l` (full suite, tree `d298624`) came out **3 passing / 217 failing** because 63
+      homeserver deployments never started: the store held 2038 anonymous volumes and podman's
+      lock table is 2048, so new volumes simply fail
+      (`allocating lock for new volume: allocation failed; exceeded num_locks (2048)`, 279 times in
+      that log). One full suite adds roughly 700, so the day's own runs pushed it over.
+
+      The runner detects this and says so next to the tally rather than letting the number stand,
+      and it prints the two loops rather than running them: one deletes anonymous volumes belonging
+      to no running container, the other removes `aardvark-dns` files for networks that no longer
+      exist (the stale `complement_msc3902_1_servers` record is still there and has been behind
+      several "certificate is valid for hs2, not hs1" failures). Both touch state that may belong to
+      other projects on this machine, so they are an operator's decision. The commands are in
+      `scripts/complement.sh` and quoted in `docs/compliance-matrix.md` under "Run 2026-11-07l is
+      not a tally".
+
+      Also worth changing here, and not an operator action: the runner could *count down* — refuse
+      to start a full suite over a threshold with a message, rather than discovering it 63
+      deployments in. That is a small change to `scripts/complement.sh`.
