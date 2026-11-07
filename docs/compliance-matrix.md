@@ -233,6 +233,41 @@ Lists: `.agent-work/complement-passes-20261107h.txt`, `.agent-work/complement-fa
 qualified table `.agent-work/next/complement-results-20261107h.tsv`; log
 `.agent-work/next/complement-run-20261107h.log`.
 
+## Run 2026-11-07l is not a tally: the podman volume store exhausted its locks
+
+`RUN='.*' COMPLEMENT_LABEL=20261107l COMPLEMENT_TEST_TIMEOUT=40m PARALLEL=2 scripts/complement.sh -v`
+was started at tree `d298624` to re-measure the whole suite after the account and receipt work. It
+finished with **3 passing, 217 failing, 0 skipped** and the runner's own warning beside it: *some
+deployments never started*. It measures the container runtime, not this server, and it is recorded
+here so that nobody reads 217 as a protocol result.
+
+| Evidence | Value |
+| --- | --- |
+| `exceeded num_locks` lines in the log | 279; the first is `allocating lock for new volume: allocation failed; exceeded num_locks (2048)` |
+| Deploy failures the runner counted | 63 (`failed to deployBaseImage` / `timed out checking for homeserver to be up`) |
+| Anonymous volumes in the store when it started | 2038 — the runner warned before the first test ran |
+| Top-level results | 3 tests passed (`TestMembersLocal`, `TestIsDirectFlagLocal`, `TestWriteMDirectAccountData`); the other 217 never reached an assertion |
+| The measured position | unchanged: **20261107h, 121 passing / 98 failing / 1 skipped**, with the account (T-4081) and receipt (T-4083) work carrying targeted runs only |
+
+Clearing it is an operator's call, not a script's — it deletes volumes and DNS files on a machine
+that may be running other projects' containers. The two snippets are in `scripts/complement.sh`;
+they are:
+
+```
+keep=$(for c in $(podman ps -aq); do podman inspect "$c" --format '{{range .Mounts}}{{.Name}} {{end}}'; done)
+for v in $(podman volume ls -q); do case "$v" in *[!0-9a-f]*|"") continue;; esac
+  [ ${#v} -eq 64 ] || continue; case "$keep" in *"$v"*) continue;; esac
+  podman volume rm "$v" >/dev/null; done
+
+dns="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/containers/networks/aardvark-dns"
+for f in "$dns"/*; do n=${f##*/}; [ "$n" = aardvark.pid ] && continue
+  podman network exists "$n" 2>/dev/null || rm -f "$f"; done
+kill "$(cat "$dns/aardvark.pid")" 2>/dev/null || true
+```
+
+Lists and log: `.agent-work/complement-{passes,failures}-20261107l.txt`,
+`.agent-work/next/complement-run-20261107l.log`.
+
 ## Targeted runs (2026-11-07j and 2026-11-07k — T-4083 read receipts, closed)
 
 Same filter both times, so the second is a re-measurement and not a different question:
