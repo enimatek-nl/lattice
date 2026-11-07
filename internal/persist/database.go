@@ -41,6 +41,9 @@ type Database struct {
 	Filters     FilterRepo
 	AccountData AccountDataRepo
 	Presence    PresenceRepo
+	// Receipts holds each user's read position per room, which is what sync delivers as an
+	// `m.receipt` ephemeral event and what an unread count is measured from.
+	Receipts    ReceiptRepo
 	DeviceLists DeviceListRepo
 	DeviceKeys  DeviceKeysRepo
 	Federation  FederationRepo
@@ -92,6 +95,7 @@ func Open(path string, log *slog.Logger) (*Database, error) {
 	d.Filters = NewFilterRepo(gdb)
 	d.AccountData = NewAccountDataRepo(gdb)
 	d.Presence = NewPresenceRepo(gdb)
+	d.Receipts = NewReceiptRepo(gdb)
 	d.DeviceLists = NewDeviceListRepo(gdb)
 	d.Federation = NewFederationRepo(gdb)
 	d.DeviceKeys = NewDeviceKeysRepo(gdb)
@@ -119,7 +123,7 @@ func applyPragmas(gdb *gorm.DB) error {
 // matter for Matrix lookups and are not derived from struct tags.
 func (d *Database) migrate(log *slog.Logger) error {
 	if err := d.db.AutoMigrate(&User{}, &Device{}, &AccessToken{}, &SigningKey{},
-		&Room{}, &Event{}, &EventEdge{}, &RoomState{}, &EventAuthContext{}, &EventTxn{}, &RoomAlias{}, &Filter{}, &AccountData{}, &Presence{}, &DeviceListChange{}, &DeviceKeyDoc{}, &OneTimeKey{},
+		&Room{}, &Event{}, &EventEdge{}, &RoomState{}, &EventAuthContext{}, &EventTxn{}, &RoomAlias{}, &Filter{}, &AccountData{}, &Presence{}, &Receipt{}, &DeviceListChange{}, &DeviceKeyDoc{}, &OneTimeKey{},
 		&DeviceListStream{},
 		&ServerSigningKey{}, &ServerKeyDocument{}, &FederationTransaction{}, &FederationQueueItem{},
 		&MediaMetadata{},
@@ -144,6 +148,11 @@ func (d *Database) migrate(log *slog.Logger) error {
 		"DROP INDEX IF EXISTS idx_account_data_user_type",
 		"CREATE UNIQUE INDEX IF NOT EXISTS idx_account_data_user_room_type ON account_data(user_id, room_id, data_type)",
 		"CREATE INDEX IF NOT EXISTS idx_account_data_user_stream ON account_data(user_id, stream_ordering)",
+
+		// A user has one read position per room and kind of receipt, read by position for
+		// the same reason presence is: a client asks what changed since its last sync.
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_receipts_room_type_user_thread ON receipts(room_id, receipt_type, user_id, thread_id)",
+		"CREATE INDEX IF NOT EXISTS idx_receipts_room_stream ON receipts(room_id, stream_ordering)",
 
 		// Presence is one current row per user, read by position when sync asks what
 		// changed since a token.

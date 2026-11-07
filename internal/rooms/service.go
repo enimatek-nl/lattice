@@ -128,7 +128,11 @@ type Service struct {
 	state  persist.StateRepo
 	groups persist.StateGroupRepo
 	alias  persist.RoomAliasRepo
-	signer events.Signer
+	// receipts holds each user's read position per room. It is not part of the room's graph: a
+	// receipt is a statement about reading, which is why it takes a stream position rather than
+	// an event ID.
+	receipts persist.ReceiptRepo
+	signer   events.Signer
 	// serve turns a stored event into the form a client is allowed to see. It lives here
 	// so that `/messages`, `/event` and `/sync` answer the redaction question the same
 	// way; when each path decided for itself, the same event could come back with its
@@ -300,6 +304,7 @@ func New(db *persist.Database, signer events.Signer, presence PresenceNotifier, 
 		state:    db.State,
 		groups:   db.StateGroups,
 		alias:    db.Aliases,
+		receipts: db.Receipts,
 		signer:   signer,
 		presence: presence,
 		upgrades: upgrades,
@@ -321,6 +326,7 @@ func (s *Service) WithTx(tx *gorm.DB) *Service {
 		state:    s.state.WithTx(tx),
 		groups:   s.groups.WithTx(tx),
 		alias:    s.alias.WithTx(tx),
+		receipts: s.receipts.WithTx(tx),
 		signer:   s.signer,
 		presence: s.presence,
 		upgrades: s.upgrades,

@@ -1,0 +1,2 @@
+TestRoomReceipts
+TestThreadReceiptsInSyncMSC4102
