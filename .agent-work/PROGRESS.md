@@ -2849,3 +2849,46 @@ Targeted run `20261107i-account`: **6 passing, 1 failing** — `TestChangePasswo
 `TestDeactivateAccount` newly green, the login/logout/registration/device families unchanged, and
 `TestChangePasswordPushers` still red because `POST /pushers/set` does not exist here at all. That is
 T-4082, the next door.
+
+## 2026-11-07 (night) — read receipts, and what a non-event has to do with the stream (T-4083)
+
+`POST /rooms/{room}/receipt/{type}/{eventID}` and `POST /rooms/{room}/read_markers` did not exist,
+so `TestRoomReceipts` and `TestRoomReadMarkers` were 404s all the way down. Implementing them looked
+like an endpoint and a table; it turned into three sentences about the stream, each bought with a
+failure:
+
+1. **A receipt is not an event, but it still has to be synchronisable.** It has no ID, no auth
+   rules and no place in the graph — it is a current value about a person, exactly like presence,
+   which this server already delivers. So it is stored as one row per (room, kind, user, thread)
+   that *moves*, and the move takes a position in the same stream events use. An incremental sync
+   then answers "which receipts moved inside your window"; a first sync has no window and gets the
+   current answer.
+2. **The stream has to know the table exists.** Positions are `MAX(stream_ordering)+1` over a union
+   of the tables that participate. `receipts` was not in it, so a receipt sat at a position the
+   stream did not know about, `next_batch` fell behind it, and the receipt was filtered out of the
+   window that had been asked for. Added to `streamTables`, and the test went from "no receipt" to
+   "the receipt".
+3. **Two failures that were storage, not protocol.** The repository has to be bound to the
+   transaction that takes the position: SQLite waited on itself and the request hung for ten
+   seconds, which reads as a deadlock bug in the sync loop and is a missing `WithTx`. And the
+   second receipt one user posted answered **500 `M_UNKNOWN`** — an update of an existing row needs
+   a key to find it by, and the row had no primary key. `20261107j-receipts` records that 500 with
+   its line (`room_receipts_test.go:61`); `20261107k-receipts`, after the fix, is the run that says
+   it works.
+
+**Where the two halves live.** `m.read` is the receipt, sent through the same service call the
+receipt endpoint uses so the two doors cannot disagree about what a read position means.
+`m.fully_read` is the reader's own bookmark: room-scoped account data, delivered in the same sync
+under `account_data`, because nothing else in the room needs to know it.
+
+**Verification.** `tests/integration/receipts_test.go` — the ephemeral shape (no `room_id`, no event
+ID of its own), a first sync carrying the current position, a quiet window repeating nothing, a
+position moved twice leaving one receipt, and the refusals (unknown event and cross-room event 404,
+bad receipt kind and bad event ID 400, a room the caller is not in 403, a custom dotted kind
+accepted). Targeted run `20261107k-receipts`: **10 passing, 1 failing** — `TestRoomReceipts` and
+`TestRoomReadMarkers` green, `TestSync` green in both packages, the `/sync` and `/messages` family
+unchanged. The remaining failure, `TestThreadReceiptsInSyncMSC4102`, was failing before this work
+too: it receipts inside a thread, and threads do not exist here yet.
+
+**Still honest about:** unread counts, which remain zero. The rows are there now; MSC784's counting
+rules and MSC2860's marker are T-3005a.

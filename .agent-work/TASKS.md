@@ -1446,3 +1446,47 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
       1 skipped**, with `TestEvent`, `TestFilter`, `TestRequestEncodingFails` and
       `TestRoomImageRoundtrip` newly green and `TestPushRuleRoomUpgrade` newly red on the 500 that
       T-4071 is about.
+
+- [x] T-4083 read receipts and read markers. `POST /rooms/{room}/receipt/{type}/{eventID}` and
+      `POST /rooms/{room}/read_markers` were 404 `M_UNRECOGNIZED`, so `TestRoomReceipts` and
+      `TestRoomReadMarkers` had nothing to fail on but the door.
+
+      A receipt is not an event: it has no ID, no authorization rules and no place in the room's
+      graph. It is a current value about a person — like presence, which this server already
+      synchronises — so it is stored as one row per (room, kind of receipt, user, thread) that
+      *moves*, and the row takes a position in the same stream events take. That is what makes an
+      incremental sync able to answer "which receipts moved inside your window", while a first sync
+      has no window and is given the current answer instead. `m.fully_read` is the reader's own
+      bookmark, so it goes into room-scoped account data rather than becoming something the rest of
+      the room hears about.
+
+      Three things the stream needed to be told about, each of which was a failure before it was a
+      sentence: the `receipts` table joins the union the stream position is computed from (without
+      it a `next_batch` is behind the receipt it is supposed to cover, and the receipt is filtered
+      out of the very window that was asked for); the repository has to be bound to the transaction
+      that takes the position (SQLite waits on itself otherwise, which read as a request that hung
+      for ten seconds); and a row that is being updated needs a key to be found by — the **second**
+      receipt one user posted answered 500 `M_UNKNOWN` until the row had a primary key.
+
+      Verification: `tests/integration/receipts_test.go` — a receipt reaches the same user's next
+      incremental sync as `m.receipt` with no `room_id` and no event ID of its own, a first sync
+      carries the current position, a window that contains no move repeats nothing, a receipt
+      posted twice leaves one position rather than two, and the refusals: an event this server has
+      never held and an event from a different room are 404, a receipt kind with no dot in it and a
+      non-event ID are 400, a room the caller is not in is 403, and a custom dotted kind is
+      accepted.
+
+      Targeted Complement runs, both in the sync and `/messages` family so the changed include-rule
+      for joined rooms was measured against its blast radius:
+      `20261107j-receipts` (**9 passing, 2 failing**) had `TestRoomReadMarkers` green and
+      `TestRoomReceipts` still red — `room_receipts_test.go:61`, the second receipt of the room
+      `returned non-2xx code: 500 Internal Server Error`, which is the primary-key finding above —
+      and after the fix `20261107k-receipts` is **10 passing, 1 failing**: `TestRoomReceipts` and
+      `TestRoomReadMarkers` green, `TestSync` green in both packages that define it, and
+      `TestSyncFilter`, `TestSyncLeaveSection`, `TestSyncTimelineGap`,
+      `TestSyncOmitsStateChangeOnFilteredEvents` and the two lazy-loading `/messages` tests
+      unchanged from 20261107h. The one failure is `TestThreadReceiptsInSyncMSC4102`, red in
+      20261107h as well: it receipts *within a thread*, and threads are not implemented (MSC4102,
+      T-4020/T-4024 cluster).
+      Unread counts are still zero on purpose: MSC784's counting rules and MSC2860's read marker
+      are T-3005a, and the rows behind this are now the raw material for it.
