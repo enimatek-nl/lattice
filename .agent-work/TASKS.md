@@ -1327,14 +1327,35 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
       `TestRequestEncodingFails` — lists `.agent-work/complement-{passes,failures}-20261107d-sizelimit.txt`.
       These two were not re-run in a full suite; the full tally above them is still 20261107c.
 
-- [ ] T-4079 a filter is not accepted whatever is written in it. `TestFilter` (csapi) is red on
-      fourteen assertions, all of the same shape and all in the log:
-      "Expected 4XX status code, got 200 for testing filter map[presence:not_an_object]" and
-      thirteen more. `PUT/POST /user/{userID}/filter` stores any JSON the client sends and answers
-      200; the spec defines the filter object's fields and their types, so a filter whose `timeline`
-      is a string, or whose `rooms` is a list of integers, is a client bug that should be answered at
-      the door it arrived at rather than silently doing nothing on every later `/sync`.
-      A filter validator is a small, self-contained thing: it is the same shape read by
-      `internal/sync` when a `/sync` carries `filter=`, so write it once and use it on both doors.
-      Complement: `TestFilter` in `tests/csapi`,
-      `.agent-work/next/complement-run-20261107c.log` (lines quoted above).
+- [x] T-4079 a filter is not accepted whatever is written in it. `TestFilter` (csapi) was red on
+      fourteen assertions all of the same shape, in the 20261107c log:
+      "Expected 4XX status code, got 200 for testing filter map[presence:not_an_object]" and thirteen
+      more. `POST /user/{userID}/filter` stored any JSON and answered 200, so a filter with a typo in
+      it became a permanent fact: every later `/sync` through it returned fewer events than the client
+      meant to ask for, and nothing said so.
+
+      Fixed at the two doors a filter arrives at — `SaveFilter` (the create door) and `Service.filter`
+      (a filter given inline to `/sync`), which is why the second one matters: a client told its filter
+      is wrong once and not again has been trained to distrust the answer it did get. The checks are
+      the ones the filter object states in the specification — which fields are objects, which are
+      lists of strings, which are lists of **room IDs** and **user IDs** (`map[room:map[timeline:
+      map[rooms:[not_a_room_id]]]]` and `[not_a_sender_id]` are the two that no amount of type checking
+      would catch) — and answered 400 `M_INVALID_PARAM` naming the field.
+
+      What is deliberately not checked is written in the code: unknown field names are left alone. The
+      filter object is where MSCs put their switches (a threaded-sync filter carries a namespaced name
+      today), and refusing a name this server has not read makes this server the reason a client cannot
+      try a newer spec.
+
+      Verification: `tests/integration/filtervalidation_test.go`, twenty-one bad documents and the
+      good one read back byte for byte, plus the inline `/sync` door. `go test ./tests/...` green.
+      Targeted Complement run `20261107e-filters`
+      (`.agent-work/next/complement-run-20261107e-filters.log`, table
+      `.agent-work/next/complement-results-20261107e-filters.tsv`): **10 passing, 3 failing** across
+      the twelve filter-touching tests in the suite (`TestFilter` green; `TestSync` green in both
+      packages that define it, csapi and msc4222; `TestSyncFilter`, `TestRoomMessagesLazyLoading`,
+      `TestRoomMessagesLazyLoadingLocalUser`, `TestSearch`…). The three failures — `TestSearch`,
+      `TestRoomImageRoundtrip`, `TestFilterMessagesByRelType` — are all in
+      `.agent-work/complement-failures-20261107c.txt` too, so they are not caused by this change.
+      `TestFilterMessagesByRelType` is MSC3874 `rel_types` on `/messages`, unimplemented;
+      `TestRoomImageRoundtrip` fails on `key 'end' missing`, which is next.

@@ -2732,3 +2732,42 @@ full-suite tally remains 20261107c's 118/101/1 until the next full run says othe
 **Next cheap win found in the same log, not taken yet:** `TestFilter`'s fourteen
 "Expected 4XX status code, got 200 for testing filter map[...]" assertions — this server stores any
 JSON as a filter. Opened as T-4079.
+
+## 2026-11-07 (evening) — a filter with a typo in it is refused, not stored (T-4079)
+
+`TestFilter` was fourteen lines in the 20261107c log that all read the same way:
+
+```
+invalid_test.go:188: Expected 4XX status code, got 200 for testing filter map[presence:not_an_object]
+invalid_test.go:188: Expected 4XX status code, got 200 for testing filter map[room:map[timeline:map[rooms:[not_a_room_id]]]]
+```
+
+A filter is the client's document, and this server stored any document and answered 200. The harm is
+not the 200; it is that the filter then shaped every later `/sync` of that user's, returning fewer
+events than the client meant to ask for, with no error anywhere to explain the missing ones.
+
+**Two doors, not one.** The obvious place was `POST /user/{user}/filter`. The one that is easy to miss
+is `/sync?filter={…}`, where the same document arrives inline: a client told its filter is wrong once
+and not again has been trained to distrust the answer it did get.
+
+**What is not checked, on purpose.** Field *names* this server has not read are left alone. The filter
+object is where MSCs park their switches — a threaded-sync filter carries a namespaced name today — and
+refusing an unknown name makes this server the reason a client cannot try a newer spec. Field *shapes*
+this server does read must match the specification, including the two that no type checking catches:
+`rooms` must hold room IDs and `senders` must hold user IDs, so `[not_a_sender_id]` is a bug at the
+door rather than a filter that quietly matches nothing.
+
+**Verification.** `tests/integration/filtervalidation_test.go` (twenty-one bad documents, the good one
+read back byte for byte, and the inline door). `go test ./tests/...` green. Targeted Complement run
+`20261107e-filters`: **10 passing, 3 failing** over the twelve filter-touching tests in the suite, with
+`TestFilter` green and `TestSync` green in both packages that define it (`csapi`, `msc4222`). The three
+failures (`TestSearch`, `TestRoomImageRoundtrip`, `TestFilterMessagesByRelType`) are all in the
+20261107c failure list as well, so nothing here caused them. Full-suite tally is still 20261107c's
+118 / 101 / 1 until the next full run.
+
+**Picked up from the same log, not yet done:** `TestRoomImageRoundtrip` fails on
+`MatchResponse key 'end' missing` — this page of history answers `start` and omits `end` when it
+believes there is nothing further, where the reference servers always answer a token to continue from.
+That is a deliberate behaviour with four assertions in `tests/integration/history_test.go` behind it,
+so changing it means changing the local story about how a client knows to stop paginating, and saying
+which of the two this project is following.

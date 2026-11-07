@@ -213,6 +213,26 @@ membership, alias and M1-regression subset, and it is reported as such.
    that a version 1 room that disagrees between servers is investigated rather than assumed away.
    Interoperability against Synapse on such a room is not tested.
 
+## Targeted run (2026-11-07e-filters — T-4079 closed)
+
+`RUN='^TestFilter$|^TestSyncFilter$|^TestRoomMessagesLazyLoading$|^TestRoomMessagesLazyLoadingLocalUser$|^TestSync$|^TestSearch$|^TestPublicRooms$|^TestFilterMessagesByRelType$|^TestRoomImageRoundtrip$|^TestMediaConfig$|^TestSendAndFetchMessage$|^TestSendMessageWithTxn$' COMPLEMENT_LABEL=20261107e-filters COMPLEMENT_TEST_TIMEOUT=25m scripts/complement.sh -v`
+— every Complement test that puts a `filter` in a request, run together so the new validation could be
+checked against its own blast radius rather than against a hopeful subset. `TestSync` is defined in two
+packages and is listed twice, so thirteen results for twelve names.
+
+| Field | Value |
+| --- | --- |
+| Tally | **10 passing, 3 failing, 0 skipped** |
+| Newly passing | `TestFilter` — twenty-one shapes a client can write, all answered 400 `M_INVALID_PARAM` naming the field, where 20261107c showed 200 and a stored filter |
+| Still failing, unchanged from 20261107c | `TestSearch` (search is not implemented), `TestFilterMessagesByRelType` (MSC3874 `rel_types` on `/messages`), `TestRoomImageRoundtrip` (`MatchResponse key 'end' missing` — this server omits `end` when it thinks there is nothing further) |
+| Regression check | `TestSync` green in both `tests/csapi` and `tests/msc4222`; `TestSyncFilter`, `TestRoomMessagesLazyLoading`, `TestRoomMessagesLazyLoadingLocalUser`, `TestPublicRooms`, `TestMediaConfig`, `TestRoomImageRoundtrip`'s neighbours all behave as in 20261107c |
+| Complement assertions changed | none |
+
+Lists: `.agent-work/complement-passes-20261107e-filters.txt`,
+`.agent-work/complement-failures-20261107e-filters.txt`; table
+`.agent-work/next/complement-results-20261107e-filters.tsv`; log
+`.agent-work/next/complement-run-20261107e-filters.log`. The full-suite tally above remains 20261107c's.
+
 ## Targeted run (2026-11-07d-sizelimit — T-4078 closed)
 
 `RUN='^TestEvent$|^TestRequestEncodingFails$' COMPLEMENT_LABEL=20261107d-sizelimit scripts/complement.sh -v`,

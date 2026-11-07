@@ -1,0 +1,13 @@
+fail	tests/csapi	TestRoomImageRoundtrip
+fail	tests/csapi	TestSearch
+fail	tests/msc3874	TestFilterMessagesByRelType
+pass	tests/csapi	TestFilter
+pass	tests/csapi	TestMediaConfig
+pass	tests/csapi	TestPublicRooms
+pass	tests/csapi	TestRoomMessagesLazyLoading
+pass	tests/csapi	TestRoomMessagesLazyLoadingLocalUser
+pass	tests/csapi	TestSendAndFetchMessage
+pass	tests/csapi	TestSendMessageWithTxn
+pass	tests/csapi	TestSync
+pass	tests/csapi	TestSyncFilter
+pass	tests/msc4222	TestSync
