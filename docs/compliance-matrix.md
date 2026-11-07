@@ -213,6 +213,26 @@ membership, alias and M1-regression subset, and it is reported as such.
    that a version 1 room that disagrees between servers is investigated rather than assumed away.
    Interoperability against Synapse on such a room is not tested.
 
+## Targeted run (2026-11-07d-sizelimit — T-4078 closed)
+
+`RUN='^TestEvent$|^TestRequestEncodingFails$' COMPLEMENT_LABEL=20261107d-sizelimit scripts/complement.sh -v`,
+Complement `7b38a63c9db3`, image built at the tree carrying `maxPDUSize` in `persistEvent` and the
+UTF-8 check in `httpx.DecodeJSON`. Every other package reported "no tests to run", so this is a
+two-test run and nothing else in it is measured.
+
+| Field | Value |
+| --- | --- |
+| Tally | **2 passing, 0 failing, 0 skipped** (top-level; the run's whole universe was these two tests) |
+| Passing | `TestEvent` — `Large_Event` and `Large_State_Event` now answer 413 `M_TOO_LARGE`, where 20261107c showed 200 for both; `TestRequestEncodingFails` — `POST_rejects_invalid_utf-8_in_JSON` answers 400 `M_NOT_JSON`, where 20261107c showed 401 `M_NO_AUTH` because Go's decoder had swallowed the invalid byte and the request reached the auth question |
+| Newly failing | not measurable from a two-test run |
+| Full-suite tally | unchanged: 20261107c's 118 / 101 / 1, above. These two tests were failing there and are green in this run; a full re-run has not been done since |
+| Complement assertions changed | none |
+
+Lists: `.agent-work/complement-passes-20261107d-sizelimit.txt` (2 lines),
+`.agent-work/complement-failures-20261107d-sizelimit.txt` (empty);
+table `.agent-work/next/complement-results-20261107d-sizelimit.tsv`;
+log `.agent-work/next/complement-run-20261107d-sizelimit.log`.
+
 ## Latest full run (2026-11-07c — T-4074 the membership handshakes closed, T-4075/T-4076/T-4077 opened)
 
 `RUN='.*' COMPLEMENT_LABEL=20261107c COMPLEMENT_TEST_TIMEOUT=40m scripts/complement.sh -v`, Complement

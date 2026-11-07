@@ -37,6 +37,15 @@ import (
 // forks merged first, which is federation work.
 const maxPrevEvents = 10
 
+// maxPDUSize is the ceiling on how large an event may be, in bytes of the event as it is stored —
+// the Server-Server API's MAX_PDU_SIZE. It is enforced here rather than at the Client-Server API
+// door for two reasons. A client that is told 200 about an event its own server can never send to
+// anybody has been lied to: the size limit is a property of the event, not of the door it came
+// through. And the ceiling is not this server's invention to apply only to itself — a peer's
+// oversized event is refused on the way in as well, so the two paths cannot disagree about what a
+// room is allowed to contain.
+const maxPDUSize = 65536
+
 // Preset names the initial-state layouts the Client-Server API defines.
 type Preset string
 
@@ -851,6 +860,14 @@ func (s *Service) persistEvent(ctx context.Context, event map[string]any, stream
 	canonical, err := events.Canonical(event)
 	if err != nil {
 		return fmt.Errorf("rooms: cannot encode the event: %w", err)
+	}
+	if len(canonical) > maxPDUSize {
+		// Measured on the bytes that would be stored, signatures included, because that is the
+		// thing a peer would receive and the thing the limit is about. The event is not stored and
+		// nothing else in the room moves: an event that cannot be sent is not an event that
+		// happened.
+		return matrixerr.Newf(matrixerr.CodeTooLarge,
+			"The event is %d bytes, over this server's limit of %d.", len(canonical), maxPDUSize)
 	}
 	eventID, _ := event["event_id"].(string)
 	roomID, _ := event["room_id"].(string)
