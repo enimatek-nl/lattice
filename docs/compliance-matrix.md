@@ -1,6 +1,10 @@
 # Compliance Matrix
 
-Last updated: 2026-11-05.
+Last updated: 2026-11-07. (Rows below the first two tables are dated where they were written; a
+row that contradicts a later dated section is stale, and the dated sections and the run lists under
+`.agent-work/` are the authority. A 2026-11-07 pass over this file corrected the rows that had drifted
+— media, sync, device keys, push rules, room version 1/2 authorisation, server ACLs, federation
+invites — because a stale "not implemented" line is as misleading as a stale "done" one.)
 
 This matrix distinguishes **implemented**, **tested by this project**, **verified against Complement**,
 **partial**, **not implemented** and **not applicable**. An endpoint that merely answers is not
@@ -27,20 +31,20 @@ Specification: Matrix v1.19 (`docs/specification-version.md`).
 | Errors | 404 `M_UNRECOGNIZED` for unknown paths, 405 `M_UNRECOGNIZED` + `Allow` for wrong methods, across client/federation/key/media prefixes | implemented | yes | **verified** (`TestUnknownEndpoints`, all subtests) |
 | Discovery | `/.well-known/matrix/client`, `/.well-known/matrix/server` | implemented | yes | n/a |
 | Media | `GET /v3/config` (upload size) | implemented | yes | **verified** (`TestMediaConfig`) |
-| Media | upload / download / thumbnail / async | not implemented | stub answers 501 | `TestMediaConfig` passes; upload tests fail with 501 (recorded, not hidden) |
-| Filters | `POST /filter` validation | not implemented | no | `TestFilter` "passes" only because it asserts 4xx and we answer 404 — **incidental, not compliance** |
+| Media | upload (sync and async `create`/`commit`), download including the authenticated `/client/v1/media/...` forms, thumbnail, `config`, remote content fetched once from the origin and served from the copy held here | implemented | `tests/integration/media_test.go`, `tests/unit/media_multipart_test.go` | **verified**: `TestMediaConfig`, `TestContentMediaV1`, `TestContentCSAPIMediaV1`, `TestMediaFilenames`, `TestMediaWithoutFileName`, `TestAsyncUpload`, `TestFederationThumbnail`, `TestLocalPngThumbnail`, `TestRemotePngThumbnail`. `TestRoomImageRoundtrip` and `TestUrlPreview` stay red: previews and the media report endpoint are not implemented |
+| Filters | `POST`/`GET`/`DELETE /user/{id}/filter[/{filterID}]`: filters are stored, validated and read back, and a sync and a `/messages` page consult them | partial — the sections and limits a filter names are not all applied (T-4020) | `tests/integration/sync_test.go` | `TestSyncFilter` passes; `TestFilter` and `TestSyncOmitsStateChangeOnFilteredEvents` are red (T-4020) |
 | Rooms | `POST /v3/createRoom`: presets, `room_version` negotiation (`M_UNSUPPORTED_ROOM_VERSION`), `creation_content` limits, initial state, name/topic/avatar shorthand | implemented | yes | not verified (Complement room tests also need membership endpoints) |
 | Events | `PUT /v3/rooms/{roomID}/send/{eventType}/{txnID}`: authorisation, hashing, signing, storage, per-device transaction idempotency | implemented | yes | not verified |
 | Events | `PUT /send/m.room.member/...` refused with 400 `M_UNRECOGNIZED` (membership has its own endpoints) | implemented | yes | not verified |
 | State | `PUT /v3/rooms/{roomID}/state/{eventType}[/{stateKey}]`, including the empty state key and rejection of deeper paths | implemented | yes | not verified |
 | Rooms | join / invite / knock / leave, `GET /state`, `/members`, `/messages`, `/event/{eventID}`, redaction (`PUT /redact/{eventID}/{txn}`), aliases, directory, upgrades | implemented | `tests/integration/redaction_test.go`, `tests/integration/history_test.go`, Complement `TestRedact`/`TestPowerLevels` | still missing: `GET /rooms/{roomID}/context/{eventID}` (T-2015), `GET /rooms/{roomID}/event_auth/{eventID}` (T-2016), `GET /_matrix/federation/v1/state_ids` |
-| Sync / messages / filters | all | not implemented | — | fails with 404 (M3) |
-| E2EE device keys, to-device, key backup | all | not implemented | — | fails with 404 (M5) |
-| Account: deactivate, change password, 3PIDs | all | not implemented | — | fails with 404 |
-| Presence, typing, receipts, read markers | all | not implemented | — | fails with 404 |
-| Directory, aliases, spaces, search, user directory | all | not implemented | — | fails with 404 |
+| Sync / messages | `GET /sync` (incremental, `since`, long-poll, joined/invited/left sections, `device_lists`, account data, limited timelines, `prev_batch`), `GET /rooms/{id}/messages` | implemented | `tests/integration/sync_test.go`, `tests/integration/history_test.go`, `tests/integration/statresolution_test.go` | **verified**: `TestSync`, `TestSyncLeaveSection`, `TestGappedSyncLeaveSection`, `TestSyncTimelineGap`, `TestCumulativeJoinLeaveJoinSync`, `TestOlderLeftRoomsNotInLeaveSection`. Still red through sync: MSC4222 `state_after` (T-3001f), the presence section (T-3001e), the filtered-state case (T-4020), and the two-server cases that need the handshake pieces below |
+| E2EE device keys | `POST /keys/upload`, `POST /keys/query` (asking a peer for a user who lives elsewhere), `POST /keys/claim`, federation `user/keys/query` | implemented | `tests/integration/keys_test.go`, `tests/integration/federationdevicekeys_test.go` | **verified**: `TestUploadKey`, `TestUploadKeyIdempotency`, `TestUploadKeyIdempotencyOverlap`, `TestKeyClaimOrdering`, `TestKeysQueryWithDeviceIDAsObjectFails`. `TestFederationKeyUploadQuery`, `TestKeyChangesLocal` and `TestE2EKeyBackupReplaceRoomKeyRules` are red: `/keys/changes`, cross-signing and key backup are not implemented (T-3008d, T-3008e) |
+| Account | whoami, devices, sessions, profile; `account_data` for the user (write and read) | partial | `tests/integration/auth_test.go`, `tests/integration/direct_test.go`, `tests/integration/pushrules_test.go` | `TestChangePassword`, `TestDeactivateAccount`, `TestAddAccountData`, `TestRemovingAccountData` and `TestMSC3391...` are red: no `/account/password`, no `/account/deactivate`, no `DELETE` on account data, no room-scoped account data (T-4027, T-4028, T-4029) |
+| Presence | `GET`/`PUT /presence/{userID}/status` for one user, and the `presence` section of `/sync` for users who share a room | partial — there is no idle timeout, so a user who stops asking stays online (T-3001e) | `tests/integration/presence_test.go` | `TestPresence` and `TestPresenceSyncDifferentRooms` pass; `TestRemotePresence` is red (no `m.presence` EDU, T-4008) |
+| Directory, aliases, spaces | `/publicRooms` (both listeners), `/directory/room/{alias}`, `/rooms/{id}/aliases`, `/hierarchy` (both directions), `/room_summary/{id}` | implemented | `tests/integration/aliases_test.go`, `tests/integration/hierarchy_test.go`, `tests/integration/directory_test.go` | **verified**: `TestRoomAlias`, `TestRoomCanonicalAlias`, `TestRoomDeleteAlias`, `TestPublicRooms`, `TestRoomSummary`, `TestClientSpacesSummaryJoinRules`, `TestFederatedClientSpaces`. Red: `TestRemoteAliasRequestsUnderstandUnicode` (no federation `/query/directory`), the user directory (`TestRoomSpecificUsername*`, T-4058), and `/search` plus `/relations`/`/threads`, which are not implemented at all |
 | Refresh tokens | `refresh_token` | not implemented | refusal tested | `TestTxnIdWithRefreshToken` fails on our 400 `M_INVALID_PARAM` — an explicit refusal, not a silent ignore |
-| Push, notifications, application services, URL preview, SSO | all | not implemented | — | fails with 404 |
+| Push rules | the whole read/write `/pushrules` API, the default rule set, delivery to the client through `account_data` in `/sync`, and an evaluator for every condition kind in the specification | partial — the evaluator exists but nothing evaluates rules as events are persisted, so the unread and highlight counts a client is told are zero (T-3005a) | `tests/unit/pushrules_test.go`, `tests/integration/pushrules_test.go` | **verified**: `TestPushRuleCacheHealth`, `TestPushSync`, `TestPushRuleRoomUpgrade` (flaky: red in some runs). Red: `TestPollsLocalPushRules`, and pushers, the push gateway and `GET /notifications` are absent |
 
 ## Server-Server and key API
 
@@ -53,7 +57,7 @@ Specification: Matrix v1.19 (`docs/specification-version.md`).
 | Address policy for dialed addresses (loopback, link-local metadata, CGNAT, multicast, private ranges denied by default; configurable allow/deny) | implemented | yes (`tests/unit/federationdiscovery_test.go`, `tests/unit/config_test.go`) | n/a. Known limit: enforced at resolution, not at dial time |
 | Remote signing keys: fetch, self-signature requirement, one-week trust clamp, retired keys until `expired_ts`, expiry enforced per room version, notary fallback, cache reuse | implemented | yes (`tests/unit/federationkeys_test.go`) | not verified |
 | `POST /_matrix/federation/v1/user/keys/query` (answering for this server's own users) and the outbound half of `POST /_matrix/client/v3/keys/query` for users who live elsewhere | implemented: the answer carries only the users that were asked about and only those in the answering server's namespace, key documents are passed through byte-for-byte because the device signed them, and a peer that does not answer leaves that user's entry empty instead of failing the query. Cross-signing (`master_keys`, `self_signing_keys`) is not stored here, so it is not reported | yes (`tests/integration/federationdevicekeys_test.go`) | **verified** as part of `TestDeviceListUpdates`, which queries a remote user's keys after being told they changed |
-| Device-list changes over federation (`m.device_list_update` EDUs out when a local user's devices change or that user joins a room elsewhere, in when a peer sends them) | implemented: the announcement goes to the servers that hold a joined room with the user, a peer is only believed about users in its own name, and what arrives is passed to the local users who share a room with that user. A deletion announcement (`deleted: true`) and cross-signing key changes are not announced yet (T-4023) | yes (`tests/integration/federationdevicelists_test.go`, `tests/unit/devicestreams_test.go`) | **verified**: `TestDeviceListUpdates` (all ten subtests), `TestDeviceListsUpdateOverFederationOnRoomJoin`, `TestUserAppearsInChangedDeviceListOnJoinOverFederation` |
+| Device-list changes over federation (`m.device_list_update` EDUs out when a local user's devices change or that user joins a room elsewhere, in when a peer sends them) | implemented: the announcement goes to the servers that hold a joined room with the user, a peer is only believed about users in its own name, and what arrives is passed to the local users who share a room with that user. A deletion announcement (`deleted: true`) and cross-signing key changes are not announced yet (T-4023) | yes (`tests/integration/federationdevicelists_test.go`, `tests/unit/devicestreams_test.go`) | **verified for nine of the ten `TestDeviceListUpdates` subtests**, plus `TestDeviceListsUpdateOverFederationOnRoomJoin` and `TestUserAppearsInChangedDeviceListOnJoinOverFederation`. The tenth, *when joining a room with a remote user*, fails on a clean re-run (2026-11-07, twice in a row, and it is in the project's own failures list): when this server's user joins a room that lives elsewhere, nobody announces the other members' device lists to the joining server (T-4064) |
 | `X-Matrix` request authentication (in and out) | implemented | yes (`tests/unit/fedauth_test.go`, `tests/integration/federation_test.go`) | not verified: needs two homeservers in one Complement run |
 | `PUT /_matrix/federation/v1/send/{txnId}`: authentication, origin agreement, PDU/EDU caps, per-PDU answers, transaction replay answered identically | implemented | yes (`tests/integration/federation_test.go`) | not verified (needs two servers) |
 | A refusal is a verdict this server keeps: `event_rejections` records why an event was refused (bad signature, wrong hash, unauthorised), an event citing a refused auth event is refused under rule 2.3 naming that refusal, and a refusal that was only a gap — missing predecessors, an auth event nobody has mentioned — is deliberately **not** recorded, because the gap may still be filled | implemented+tested | `tests/unit/rejections_test.go`, `tests/integration/federation_test.go` (`TestFederationRefusalIsAVerdict`) |
@@ -64,7 +68,9 @@ Specification: Matrix v1.19 (`docs/specification-version.md`).
 | EDUs: received, capped, acknowledged, logged — and nothing else | partial | receipt path only | not verified |
 | `m.room.server_acl` is enforced: an excluded server is refused the join template, the room's state, its authorisation chain, a single event, and any PDU it pushes; a room's events are not relayed to it | implemented+tested | `tests/integration/serveracl_test.go`, `tests/unit/serveracl_test.go` |
 | Join handshake (`/make_join`, `/send_join`, both halves), `/state_ids`, `/event_auth` as a client, and the missing-event read (`GET /event` as a client, to fill a room's history) | implemented+tested between two homeservers in one process | `tests/integration/federationjoins_test.go`, `tests/integration/joinremote_test.go` | not verified: no `federation_*` Complement test runs against this server yet |
-| Leaves, invites, knocks (`/make_leave`, `/send_leave`, `/invite`, `/make_knock`, `/send_knock`), answering `/backfill`, `/hooda`, third-party invites | not implemented | — | recorded as open tasks (T-4009c) rather than a silent gap |
+| Invites over federation: `PUT /_matrix/federation/v1|v2/invite/{roomID}/{eventID}` answered for this server's own users (the event is checked against what the URL claims, countersigned here, stored as an invite), and asked of a peer when a local user invites somebody who lives elsewhere | implemented | `tests/integration/membership_test.go`, `tests/integration/remotemembership_test.go` | **verified** in `TestFederationRoomsInvite` (reject, rescind, metadata, rejoin subtests) and `TestUnbanViaInvite`; `TestFederationRoomsInvite` as a whole is still red for one subtest — see T-4063 |
+| Leaves and knocks over federation (`/make_leave`, `/send_leave`, `/make_knock`, `/send_knock`), answering `/backfill`, `/hooda`, third-party invites, federation `/profile`, federation `/query/directory` for remote aliases | not implemented | — | recorded as open tasks (T-4009c, T-4009b2, T-4058) rather than a silent gap; a local user who wants to leave a room held elsewhere writes their own leave and fans it out, which is why the leave endpoint tests pass for local rooms |
+| A kick, ban or unban of a user who lives on another homeserver: this server holds the room, so the member event is written and signed here under the room's own rules, and fan-out takes it to the target's server as well as to the servers holding a joined member | implemented+tested | `tests/integration/remotemembership_test.go` | **verified** by `TestFederationRoomsInvite/Inviter user can rescind invite over federation` and `TestUnbanViaInvite`, both red before this work; one Complement case disagrees — see T-4063 |
 | TLS on the federation listener (TLS ≥ 1.2, CA-signed certificate support) | implemented | yes | every run uses it: containers start healthy and federation attempts reach the handshake |
 
 ## Protocol primitives (appendices)
@@ -92,9 +98,10 @@ Specification: Matrix v1.19 (`docs/specification-version.md`).
 | Event authorisation rules (rules 1-10) for room versions 3-11, with version-gated join rules and power-level validation | implemented | `tests/unit/eventauth_test.go` |
 | Auth events selection and its validation (duplicates, foreign rooms, rejected auth events) | implemented | `tests/unit/eventauth_test.go` |
 | Restricted-room allow list evaluation | partial: enforced for locally created joins only | `tests/unit/eventauth_test.go` |
-| Event authorisation for room versions 1 and 2 | not implemented (refused with `ErrRulesetUnsupported`) | `tests/unit/eventauth_test.go` |
+| Event authorisation for room versions 1 and 2 | implemented as the table those two versions share (`eventauth.RulesV1V2`), not the later versions' rules applied early | `tests/unit/authorisation_legacy_test.go` |
 | State Resolution 2 (room versions 2-11): auth difference, power events, reverse topological power ordering, mainline ordering, iterative auth checks — and the live path consults it: each event's state snapshot is recorded (`state_groups`), and a room with more than one forward extremity has its current state written from the resolved answer, not from the order events arrived | implemented+tested | `tests/unit/stateresolve_test.go` (the algorithm, both argument orders, and the timestamp ordering over JSON-decoded events), `tests/integration/statresolution_test.go` (the same fork handed to two homeservers in opposite orders; both agree, both keep the losing branch, and the answer matches the algorithm run standalone) |
-| State resolution for room versions 1 and 12 | not implemented (refused with `ErrAlgorithmUnsupported`) | `tests/unit/stateresolve_test.go` |
+| State resolution for room version 1 | implemented as the algorithm the pinned version 1 page describes; see the divergence note below about Synapse's richer procedure | `tests/unit/stateresolvev1_test.go`, `tests/integration/roomversionlegacy_test.go` |
+| State resolution for room version 12 (v2.1: conflicted subgraph, empty start set) | not implemented (refused with `ErrAlgorithmUnsupported`); version 12 is recognised and refused rather than invented | `tests/unit/stateresolve_test.go`, T-4019 |
 | State resolution cross-checked against another implementation | not done yet | follow-up task T-2005a |
 | Event graph storage (events, prev/auth edges, per-event auth context) and the forward-extremities query | implemented | `tests/unit/eventstore_test.go` |
 | Transaction ID store for `/send/{type}/{txn}` idempotency (unique per device) | implemented and exercised through the endpoint | `tests/unit/eventstore_test.go`, `tests/integration/rooms_test.go` |
@@ -106,7 +113,7 @@ Specification: Matrix v1.19 (`docs/specification-version.md`).
 | An event accepted without its predecessors is an outlier: its state counts, and it is kept out of timelines and forward extremities | implemented+tested | `internal/persist/event.go`, `internal/persist/history.go`, `internal/persist/sync.go` |
 | A room's history is caught up by asking a server that was there first: holes are named from this room's own events, fetched newest-first, walked back until they meet what this server holds, stored parents-first so this server's own ordering follows causality, and bounded by a budget that leaves the rest askable | implemented+tested (triggered by a join; no worker pass or on-demand trigger yet) | `internal/federation/backfill.go`, `internal/rooms/gap.go`, `tests/integration/joinremote_test.go`, `tests/unit/eventstore_test.go` |
 | `/state_ids` and `/event_auth`: a room's state and an event's auth chain, by ID, to servers the room has a seat for | implemented+tested | `tests/integration/federationjoins_test.go` |
-| `m.room.server_acl`: a room excluding a homeserver, applied to the join/state/auth endpoints and per PDU | not implemented | open task; the federation handlers name where the rule belongs |
+| `m.room.server_acl`: a room excluding a homeserver, applied to the join template, the room's state, its authorisation chain, a single event, any PDU it pushes, and the fan-out that would relay events to it | implemented+tested | `tests/integration/serveracl_test.go`, `tests/unit/serveracl_test.go`. Still red: `TestACLsForEDUs` and the ACL check on the endpoints that do not exist yet (T-4012) |
 | Redaction on the wire: a homeserver forwards the unredacted event plus the redaction, and each receiver strips its own copy; the content hash is therefore checked unconditionally | implemented+tested | `internal/events/verify.go`, `tests/integration/redaction_test.go`, cross-checked against gomatrixserverlib's unconditional content-hash check |
 | What a client is shown for a redacted event: the emptied form, the redaction under `unsigned.redacted_because`, and `redacts` where its room version looks — the same on `/event`, `/messages`, state reads and `/sync`; and a redaction whose partner has not arrived is kept but not shown | implemented+tested | `internal/redaction/serve.go`, `tests/unit/serve_test.go`, `tests/integration/redaction_test.go` (`TestSyncExplainsWhyAnEventItAlreadySawWentEmpty`, `TestARedactionIsNotShownToAClientUntilItsTargetArrives`) |
 | `unsigned.redacted_because` on a redacted event served to a client, and `redacts` placed for the client's room version | implemented (client-server reads: `/event`, `/messages`, `/context`, state) — **not yet** in `/sync`, which serves the redacted form but not the `unsigned` copy | `tests/integration/redaction_test.go`, `tests/unit/redaction_rules_test.go` |
@@ -205,6 +212,40 @@ membership, alias and M1-regression subset, and it is reported as such.
    pages are what the project's precedence rules make normative; the divergence is recorded here so
    that a version 1 room that disagrees between servers is investigated rather than assumed away.
    Interoperability against Synapse on such a room is not tested.
+
+## Latest full run (2026-11-07, remote membership changes — T-4062 closed, T-4063/T-4064 opened)
+
+`RUN='.' PARALLEL=2 COMPLEMENT_LABEL=20261107a scripts/complement.sh -v`, Complement `7b38a63c9db3`,
+image from `deploy/complement/Dockerfile` at this commit. The runner now writes its own log and cuts
+its own pass/failure lists, so this tally and the lists under `.agent-work/` are one artefact.
+
+| Field | Value |
+| --- | --- |
+| Tally | **106 passing, 113 failing, 1 skipped** (previously 104 / 115 / 1, the same 220-test universe) |
+| Newly failing | none |
+| Newly passing | `TestUnbanViaInvite` and `TestFederationRoomsInvite/Inviter user can rescind invite over federation` (the kick, ban and unban of a remote user, T-4062); `TestAsyncUpload`, which the 2026-11-06 records described as turned green by the `M_CANNOT_OVERWRITE_MEDIA` correction while that run's own list still had it failing — it is green here, in a run whose log says so |
+| Split | csapi 69/107 (was 68: `TestRoomDeleteAlias`, flaky), server-server 35/92 (was 34: `TestUnbanViaInvite`), MSC packages 2/22 |
+| Red in the same area | `TestFederationRoomsInvite` remains red as a whole for one subtest, which expects the invited user's own server to keep holding the invitation after a moderator on another server kicks that user (T-4063); inside that subtest a `SendEventSynced` step also stalls, which needs its own diagnosis |
+| Reproducibly red, newly recorded | `TestDeviceListUpdates/when_joining_a_room_with_a_remote_user` — nine of that test's ten subtests pass; the matrix row claiming all ten was wrong and is corrected (T-4064) |
+| Environment checks | no leaked-volume or stale-DNS warning; no `exceeded num_locks`; 0 panics |
+| Complement assertions changed | none |
+
+Lists: `.agent-work/complement-passes-20261107a.txt`, `.agent-work/complement-failures-20261107a.txt`;
+log: `.agent-work/next/complement-run-20261107a.log`.
+
+## A full run on the abandoned `main` branch, measured for comparison (2026-11-07)
+
+Not this branch's compliance position — recorded because `retry` and `main` share no history, and the
+comparison decides what to port rather than re-derive. Same Complement checkout, same machine, same
+runner.
+
+| Field | Value |
+| --- | --- |
+| Image as checked out | **does not start**: `deploy/complement/Dockerfile` copies a host-built, glibc-dynamic binary into an Alpine (musl) runtime, so every container dies at `lattice: not found` and every test fails as a deploy timeout. Built with `CGO_ENABLED=0` it starts |
+| Server-server (`tests`) | **78 of 92 green** — matches what `main`'s own `docs/TODO.md` claimed |
+| `tests/csapi` | did **not** finish in 40 minutes; of the 62 that ran before the timeout, 51 were green |
+| Against this branch | `main` passes 45 server-server tests this branch fails (knocking, `/make_leave`/`/send_leave`, MSC4289/4291/4297/4311, `get_missing_events`, typing, federation profile, `TestNetworkPartitionOrdering`); this branch passes one that `main` fails (`TestUnrejectRejectedEvents`) |
+| Decision this puts on the record | port the missing handshake family and the room-version-12 MSC work from `main` rather than re-deriving it, and keep this branch's image, runner, evidence discipline and static build |
 
 ## Latest full run (2026-11-11, profiles — T-4057 closed, T-4058 opened)
 

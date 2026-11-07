@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/enimatek/lattice/internal/eventauth"
 	"github.com/enimatek/lattice/internal/matrixid"
 	"github.com/enimatek/lattice/internal/persist"
 )
@@ -133,6 +134,16 @@ func (s *Sender) Relay(ctx context.Context, roomID, eventID string) error {
 		return fmt.Errorf("federation: cannot read the room's members to relay an event: %w", err)
 	}
 	destinations := serverNames(members, s.ours)
+	// A membership event goes to the server of the user it is about, joined or not. The
+	// servers holding a member are who an ordinary event reaches, but a member event is often
+	// precisely about a server that holds nobody who is currently joined here: the invitation
+	// this server rescinded for a user who never joined, the ban this server wrote for a user
+	// who lives elsewhere, the leave that just removed them. If that server is not told, the
+	// room has two copies and only one of them knows the person is out.
+	if stored.Type == eventauth.TypeMember && stored.StateKey != nil && *stored.StateKey != "" {
+		destinations = append(destinations, serverNames([]string{*stored.StateKey}, s.ours)...)
+		destinations = uniqueSorted(destinations)
+	}
 	if s.ACLs != nil && len(destinations) > 0 {
 		// A room that has excluded a server is not served by passing events to it. The exclusion
 		// is the room's decision, made in its state, and a server that keeps a room's traffic
@@ -513,6 +524,22 @@ func serverNames(userIDs []string, ours string) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// uniqueSorted folds a destination list into sorted unique names, so appending a second
+// source of destinations cannot make the same server be offered the same event twice.
+func uniqueSorted(names []string) []string {
+	seen := make(map[string]bool, len(names))
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func destinationsOf(items []*persist.FederationQueueItem) []string {

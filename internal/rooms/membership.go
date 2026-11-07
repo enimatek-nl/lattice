@@ -18,6 +18,15 @@ import (
 var ErrRemoteTarget = matrixerr.New(matrixerr.CodeUnknown,
 	"Changing the membership of a user who lives on another homeserver has to be carried out by that server, and this server does not implement that part of federation yet.")
 
+// ErrRemoteSender names a membership event this server would have to sign on behalf of a
+// user who lives on another homeserver. A kick or a ban carried out by a moderator who
+// lives here is this server's own act and this server's own signature; an act attributed
+// to somebody else's user is that homeserver's, and signing it here would be this server
+// putting words in another's mouth — which no room version would be able to tell apart
+// from the real thing.
+var ErrRemoteSender = matrixerr.New(matrixerr.CodeForbidden,
+	"A membership change sent by a user who lives on another homeserver is signed by that homeserver, not by this one.")
+
 // MembershipChange asks for an m.room.member state event.
 //
 // The membership value and the target are all the transport supplies: whether the
@@ -80,15 +89,37 @@ func (s *Service) SetMembership(ctx context.Context, change MembershipChange) (s
 		return "", matrixerr.Newf(matrixerr.CodeInvalidParam, "%q is not a valid user ID.", change.Target)
 	}
 	if !matrixid.IsLocal(domain, s.name) {
-		// An invite is the one membership change this server can carry out for a user who
-		// lives elsewhere, because this server holds the room and can build the event; the
-		// invited user's server signs it as well. The other changes belong to the other
-		// server: it is the one that speaks for that user, and a leave or a ban written here
-		// would be this server claiming to be somebody else's homeserver.
-		if change.Membership == eventauth.MembershipInvite {
+		// The user the membership is about lives elsewhere. Three different questions hide in
+		// that one fact, and they answer differently.
+		//
+		// An invitation is built here and signed twice: this server holds the room and writes
+		// the event, and the invited user's server countersigns it, because an invitation is a
+		// claim made by both — the room that opens the door and the homeserver that will keep
+		// the key.
+		//
+		// A kick, a ban or an unban of a user who lives elsewhere is this server acting in this
+		// server's own room, and the room's authorisation rules are what decide it. In every
+		// room version that has them, a member event about *another* user is judged by the
+		// sender's power to kick, ban or unban, not by who the target's homeserver is: the
+		// signature that carries the act is the sender's server's, and that is this one. A room
+		// whose moderator lives here could otherwise never remove a member who joined from
+		// elsewhere, and a room cannot defend itself against somebody it let in. What the other
+		// server is owed is the event, which fan-out delivers — not a signature it never had to
+		// give.
+		//
+		// A join or a knock speaks for the person doing it, so a target who lives elsewhere is
+		// not this server's to sign for at all.
+		switch change.Membership {
+		case eventauth.MembershipInvite:
 			return s.inviteRemote(ctx, change)
+		case eventauth.MembershipLeave, eventauth.MembershipBan:
+			senderDomain, err := matrixid.UserDomain(change.Sender)
+			if err != nil || !matrixid.IsLocal(senderDomain, s.name) {
+				return "", ErrRemoteSender
+			}
+		default:
+			return "", ErrRemoteTarget
 		}
-		return "", ErrRemoteTarget
 	}
 
 	// Kicking is only meaningful for someone who is actually in the room. The event
