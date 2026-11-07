@@ -90,6 +90,16 @@ func Register(r *httpserver.Router, d *Deps, requireAuth func(http.Handler) http
 		r.Handle(method, "/_matrix/client/v3"+path, authed(h))
 		r.Handle(method, "/_matrix/client/r0"+path, authed(h))
 	}
+	// versionedV1 registers an endpoint the specification published after the r0 prefix was
+	// retired: the current v3 spelling and the v1 prefix it was actually introduced under. Both
+	// are served, because a client that follows the specification's own prefix has to be answered
+	// rather than told the endpoint does not exist — `/relations` is one of these, and Complement
+	// asks for it under v1.
+	versionedV1 := func(method, path string, h http.HandlerFunc) {
+		r.Handle(method, "/_matrix/client/v3"+path, authed(h))
+		r.Handle(method, "/_matrix/client/v1"+path, authed(h))
+	}
+
 	// versionedOpen is the same for the endpoints that carry no token — resolving an alias,
 	// reading a profile, and the login and registration dance that happens before a token
 	// exists. Requiring a token there would make the first step of using a homeserver
@@ -177,6 +187,12 @@ func Register(r *httpserver.Router, d *Deps, requireAuth func(http.Handler) http
 	versioned("PUT", "/rooms/{roomID}/receipt/{receiptType}/{eventID}", d.handleReceipt)
 	versioned("POST", "/rooms/{roomID}/read_markers", d.handleReadMarkers)
 	versioned("GET", "/rooms/{roomID}/event/{eventID}", d.handleRoomEvent)
+	// What relates to an event: a thread's replies, an edit's edits, a reaction's reactions.
+	// The optional segments are filters on the same read, so the three spellings are one
+	// handler rather than three that could drift apart.
+	versionedV1("GET", "/rooms/{roomID}/relations/{eventID}", d.handleRelations)
+	versionedV1("GET", "/rooms/{roomID}/relations/{eventID}/{relType}", d.handleRelations)
+	versionedV1("GET", "/rooms/{roomID}/relations/{eventID}/{relType}/{eventType}", d.handleRelations)
 	versioned("PUT", "/rooms/{roomID}/redact/{eventID}/{txnID}", d.handleRedact)
 
 	// The room directory: which rooms this server advertises, and who may change that.

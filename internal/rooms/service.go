@@ -132,7 +132,11 @@ type Service struct {
 	// receipt is a statement about reading, which is why it takes a stream position rather than
 	// an event ID.
 	receipts persist.ReceiptRepo
-	signer   events.Signer
+	// relations indexes which event relates to which. The claim itself is in the event's
+	// content; this is the lookup over it, written and removed alongside the event so the
+	// index cannot outlive what it describes.
+	relations persist.RelationRepo
+	signer    events.Signer
 	// serve turns a stored event into the form a client is allowed to see. It lives here
 	// so that `/messages`, `/event` and `/sync` answer the redaction question the same
 	// way; when each path decided for itself, the same event could come back with its
@@ -297,20 +301,21 @@ func New(db *persist.Database, signer events.Signer, presence PresenceNotifier, 
 		log = slog.New(slog.DiscardHandler)
 	}
 	return &Service{
-		db:       db,
-		rooms:    db.Rooms,
-		events:   db.Events,
-		serve:    redaction.NewServicer(db.Events, db.Rooms, db.StateGroups),
-		state:    db.State,
-		groups:   db.StateGroups,
-		alias:    db.Aliases,
-		receipts: db.Receipts,
-		signer:   signer,
-		presence: presence,
-		upgrades: upgrades,
-		name:     serverName,
-		log:      log,
-		now:      func() time.Time { return time.Now().UTC() },
+		db:        db,
+		rooms:     db.Rooms,
+		events:    db.Events,
+		serve:     redaction.NewServicer(db.Events, db.Rooms, db.StateGroups),
+		state:     db.State,
+		groups:    db.StateGroups,
+		alias:     db.Aliases,
+		receipts:  db.Receipts,
+		relations: db.Relations,
+		signer:    signer,
+		presence:  presence,
+		upgrades:  upgrades,
+		name:      serverName,
+		log:       log,
+		now:       func() time.Time { return time.Now().UTC() },
 	}, nil
 }
 
@@ -319,18 +324,19 @@ func New(db *persist.Database, signer events.Signer, presence PresenceNotifier, 
 func (s *Service) WithTx(tx *gorm.DB) *Service {
 	rooms, events := s.rooms.WithTx(tx), s.events.WithTx(tx)
 	return &Service{
-		db:       s.db,
-		rooms:    rooms,
-		events:   events,
-		serve:    redaction.NewServicer(events, rooms, s.groups.WithTx(tx)),
-		state:    s.state.WithTx(tx),
-		groups:   s.groups.WithTx(tx),
-		alias:    s.alias.WithTx(tx),
-		receipts: s.receipts.WithTx(tx),
-		signer:   s.signer,
-		presence: s.presence,
-		upgrades: s.upgrades,
-		relayer:  s.relayer,
+		db:        s.db,
+		rooms:     rooms,
+		events:    events,
+		serve:     redaction.NewServicer(events, rooms, s.groups.WithTx(tx)),
+		state:     s.state.WithTx(tx),
+		groups:    s.groups.WithTx(tx),
+		alias:     s.alias.WithTx(tx),
+		receipts:  s.receipts.WithTx(tx),
+		relations: s.relations.WithTx(tx),
+		signer:    s.signer,
+		presence:  s.presence,
+		upgrades:  s.upgrades,
+		relayer:   s.relayer,
 		// The capabilities the application attaches after construction have to be carried over
 		// as well. A transaction-scoped service that loses the key ring cannot answer rule 4.2, so
 		// a restricted join would be refused inside a transaction and allowed outside it — which is
@@ -918,6 +924,12 @@ func (s *Service) persistEvent(ctx context.Context, event map[string]any, stream
 		if err := s.state.RememberAuthContext(ctx, eventID, authIDs); err != nil {
 			return fmt.Errorf("rooms: cannot record the authorisation context: %w", err)
 		}
+	}
+	// A relation is part of the event's content, so it is indexed here rather than derived
+	// on every read. Doing it at the funnel is what keeps a locally sent edit and one that
+	// arrived over federation in the same index.
+	if err := s.noteRelation(ctx, event, row); err != nil {
+		return err
 	}
 	if row.IsState() {
 		if err := s.state.Set(ctx, &persist.RoomState{

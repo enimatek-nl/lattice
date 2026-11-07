@@ -248,6 +248,12 @@ func (s *Service) applyRedaction(ctx context.Context, redactionID, targetID stri
 	if err := s.events.MarkRedacted(ctx, targetID, canonical); err != nil {
 		return fmt.Errorf("rooms: cannot store the redacted form of %s: %w", targetID, err)
 	}
+	// What the event said about other events went with its content, so the index of it goes
+	// too. Leaving the row behind would keep an edit or a thread reply listed under the event
+	// it related to, when the client reading it is no longer allowed to see that it is one.
+	if err := s.relations.DeleteByEvent(ctx, targetID); err != nil {
+		return fmt.Errorf("rooms: cannot drop the relation index of %s: %w", targetID, err)
+	}
 	if err := s.events.MarkRedactionApplied(ctx, redactionID); err != nil {
 		return fmt.Errorf("rooms: cannot record an applied redaction: %w", err)
 	}

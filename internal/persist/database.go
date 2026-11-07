@@ -43,7 +43,10 @@ type Database struct {
 	Presence    PresenceRepo
 	// Receipts holds each user's read position per room, which is what sync delivers as an
 	// `m.receipt` ephemeral event and what an unread count is measured from.
-	Receipts    ReceiptRepo
+	Receipts ReceiptRepo
+	// Relations indexes which events relate to which, which is what makes a thread view and
+	// an edit chain a lookup rather than a scan of the room.
+	Relations   RelationRepo
 	DeviceLists DeviceListRepo
 	DeviceKeys  DeviceKeysRepo
 	Federation  FederationRepo
@@ -96,6 +99,7 @@ func Open(path string, log *slog.Logger) (*Database, error) {
 	d.AccountData = NewAccountDataRepo(gdb)
 	d.Presence = NewPresenceRepo(gdb)
 	d.Receipts = NewReceiptRepo(gdb)
+	d.Relations = NewRelationRepo(gdb)
 	d.DeviceLists = NewDeviceListRepo(gdb)
 	d.Federation = NewFederationRepo(gdb)
 	d.DeviceKeys = NewDeviceKeysRepo(gdb)
@@ -123,7 +127,7 @@ func applyPragmas(gdb *gorm.DB) error {
 // matter for Matrix lookups and are not derived from struct tags.
 func (d *Database) migrate(log *slog.Logger) error {
 	if err := d.db.AutoMigrate(&User{}, &Device{}, &AccessToken{}, &SigningKey{},
-		&Room{}, &Event{}, &EventEdge{}, &RoomState{}, &EventAuthContext{}, &EventTxn{}, &RoomAlias{}, &Filter{}, &AccountData{}, &Presence{}, &Receipt{}, &DeviceListChange{}, &DeviceKeyDoc{}, &OneTimeKey{},
+		&Room{}, &Event{}, &EventEdge{}, &RoomState{}, &EventAuthContext{}, &EventTxn{}, &RoomAlias{}, &Filter{}, &AccountData{}, &Presence{}, &Receipt{}, &Relation{}, &DeviceListChange{}, &DeviceKeyDoc{}, &OneTimeKey{},
 		&DeviceListStream{},
 		&ServerSigningKey{}, &ServerKeyDocument{}, &FederationTransaction{}, &FederationQueueItem{},
 		&MediaMetadata{},
@@ -153,6 +157,11 @@ func (d *Database) migrate(log *slog.Logger) error {
 		// the same reason presence is: a client asks what changed since its last sync.
 		"CREATE UNIQUE INDEX IF NOT EXISTS idx_receipts_room_type_user_thread ON receipts(room_id, receipt_type, user_id, thread_id)",
 		"CREATE INDEX IF NOT EXISTS idx_receipts_room_stream ON receipts(room_id, stream_ordering)",
+
+		// A relation is claimed by exactly one event, and read by what it points at: the
+		// pair of indexes is the endpoint `/relations/{eventID}` and its thread badge.
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_event_relations_event ON event_relations(event_id)",
+		"CREATE INDEX IF NOT EXISTS idx_event_relations_room_target_stream ON event_relations(room_id, target_event_id, stream_ordering)",
 
 		// Presence is one current row per user, read by position when sync asks what
 		// changed since a token.
