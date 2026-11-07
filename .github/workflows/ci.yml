@@ -1,0 +1,62 @@
+name: ci
+
+# The gate this project actually claims. `make verify` is gofmt + go vet + race tests,
+# and the records in .agent-work/ cite those runs, so CI runs the same three things on
+# every push and pull request. A claim about tests passing that no machine re-checks is
+# a claim that rots: this file is what stops the docs and the tree from drifting apart
+# between a commit and the next release.
+#
+# Complement is not run here on purpose. It needs a container runtime, a Complement
+# checkout and about ten minutes of two-homeserver traffic, and its tally is a project
+# record kept in docs/compliance-matrix.md with its run logs under .agent-work/, not a
+# per-commit pass/fail. scripts/complement.sh is the way to run it.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.26"
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l $(find . -name '*.go'))
+          if [ -n "$unformatted" ]; then
+            echo "these files are not gofmt-clean:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          # The version is pinned, not "latest": a linter release that turns on a new
+          # check would otherwise make an unrelated commit red, and the fix would be a
+          # guess about which rule changed.
+          version: v2.15.0
+          args: --timeout=5m
+
+      - name: race tests
+        run: go test -race -count=1 -timeout 15m ./tests/...
+
+      - name: build
+        run: go build -o bin/lattice ./cmd/lattice && ./bin/lattice version

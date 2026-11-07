@@ -888,23 +888,6 @@ func stringOfOr(v any, fallback string) string {
 	return s
 }
 
-func stringSlice(v any) []string {
-	list, ok := v.([]any)
-	if !ok {
-		if typed, ok := v.([]string); ok {
-			return typed
-		}
-		return nil
-	}
-	out := make([]string, 0, len(list))
-	for _, item := range list {
-		if s, ok := item.(string); ok {
-			out = append(out, s)
-		}
-	}
-	return out
-}
-
 func sameKeys(a, b []Key) bool {
 	if len(a) != len(b) {
 		return false

@@ -542,11 +542,6 @@ func childStates(entry map[string]any) []map[string]any {
 	return list
 }
 
-// childVia reads the servers a stripped child event points at.
-func childVia(event map[string]any) []string {
-	return stringSlice(contentOfEvent(event)["via"])
-}
-
 func roomIDOf(entry map[string]any) string { return stringOf(entry["room_id"]) }
 
 func roomTypeOf(entry map[string]any) string { return stringOf(entry["room_type"]) }

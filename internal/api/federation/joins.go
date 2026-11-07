@@ -461,15 +461,3 @@ func (d *Deps) answerServiceError(w http.ResponseWriter, endpoint, roomID string
 	}
 	matrixerr.WriteServiceError(w, err)
 }
-
-// anyStringSlice reads a JSON array of strings.
-func anyStringSlice(value any) []string {
-	list, _ := value.([]any)
-	out := make([]string, 0, len(list))
-	for _, item := range list {
-		if text, ok := item.(string); ok {
-			out = append(out, text)
-		}
-	}
-	return out
-}
