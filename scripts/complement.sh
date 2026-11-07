@@ -114,6 +114,62 @@ if command -v podman >/dev/null 2>&1; then
 	fi
 fi
 
-echo "== running Complement (filter: $filter, packages in parallel: $parallel)"
+# The run, its log, and its tally.
+#
+# Two recorded tallies in this project's own history drifted from the logs they were
+# written from — a test described as "newly passing" while the run's list of the same
+# date still had it failing, and a device-list test marked "verified, all ten subtests"
+# in prose that its own failures list contradicted (and that fails on a clean re-run).
+# The cure is not more care; it is that the lists and the summary line a tally is quoted
+# from come out of the same run as the log, so quoting a number without its log is
+# impossible. So: the raw output always goes to a log under .agent-work/next/, and the
+# pass and failure lists — top-level tests, not subtests, which is the universe every
+# tally in docs/compliance-matrix.md names — are cut from that log.
+#
+# COMPLEMENT_LABEL names the artefacts: with COMPLEMENT_LABEL=20261107a this writes
+# .agent-work/complement-{passes,failures}-20261107a.txt alongside the log.
+#
+# go test's default per-package budget is 10 minutes, and the whole-suite run needs
+# more than that on a loaded machine. A package that blows its budget does not report
+# failures: it panics, prints a goroutine dump, and leaves every test after the one it
+# reached unrun — which reads as "these tests fail" and is really "these tests never
+# ran". COMPLEMENT_TEST_TIMEOUT sets the budget; a run that hits it is reported as an
+# unfinished run rather than a tally.
+timeout="${COMPLEMENT_TEST_TIMEOUT:-30m}"
+label="${COMPLEMENT_LABEL:-$(date -u +%Y%m%dT%H%M%SZ)}"
+run_log="$repo_root/.agent-work/next/complement-run-$label.log"
+mkdir -p "$repo_root/.agent-work/next"
+
+echo "== running Complement (filter: $filter, packages in parallel: $parallel, per-package timeout: $timeout)"
+echo "== raw output: $run_log"
 cd "$complement_dir"
-COMPLEMENT_BASE_IMAGE="$image" go test ./tests/... -run "$filter" -count=1 -p "$parallel" "${@:1}"
+exit_code=0
+COMPLEMENT_BASE_IMAGE="$image" go test ./tests/... -run "$filter" -count=1 -p "$parallel" \
+	-timeout "$timeout" "${@:1}" 2>&1 | tee "$run_log" || exit_code=$?
+
+# Top-level results only. Subtests are counted inside their parent, exactly the way the
+# compliance matrix counts them, so a list cut here and a tally quoted there are the
+# same arithmetic.
+passes="$repo_root/.agent-work/complement-passes-$label.txt"
+failures="$repo_root/.agent-work/complement-failures-$label.txt"
+grep -E '^--- (PASS|FAIL|SKIP): ' "$run_log" | sed -E 's/^--- ([A-Z]+): ([^ ]+).*/\1 \2/' | sort -u |
+	awk '$1=="PASS"{print $2 > "'"$passes"'"} $1=="FAIL"{print $2 > "'"$failures"'"}'
+[[ -f "$passes" ]] || : > "$passes"
+[[ -f "$failures" ]] || : > "$failures"
+
+passed=$(wc -l < "$passes" | tr -d ' ')
+failed=$(wc -l < "$failures" | tr -d ' ')
+skipped=$(grep -cE '^--- SKIP: ' "$run_log" || true)
+echo "== tally: $passed passing, $failed failing, $skipped skipped (top-level tests)"
+echo "== lists: $passes, $failures"
+
+# A killed package is not a smaller suite; it is an unfinished one. Say so loudly, next
+# to the tally, because a tally printed on its own invites exactly the wrong reading.
+if grep -q 'panic: test timed out' "$run_log"; then
+	packages=$(grep -E 'panic: test timed out after' "$run_log" | sed -E 's/.*after ([^ ]+).*/\1/' | tr '\n' ' ')
+	echo "!! THIS RUN IS INCOMPLETE: a package hit its per-package timeout ($packages). Tests after the one it reached never ran; the numbers above are a floor, not a tally. Raise COMPLEMENT_TEST_TIMEOUT before quoting them."
+fi
+if grep -qE 'failed to deployBaseImage|timed out checking for homeserver to be up' "$run_log"; then
+	echo "!! some deployments never started. Those failures are the container or the environment, not the protocol: check the image starts at all (podman run --rm <image>) and the volume/DNS warnings above."
+fi
+exit "$exit_code"

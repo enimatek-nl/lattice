@@ -42,16 +42,6 @@ func v1Base() []map[string]any {
 	return []map[string]any{create, aliceJoin, joinRules, levels}
 }
 
-func resolveV1(t *testing.T, events ...map[string]any) state.State {
-	t.Helper()
-	graph := graphWith(events...)
-	resolved, err := state.Resolve(roomversion.MustGet("1"), graph, []state.State{stateOf(events...)}, eventauth.Opts{})
-	if err != nil {
-		t.Fatalf("resolving a room version 1 room: %v", err)
-	}
-	return resolved
-}
-
 // TestResolveV1PreservesAgreedState is the least the algorithm has to get right: with nothing
 // contested, the state comes back as it went in.
 func TestResolveV1PreservesAgreedState(t *testing.T) {

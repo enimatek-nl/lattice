@@ -1160,23 +1160,6 @@ func toAnySlice(values []string) []any {
 	return out
 }
 
-func anyStrings(value any) []string {
-	switch typed := value.(type) {
-	case []any:
-		out := make([]string, 0, len(typed))
-		for _, item := range typed {
-			if text, ok := item.(string); ok {
-				out = append(out, text)
-			}
-		}
-		return out
-	case []string:
-		return typed
-	default:
-		return nil
-	}
-}
-
 func stringOr(value any) string {
 	text, _ := value.(string)
 	return text

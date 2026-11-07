@@ -59,12 +59,8 @@ func hierarchyAnswerOf(payload map[string]any, roomID string) (rooms.HierarchyAn
 	if room, ok := payload["room"].(map[string]any); ok {
 		answer.Room = room
 	}
-	for _, child := range anyList(payload["children"]) {
-		answer.Children = append(answer.Children, child)
-	}
-	for _, id := range payloadStrings(payload["inaccessible_children"]) {
-		answer.InaccessibleChildren = append(answer.InaccessibleChildren, id)
-	}
+	answer.Children = append(answer.Children, anyList(payload["children"])...)
+	answer.InaccessibleChildren = append(answer.InaccessibleChildren, payloadStrings(payload["inaccessible_children"])...)
 	if answer.Room == nil {
 		entries := anyList(payload["rooms"])
 		if len(entries) == 0 {
@@ -76,9 +72,7 @@ func hierarchyAnswerOf(payload map[string]any, roomID string) (rooms.HierarchyAn
 				"federation: a hierarchy answer for %q starts with %q", roomID, name)
 		}
 		answer.Room = first
-		for _, child := range entries[1:] {
-			answer.Children = append(answer.Children, child)
-		}
+		answer.Children = append(answer.Children, entries[1:]...)
 	}
 	return answer, nil
 }

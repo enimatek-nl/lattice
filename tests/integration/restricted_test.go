@@ -238,10 +238,7 @@ func TestRestrictedJoinUsesThisServersOwnAuthoriser(t *testing.T) {
 	// until “%s” appears in the levels hs2 holds, a choice between two authorisers is not a choice
 	// hs2 is in a position to make.
 	deadline := time.Now().Add(30 * time.Second)
-	for {
-		if holdsInvitePower(t, hs2, restricted, bob, bobID) {
-			break
-		}
+	for !holdsInvitePower(t, hs2, restricted, bob, bobID) {
 		if time.Now().After(deadline) {
 			t.Fatalf("“%s” never learned that “%s” holds the invite power in “%s”", hs2.name, bobID, restricted)
 		}

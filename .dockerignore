@@ -1,0 +1,46 @@
+# What never belongs in a build context.
+#
+# The release image in Dockerfile reads go.mod, go.sum, cmd and internal, and the
+# Complement image in deploy/complement/Dockerfile copies the repository to build the
+# same module. Either way, everything else here is either evidence or runtime state:
+# a docs tree that changes the layer hash for no reason, a test suite that nothing in
+# the image runs, or a database, key or log that would be published as an image layer
+# if it were copied in.
+.git
+.github
+.agent-work
+docs
+tests
+README.md
+AGENTS.md
+Makefile
+Dockerfile
+.dockerignore
+LICENSE
+
+# Runtime state and secrets. Never in an image, never one COPY away from one.
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.pem
+*.key
+*.crt
+.env
+.env.*
+/data/
+/media/
+/tmp/
+/secrets/
+*.log
+
+# Build and test leftovers.
+bin/
+coverage.out
+coverage.html
+*.test
+*.out
+.idea/
+.vscode/
+.DS_Store

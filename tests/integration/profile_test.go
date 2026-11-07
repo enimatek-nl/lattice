@@ -234,7 +234,7 @@ func syncHasMemberWith(t *testing.T, body map[string]any, userID, roomID, key, w
 // pathValue walks a decoded JSON response without failing a test over a shape that simply is not there.
 func pathValue(t *testing.T, root any, keys ...string) any {
 	t.Helper()
-	var current any = root
+	current := root
 	for _, key := range keys {
 		object, ok := current.(map[string]any)
 		if !ok {

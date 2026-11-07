@@ -9,6 +9,12 @@ BIN     := bin/lattice
 PKG     := ./cmd/... ./internal/...
 TESTS   := ./tests/...
 COVER   := coverage.out
+# VERSION is read from the one place the number lives (internal/app.Version), so a
+# release image tag and the version the server reports cannot drift apart.
+VERSION := $(shell sed -n 's/^const Version = "\(.*\)".*/\1/p' internal/app/app.go)
+# The label names the log and the tally lists a full run writes, so that a number quoted
+# in docs/compliance-matrix.md can be traced back to the run it came from.
+COMPLEMENT_LABEL ?= $(shell date -u +%Y%m%dT%H%M%SZ)
 IMAGE   ?= complement-lattice:latest
 
 .DEFAULT_GOAL := verify
@@ -68,6 +74,10 @@ lint: ## golangci-lint when available, go vet otherwise
 tidy: ## resolve and record dependencies
 	$(GO) mod tidy
 
+.PHONY: image
+image: ## build the release image: one static binary, no shell and no compiler in it
+	docker build --build-arg REVISION="$$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" -t lattice:$(VERSION) .
+
 .PHONY: docker
 docker: ## build the Complement-compatible image
 	docker build -t $(IMAGE) -f deploy/complement/Dockerfile .
@@ -77,8 +87,8 @@ complement: ## run the M1-relevant Complement suites against the built image
 	COMPLEMENT_BASE_IMAGE=$(IMAGE) scripts/complement.sh
 
 .PHONY: complement-all
-complement-all: ## the whole Complement suite (long; failures expected pre-federation)
-	COMPLEMENT_BASE_IMAGE=$(IMAGE) RUN='.*' scripts/complement.sh
+complement-all: ## the whole Complement suite; the log and the pass/failure lists are recorded under .agent-work/
+	COMPLEMENT_BASE_IMAGE=$(IMAGE) RUN='.*' COMPLEMENT_LABEL=$(COMPLEMENT_LABEL) scripts/complement.sh
 
 .PHONY: generate-config
 generate-config: ## print a documented default configuration
