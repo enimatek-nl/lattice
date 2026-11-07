@@ -2771,3 +2771,48 @@ believes there is nothing further, where the reference servers always answer a t
 That is a deliberate behaviour with four assertions in `tests/integration/history_test.go` behind it,
 so changing it means changing the local story about how a client knows to stop paginating, and saying
 which of the two this project is following.
+
+## 2026-11-07 (evening) — the filter on `/messages` is a filter again (T-4080)
+
+`TestRoomImageRoundtrip` asks one thing of `/messages`:
+
+```
+GET /rooms/{room}/messages?filter={"contains_url":true}&dir=b
+  → chunk of 1, `start` a string, `end` a string
+```
+
+This server returned the room's whole timeline, because `ParseHistoryFilter` read exactly one flag
+out of the parameter — `lazy_load_members` — and ignored the rest. `contains_url` was not read
+anywhere in the server, not even on the `/sync` door where the filter is defined.
+
+**One document, two doors.** `/sync` nests the filter under `room.timeline` and `room.state`;
+`/messages` takes a *room event filter as the whole parameter*. The type lists, sender lists, room
+lists and `contains_url` now live in `internal/eventfilter`, used by both doors and by the shape
+checks added in T-4079, so a filter cannot come to mean one thing on one door and something else on
+the next. Applying it to a page also moved where `end` is measured: once a filter drops events, the
+chunk's length is no longer an index into the window that was read, so `end` names the position the
+page really stopped at.
+
+**The detour, recorded because it was nearly taken.** The failing assertion was about `end`, so the
+first patch made every page answer an `end` token — the reference servers do. That patch is gone, and
+the reason is in the specification and in Complement's own words:
+
+> "If no further events are available (either because we have reached the start of the timeline, or
+> because the user does not have permission to see any more events), this property is omitted from
+> the response."
+>
+> `// Keep paginating until we start of the room (no end property is returned).`
+> — `tests/csapi/room_messages_test.go`, `TestMessagesOverFederation`
+
+Always answering `end` would have traded a federation pagination test for a media one. The real gap
+was the filter all along, and the quotation now sits next to the `End` field where the next reader
+will form the same hypothesis.
+
+**Verification.** `tests/integration/messagesfilter_test.go`: the four kinds of list and
+`contains_url` both ways on `/messages`, a filtered page's `end` followed to an empty page, the same
+shape checks answered 400 `M_INVALID_PARAM` at this door, and the flag honoured through a sync filter
+with an unfiltered control sync beside it. `go test ./tests/...` green. Targeted Complement run
+`20261107g-msgfilter`: **10 passing, 2 failing**, `TestRoomImageRoundtrip` newly green; the two
+failures (`TestFilterMessagesByRelType`, `TestMessagesOverFederation`) fail identically in 20261107c.
+Full-suite tally is still 20261107c's 118 / 101 / 1 — three targeted runs' worth of fixes are in the
+tree, and the next full run is what will re-measure them.

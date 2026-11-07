@@ -666,6 +666,11 @@ func (s *Service) room(ctx context.Context, userID, roomID string, since Token, 
 			}
 			return roomUpdate{}, err
 		}
+		// The rest of the filter needs the event, not just its type: the sender lists, and
+		// `contains_url`, which is how a client asks a room's timeline for its media alone.
+		if !filter.AllowsTimelineContent(body) {
+			continue
+		}
 		accepted = append(accepted, body)
 		newest = event.StreamOrdering
 	}
@@ -777,6 +782,9 @@ func (s *Service) stateEvents(ctx context.Context, userID, roomID string, since 
 				continue
 			}
 			return Events{}, err
+		}
+		if !filter.AllowsStateContent(body) {
+			continue
 		}
 		out = append(out, body)
 	}

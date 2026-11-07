@@ -71,6 +71,9 @@ func (s *Service) stateAfter(ctx context.Context, userID, roomID string, timelin
 			}
 			return nil, err
 		}
+		if !filter.AllowsStateContent(body) {
+			continue
+		}
 		out = append(out, body)
 	}
 	sortEvents(out)

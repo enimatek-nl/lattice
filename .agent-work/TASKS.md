@@ -1359,3 +1359,41 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
       `.agent-work/complement-failures-20261107c.txt` too, so they are not caused by this change.
       `TestFilterMessagesByRelType` is MSC3874 `rel_types` on `/messages`, unimplemented;
       `TestRoomImageRoundtrip` fails on `key 'end' missing`, which is next.
+
+- [x] T-4080 a filter given to `/rooms/{room}/messages` was read for one flag and thrown away, and
+      `contains_url` was not read anywhere at all. `TestRoomImageRoundtrip` asks for
+      `/messages?filter={"contains_url":true}&dir=b` and asserts the chunk holds the one media
+      event; this server answered the room's whole timeline, and because nothing was left *behind*
+      it also answered no `end` token, which is what Complement's assertion pointed at first.
+
+      The filter is one document with two doors: `/sync` nests it under `room.timeline` and
+      `room.state`, and `/messages` takes a **room event filter as the whole parameter**. The type
+      lists, the sender lists, the room lists and `contains_url` now live in one package,
+      `internal/eventfilter`, which both doors and the shape checks from T-4079 use, so a filter
+      cannot mean one thing on one door and another on the next. Applying it to a `/messages` page
+      also moved where the page's `end` is measured: with a filter the chunk is no longer an index
+      into the window that was read, so `end` names the position the page really stopped at.
+
+      A detour worth recording because it was nearly taken: `end` was going to be answered on every
+      page, since one Complement test asserted the key exists and the reference servers do answer
+      it. It is not, and the specification is explicit — "If no further events are available
+      (either because we have reached the start of the timeline, or because the user does not have
+      permission to see any more events), this property is omitted from the response" — and
+      Complement's own federation pagination loop says *"Keep paginating until the start of the room
+      (no `end` property is returned)"*. Making `end` always present would have broken
+      `TestMessagesOverFederation` to satisfy `TestRoomImageRoundtrip`; the real gap was the filter.
+      The quotation is now in `internal/rooms/history.go` where the next reader will look.
+
+      Verification: `tests/integration/messagesfilter_test.go` (the `/messages` filter's four kinds
+      of list and `contains_url` both ways, a filtered page's `end` token followed to an empty page,
+      the same shape checks answered 400 `M_INVALID_PARAM` at this door, and the flag honoured
+      through a `/sync` filter with an unfiltered control sync beside it). `go test ./tests/...`
+      green. Targeted Complement run `20261107g-msgfilter`
+      (`.agent-work/next/complement-run-20261107g-msgfilter.log`, table
+      `.agent-work/next/complement-results-20261107g-msgfilter.tsv`): **10 passing, 2 failing** —
+      `TestRoomImageRoundtrip` newly green; `TestFilter`, `TestSyncFilter`, `TestSync` (both
+      packages), the two lazy-loading `/messages` tests and the send/fetch family unchanged; the two
+      failures are `TestFilterMessagesByRelType` (MSC3874 `rel_types`, unimplemented) and
+      `TestMessagesOverFederation`, which fails in this run exactly as it does in 20261107c —
+      `SendEventSynced waiting for event ID …` in the backfill subtest, T-4009b2/T-4007 — so it is
+      not a consequence of applying filters.

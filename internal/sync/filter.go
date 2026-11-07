@@ -7,69 +7,42 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/enimatek/lattice/internal/eventfilter"
 	"github.com/enimatek/lattice/internal/matrixerr"
 	"github.com/enimatek/lattice/internal/persist"
 )
 
 // Filter is the part of a sync filter this server acts on.
 //
-// A filter is the client's request about how much to send, so the fields that change what
-// a client receives are honoured, and the ones that would need features this server does
-// not have yet are accepted and recorded as ignored rather than refused: refusing a
-// filter that also asks for a timeline limit would break clients that only came here for
-// the limit.
+// A filter is the client's request about how much to send, so the fields that change what a
+// client receives are honoured, and the ones that would need features this server does not have
+// yet are accepted and recorded as ignored rather than refused: refusing a filter that also asks
+// for a timeline limit would break clients that only came here for the limit.
 type Filter struct {
 	Room struct {
-		Timeline EventFilter `json:"timeline"`
-		State    EventFilter `json:"state"`
+		Timeline eventfilter.RoomEventFilter `json:"timeline"`
+		State    eventfilter.EventFilter     `json:"state"`
 	} `json:"room"`
 }
 
-// EventFilter is a filter over one kind of event stream.
-type EventFilter struct {
-	Limit    *int     `json:"limit"`
-	Types    []string `json:"types"`
-	NotTypes []string `json:"not_types"`
-	// Senders, NotSenders, URLs, NotURLs and LazyLoadOptions are parsed so an unknown
-	// field is not mistaken for a typo in a field we do support, but they do not narrow
-	// anything yet.
-	Senders         *[]string `json:"senders"`
-	NotSenders      *[]string `json:"not_senders"`
-	URLs            *[]string `json:"urls"`
-	NotURLs         *[]string `json:"not_urls"`
-	LazyLoadOptions any       `json:"lazy_load_options"`
-	// LazyLoadMembers is read from the state filter only, which is what the reference
-	// servers key off and what the specification's own guidance points at: the flag is
-	// accepted on the timeline filter too, but the timeline is a list of events the client
-	// asked for, not a state section that can be trimmed.
-	LazyLoadMembers bool `json:"lazy_load_members"`
-}
-
-// Allows reports whether an event type survives this filter. An empty `types` list means
-// "no types" — the client asked for nothing of this kind, which is how a client turns off
-// state in a sync — while an absent list means "everything".
-func (f EventFilter) Allows(eventType string) bool {
-	if f.Types != nil {
-		for _, wanted := range f.Types {
-			if wanted == eventType {
-				return true
-			}
-		}
-		return false
-	}
-	for _, unwanted := range f.NotTypes {
-		if unwanted == eventType {
-			return false
-		}
-	}
-	return true
-}
-
-// AllowsTimeline and AllowsState apply the filter to the two event lists a room carries.
-func (f Filter) AllowsTimeline(eventType string) bool { return f.Room.Timeline.Allows(eventType) }
+// AllowsTimeline and AllowsState apply the type lists of the filter to the two event lists a
+// room carries. The parts that need the event itself — the sender lists and `contains_url` — are
+// applied by AllowsTimelineContent and AllowsStateContent, which run once the event is in its
+// client form.
+func (f Filter) AllowsTimeline(eventType string) bool { return f.Room.Timeline.AllowsType(eventType) }
 
 // AllowsState applies the filter to state events.
-func (f Filter) AllowsState(eventType string) bool { return f.Room.State.Allows(eventType) }
+func (f Filter) AllowsState(eventType string) bool { return f.Room.State.AllowsType(eventType) }
+
+// AllowsTimelineContent is the rest of the timeline filter, read from the served event.
+func (f Filter) AllowsTimelineContent(event map[string]any) bool {
+	return f.Room.Timeline.AllowsContent(event)
+}
+
+// AllowsStateContent is the rest of the state filter, read from the served event.
+func (f Filter) AllowsStateContent(event map[string]any) bool {
+	return f.Room.State.AllowsContent(event)
+}
 
 // TimelineLimit is how many timeline events to return. The specification's default is 10.
 func (f Filter) TimelineLimit() int {
