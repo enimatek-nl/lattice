@@ -233,6 +233,42 @@ func (s *Service) FindForLogin(ctx context.Context, identifier string) (*persist
 	return user, err
 }
 
+// SetPassword replaces an account's password. The policy that created the account applies to
+// changing it too: a server that lets a password be weakened on the way in has not had a policy.
+func (s *Service) SetPassword(ctx context.Context, userID, password string) error {
+	if err := s.checkPasswordPolicy(password); err != nil {
+		return err
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), s.cfg.BcryptCost)
+	if err != nil {
+		return fmt.Errorf("users: cannot hash the password: %w", err)
+	}
+	if err := s.db.Users.SetPassword(ctx, userID, string(hash)); err != nil {
+		if errors.Is(err, persist.ErrNotFound) {
+			return matrixerr.New(matrixerr.CodeNotFound, "This account does not exist.")
+		}
+		return fmt.Errorf("users: cannot store the password: %w", err)
+	}
+	return nil
+}
+
+// Deactivate ends an account: it can never log in again, and the password that proved it is
+// thrown away rather than kept. The account row stays, because everything else on this server
+// — rooms, membership events, keys — names it, and the specification's deactivation is about
+// the account ceasing to be usable, not about the server pretending it never existed.
+func (s *Service) Deactivate(ctx context.Context, userID string) error {
+	if err := s.db.Users.SetPassword(ctx, userID, ""); err != nil {
+		if errors.Is(err, persist.ErrNotFound) {
+			return matrixerr.New(matrixerr.CodeNotFound, "This account does not exist.")
+		}
+		return fmt.Errorf("users: cannot clear the password: %w", err)
+	}
+	if err := s.db.Users.SetDeactivated(ctx, userID, true); err != nil {
+		return fmt.Errorf("users: cannot mark the account deactivated: %w", err)
+	}
+	return nil
+}
+
 // CheckPassword verifies a password against a stored bcrypt hash.
 func CheckPassword(user *persist.User, password string) bool {
 	if user.PasswordHash == "" {

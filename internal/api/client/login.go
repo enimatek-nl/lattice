@@ -77,14 +77,17 @@ func (d *Deps) handleLogin(w http.ResponseWriter, r *http.Request) {
 			"The server encountered an internal error."))
 		return
 	}
-	if !users.CheckPassword(user, req.Password) {
-		matrixerr.Write(w, http.StatusForbidden, matrixerr.New(matrixerr.CodeForbidden,
-			"Wrong user ID or password."))
-		return
-	}
+	// A deactivated account is named as one. Its password hash is gone, so testing the
+	// password first would answer "wrong password" to someone who needs to be told the
+	// account itself has ended.
 	if user.Deactivated {
 		matrixerr.Write(w, http.StatusForbidden, matrixerr.New(matrixerr.CodeUserDeactivated,
 			"This account has been deactivated."))
+		return
+	}
+	if !users.CheckPassword(user, req.Password) {
+		matrixerr.Write(w, http.StatusForbidden, matrixerr.New(matrixerr.CodeForbidden,
+			"Wrong user ID or password."))
 		return
 	}
 

@@ -35,6 +35,10 @@ type UserRepo interface {
 	ByUserID(ctx context.Context, userID string) (*User, error)
 	ByLocalpart(ctx context.Context, localpart string) (*User, error)
 	SetDeactivated(ctx context.Context, userID string, deactivated bool) error
+	// SetPassword replaces an account's password hash. An empty hash means the account has no
+	// password at all, which is what a deactivated account is left with: nothing to log in
+	// with, and nothing to answer a forgotten password with.
+	SetPassword(ctx context.Context, userID, passwordHash string) error
 	// SetProfile writes the display name and avatar URL, replacing both: a caller that wants to
 	// change one of them reads the other first. An empty value clears it.
 	SetProfile(ctx context.Context, userID, displayname, avatarURL string) error
@@ -90,6 +94,19 @@ func (u *UserRepoImpl) ByLocalpart(ctx context.Context, localpart string) (*User
 func (u *UserRepoImpl) SetDeactivated(ctx context.Context, userID string, deactivated bool) error {
 	res := u.db.WithContext(ctx).Model(&User{}).Where("user_id = ?", userID).
 		Update("deactivated", deactivated)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetPassword implements [UserRepo].
+func (u *UserRepoImpl) SetPassword(ctx context.Context, userID, passwordHash string) error {
+	res := u.db.WithContext(ctx).Model(&User{}).Where("user_id = ?", userID).
+		Update("password_hash", passwordHash)
 	if res.Error != nil {
 		return res.Error
 	}

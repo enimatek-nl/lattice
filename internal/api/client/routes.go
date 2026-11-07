@@ -123,6 +123,11 @@ func Register(r *httpserver.Router, d *Deps, requireAuth func(http.Handler) http
 	// Session and device management.
 	r.Handle("GET", "/_matrix/client/v1/account/whoami", authed(d.handleWhoAmI))
 	versioned("GET", "/account/whoami", d.handleWhoAmI)
+	// The two endpoints that end an account's ability to prove itself. Both are guarded by
+	// User-Interactive Auth rather than by the token alone: the session that is asking is the
+	// thing that may have been stolen.
+	versioned("POST", "/account/password", d.handlePasswordChange)
+	versioned("POST", "/account/deactivate", d.handleDeactivate)
 	versioned("POST", "/logout", d.handleLogout)
 	versioned("POST", "/logout/all", d.handleLogoutAll)
 	versioned("GET", "/devices", d.handleDevicesList)

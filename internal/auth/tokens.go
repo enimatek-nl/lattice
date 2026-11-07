@@ -73,6 +73,12 @@ func (t *TokenService) RevokeDevice(ctx context.Context, userID, deviceID string
 	return t.tokens.DeleteByDevice(ctx, userID, deviceID)
 }
 
+// RevokeExcept invalidates every token of a user except the named device's, which is the
+// session that asked for it.
+func (t *TokenService) RevokeExcept(ctx context.Context, userID, keepDeviceID string) error {
+	return t.tokens.DeleteByUserExcept(ctx, userID, keepDeviceID)
+}
+
 // RevokeUser invalidates every token of a user.
 func (t *TokenService) RevokeUser(ctx context.Context, userID string) error {
 	return t.tokens.DeleteByUser(ctx, userID)
