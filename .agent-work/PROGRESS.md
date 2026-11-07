@@ -2690,3 +2690,45 @@ and recorded: T-4076 (what a first sync's `state` section is — current state v
 start of the returned timeline, which is exactly the ambiguity MSC4222 exists for) and T-4075.
 `TestRoomForget` and `TestLeftRoomFixture` are red for a policy this server has not decided —
 leaving versus forgetting a room — and that is T-4077; `/forget` answers 404 `M_UNRECOGNIZED` today.
+
+## 2026-11-07 (evening) — two ceilings: 413 `M_TOO_LARGE` and `M_NOT_JSON` (T-4078)
+
+Both came out of the 20261107c failure list rather than out of the plan, and both were the cheapest
+kind of red: a server answering **200** where the specification asks for a refusal.
+
+```
+invalid_test.go:215: MatchResponse got status 200 want 413 - .../send/m.room.message/1
+apidoc_request_encoding_test.go:22: MatchResponse got status 401 want 400 - .../register
+                                  => {"errcode":"M_NO_AUTH", ...}
+```
+
+**Where the ceiling belongs.** `MAX_PDU_SIZE` is now enforced at the storage funnel — `persistEvent`
+measures the canonical form — not at the client door. That placement is the finding, not the number:
+the limit is a property of an event, so `/send`, `/state`, a peer's `/send_join`, `/send_leave`,
+`/send_knock` and a transaction's bundle ingest must all answer it identically, and a server enforcing
+it on one door only will happily store events its peers will refuse. Over the limit is 413
+`M_TOO_LARGE` naming both byte counts.
+
+**A decoder that does not fail is a correctness hole, not a tolerance.** Go's `encoding/json`
+replaces an invalid UTF-8 byte with U+FFFD and continues, so the request in
+`TestRequestEncodingFails` was parsed, went on to the auth question, and answered 401 for a body that
+was never valid JSON text. `httpx.DecodeJSON` now rejects a body that is not UTF-8 with 400
+`M_NOT_JSON` before the decoder is called. Valid UTF-8 of any width remains ordinary JSON, and the
+test says so by setting a display name containing an em dash and Japanese.
+
+**What the test taught.** The first version picked a 72 KB body as "just under the limit" and failed —
+the body alone was over it. It now **bisects** for the largest accepted body and asserts that the
+boundary lands just under 65,536 bytes, which is the only way to tell a correct ceiling from one that
+fires far too early; a test that hand-picks an oversized body proves the refusal exists and nothing
+about where it is. It also checks that every event the room kept is inside the boundary: a refused
+event is not a happened event.
+
+**Verification.** `tests/integration/eventlimits_test.go`; `go test ./tests/...` green. Targeted
+Complement run `20261107d-sizelimit`: **2 passing, 0 failing** top-level — `TestEvent` (including
+`Large_Event` and `Large_State_Event`, both of which were the 200s above) and
+`TestRequestEncodingFails`. Single targeted run, all packages filtered out except these two; the
+full-suite tally remains 20261107c's 118/101/1 until the next full run says otherwise.
+
+**Next cheap win found in the same log, not taken yet:** `TestFilter`'s fourteen
+"Expected 4XX status code, got 200 for testing filter map[...]" assertions — this server stores any
+JSON as a filter. Opened as T-4079.

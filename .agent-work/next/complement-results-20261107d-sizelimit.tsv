@@ -1,0 +1,2 @@
+pass	tests/csapi	TestEvent
+pass	tests/csapi	TestRequestEncodingFails

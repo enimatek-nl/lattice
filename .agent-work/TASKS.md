@@ -1291,3 +1291,50 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
       that `/sync`, the room lists and the history reads all consult — not a deletion of the room.
       Related: T-2015 (`/context`), T-3001 (history visibility), T-4074 (a leave that reaches a room
       held elsewhere, now done).
+
+- [x] T-4078 two ceilings a request hits before anything has happened: an event over `MAX_PDU_SIZE`,
+      and a body that is not valid UTF-8. Both were in the 2026-11-07c failing list with a 200 or a
+      wrong-code answer where the specification asks for a refusal:
+      `TestEvent/Parallel/Large_Event` and `TestEvent/Parallel/Large_State_Event`
+      (`invalid_test.go:215`, `:229`: "MatchResponse got status 200 want 413"), and
+      `TestRequestEncodingFails/POST_rejects_invalid_utf-8_in_JSON` (`apidoc_request_encoding_test.go:22`:
+      "MatchResponse got status 401 want 400", the answer being `M_NO_AUTH` — the body's invalid byte
+      had been swallowed and the request had gone on to the auth question).
+
+      The size ceiling is checked at the storage funnel rather than at the client door
+      (`maxPDUSize` in `internal/rooms/service.go`, measured on the canonical form inside
+      `persistEvent`), so the client's `/send` and `/state`, a peer's `/send_join`, `/send_leave`,
+      `/send_knock` and a transaction's bundle ingest all answer the same question the same way —
+      which is the point: the limit is a property of an event, and a server that enforced it only on
+      one door would store events its peers would refuse. 413 `M_TOO_LARGE`, with the two numbers in
+      the message so a sender can tell an over-long body from a near-limit room ID.
+
+      The UTF-8 ceiling is in `httpx.DecodeJSON`: Go's decoder does not fail on an invalid byte, it
+      substitutes U+FFFD and carries on, so an unvalidated body becomes a stored display name,
+      message and index entry, with a 200 for the sender. JSON text is UTF-8 by definition, so the
+      body is rejected as `M_NOT_JSON` (400) before the decoder sees it. Valid UTF-8 of any width is
+      ordinary JSON: the test sets a name with an em dash and Japanese in it afterwards.
+
+      Verification: `tests/integration/eventlimits_test.go`. The size test **bisects** for the
+      largest body this server accepts and asserts that the boundary sits just under 65,536 bytes;
+      hand-picking an oversized body cannot tell a correct ceiling from one that fires far too early,
+      and the first version of this test proved that by picking a body that was already over. The
+      refused events are also checked not to be in the room's timeline — a refused event is not a
+      happened event. `go test ./tests/...` green. Targeted Complement run `20261107d-sizelimit`
+      (`.agent-work/next/complement-run-20261107d-sizelimit.log`, table
+      `.agent-work/next/complement-results-20261107d-sizelimit.tsv`): 2 passing, 0 failing
+      top-level — `TestEvent` (with `Large_Event` and `Large_State_Event`) and
+      `TestRequestEncodingFails` — lists `.agent-work/complement-{passes,failures}-20261107d-sizelimit.txt`.
+      These two were not re-run in a full suite; the full tally above them is still 20261107c.
+
+- [ ] T-4079 a filter is not accepted whatever is written in it. `TestFilter` (csapi) is red on
+      fourteen assertions, all of the same shape and all in the log:
+      "Expected 4XX status code, got 200 for testing filter map[presence:not_an_object]" and
+      thirteen more. `PUT/POST /user/{userID}/filter` stores any JSON the client sends and answers
+      200; the spec defines the filter object's fields and their types, so a filter whose `timeline`
+      is a string, or whose `rooms` is a list of integers, is a client bug that should be answered at
+      the door it arrived at rather than silently doing nothing on every later `/sync`.
+      A filter validator is a small, self-contained thing: it is the same shape read by
+      `internal/sync` when a `/sync` carries `filter=`, so write it once and use it on both doors.
+      Complement: `TestFilter` in `tests/csapi`,
+      `.agent-work/next/complement-run-20261107c.log` (lines quoted above).

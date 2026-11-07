@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/enimatek/lattice/internal/matrixerr"
 )
@@ -70,6 +71,15 @@ func DecodeJSON(r *http.Request, maxBytes int64, target any) error {
 	}
 	if len(data) == 0 {
 		return setEmptyIfSet(target)
+	}
+	// JSON text is UTF-8 by definition, and Go's decoder does not enforce that: it replaces an
+	// invalid byte with U+FFFD and carries on. Without this check a display name or a message body
+	// arriving with a stray byte would be stored, indexed and served with a replacement character
+	// where the sender's text was, and the sender would be told 200. The body is not JSON at all,
+	// which is M_NOT_JSON rather than a complaint about shape.
+	if !utf8.Valid(data) {
+		return matrixerr.New(matrixerr.CodeNotJSON,
+			"Request body is not valid UTF-8, which JSON text has to be.")
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
