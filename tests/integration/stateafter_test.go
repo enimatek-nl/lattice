@@ -12,8 +12,8 @@ import (
 // the timeline and given a state section that stops before it has to keep every membership it
 // was ever shown, forever, to know who is in the room.
 
-// saMemberKeys lists the user whose member event a state section carries.
-func saMemberKeys(t *testing.T, room map[string]any, field string) []string {
+// memberStateKeysIn lists the user whose member event a state section carries.
+func memberStateKeysIn(t *testing.T, room map[string]any, field string) []string {
 	t.Helper()
 	list, _ := room[field].(map[string]any)
 	raw, _ := list["events"].([]any)
@@ -30,9 +30,9 @@ func saMemberKeys(t *testing.T, room map[string]any, field string) []string {
 	return out
 }
 
-// saEventIDs lists the event IDs a section carries, so a test can ask whether the same event
+// eventIDsIn lists the event IDs a section carries, so a test can ask whether the same event
 // appears twice — which is the point of the section, not an accident.
-func saEventIDs(t *testing.T, room map[string]any, field string) []string {
+func eventIDsIn(t *testing.T, room map[string]any, field string) []string {
 	t.Helper()
 	list, _ := room[field].(map[string]any)
 	raw, _ := list["events"].([]any)
@@ -46,9 +46,9 @@ func saEventIDs(t *testing.T, room map[string]any, field string) []string {
 	return out
 }
 
-// saSenders lists who spoke in the timeline batch, which is the set MSC4222 says the
+// timelineSenderIDs lists who spoke in the timeline batch, which is the set MSC4222 says the
 // trimmed state has to cover.
-func saSenders(t *testing.T, room map[string]any) []string {
+func timelineSenderIDs(t *testing.T, room map[string]any) []string {
 	t.Helper()
 	list, _ := room["timeline"].(map[string]any)
 	raw, _ := list["events"].([]any)
@@ -89,7 +89,7 @@ func TestSyncStateAfterAnswersAtTheEndOfTheBatch(t *testing.T) {
 
 	// The ordinary answer first, so the difference below cannot be blamed on a missing
 	// section: no flag means `state`, and nothing named `state_after`.
-	plain := roomSection(t, saSync(t, h, aliceToken, ""), "join", roomID)
+	plain := roomSection(t, syncBody(t, h, aliceToken, ""), "join", roomID)
 	if _, ok := plain["state"].(map[string]any); !ok {
 		t.Fatalf("a sync with no flag lost its state section: %v", plain)
 	}
@@ -100,24 +100,24 @@ func TestSyncStateAfterAnswersAtTheEndOfTheBatch(t *testing.T) {
 	}
 
 	query := "&use_state_after=true&filter=" + url.QueryEscape(`{"room":{"state":{"lazy_load_members":true}}}`)
-	room := roomSection(t, saSync(t, h, aliceToken, query), "join", roomID)
+	room := roomSection(t, syncBody(t, h, aliceToken, query), "join", roomID)
 	if room == nil {
 		t.Fatalf("the joined room is missing from the state_after sync")
 	}
 	if _, ok := room["state"].(map[string]any); ok {
-		t.Errorf("a state_after sync still carries state: %v", saKeys(room))
+		t.Errorf("a state_after sync still carries state: %v", sectionKeys(room))
 	}
 	after, ok := room["state_after"].(map[string]any)
 	if !ok {
-		t.Fatalf("no state_after section: %v", saKeys(room))
+		t.Fatalf("no state_after section: %v", sectionKeys(room))
 	}
 	if _, ok := after["events"].([]any); !ok {
 		t.Fatalf("state_after has no events array: %v", after)
 	}
 
 	// Every sender in the batch must have a member event in the state section.
-	keys := saMemberKeys(t, room, "state_after")
-	for _, sender := range saSenders(t, room) {
+	keys := memberStateKeysIn(t, room, "state_after")
+	for _, sender := range timelineSenderIDs(t, room) {
 		if !containsString(keys, sender) {
 			t.Errorf("state_after has no member event for the timeline sender %s; it has %v", sender, keys)
 		}
@@ -126,8 +126,8 @@ func TestSyncStateAfterAnswersAtTheEndOfTheBatch(t *testing.T) {
 	// MSC4222 rule stated from the other side: the state is not "the room minus what you
 	// were just shown", it is "the room as of what you were just shown".
 	bobJoin := ""
-	for _, id := range saEventIDs(t, room, "timeline") {
-		if containsString(saEventIDs(t, room, "state_after"), id) && id != "" {
+	for _, id := range eventIDsIn(t, room, "timeline") {
+		if containsString(eventIDsIn(t, room, "state_after"), id) && id != "" {
 			bobJoin = id
 			break
 		}
@@ -137,8 +137,8 @@ func TestSyncStateAfterAnswersAtTheEndOfTheBatch(t *testing.T) {
 	}
 
 	// Without lazy loading the section is the whole state, so the silent member is in it.
-	full := roomSection(t, saSync(t, h, aliceToken, "&use_state_after=true"), "join", roomID)
-	fullKeys := saMemberKeys(t, full, "state_after")
+	full := roomSection(t, syncBody(t, h, aliceToken, "&use_state_after=true"), "join", roomID)
+	fullKeys := memberStateKeysIn(t, full, "state_after")
 	for _, want := range []string{aliceID, bobID, carolID} {
 		if !containsString(fullKeys, want) {
 			t.Errorf("state_after without lazy loading is missing the member %s; it has %v", want, fullKeys)
@@ -156,16 +156,16 @@ func TestSyncStateAfterTrimsSilentMembersUnderLazyLoad(t *testing.T) {
 	// A batch of one event: Alice's message. She is the only sender in it.
 	filter := `{"room":{"timeline":{"limit":1},"state":{"lazy_load_members":true}}}`
 	query := "&use_state_after=true&filter=" + url.QueryEscape(filter)
-	room := roomSection(t, saSync(t, h, aliceToken, query), "join", roomID)
+	room := roomSection(t, syncBody(t, h, aliceToken, query), "join", roomID)
 	if room == nil {
 		t.Fatalf("the joined room is missing from the state_after sync")
 	}
-	senders := saSenders(t, room)
+	senders := timelineSenderIDs(t, room)
 	if len(senders) != 1 {
 		t.Fatalf("the timeline batch is not the one event this test asked for: %v", senders)
 	}
 	spoken := senders[0]
-	keys := saMemberKeys(t, room, "state_after")
+	keys := memberStateKeysIn(t, room, "state_after")
 	if !containsString(keys, spoken) {
 		t.Errorf("state_after is missing the member event of %s, the one sender in this batch: %v", spoken, keys)
 	}
@@ -191,25 +191,25 @@ func TestSyncStateAfterUnderTheUnstableFlag(t *testing.T) {
 	t.Parallel()
 	h, roomID, aliceToken, _, _, _ := stateAfterRoom(t)
 
-	room := roomSection(t, saSync(t, h, aliceToken, "&org.matrix.msc4222.use_state_after=true"), "join", roomID)
+	room := roomSection(t, syncBody(t, h, aliceToken, "&org.matrix.msc4222.use_state_after=true"), "join", roomID)
 	if _, ok := room["org.matrix.msc4222.state_after"].(map[string]any); !ok {
-		t.Fatalf("no org.matrix.msc4222.state_after section: %v", saKeys(room))
+		t.Fatalf("no org.matrix.msc4222.state_after section: %v", sectionKeys(room))
 	}
 	if _, ok := room["state"].(map[string]any); ok {
-		t.Errorf("a state_after sync still carries state: %v", saKeys(room))
+		t.Errorf("a state_after sync still carries state: %v", sectionKeys(room))
 	}
 }
 
-// saSync syncs with no timeout and returns the decoded body.
-func saSync(t *testing.T, h *harness, token, query string) map[string]any {
+// syncBody syncs with no timeout and returns the decoded body.
+func syncBody(t *testing.T, h *harness, token, query string) map[string]any {
 	t.Helper()
 	body, _ := syncNow(t, h, token, query)
 	return body
 }
 
-// saKeys names the sections of a room for a failure message, so a missing field can be told
+// sectionKeys names the sections of a room for a failure message, so a missing field can be told
 // apart from a misnamed one.
-func saKeys(room map[string]any) []string {
+func sectionKeys(room map[string]any) []string {
 	out := []string{}
 	for key := range room {
 		out = append(out, key)

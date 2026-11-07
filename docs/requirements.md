@@ -208,8 +208,11 @@ the parts that must be byte-exact before any room is created.
 13. **`m.` event types are lowercase.** Client-supplied event types are validated: an
    `m.`-prefixed type may hold only lowercase letters, digits and underscores per
    component. Accepting `m.Room.Message` would create state and power-level entries no
-   specification event ever matches. Custom types must be dotted, so two servers cannot
-   invent the same name.
+   specification event ever matches. Custom types need not be dotted: the dotted
+   namespace is a convention that keeps two servers' names apart, and the risk it
+   manages belongs to whoever invents the name. Refusing an undotted type answers
+   400 before the room sees the event, and Complement's sync-filter tests send
+   undotted types for exactly that reason.
 9. **`m.room.aliases` special case.** The specification removes it in room version 6 and
    Synapse gates it by version; gomatrixserverlib applies it to every room version. This
    implementation follows the specification, so an aliases event in a version 6+ room needs

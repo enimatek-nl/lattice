@@ -84,13 +84,27 @@ func TestPrevStateShowsWhatAStateEventReplaced(t *testing.T) {
 		before string
 	}
 	var claims []claim
+	// One event may be served twice in a response — a state event that is both in the
+	// timeline batch and in the room's state — and that is legal. What is not legal is the
+	// same event reporting two different things it replaced, so the assertions below are
+	// made per event id.
+	seen := map[string]claim{}
 	for _, event := range eventsOfType(t, room, "m.room.topic") {
 		content, _ := event["content"].(map[string]any)
 		topic, _ := content["topic"].(string)
 		unsigned := unsignedOf(t, event)
 		previous, _ := unsigned["prev_content"].(map[string]any)
 		before, _ := previous["topic"].(string)
-		claims = append(claims, claim{topic: topic, before: before})
+		id, _ := event["event_id"].(string)
+		current := claim{topic: topic, before: before}
+		if already, ok := seen[id]; ok {
+			if already != current {
+				t.Errorf("the topic event %s is served as replacing %q and as replacing %q", id, already.before, current.before)
+			}
+			continue
+		}
+		seen[id] = current
+		claims = append(claims, current)
 		if previous != nil && topic != "first topic" {
 			if sender, _ := unsigned["prev_sender"].(string); sender != alice {
 				t.Errorf("prev_sender of the topic change to %q = %q, want %s", topic, sender, alice)
