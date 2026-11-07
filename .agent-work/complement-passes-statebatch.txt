@@ -1,0 +1,13 @@
+TestRoomCreate
+TestRoomMembers
+TestRoomMessagesLazyLoading
+TestRoomMessagesLazyLoadingLocalUser
+TestRoomState
+TestRoomSummary
+TestSync
+TestSyncFilter
+TestSyncLeaveSection
+TestSyncTimelineGap
+TestSync
+TestRoomSummaryAllowedRoomIDs
+TestSyncOmitsStateChangeOnFilteredEvents

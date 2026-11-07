@@ -1081,3 +1081,74 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
       instead of re-reading the whole list. Nothing in the Complement suites at this checkout asks
       for it; it is recorded so "MSC4222 done" is not claimed from the sync half alone.
 
+
+- [x] T-4069 an event type without a dot is not malformed, and refusing it hid an endpoint.
+      `PUT /rooms/{roomID}/send/{type}/{txn}` answered 400 for types like `please_filter_me`
+      because `matrixid.EventTypeValid` required at least two dot-separated components, a rule
+      this project wrote for itself ("custom types must be dotted, so two servers cannot invent
+      the same name" — `docs/requirements.md` DEC line 13). Nothing in the protocol says that:
+      the reserved `m.` namespace is enforced, and a name without a dot is unqualified, whose
+      only risk is a clash — a problem belonging to whoever invents the name, not to the server
+      carrying it. The cost of the rule was invisible in the local suite and obvious in
+      Complement's: a client could not store, filter, paginate or read back an event of that
+      type, because the request died before the room saw it. Now accepted: components still have
+      to be usable (no empty component, no space, no leading dot, length bound), and `m.` still
+      has to look like the specification's own names.
+      Verification: `tests/integration/customeventtype_test.go` (an undotted type is stored,
+      delivered in a sync, excluded by a `not_types` filter that names it, and still readable at
+      `/event/{eventID}` afterwards; the reserved shapes `m.Room.Message`, `m.`, `m..room` and
+      `bad type` are still 400); `tests/unit/roomslogic_test.go` updated; Complement
+      `TestSyncOmitsStateChangeOnFilteredEvents` moves from the 400 to a later assertion, which
+      T-4070 finished.
+
+- [x] T-4070 the state section may only subtract what the client is being shown in this response.
+      `stateEvents` dropped every state event that the timeline batch carried. That is right for
+      an incremental sync — the client is handed the event in the same response — and wrong in
+      the two cases the subtraction cannot see: a *first* sync, where the client holds nothing,
+      and any sync whose filter or `limit` hid the event from the batch. In a young room the
+      second case is total: every state event is the batch, so the state section answered empty.
+      Now the subtraction applies only when `since` is present and `full_state` is not, which is
+      the same condition the "changed since the token" filter already uses. Cost is unchanged for
+      a linear room (the incremental case is the one that has a token); the first sync and a
+      `full_state` sync carry the room's whole state, which is what they were always meant to
+      carry and what `lazy_load_members` exists to shrink.
+      Complement: `TestSyncOmitsStateChangeOnFilteredEvents` (a two-server room, a state event
+      `m.room.name` delivered over the federation `/send` path across a fork, then a sync with
+      `timeline.limit=1` and `not_types:["please_filter_me"]` — the event is in the batch and has
+      to be in the state too), red in every recorded run before this and green with it, together
+      with the sync and room-state family that could have caught a regression: 13 top-level
+      tests, 0 failures, `.agent-work/next/complement-run-statebatch.log` and
+      `.../complement-results-statebatch.tsv`.
+      Own tests: `tests/integration/syncstatebatch_test.go` (a limited batch whose single event
+      is a state event: the state section carries it and the rest of the room's state; a filter
+      that hides the topic from the batch must not hide it from the state; an incremental sync
+      still does not serve the same event twice). One existing test needed correcting rather
+      than the server: `TestPrevStateShowsWhatAStateEventReplaced` counted served topic events
+      exactly, and a first sync may now serve the same event in both sections, so its assertions
+      are made per event id — including the case that mattered, one event claiming two different
+      things that it replaced.
+
+- [ ] T-4071 a two-server test that fails twice for different reasons and passes the third time.
+      `TestPushRuleRoomUpgrade` (csapi) moved from passing in `.agent-work/complement-passes-20261113e.txt`
+      to failing in the full run `20261107b`, and its two local-upgrade subtests pass every time: the
+      two *remote*-join subtests are the flaky ones. Three re-runs in a row gave: fail with
+      `federation: hs2 has no keys recorded and was asked for too recently to ask again` — a join
+      refused at the X-Matrix credential check because the peer's signing keys were fetched, not
+      found, and the negative answer is cached with a backoff, so the first join after a deployment
+      can be refused and reach the client as a 500 on `/join`; fail with
+      `certificate is valid for hs2, localhost, not hs1` — a request for the name `hs1` went to a
+      container holding `hs2`'s certificate, which is the stale `aardvark-dns` record condition the
+      runner warns about, not a protocol fault; and then pass. Neither is caused by the sync, account
+      data or event-type work in this window, and the third run is the proof.
+      Worth fixing on its own: the negative key cache should not be able to answer "this server has
+      no keys" to a join that arrived *because* the peer exists, and the answer a client gets here is
+      `M_UNKNOWN` 500 for what is, at worst, a retryable federation failure. Related: T-4001 (the
+      credential check), T-4005 (key fetching and its trust clamp), T-4056 (the environment warning).
+
+- [ ] T-4072 `GET /keys/changes`: the device-list stream as an endpoint. `device_lists.changed` and
+      `device_lists.left` already reach `/sync`, and the rows behind them are addressed per observer
+      with a stream position — so the range question a client asks ("whose devices moved between these
+      two tokens?") is a read of the same table, not a new feature. Complement: `TestKeyChangesLocal`
+      (csapi), which is red on the missing endpoint. Record the deprecated `user_id` parameter's
+      handling explicitly: if it names someone other than the caller, the answer is not that
+      someone's list.

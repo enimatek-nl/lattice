@@ -380,12 +380,19 @@ func utf16Surrogate(r rune) bool {
 
 // EventTypeValid checks an event type against the naming rules: a name starting with
 // "m." is reserved for the specification and must be lowercase dotted; any other
-// event type is a dotted name ending in the kind, normally with a domain at the front
-// so that a third party can name it without a clash.
+// event type is a name whose components are usable, normally dotted with a domain at
+// the front so that a third party can name it without a clash.
 //
 // The shape is enforced rather than ignored because event types are keys in state, in
 // power levels and in push rules: a type with a stray space or an empty component
 // becomes a key nothing else can address.
+//
+// The dotted namespace is a convention, not a rule a server may enforce. A name without
+// a dot is unqualified, and the risk it carries is a clash of two servers' naming — a
+// risk to be managed by whoever invents the name, not a malformation. Refusing one makes
+// an endpoint the specification defines unreachable, because the server answers 400 before
+// the room ever sees the event: Complement's filter tests send types like
+// `please_filter_me` for exactly that reason, and the reference servers take them.
 func EventTypeValid(id string) error {
 	if id == "" {
 		return fmt.Errorf("matrixid: an event type must not be empty")
@@ -406,9 +413,6 @@ func EventTypeValid(id string) error {
 		return nil
 	}
 	components := strings.Split(id, ".")
-	if len(components) < 2 {
-		return fmt.Errorf("matrixid: event type %q must be dotted so that it cannot clash with another server's", id)
-	}
 	for _, component := range components {
 		if !isEventTypeComponent(component) {
 			return fmt.Errorf("matrixid: event type %q has an unusable component", id)

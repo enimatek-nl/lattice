@@ -28,9 +28,13 @@ func TestEventTypeValidation(t *testing.T) {
 		{"m.", false},
 		{"m.Room.Message", false},
 		{"not an event", false},
-		// Undotted custom names are refused on the way in: the dotted namespace is
-		// what keeps two servers' custom types apart.
-		{"nodots", false},
+		// Undotted custom names are accepted. The dotted namespace is a convention, and the
+		// risk it manages — two servers inventing the same name — belongs to whoever
+		// invents it, not to the server. Refusing one answers 400 before the room sees
+		// anything, which is how Complement's filter tests came to be red here: they send
+		// types like `please_filter_me`, and the reference servers take them.
+		{"nodots", true},
+		{"please_filter_me", true},
 		{"m.room.", false},
 		{".room.message", false},
 		{"m..room", false},

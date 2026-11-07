@@ -1,5 +1,42 @@
 # Progress
 
+## 2026-11-07 — an event type nobody qualified, and a state section that stopped hiding behind the batch
+
+**A dot is a convention.** `PUT /rooms/{roomID}/send/{type}/{txn}` answered 400 for an event type
+without a dot — `please_filter_me`, say — because this server required custom types to be dotted,
+a rule written down in `docs/requirements.md` so that two servers could not invent the same name.
+Nothing in the protocol requires a dot: the reserved `m.` namespace is enforced and the components
+have to be usable, and an unqualified name's only hazard is a clash, which belongs to whoever
+invents the name. The cost of over-strictness here was invisible from the inside and glaring from
+outside: the request died before the room saw the event, so the endpoints for storing it, filtering
+it, paging it and reading it back were unreachable rather than missing. Complement's sync-filter
+tests send unqualified types, and this server was failing them with a 400 about naming.
+
+**What the state section may subtract.** `/sync` was dropping from a room's `state` any state event
+the timeline batch carried, on the reasoning that the client is being handed the event anyway. That
+reasoning holds only when the response really does hand it over, and two cases break it: a first
+sync, where the client holds nothing, and any sync whose `limit` or `not_types` filter hid the
+event from the batch. In a young room the second case is total — every state event is in the batch,
+so the state section came back empty. The subtraction now applies only when the client has a token
+and did not ask for `full_state`, which is the same condition the "changed since your token" filter
+already uses. A first or full-state sync therefore carries the room's whole state, as it always
+should have; shrinking that is what `lazy_load_members` is for, and that flag is honoured since the
+MSC4222 work.
+
+One existing test was corrected rather than the server: `TestPrevStateShowsWhatAStateEventReplaced`
+asserted that each topic event was served exactly once, and a first sync may legitimately serve the
+same state event in both the batch and the state. Its assertions are now made per event id, which
+also catches the thing it was really watching — one event claiming two different predecessors.
+
+Verification: `tests/integration/customeventtype_test.go`, `tests/integration/syncstatebatch_test.go`
+and the updated `tests/unit/roomslogic_test.go`, with `go test -race ./tests/...` and
+`golangci-lint` green. Complement: `TestSyncOmitsStateChangeOnFilteredEvents` green for the first
+time (a state event delivered across a federation fork, a `limit=1` type-filtered batch, and the
+state section still required to carry it), and with it the whole sync and room-state set —
+13 top-level tests, 0 failures, in `.agent-work/next/complement-run-statebatch.log` and
+`.../complement-results-statebatch.tsv`. A full suite run follows this change so the tally next to
+it is measured rather than inherited.
+
 ## 2026-11-07 — a sync whose state sits where its timeline does (MSC4222 `state_after`)
 
 A sync batch says "here are the last N events, and here is the room's state". Those two answers

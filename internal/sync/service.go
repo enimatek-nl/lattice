@@ -721,15 +721,22 @@ func (s *Service) room(ctx context.Context, userID, roomID string, since Token, 
 	return update, nil
 }
 
-// stateEvents returns the room's state as the client needs it: the state that applies at
-// the start of the timeline, minus the state events already in the timeline.
+// stateEvents returns the room's state as the client needs it.
 //
-// The exact rule the specification gives is "state at the start of the window", which
-// would need a stored state snapshot per event. This server has no such snapshot yet, so
-// it answers with the room's current state, keeping only entries that changed after the
-// token (or all of them on a first or full-state sync), and dropping any that the
-// timeline already carries. That is a documented approximation: it can name state that
-// changed after the window, never state that has since been superseded.
+// A first sync, or a `full_state` one, gets the room's whole state. An incremental sync gets
+// the state that changed since its token, minus the state events the timeline batch it came
+// with already carries — the subtraction is only ever right for the incremental case, because
+// it assumes the client is being *shown* the event in this response. It is wrong for a first
+// sync, where there is nothing the client holds, and it is wrong when a filter has hidden the
+// event from the batch: Complement's `TestSyncOmitsStateChangeOnFilteredEvents` is that second
+// case, a state event whose batch is limited and typed-filtered, where the client still needs
+// the state entry even though the event is also in the batch.
+//
+// The exact rule the specification gives is "state at the start of the window", which needs a
+// stored state snapshot per event. Those snapshots exist (T-3004a) and are what `state_after`
+// answers from; the `state` section still reads current state, keeping entries that changed
+// after the token. That is a documented approximation: it can name state that changed after the
+// window, never state that has since been superseded.
 func (s *Service) stateEvents(ctx context.Context, userID, roomID string, since Token, until int64, position int64, filter Filter, req Request, timeline []Event) (Events, error) {
 	entries, err := s.state.All(ctx, roomID)
 	if err != nil {
@@ -746,10 +753,15 @@ func (s *Service) stateEvents(ctx context.Context, userID, roomID string, since 
 	if err != nil {
 		return Events{}, fmt.Errorf("sync: cannot read state events of %s: %w", roomID, err)
 	}
+	// Only an incremental sync may subtract the batch from the state: the client is being
+	// shown those events now, and it holds nothing before this response on a first sync.
+	incremental := req.HasSince && !req.FullState
 	inTimeline := make(map[string]bool, len(timeline))
-	for _, event := range timeline {
-		if id, ok := event["event_id"].(string); ok {
-			inTimeline[id] = true
+	if incremental {
+		for _, event := range timeline {
+			if id, ok := event["event_id"].(string); ok {
+				inTimeline[id] = true
+			}
 		}
 	}
 
