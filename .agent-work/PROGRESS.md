@@ -1,5 +1,49 @@
 # Progress
 
+## 2026-11-07 — a sync whose state sits where its timeline does (MSC4222 `state_after`)
+
+A sync batch says "here are the last N events, and here is the room's state". Those two answers
+sit at different points in the room. The state has always been read at the *start* of the window,
+so the events that changed it since are in the timeline and their results are not in the state —
+and this server used to go further, dropping from the state any event the timeline already
+carried. A client holding that pair has to replay the timeline over the state to know who is in
+the room, which means it has to keep every membership event it was ever shown. That is exactly the
+rule a lazy-loading filter makes impossible: the filter exists to drop membership events.
+
+MSC4222's answer, now in the stable specification, is `state_after`: the state as of the *last*
+event of the batch, in place of `state`. Answering it is one lookup here rather than a replay,
+because the state each event was sent against is already stored (T-3004a) — the snapshot attached
+to the newest event of the batch *is* the state at the end of the batch, that event's own change
+included. Rooms whose newest event has no snapshot — history that reached this server without one —
+fall back to the current state, which is the same approximation the `state` section already makes,
+and it is written down where it happens rather than buried.
+
+`lazy_load_members` on the state filter is honoured now, and only there: the reference servers key
+off the state filter, and a timeline is a list the client asked for, not a state section that can
+be trimmed. Under it, a batch of one message sends that sender's membership and not the room's
+whole roster — but the room's other state stays, because a client that cannot show a room's name or
+its power levels has bought nothing with the smaller member list. Without the flag nothing is
+trimmed: the specification asks for "at least" the timeline senders, and the superset sent today is
+legal. Left and banned rooms keep `state`: their batch ends at the event that took the user out, so
+"state at the end of the batch" is what that section already answers.
+
+The response field is named by the flag the client used — `state_after` for `use_state_after`,
+`org.matrix.msc4222.state_after` for the unstable flag — because a client that sends the
+pre-stabilisation flag is a client that reads the pre-stabilisation key, and answering it under the
+other name tells it the feature did not happen.
+
+Verification: `tests/integration/stateafter_test.go` (three cases — the ordinary answer keeps
+`state` and gains nothing named `state_after`; `state_after` covers every sender in the batch and
+repeats the membership events the batch already carries; under lazy loading a silent member is
+dropped and non-member state is not; the unstable flag names the unstable field), `go test
+-race ./tests/...` and `golangci-lint` green. Complement `tests/msc4222` is green in full, both
+subtests — the whole package, red in every recorded run until now — checked together with
+`tests/csapi` `TestSync` and `TestRoomMessagesLazyLoading*`, which stay green, in
+`.agent-work/next/complement-run-stateafter.log` with its results table
+`.../complement-results-stateafter.tsv`. Two sync failures are unchanged: `TestSyncOmitsStateChangeOnFilteredEvents`
+(T-4020) and `TestDeviceListUpdates` (T-4064). MSC4222's other half — `/members` as a stream with
+`from`/`to` positions — is T-4068, not implemented.
+
 ## 2026-11-07 — account data a user can take back, and a run that names the package each result came from
 
 **Room account data, and what a removal means.** `account_data` was a value per user per type. The

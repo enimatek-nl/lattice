@@ -26,6 +26,15 @@ func (d *Deps) handleSync(w http.ResponseWriter, r *http.Request) {
 		FullState:   query.Get("full_state") == "true",
 		SetPresence: query.Get("set_presence"),
 	}
+	// MSC4222's state section, under whichever name the client used. The two flags mean the
+	// same thing; the name decides what the response calls it, because a client that asked
+	// with the pre-stabilisation spelling looks for the pre-stabilisation field.
+	switch {
+	case query.Get("use_state_after") == "true":
+		req.StateAfter = sync.StateAfterStable
+	case query.Get("org.matrix.msc4222.use_state_after") == "true":
+		req.StateAfter = sync.StateAfterUnstable
+	}
 	if since, present := query["since"]; present {
 		req.HasSince = true
 		req.Since = since[0]

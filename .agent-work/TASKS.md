@@ -1044,10 +1044,40 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
       the stable sync suite's — which is why the matrix row that said "MSC4222 `state_after` (T-3001f)"
       pointed at a task about sync filters' presence section. It points at T-4067 now.
 
-- [ ] T-4067 MSC4222 `state_after`: `/sync` answers `use_state_after=true` (and the unstable
-      `org.matrix.msc4222.use_state_after`) by replacing a joined room's `state` with the state as of
-      the *last* event in the timeline chunk, and under a `lazy_load_members` filter that chunk's
-      member events for every timeline sender. Complement: `tests/msc4222`'s `TestSync`, both
-      subtests (public room, and a private room where the invitee joins without speaking). This is
-      the whole of that package, and it is the only red thing in the run named after it; the stable
-      `tests/csapi` `TestSync` is green.
+- [x] T-4067 MSC4222 `state_after` is answered, and MSC4222's other half is a different feature.
+      Done: `/sync` with `use_state_after=true` (or the unstable `org.matrix.msc4222.use_state_after`)
+      replaces a joined room's `state` with `state_after` — the state as of the *last* event of the
+      timeline batch, that event's own change included — and the field carries the name the client
+      asked with, because a client that sends the pre-stabilisation flag reads the pre-stabilisation
+      key. This server already records the state each event was sent against (T-3004a), so the answer
+      is one lookup: the snapshot attached to the newest event of the batch. Rooms whose newest event
+      has no snapshot (history that arrived without one) fall back to the current state, which is the
+      same approximation the `state` section already makes, recorded where it happens.
+      `lazy_load_members` on the state filter is now honoured, and only on the state filter: the
+      reference servers key off it there, and a timeline is a list the client asked for, not a state
+      section that can be trimmed. Under it the members sent are the ones the batch speaks about, so
+      a batch of one message sends that sender's membership and not the whole roster — while
+      non-member state stays, because a client that cannot show a room's name or power levels has
+      gained nothing. What is deliberately *not* trimmed is `state` without the flag: the
+      specification asks for "at least" the timeline senders, and today's superset is legal.
+      Left and banned rooms keep `state`: their batch ends at the event that took the user out, so
+      "state at the end of the batch" is what that section already answers.
+      Still open, its own task: MSC4222's `GET /rooms/{roomID}/members` as a stream (`from`/`to`
+      positions, so a client can follow a room's membership instead of re-reading it).
+      Verification: `tests/integration/stateafter_test.go` (three cases: the ordinary answer keeps
+      `state` and gains nothing named `state_after`; `state_after` covers every timeline sender and
+      repeats the membership events already in the batch; under lazy loading a silent member is
+      dropped and non-member state is not; the unstable flag names the unstable field); Complement
+      `tests/msc4222` green, both subtests, from
+      `RUN='TestSync$|TestSyncOmitsStateChangeOnFilteredEvents|TestRoomMessagesLazyLoading|TestSyncLazyLoadingRoomMembers|TestDeviceListUpdates|TestAddAccountData'`
+      with label `stateafter` (`.agent-work/next/complement-run-stateafter.log`,
+      `.../complement-results-stateafter.tsv`) — that run also re-checks the `tests/csapi` `TestSync`
+      and `TestRoomMessagesLazyLoading*`, which stay green, and leaves `TestSyncOmitsStateChangeOnFilteredEvents`
+      (T-4020) and `TestDeviceListUpdates` (T-4064) red as before.
+
+- [ ] T-4068 MSC4222's other half: `GET /rooms/{roomID}/members` as a stream. `/members` answers the
+      roster now, with `membership`/`not_membership` filters and `at` for the past (T-4058's
+      neighbour), but not with `from`/`to` positions that let a client follow membership changes
+      instead of re-reading the whole list. Nothing in the Complement suites at this checkout asks
+      for it; it is recorded so "MSC4222 done" is not claimed from the sync half alone.
+

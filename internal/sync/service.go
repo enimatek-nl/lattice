@@ -77,7 +77,24 @@ type Request struct {
 	// value means the client asked for nothing; an unknown one is ignored rather than
 	// refused, because a client that mistypes a word should still get its events.
 	SetPresence string
+	// StateAfter says how the client asked for the room's state at the *end* of the
+	// timeline batch rather than at its start (MSC4222, now in the stable specification).
+	// The answer carries the field name the client used, because a client that asked with
+	// the pre-stabilisation spelling reads the pre-stabilisation name back.
+	StateAfter StateAfterFlag
 }
+
+// StateAfterFlag is how a client asked for MSC4222's state section.
+type StateAfterFlag int
+
+const (
+	// StateAfterNone is the ordinary sync: `state`, as of the start of the batch.
+	StateAfterNone StateAfterFlag = iota
+	// StateAfterStable is `use_state_after=true`.
+	StateAfterStable
+	// StateAfterUnstable is `org.matrix.msc4222.use_state_after=true`.
+	StateAfterUnstable
+)
 
 // Result is the `/sync` response.
 type Result struct {
@@ -132,13 +149,22 @@ type Events struct {
 }
 
 // JoinedRoom is a room the user is in.
+//
+// Exactly one of `State` and the MSC4222 state section is filled in. A client that asked for
+// `state_after` is told the state at the end of its timeline batch and not the state at its
+// start: two state sections for one room would let a client pick the one that suits its bug
+// and blame the server later.
 type JoinedRoom struct {
-	Timeline            Events              `json:"timeline"`
-	State               Events              `json:"state"`
-	Ephemeral           Events              `json:"ephemeral"`
-	AccountData         Events              `json:"account_data"`
-	UnreadNotifications UnreadNotifications `json:"unread_notifications"`
-	HighlightCount      int                 `json:"highlight_count"`
+	Timeline   Events  `json:"timeline"`
+	State      *Events `json:"state,omitempty"`
+	StateAfter *Events `json:"state_after,omitempty"`
+	// UnstableMSC4222StateAfter is the same answer under the name used before MSC4222 was
+	// stabilised. It is set only when the client asked with that flag.
+	UnstableMSC4222StateAfter *Events             `json:"org.matrix.msc4222.state_after,omitempty"`
+	Ephemeral                 Events              `json:"ephemeral"`
+	AccountData               Events              `json:"account_data"`
+	UnreadNotifications       UnreadNotifications `json:"unread_notifications"`
+	HighlightCount            int                 `json:"highlight_count"`
 	// Summary is the room summary: the counts a client needs to show a room without
 	// fetching its whole member list. The keys are the specification's, dotted and
 	// quoted, and they live inside `summary` rather than beside it.
@@ -184,7 +210,10 @@ type Service struct {
 	// serve turns a stored event into what a client may see. It is the same servicer the
 	// room read paths use: a room whose redaction rules /messages applies but that /sync
 	// ignores is one room with two answers.
-	serve    *redaction.Servicer
+	serve *redaction.Servicer
+	// groups reads the state an event was sent against, which is what makes "the state at
+	// the end of this batch" a lookup instead of a replay.
+	groups   persist.StateGroupRepo
 	filters  persist.FilterRepo
 	account  persist.AccountDataRepo
 	presence persist.PresenceRepo
@@ -202,6 +231,7 @@ func NewService(db *persist.Database, log *slog.Logger) *Service {
 		events:   db.Events,
 		state:    db.State,
 		serve:    redaction.NewServicer(db.Events, db.Rooms, db.StateGroups),
+		groups:   db.StateGroups,
 		filters:  db.Filters,
 		account:  db.AccountData,
 		presence: db.Presence,
@@ -332,9 +362,8 @@ func (s *Service) build(ctx context.Context, userID string, since Token, filter 
 			if result.Rooms.Join == nil {
 				result.Rooms.Join = map[string]JoinedRoom{}
 			}
-			result.Rooms.Join[membership.RoomID] = JoinedRoom{
+			section := JoinedRoom{
 				Timeline: room.timeline,
-				State:    room.state,
 				// Ephemeral events (receipts, typing) and account data are not stored
 				// yet, so the honest answer is an empty list, not a missing field.
 				Ephemeral:           Events{Events: []Event{}},
@@ -346,6 +375,16 @@ func (s *Service) build(ctx context.Context, userID string, since Token, filter 
 					summaryInvitedMemberCount: invited,
 				},
 			}
+			// One state section, named by what the client asked for.
+			switch {
+			case room.stateAfter == nil:
+				section.State = &room.state
+			case req.StateAfter == StateAfterUnstable:
+				section.UnstableMSC4222StateAfter = room.stateAfter
+			default:
+				section.StateAfter = room.stateAfter
+			}
+			result.Rooms.Join[membership.RoomID] = section
 		case eventauth.MembershipInvite:
 
 			if result.Rooms.Invite == nil {
@@ -581,6 +620,9 @@ func included(room roomUpdate, req Request) bool {
 type roomUpdate struct {
 	timeline Events
 	state    Events
+	// stateAfter is the same room's state read at the newest event of the timeline batch.
+	// It is set only when the client asked for it, and then `state` is left empty.
+	stateAfter *Events
 	// total counts every event in the window, before filtering and truncation. It is
 	// what makes the `limited` flag mean something.
 	total int64
@@ -664,7 +706,19 @@ func (s *Service) room(ctx context.Context, userID, roomID string, since Token, 
 	if err != nil {
 		return roomUpdate{}, err
 	}
-	return roomUpdate{timeline: timeline, state: stateEvents, total: total}, nil
+	update := roomUpdate{timeline: timeline, state: stateEvents, total: total}
+	// Read alongside the ordinary state section rather than instead of it: the section a
+	// joined room answers with is the client's choice. A room the user has left is not
+	// asked for — its batch ends at the event that took them out, so the state as of that
+	// event is exactly what the `state` section already answers there.
+	if req.StateAfter != StateAfterNone && until == 0 {
+		after, err := s.stateAfter(ctx, userID, roomID, accepted, position, filter)
+		if err != nil {
+			return roomUpdate{}, err
+		}
+		update.stateAfter = after
+	}
+	return update, nil
 }
 
 // stateEvents returns the room's state as the client needs it: the state that applies at
