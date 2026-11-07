@@ -40,7 +40,13 @@ func (i *Inviter) SendInvite(ctx context.Context, destination, roomVersion strin
 		return nil, fmt.Errorf("federation: an invite has to name its room and its event before it is sent")
 	}
 	target := "/_matrix/federation/v2/invite/" + roomID + "/" + eventID
-	body := map[string]any{"room_version": roomVersion, "invite_event": event}
+	// The event is named twice, under `invite_event` and under `event`. That is not hesitation:
+	// the specification calls the field `invite_event`, and gomatrixserverlib — the library Dendrite
+	// and Complement's own federation server decode with — reads it as `event` and refuses the
+	// request outright when that key is absent. A body carrying both is understood by either reader
+	// and says the same thing to both; a body carrying only the spec spelling is, to a large part of
+	// the federation, an invite with no event in it.
+	body := map[string]any{"room_version": roomVersion, "invite_event": event, "event": event}
 	countersigned, status, err := i.ask(ctx, destination, target, body)
 	if err == nil {
 		return countersigned, nil
