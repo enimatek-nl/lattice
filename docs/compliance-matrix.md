@@ -233,6 +233,30 @@ Lists: `.agent-work/complement-passes-20261107h.txt`, `.agent-work/complement-fa
 qualified table `.agent-work/next/complement-results-20261107h.tsv`; log
 `.agent-work/next/complement-run-20261107h.log`.
 
+## Targeted runs (2026-11-07j and 2026-11-07k — T-4083 read receipts, closed)
+
+Same filter both times, so the second is a re-measurement and not a different question:
+`RUN='^TestRoomReceipts$|^TestRoomReadMarkers$|^TestSync.*$|^TestRoomMessages.*$|^TestThreadReceipts.*$' COMPLEMENT_TEST_TIMEOUT=25m scripts/complement.sh -v`
+with `COMPLEMENT_LABEL=20261107j-receipts` and `20261107k-receipts`. The family is wider than the
+two new endpoints on purpose: a joined room is now included in a sync when it has a receipt to
+report, and that rule had to be measured against every sync test in the suite.
+
+| Field | 20261107j-receipts | 20261107k-receipts (after the fix) |
+| --- | --- | --- |
+| Tally | **9 passing, 2 failing** | **10 passing, 1 failing, 0 skipped** |
+| `TestRoomReadMarkers` | green — the receipt and the `m.fully_read` bookmark both reach the caller's sync | green |
+| `TestRoomReceipts` | **red**: the second receipt of the room `returned non-2xx code: 500 Internal Server Error` (`apidoc_room_receipts_test.go:61`) — an update of an existing receipt row had no key to update it by | green |
+| `TestThreadReceiptsInSyncMSC4102` | red, as in 20261107h — receipts inside a thread, and threads are not implemented | red, unchanged |
+| Sync family | `TestSync` (csapi and msc4222), `TestSyncFilter`, `TestSyncLeaveSection`, `TestSyncTimelineGap`, `TestSyncOmitsStateChangeOnFilteredEvents`, both lazy-loading `/messages` tests | same, all green — the receipt-carrying room does not disturb the rooms a sync chooses to include |
+| Complement assertions changed | none | none |
+
+Lists: `.agent-work/complement-{passes,failures}-20261107j-receipts.txt` and
+`…-20261107k-receipts.txt`; tables
+`.agent-work/next/complement-results-20261107{j,k}-receipts.tsv`; logs
+`.agent-work/next/complement-run-20261107{j,k}-receipts.log`. The full-suite tally above is still
+20261107h's 121 / 98 / 1; the account endpoints (T-4081) and the receipts (T-4083) are in the tree
+after it and have only targeted runs beside them.
+
 ## Targeted run (2026-11-07i-account — T-4081 closed)
 
 `RUN='^TestChangePassword$|^TestChangePasswordPushers$|^TestDeactivateAccount$|^TestLogin$|^TestLogout$|^TestDeviceManagement$|^TestRegistration$|^TestAccountData$|^TestWhoami$' COMPLEMENT_LABEL=20261107i-account COMPLEMENT_TEST_TIMEOUT=20m scripts/complement.sh -v`
