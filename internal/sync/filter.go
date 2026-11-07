@@ -38,6 +38,11 @@ type EventFilter struct {
 	URLs            *[]string `json:"urls"`
 	NotURLs         *[]string `json:"not_urls"`
 	LazyLoadOptions any       `json:"lazy_load_options"`
+	// LazyLoadMembers is read from the state filter only, which is what the reference
+	// servers key off and what the specification's own guidance points at: the flag is
+	// accepted on the timeline filter too, but the timeline is a list of events the client
+	// asked for, not a state section that can be trimmed.
+	LazyLoadMembers bool `json:"lazy_load_members"`
 }
 
 // Allows reports whether an event type survives this filter. An empty `types` list means
