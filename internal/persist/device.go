@@ -130,6 +130,10 @@ type TokenRepo interface {
 	DeleteByHash(ctx context.Context, hash string) error
 	DeleteByDevice(ctx context.Context, userID, deviceID string) error
 	DeleteByUser(ctx context.Context, userID string) error
+	// DeleteByUserExcept invalidates every token of a user except the named device's. A
+	// password change that logs the other sessions out has to leave the one that asked
+	// alone: revoking everything and re-minting would change the caller's token under it.
+	DeleteByUserExcept(ctx context.Context, userID, keepDeviceID string) error
 }
 
 // TokenRepoImpl is the GORM implementation of [TokenRepo].
@@ -172,6 +176,12 @@ func (t *TokenRepoImpl) DeleteByHash(ctx context.Context, hash string) error {
 func (t *TokenRepoImpl) DeleteByDevice(ctx context.Context, userID, deviceID string) error {
 	return t.db.WithContext(ctx).
 		Where("user_id = ? AND device_id = ?", userID, deviceID).
+		Delete(&AccessToken{}).Error
+}
+
+// DeleteByUserExcept implements [TokenRepo].
+func (t *TokenRepoImpl) DeleteByUserExcept(ctx context.Context, userID, keepDeviceID string) error {
+	return t.db.WithContext(ctx).Where("user_id = ? AND device_id <> ?", userID, keepDeviceID).
 		Delete(&AccessToken{}).Error
 }
 
