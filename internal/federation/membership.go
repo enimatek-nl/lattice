@@ -113,15 +113,28 @@ func (j *Joiner) membershipVia(ctx context.Context, destination, roomID, userID,
 		return rooms.RemoteMembershipResult{}, err
 	}
 	if membership == eventauth.MembershipKnock {
-		// The answer carries the room's own state, which is how a knocker knows what it is waiting
-		// for. It is logged rather than stored: a knock does not make this server a holder of the
-		// room, and the room's state arriving here is a different thing from the room arriving here.
-		state := len(pdusFrom(answer, "knock_room_state"))
+		// What the resident server hands back is the room's identity — the state a room shows to
+		// somebody it has not let in. It is read here and logged, and it is not stored, and the
+		// reason is worth keeping next to the code that does not store it.
+		//
+		// This server is not a holder of a knocked room, and the handover cannot be ingested the way
+		// a join's is: `knock_room_state` deliberately carries no `m.room.member` events, and in every
+		// room version that has knock, the member event of whoever wrote a state event is one of that
+		// event's auth events. Hand the state over as full PDUs and none of it can be authorised here,
+		// because the events that would authorise it are exactly the ones a knock is not allowed to
+		// reveal; the whole set, including this server's own knock, would sit unresolved.
+		//
+		// What is missing is a knock's own record — the shape an invite-hanging room is for the
+		// invited user — rather than a copy of a room this server has no business holding. Until that
+		// exists, the user who knocked on a remote room gets a 200 and nothing to look at: the room
+		// does not appear in her sync, and the knock she made is invisible to her own server. Tracked
+		// as T-4075, with the Complement knock test that asks for it named there.
+		state := pdusFrom(answer, "knock_room_state")
 		j.Log.Info("federation: a local user knocked on a room held elsewhere",
 			slog.String("room_id", roomID), slog.String("user_id", userID),
 			slog.String("destination", destination), slog.String("event_id", eventID),
-			slog.Int("room_state_events", state))
-		return rooms.RemoteMembershipResult{EventID: eventID, RoomState: state}, nil
+			slog.Int("room_state_events", len(state)))
+		return rooms.RemoteMembershipResult{EventID: eventID, RoomState: len(state)}, nil
 	}
 	j.Log.Info("federation: a local user left a room held elsewhere",
 		slog.String("room_id", roomID), slog.String("user_id", userID),
