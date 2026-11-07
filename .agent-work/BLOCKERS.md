@@ -5,11 +5,19 @@ deliberate decisions that must not be forgotten.
 
 ## Blocking *specific* Complement tests (not the project)
 
-| Item | Effect | Resolution |
+These three were the blockers in the M1 record. They are closed: `/sync`, the content repository and
+the federation exchange all exist and are Complement-verified. What is red now is narrower, and each
+item is a task rather than a milestone-sized wall:
+
+| Item | Effect | Task |
 | --- | --- | --- |
-| `GET /sync` not implemented | Complement `TestLogout/Can_logout_current_device`, `TestLogout/Can_logout_all_devices`, `TestDeviceManagement/DELETE_/device/{deviceId}`, `…_requires_UI_auth_user_to_match_device_owner` cannot be verified — those tests use `/sync` as their assertion vehicle | M3 (`/sync`). Behaviour is already covered by `tests/integration/auth_test.go` |
-| Media storage not implemented | Media upload/download/thumbnail suites fail with 501 | M5 media repository |
-| Federation exchange not implemented | Every `federation_*`/join/backfill test fails | M4 |
+| Leaves and knocks over federation (`/make_leave`, `/send_leave`, `/make_knock`, `/send_knock`) not answered | `TestKnocking`, `TestKnockingInMSC3787Room`, the `SendLeave`/`SendKnock` shape tests | T-4009c |
+| `/backfill` not answered, and only a join triggers a fetch | `TestGetMissingEventsGapFilling`, `TestInboundCanReturnMissingEvents`, history behind a gap | T-4009b2, T-4007 |
+| Room version 12 refused (state resolution v2.1, pseudo-identifier event format) | MSC4289, MSC4291, MSC4297, MSC4311, MSC3757 and the v12 room-creation tests — the single largest red cluster | T-4019 |
+| EDUs are received and acknowledged but do nothing; no device-list announcement when a remote server joins a room | `TestRemotePresence`, `TestRemoteTyping`, `TestToDeviceMessages*`, `TestACLsForEDUs`, `TestDeviceListUpdates/when_joining_a_room_with_a_remote_user` | T-4008, T-4064, T-3008c |
+| Relations, threads, search, receipts, read markers, typing on the client side | `TestRelations*`, `TestThreadsEndpoint`, `TestSearch`, `TestRoomReceipts`, `TestRoomReadMarkers`, `TestTyping` | untasked — open them before claiming M5 coverage |
+| Cross-signing, key backup, `/keys/changes`, to-device | `TestE2EKeyBackupReplaceRoomKeyRules`, `TestKeyChangesLocal`, `TestToDeviceMessages` | T-3008d, T-3008e |
+| Account endpoints: deactivate, change password, account-data deletion, room account data | `TestDeactivateAccount`, `TestChangePassword`, `TestRemovingAccountData`, `TestAddAccountData`, MSC3391 | T-4027, T-4028, T-4029 |
 
 ## Design risks carried forward
 

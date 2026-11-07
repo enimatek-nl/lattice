@@ -2,14 +2,33 @@
 
 Milestones are ordered by dependency. Each has an independently verifiable acceptance gate.
 
-**Current status (2026-11-08).** M0 and M1 are complete and verified — see `ACCEPTANCE-CRITERIA.md`
-(M1 verdict). M2 (rooms and events), M3 (client synchronisation) and M4 (federation foundation) are
-implemented and exercised by this project's integration tests, with parts of M4 and M5 verified
-against Complement; the honest per-feature picture is in `docs/compliance-matrix.md` and the
-running record is in `PROGRESS.md`. Room versions 1 through 11 are offered for new rooms; version 12
-and the unstable versions are recognised and refused (T-4019). The largest open items are device-list
-EDUs over federation (T-4009c), sync filtering (T-4020), depth-based paging (T-3001d) and the
+**Current status (2026-11-07).** M0 and M1 are complete and verified — see `ACCEPTANCE-CRITERIA.md`
+(M1 verdict). M2 (rooms and events), M3 (client synchronisation), M4 (federation foundation) and part
+of M5 (content repository, device keys, push rules, presence for one user) are implemented and
+exercised by this project's integration tests, with large parts of M4 and M5 verified against
+Complement. The measured position, from a full run on 2026-11-07: **106 Complement top-level tests
+pass, 113 fail, 1 skip** (csapi 69/107, server-server 35/92, MSC packages 2/22). The honest per-feature
+picture is in `docs/compliance-matrix.md` and the running record is in `PROGRESS.md`; every tally there
+now comes from a run whose log and pass/failure lists are stored beside it.
+
+Room versions 1 through 11 are offered for new rooms; version 12 and the unstable versions are
+recognised and refused (T-4019), which is also what keeps MSC4289, MSC4291, MSC4297, MSC4311 and
+MSC3757 red. Of the M4 handshake family, invites (both directions), the join handshake, `/state_ids`,
+`/event_auth`, `/event`, `/get_missing_events`, `X-Matrix`, the durable queue, server ACLs and
+restricted joins are done, as is a kick, ban or unban of a user who lives on another homeserver
+(T-4062). Missing: `/make_leave`, `/send_leave`, `/make_knock`, `/send_knock`, answering `/backfill`,
+federation `/profile` and `/query/directory`, and EDUs that do anything (T-4009c, T-4009b2, T-4008,
+T-4064). The largest M5/M6 open items are the MSCs above, sync filtering (T-4020), relations, threads
+and search, receipts and read markers, typing, cross-signing and key backup (T-3008d/e), the read
+marker that would make push counts mean anything (T-3005a), depth-based paging (T-3001d) and the
 address-policy re-check at dial time (T-4011). M6/M7 remain as staged.
+
+One decision the records now carry explicitly (`docs/compliance-matrix.md`, "A full run on the
+abandoned `main` branch"): the earlier attempt in this repository's history has no commits in common
+with this branch and measured 78/92 on the server-server package where this branch measures 35/92.
+Porting that handshake family and the room-version-12 work — keeping this branch's image, runner,
+evidence discipline and static build — is cheaper than re-deriving it, and the port must be reviewed
+against the specification pages rather than accepted because it is green.
 
 ## M0 — Stage 0: research and architecture (this iteration, done)
 

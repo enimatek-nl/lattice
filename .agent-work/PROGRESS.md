@@ -1,5 +1,70 @@
 # Progress
 
+## 2026-11-07 — an image that ships, a runner that cannot misreport itself, and a room allowed to remove somebody who lives elsewhere
+
+Three kinds of work, one honest.
+
+**The release path.** There was no release image, no CI, no licence. `Dockerfile` now builds the
+server the way the Complement image already did — two stages, `CGO_ENABLED=0`, one static binary in a
+small runtime, non-root UID, `/data` as the only state, both listeners exposed — and its `HEALTHCHECK`
+runs this server's own `healthcheck` subcommand instead of installing a fetcher. Verified: the image
+builds, starts, answers `/versions` 200, and the healthcheck exits 0 inside it. `.github/workflows`
+runs the gate the progress records already cite (gofmt, vet, pinned golangci-lint, race tests), and
+publishes the image on a tag with the tag matched against `internal/app.Version`, because an image
+tagged 0.2.0 that answers 0.1.0 costs an operator a week of blaming their proxy. The Makefile's
+`VERSION` is read from that same constant rather than written a second time.
+
+**A run that cannot lie about itself.** Two tallies in this project's own records had drifted from the
+logs they were cut from: a test described as "newly passing" while the run's own list of the same date
+still had it failing, and a device-list test marked "verified, all ten subtests" in prose that its own
+failures list — and a clean re-run — contradicts. `scripts/complement.sh` now writes the raw log, cuts
+the pass and failure lists from that log, prints the tally it just computed, and shouts when a package
+hit its per-package timeout (everything after the test it reached never ran: that is an unfinished run,
+not a smaller suite) or when deployments never started (a container problem, not a protocol one).
+`COMPLEMENT_TEST_TIMEOUT` replaces the silent 10-minute default. Related: the 40-minute Complement run
+that produced nothing on the abandoned `main` branch was not slow, it was broken — its image copied a
+glibc-dynamic binary into a musl base, so every container died at `not found` and Complement reported
+each deploy timeout as a test failure. Rebuilt statically it runs, and its csapi package still had not
+finished 62 of 107 tests in 40 minutes; this repository's own two packages finish in six.
+
+**A kick, a ban and an unban of a user who lives elsewhere.** These answered 501 for the reason
+recorded in `ErrRemoteTarget`: that writing a leave or a ban about another server's user would be "this
+server claiming to be somebody else's homeserver". No room version says that. In every version with
+power levels, an `m.room.member` event about *another* user is authorised by the sender's kick or ban
+power, and the signature that carries the act is the sender's server's — which here is this server.
+Refusing it made a room unable to remove a member who joined from elsewhere, and it made a permission
+refusal (403, "this user has no kick power") unreachable behind a missing-feature answer (501). So the
+event is now written and signed here under the room's own rules, and the difference from a join is
+stated where it belongs: a join speaks for the person doing it and cannot be signed by a stranger's
+homeserver (`ErrRemoteSender`, `ErrRemoteTarget` stay, for the cases that are real).
+
+The part that would have been missed: fan-out destinations are the servers holding a joined member, and
+a ban, a kick or a rescinded invitation is usually about a server holding nobody joined here — the
+invited user who never joined, the member just removed. A membership event now also goes to the server
+of the user it names. Without that the room keeps two copies and only one of them knows the person is
+out. The ACL filter still runs over the finished list, so a server the room threw out is not told
+either.
+
+Evidence. `tests/integration/remotemembership_test.go`: a local moderator kicks a remote member and
+both copies say `leave`, the user cannot then speak from their own server; a ban of an *unjoined*
+remote member (the fan-out case on its own) reaches the target's server and the unban follows it; and a
+user without the kick power is answered 403 rather than 501. `go test ./tests/...` green, `-race` green
+(unit 4.7s, integration 26.1s), `golangci-lint` back to 0 issues (five dead helpers removed). Against
+Complement: `TestFederationRoomsInvite/Inviter user can rescind invite over federation` and
+`TestUnbanViaInvite` — both red before — are green.
+
+Recorded rather than left implicit. T-4063: Complement's *Non-invitee user cannot rescind invite over
+federation* still expects the invited user's own server to keep the invitation after a kick from
+another server's moderator; this server applies the kick everywhere it has the room. That is a
+behavioural divergence to decide on, not a bug to hide, and the same subtest also stalls in
+`SendEventSynced`, which needs its own diagnosis. T-4064: `TestDeviceListUpdates/when_joining_a_room_with_a_remote_user`
+fails reproducibly — when this server's user joins a room that lives elsewhere, nobody announces the
+other members' device lists to the joining server; the announcement exists for the other direction.
+T-4065: the compliance matrix rows that had gone stale (media, sync, device keys, push rules, presence,
+directory, room version 1/2 authorisation, server ACLs, federation invites) now say what the tree does,
+because a stale "not implemented" is as misleading as a stale "done".
+
+
 ## 2026-11-06 — a content repository, and the federation refusal that was a database write (`69d2378`, `7e56edb`)
 
 T-4059 and T-4060, closed. `internal/media` plus the two doors that serve it: eleven Client-Server

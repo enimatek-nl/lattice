@@ -955,3 +955,57 @@ Ordered cheapest-verified-win first. Evidence lines are from Complement sources 
       per-room or per-user quota (only the pending-upload budget and the upload size limit), and no
       deletion endpoint — which the specification does not offer either. Record before any deployment
       claim, per AGENTS §10.
+
+## 2026-11-07 — the release path, the run's own evidence, and remote membership changes
+
+- [x] T-4062 a room whose moderator lives here can kick, ban or unban a member who lives
+      elsewhere. The endpoints answered 501 behind `ErrRemoteTarget` on the reasoning that a leave
+      or a ban about another server's user would be "this server claiming to be somebody else's
+      homeserver". No room version says that: an `m.room.member` event about *another* user is
+      authorised by the sender's kick/ban/unban power, and the signature is the sender's server's,
+      which here is this one. Consequence of the refusal: a room could never remove somebody who
+      joined from elsewhere, and a real permission refusal (403, sender without the power) was
+      unreachable behind a missing-feature answer (501). Now written and signed here under the
+      room's rules; `ErrRemoteSender` names the case that is real (an event this server would sign
+      for another server's user), `ErrRemoteTarget` stays for join and knock.
+      Fan-out detail worth recording: the destinations for an event are the servers holding a joined
+      member, and a ban, a kick or a rescinded invitation is usually about a server holding nobody
+      joined here — so a `m.room.member` event is now also queued to the domain of the user it names,
+      after which the room's ACL filter still applies.
+      Verification: `tests/integration/remotemembership_test.go` (three cases: kick visible on both
+      servers and the user silenced on their own; ban of an *unjoined* remote member reaching the
+      target's server, then the unban; a sender without the power answered 403, not 501);
+      `go test ./tests/...` and `-race` green; Complement `TestFederationRoomsInvite/Inviter user
+      can rescind invite over federation` and `TestUnbanViaInvite` green, both red before.
+
+- [ ] T-4063 what T-4062 leaves red: `TestFederationRoomsInvite/Non-invitee user cannot rescind
+      invite over federation`. The case expects the *invited user's own server* to go on holding the
+      invitation after a moderator on another server kicks that user, and to keep answering
+      `SyncInvitedTo` for it. This server applies the kick to every copy of the room it holds, so the
+      invitation stops being current here. Which is right is a decision, not an accident: the room's
+      state is one answer, but an invite is also a claim a server keeps about its own user, and the
+      two are settled differently depending on which server writes what. Also inside that subtest: it
+      stalls in `SendEventSynced` for a message in a *different* room, which needs its own diagnosis
+      before the behavioural question can even be seen — a sync that does not deliver a local user's
+      own event is a bug whatever the invite rule turns out to be.
+
+- [ ] T-4064 a device list nobody is told about. `TestDeviceListUpdates/when_joining_a_room_with_a_remote_user`
+      fails reproducibly (2026-11-07, twice in a row; and it is in `.agent-work/complement-failures-20261113e.txt`,
+      which is why the compliance matrix row claiming "all ten subtests" is corrected in T-4065).
+      The trigger is missing, not the announcement: when a server *joins* a room that lives elsewhere,
+      the resident server has to announce the device lists of the members already there to the server
+      that just arrived, and today announcements go only to servers that already hold a joined room
+      with the user. Needs the announcement to be asked for as part of the join's aftermath, plus an
+      answer on the joining side that feeds it into the per-user device streams. Related: T-3008c
+      (key upload, new device and cross-signing as triggers) and T-4023 (deletions).
+
+- [x] T-4065 the records had drifted, and drift in an honest-looking table is worse than a gap.
+      `docs/compliance-matrix.md`: media, sync/messages, device keys, push rules, presence, directory
+      and spaces, account data and filters still said "not implemented" long after they were written;
+      the primitives table contradicted the federation table about room version 1/2 authorisation and
+      about `m.room.server_acl`; the federation table said invites were missing when both halves of
+      the invite path exist; and the device-list row overclaimed. Each row now says what the tree
+      does, with the Complement names that prove it and the ones that still fail. `README.md`
+      described rooms, events, sync and federation as unimplemented; it carries the measured position
+      instead. `docs/compliance-matrix.md`'s "Last updated" line now says how to read the dated
+      sections below it.
