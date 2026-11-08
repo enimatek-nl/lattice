@@ -32,7 +32,7 @@ Specification: Matrix v1.19 (`docs/specification-version.md`).
 | Discovery | `/.well-known/matrix/client`, `/.well-known/matrix/server` | implemented | yes | n/a |
 | Media | `GET /v3/config` (upload size) | implemented | yes | **verified** (`TestMediaConfig`) |
 | Media | upload (sync and async `create`/`commit`), download including the authenticated `/client/v1/media/...` forms, thumbnail, `config`, remote content fetched once from the origin and served from the copy held here | implemented | `tests/integration/media_test.go`, `tests/unit/media_multipart_test.go` | **verified**: `TestMediaConfig`, `TestContentMediaV1`, `TestContentCSAPIMediaV1`, `TestMediaFilenames`, `TestMediaWithoutFileName`, `TestAsyncUpload`, `TestFederationThumbnail`, `TestLocalPngThumbnail`, `TestRemotePngThumbnail`. `TestRoomImageRoundtrip` and `TestUrlPreview` stay red: previews and the media report endpoint are not implemented |
-| Filters | `POST`/`GET`/`DELETE /user/{id}/filter[/{filterID}]`: filters are stored, validated and read back, and a sync and a `/messages` page consult them | partial — the sections and limits a filter names are not all applied (T-4020) | `tests/integration/sync_test.go` | `TestSyncFilter` passes; `TestFilter` and `TestSyncOmitsStateChangeOnFilteredEvents` are red (T-4020) |
+| Filters | `POST`/`GET`/`DELETE /user/{id}/filter[/{filterID}]`: filters are stored, validated and read back, and a sync and a `/messages` page consult them. MSC3874's relation lists (`org.matrix.msc3874.rel_types`, `not_rel_types`) narrow both doors, read from the event's own `content.m.relates_to.rel_type` claim rather than from the relation index | partial — the sections and limits a filter names are not all applied (T-4020) | `tests/integration/sync_test.go`, `tests/integration/messagesfilter_test.go`, `tests/integration/relationfilter_test.go` | **verified**: `TestFilterMessagesByRelType` (all six of its filter documents, run 20261108y-relfilter, T-4088), `TestSyncFilter`. `TestFilter` and `TestSyncOmitsStateChangeOnFilteredEvents` are red (T-4020) |
 | Rooms | `POST /v3/createRoom`: presets, `room_version` negotiation (`M_UNSUPPORTED_ROOM_VERSION`), `creation_content` limits, initial state, name/topic/avatar shorthand | implemented | yes | not verified (Complement room tests also need membership endpoints) |
 | Events | `PUT /v3/rooms/{roomID}/send/{eventType}/{txnID}`: authorisation, hashing, signing, storage, per-device transaction idempotency; event types outside the reserved `m.` namespace need no dot, since the dotted namespace is a convention and refusing an unqualified type hides the endpoints that would carry it (T-4069) | implemented | `tests/integration/customeventtype_test.go`, `tests/unit/roomslogic_test.go` | not verified by name; the undotted types Complement sends in its filter tests were refused here until T-4069 |
 | Events | `PUT /send/m.room.member/...` refused with 400 `M_UNRECOGNIZED` (membership has its own endpoints) | implemented | yes | not verified |
@@ -214,6 +214,77 @@ membership, alias and M1-regression subset, and it is reported as such.
    pages are what the project's precedence rules make normative; the divergence is recorded here so
    that a version 1 room that disagrees between servers is investigated rather than assumed away.
    Interoperability against Synapse on such a room is not tested.
+
+## Full run 20261108w — the tally moved, and the container network moved with it
+
+PARALLEL=2, filter `.*`, at tree `e5758b1`. Log
+`.agent-work/next/complement-run-20261108w.log`, table
+`.agent-work/next/complement-results-20261108w.tsv`, lists
+`.agent-work/complement-passes-20261108w.txt` / `-failures-20261108w.txt`.
+
+    == tally: 131 passing, 88 failing, 1 skipped (top-level tests)
+    == federation fingerprints in this run, counted from its own log:
+          11  a certificate naming another server (certificate is valid for X, not Y)
+          12  a TLS handshake refusing what a peer presented (tls: bad certificate)
+           0  a peer refusing a request as unsigned (not signed by a server this server trusts)
+           0  a federation template answered 401, which a room may legitimately do
+
+**This run is contaminated, and the number is quoted with that said rather than smoothed over.**
+Against the last clean run (20261107s, 130/89/1, fingerprints 0/0/0) the lists differ by three
+names, no more:
+
+| change | name | reading |
+|---|---|---|
+| green now, red then | `TestRoomForget`, `TestLeftRoomFixture` | the forget work (T-4077); both were also green alone at the same tree in 20261108u-forget, so this half is real |
+| red now, green then | `TestPushRuleRoomUpgrade` | not attributed to this server — see below |
+
+129 tests are green in both runs, and 87 are red in both.
+
+`TestPushRuleRoomUpgrade` deploys two servers, and its remote halves fail in this run with the
+network's own signature, from the run's log:
+
+    federation: a server could not carry a join  destination=hs1
+      error=Get "https://10.89.0.2:8448/_matrix/federation/v1/make_join/…":
+            tls: failed to verify certificate: x509: certificate is valid for hs2, localhost, not hs1
+
+This server asked where `hs1` was and was taken to an address holding **hs2's** certificate. The
+subtests that need no peer — `upgrading_a_room_carries_over_existing_push_rules_for_local_users`
+and its `manually_upgrading…` twin — pass in the same run.
+
+## Targeted run 20261108x-pushupcheck — the flipped test, alone, still contaminated
+
+`RUN='TestPushRuleRoomUpgrade'`, PARALLEL=1, at `e5758b1`, run right after the full one:
+
+    == tally: 0 passing, 1 failing, 0 skipped
+           4  a certificate naming another server   4  a TLS handshake refusing what a peer presented
+
+    --- FAIL: TestPushRuleRoomUpgrade/parallel/joining_a_remote_upgraded_room_carries_over_existing_push_rules
+    --- FAIL: TestPushRuleRoomUpgrade/parallel/joining_a_remote_manually_upgraded_room_carries_over_existing_push_rules
+    --- PASS: TestPushRuleRoomUpgrade/parallel/manually_upgrading_a_room_carries_over_existing_push_rules_for_local_users
+    --- PASS: TestPushRuleRoomUpgrade/parallel/upgrading_a_room_carries_over_existing_push_rules_for_local_users
+
+Running it alone did not clear the contamination, which settles two things at once: this test's
+status says nothing about this server until the stale network records are gone, and T-4071's
+"flaky in both directions" description was this environment all along. The stale record is
+`complement_msc3902_1_servers` in `${XDG_RUNTIME_DIR}/containers/networks/aardvark-dns` — checked
+after the run, still present, its network already deleted. Clearing it is an operator action (the
+two-command loop is in `scripts/complement.sh` next to the preflight warning); it was not run here
+because that directory also holds other projects' containers.
+
+## Targeted run 20261108y-relfilter — MSC3874 relation filters
+
+`RUN='TestFilterMessagesByRelType'`, PARALLEL=1, against the tree that became `66ab7b0`. Log
+`.agent-work/next/complement-run-20261108y-relfilter.log`.
+
+    == tally: 1 passing, 0 failing, 0 skipped
+    tests/msc3874 | --- PASS: TestFilterMessagesByRelType (1.67s)
+
+All six filter documents in it pass: `rel_types` with one type, with another, with both; and
+`not_rel_types` with one, with two. Our own test `TestEventsCanBeFilteredByWhatTheyRelateTo` in
+`tests/integration/relationfilter_test.go` adds the cases the Complement test does not ask:
+`not_rel_types` keeping an event that has no relation at all, an empty list meaning nothing
+rather than everything, an unknown relation type meaning nothing, a bad shape answered
+`M_INVALID_PARAM`, and the same document obeyed on the sync door as on `/messages`.
 
 ## Targeted run 20261108u-forget — forgetting a room, and the state owed to a member who left
 
