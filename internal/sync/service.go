@@ -30,6 +30,7 @@ import (
 	"github.com/enimatek/lattice/internal/persist"
 	"github.com/enimatek/lattice/internal/redaction"
 	"github.com/enimatek/lattice/internal/stream"
+	"github.com/enimatek/lattice/internal/typing"
 )
 
 // Limits chosen to keep one sync cheap and bounded. The timeline limit default follows
@@ -224,7 +225,11 @@ type Service struct {
 	// the same decision `/messages` and a federation peer get, from one package: a room whose
 	// `/messages` honours `history_visibility: joined` while its sync hands over the older
 	// events is one room with two answers, which is exactly how a leak gets written by accident.
-	history  *historyvis.Service
+	history *historyvis.Service
+	// typing answers who is typing in a room right now. Like receipts and presence it is a
+	// current value about a person rather than an event, and like them it takes a position in the
+	// stream so that a change can fall inside a sync window.
+	typing   *typing.Service
 	filters  persist.FilterRepo
 	account  persist.AccountDataRepo
 	presence persist.PresenceRepo
@@ -244,6 +249,7 @@ func NewService(db *persist.Database, log *slog.Logger) *Service {
 		serve:    redaction.NewServicer(db.Events, db.Rooms, db.StateGroups),
 		groups:   db.StateGroups,
 		history:  historyvis.New(db),
+		typing:   typing.New(db),
 		filters:  db.Filters,
 		account:  db.AccountData,
 		presence: db.Presence,
@@ -392,9 +398,8 @@ func (s *Service) build(ctx context.Context, userID string, since Token, filter 
 			}
 			section := JoinedRoom{
 				Timeline: room.timeline,
-				// Read receipts arrive as ephemeral events. Typing has nowhere to come
-				// from yet (T-4008), so a room with no receipts answers an empty list
-				// rather than a missing field.
+				// Read receipts and typing indicators arrive as ephemeral events; a room
+				// with neither answers an empty list rather than a missing field.
 				Ephemeral:           eventsOrEmpty(room.ephemeral),
 				AccountData:         roomAccountData(roomAccountDataByRoom, membership.RoomID),
 				UnreadNotifications: UnreadNotifications{},
@@ -660,8 +665,9 @@ type roomUpdate struct {
 	// stateAfter is the same room's state read at the newest event of the timeline batch.
 	// It is set only when the client asked for it, and then `state` is left empty.
 	stateAfter *Events
-	// ephemeral holds the room's ephemeral events for this window — read receipts today,
-	// typing when EDUs carry anything (T-4008). They are not part of the room's graph.
+	// ephemeral holds the room's ephemeral events for this window: read receipts, and who is
+	// typing. They are not part of the room's graph, and they are asked about with the same
+	// window the events are.
 	ephemeral []Event
 	// total counts every event in the window, before filtering and truncation. It is
 	// what makes the `limited` flag mean something.
@@ -779,6 +785,13 @@ func (s *Service) room(ctx context.Context, userID, roomID string, since Token, 
 			return roomUpdate{}, err
 		}
 		update.ephemeral = receipts
+		// Who is typing here, for as long as they said they were. Read after the receipts so
+		// the two ephemeral kinds keep the order the specification's examples show.
+		typingEvents, err := s.typingEvents(ctx, roomID, receiptSince, receiptUntil)
+		if err != nil {
+			return roomUpdate{}, err
+		}
+		update.ephemeral = append(update.ephemeral, typingEvents...)
 	}
 	// Read alongside the ordinary state section rather than instead of it: the section a
 	// joined room answers with is the client's choice. A room the user has left is not

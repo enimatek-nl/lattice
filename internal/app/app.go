@@ -30,6 +30,7 @@ import (
 	"github.com/enimatek/lattice/internal/roomversion"
 	"github.com/enimatek/lattice/internal/sync"
 	"github.com/enimatek/lattice/internal/tlsgen"
+	"github.com/enimatek/lattice/internal/typing"
 	"github.com/enimatek/lattice/internal/users"
 	"golang.org/x/sync/errgroup"
 )
@@ -51,9 +52,9 @@ type App struct {
 	// Pushers is where a user's devices have asked to be woken. It is separate from the push
 	// rules on purpose: the rules decide what is worth telling someone, the pushers decide
 	// where the telling goes.
-	Pushers *pushers.Service
-	Presence  *presence.Service
-	Server    *httpserver.Server
+	Pushers  *pushers.Service
+	Presence *presence.Service
+	Server   *httpserver.Server
 	// Sender is the federation outbound worker: the queue of events still owed to other
 	// homeservers. It is nil when federation is disabled.
 	Sender *federation.Sender
@@ -225,6 +226,7 @@ func NewWithOptions(ctx context.Context, cfg *config.Config, log *slog.Logger, o
 		PushRules:   pushRules,
 		Pushers:     pushers.NewService(db),
 		Presence:    presenceService,
+		Typing:      typing.New(db),
 		E2EKeys:     deviceKeys,
 		Sync:        sync.NewService(db, log),
 		DB:          db,

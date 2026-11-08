@@ -20,6 +20,7 @@ import (
 	"github.com/enimatek/lattice/internal/pushrules"
 	"github.com/enimatek/lattice/internal/rooms"
 	"github.com/enimatek/lattice/internal/sync"
+	"github.com/enimatek/lattice/internal/typing"
 	"github.com/enimatek/lattice/internal/users"
 )
 
@@ -40,13 +41,17 @@ type Deps struct {
 	// and not inside them: the rules decide whether an event is worth a notification, the
 	// pushers decide where that notification is sent, and a client can set one without ever
 	// having touched the other.
-	Pushers *pushers.Service
-	Presence    *presence.Service
-	E2EKeys     *e2ekeys.Service
-	Sync        *sync.Service
-	DB          *persist.Database
-	Version     string
-	Started     time.Time
+	Pushers  *pushers.Service
+	Presence *presence.Service
+	// Typing is who is typing in a room right now, which is shown to that room's members and to
+	// nobody else. It sits beside presence because it is the same kind of thing — a current value
+	// about a person with a timeout — and beside the room because the room decides who sees it.
+	Typing  *typing.Service
+	E2EKeys *e2ekeys.Service
+	Sync    *sync.Service
+	DB      *persist.Database
+	Version string
+	Started time.Time
 }
 
 // serviceError writes a service-layer failure with the status the protocol prescribes
@@ -196,6 +201,10 @@ func Register(r *httpserver.Router, d *Deps, requireAuth func(http.Handler) http
 	versioned("POST", "/rooms/{roomID}/receipt/{receiptType}/{eventID}", d.handleReceipt)
 	versioned("PUT", "/rooms/{roomID}/receipt/{receiptType}/{eventID}", d.handleReceipt)
 	versioned("POST", "/rooms/{roomID}/read_markers", d.handleReadMarkers)
+	// Typing indicators: who is typing in this room right now. Not events — a client says it is
+	// typing for N milliseconds and the server repeats that to the room's members for as long as
+	// it is true. They reach a client as an ephemeral `m.typing`, like receipts.
+	versioned("PUT", "/rooms/{roomID}/typing/{userID}", d.handleTyping)
 	versioned("GET", "/rooms/{roomID}/event/{eventID}", d.handleRoomEvent)
 	// What relates to an event: a thread's replies, an edit's edits, a reaction's reactions.
 	// The optional segments are filters on the same read, so the three spellings are one

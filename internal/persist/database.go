@@ -41,6 +41,9 @@ type Database struct {
 	Filters     FilterRepo
 	AccountData AccountDataRepo
 	Presence    PresenceRepo
+	// Typing is the "is typing here" indicator: one current value per (room, user) with a
+	// timeout, not an event.
+	Typing TypingRepo
 	// Receipts holds each user's read position per room, which is what sync delivers as an
 	// `m.receipt` ephemeral event and what an unread count is measured from.
 	Receipts ReceiptRepo
@@ -103,6 +106,7 @@ func Open(path string, log *slog.Logger) (*Database, error) {
 	d.Filters = NewFilterRepo(gdb)
 	d.AccountData = NewAccountDataRepo(gdb)
 	d.Presence = NewPresenceRepo(gdb)
+	d.Typing = NewTypingRepo(gdb)
 	d.Receipts = NewReceiptRepo(gdb)
 	d.Relations = NewRelationRepo(gdb)
 	d.Forgotten = NewForgetRepo(gdb)
@@ -134,7 +138,7 @@ func applyPragmas(gdb *gorm.DB) error {
 // matter for Matrix lookups and are not derived from struct tags.
 func (d *Database) migrate(log *slog.Logger) error {
 	if err := d.db.AutoMigrate(&User{}, &Device{}, &AccessToken{}, &SigningKey{},
-		&Room{}, &Event{}, &EventEdge{}, &RoomState{}, &EventAuthContext{}, &EventTxn{}, &RoomAlias{}, &Filter{}, &AccountData{}, &Presence{}, &Receipt{}, &Relation{}, &RoomForget{}, &Pusher{}, &DeviceListChange{}, &DeviceKeyDoc{}, &OneTimeKey{},
+		&Room{}, &Event{}, &EventEdge{}, &RoomState{}, &EventAuthContext{}, &EventTxn{}, &RoomAlias{}, &Filter{}, &AccountData{}, &Presence{}, &Receipt{}, &Relation{}, &RoomForget{}, &Pusher{}, &DeviceListChange{}, &DeviceKeyDoc{}, &OneTimeKey{}, &Typing{},
 		&DeviceListStream{},
 		&ServerSigningKey{}, &ServerKeyDocument{}, &FederationTransaction{}, &FederationQueueItem{},
 		&MediaMetadata{},

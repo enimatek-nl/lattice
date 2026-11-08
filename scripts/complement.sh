@@ -308,7 +308,16 @@ fi
 summary="$repo_root/.agent-work/next/complement-summary-$label.txt"
 {
 	echo "label:   $label"
-	echo "tree:    $(git -C "$repo_root" rev-parse --short HEAD 2>/dev/null || echo 'not a git checkout')"
+	# The commit, and whether the tree the image was built from matched it. A run whose image was
+	# built from uncommitted work is not a run of the commit its name is next to, and the summary
+	# would otherwise say something that is not true.
+	dirty=$(git -C "$repo_root" status --porcelain 2>/dev/null | head -20)
+	if [[ -n "$dirty" ]]; then
+		tree="$(git -C "$repo_root" rev-parse --short HEAD 2>/dev/null || echo 'not a git checkout') (working tree dirty: $(printf '%s\n' "$dirty" | wc -l | tr -d ' ') paths changed since that commit)"
+	else
+		tree="$(git -C "$repo_root" rev-parse --short HEAD 2>/dev/null || echo 'not a git checkout')"
+	fi
+	echo "tree:    $tree"
 	echo "filter:  $filter"
 	echo "parallel: $parallel   timeout: $timeout   go test exit: $exit_code"
 	echo "tally:   $passed passing, $failed failing, $skipped skipped (top-level tests)"
