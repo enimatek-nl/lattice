@@ -1,6 +1,7 @@
 package integration
 
 import (
+	"context"
 	"net/http"
 	"testing"
 	"time"
@@ -474,5 +475,52 @@ func waitsForMembership(t *testing.T, node *fedNode, roomID, token, userID, memb
 			return false
 		}
 		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// TestRestrictedJoinAuthoriserHonoursRoomVersion12Creators is the regression for a room version 12 room
+// whose own creator could not invite anybody into it.
+//
+// The restricted-join decision asks whether a named user could have sent an invitation, and this server
+// answered that from the room's power levels event. In a room version 12 room the creator is deliberately
+// absent from that event — rule 10.4 of the version refuses a power levels event that names a creator,
+// because the creator's power is infinite and a room may not state a number for it — so the question was
+// answered with the default of zero, below the invitation level. The authorisation rules treated the same
+// user as holding more than any level the room can express, which is the answer the specification wants
+// and the one the user could see a difference in.
+func TestRestrictedJoinAuthoriserHonoursRoomVersion12Creators(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	ownerID, ownerToken, _ := h.register(t, "v12owner", "pw-v12owner-pass", "")
+	guestID, guestToken, _ := h.register(t, "v12guest", "pw-v12guest-pass", "")
+
+	roomID := createRoom(t, h, ownerToken, map[string]any{"room_version": "12", "preset": "public_chat"})
+	if res := join(t, h, roomID, guestToken, nil); res.status != http.StatusOK {
+		t.Fatalf("the second user could not join the version 12 room: %d %s", res.status, res.body)
+	}
+	// An explicit invitation level, so that "not listed in the power levels event" means something here
+	// rather than being indistinguishable from an empty room where anyone may invite. Naming the guest at
+	// zero and nobody else is legal in this room version: the creator is the one user it may not name.
+	if res := h.raw(t, http.MethodPut, "/_matrix/client/v3/rooms/"+roomID+"/state/m.room.power_levels/",
+		[]byte(`{"invite":50,"users":`+`{"`+guestID+`":0}}`), ownerToken); res.status != http.StatusOK {
+		t.Fatalf("setting the room's invitation level: %d %s", res.status, res.body)
+	}
+
+	cases := []struct {
+		user string
+		want bool
+		why  string
+	}{
+		{ownerID, true, "a room version 12 creator holds more than the room can state, so it can always invite"},
+		{guestID, false, "a user listed at zero cannot"},
+	}
+	for _, tc := range cases {
+		got, err := h.app.Rooms.JoinAuthoriserValid(context.Background(), roomID, tc.user)
+		if err != nil {
+			t.Fatalf("asking whether %s could authorise a join: %v", tc.user, err)
+		}
+		if got != tc.want {
+			t.Errorf("JoinAuthoriserValid(%s) = %v, want %v: %s", tc.user, got, tc.want, tc.why)
+		}
 	}
 }

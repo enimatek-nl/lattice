@@ -201,6 +201,80 @@ func membershipOfEvent(event map[string]any) string {
 	return membership
 }
 
+// powerLevelsForInvite is the room's power levels as the restricted-join decision needs them, which is
+// the event plus one thing the event cannot say on its own.
+//
+// In a room version whose creators are privileged, the creator's power is a fact about the room and not
+// an entry in its power levels event — rule 10.4 of room version 12 refuses an event that names a
+// creator at all — so reading the event alone finds nobody there and hands the creator the default of
+// zero, below the invitation level of fifty. The authorisation rules in [eventauth] treat that same user
+// as infinite, so the two were answering one question twice and getting two answers, and the one users
+// noticed was "the room's creator cannot invite you into it". The levels are asserted here for exactly
+// that version, because this is the same claim made in the one place that cannot go through the
+// authoriser; [eventauth.CreatorsOf] is exported so the claim has a single source.
+//
+// Note what this deliberately does not do: it reads the two state rows it needs rather than the room's
+// whole current state. [Service.loadState] drops a state row whose event this server does not hold, and
+// on a room this server joined from somebody else that can leave the power levels event out of the
+// snapshot altogether — at which point the "defaults" answer an invitation question with a fifty the room
+// never set. Reading narrower, and reading the same two rows the answer has always been built from, keeps
+// this decision about the room rather than about which of its events happen to have arrived.
+func (s *Service) powerLevelsForInvite(ctx context.Context, roomID string, rules roomversion.Rules) (*eventauth.PowerLevels, error) {
+	createEvent := func() map[string]any {
+		entry, err := s.state.Get(ctx, roomID, eventauth.TypeCreate, "")
+		if err != nil {
+			return nil
+		}
+		event, err := s.eventJSON(ctx, entry.EventID)
+		if err != nil {
+			return nil
+		}
+		return event
+	}
+	entry, err := s.state.Get(ctx, roomID, eventauth.TypePowerLevels, "")
+	if err != nil {
+		if !notFound(err) {
+			return nil, fmt.Errorf("rooms: cannot read a room's power levels for a join authoriser: %w", err)
+		}
+		// A room with no power levels event is decided by the defaults, as the authorisation rules
+		// decide it. Where the version names a creator in the create event, the defaults put that
+		// user at 100 — this is the older reading and it is kept, because changing what a room
+		// version 11 defaults to is not what this function was for.
+		levels := eventauth.DefaultPowerLevels()
+		if create := createEvent(); create != nil {
+			if creator, _ := contentOfEvent(create)["creator"].(string); creator != "" {
+				levels.Users[creator] = 100
+			}
+			for _, creator := range privilegedCreatorsForInvite(rules, create) {
+				levels.Users[creator] = eventauth.CreatorPowerLevel
+			}
+		}
+		return levels, nil
+	}
+	event, err := s.eventJSON(ctx, entry.EventID)
+	if err != nil {
+		return nil, err
+	}
+	levels, err := eventauth.LoadPowerLevels(rules, contentOfEvent(event))
+	if err != nil {
+		return nil, fmt.Errorf("rooms: a room's power levels do not load: %w", err)
+	}
+	for _, creator := range privilegedCreatorsForInvite(rules, createEvent()) {
+		levels.Users[creator] = eventauth.CreatorPowerLevel
+	}
+	return levels, nil
+}
+
+// privilegedCreatorsForInvite is the room's creators where its version makes them privileged, and nobody
+// at all otherwise. Returning an empty list rather than a half-informed one is the point: the caller's
+// loop then writes nothing for a room version 11 room, which is the behaviour that predates this.
+func privilegedCreatorsForInvite(rules roomversion.Rules, create map[string]any) []string {
+	if create == nil || !rules.PrivilegedCreators {
+		return nil
+	}
+	return eventauth.CreatorsOf(rules, create)
+}
+
 // JoinAuthoriserValid reports whether this server can stand behind naming `candidate` as the
 // authoriser of a join of this room: the candidate has to live here, be in the room, and be able
 // to invite. The first condition is the one that cannot be argued around. Room version 8 rule 4.2
@@ -236,32 +310,9 @@ func (s *Service) JoinAuthoriserValid(ctx context.Context, roomID, candidate str
 	if !ok {
 		return false, nil
 	}
-	entry, err := s.state.Get(ctx, roomID, eventauth.TypePowerLevels, "")
-	if err != nil {
-		if notFound(err) {
-			// A room with no power levels event puts its creator at 100 and everyone else at 0;
-			// the defaults decide, exactly as the authorisation rules would.
-			levels := eventauth.DefaultPowerLevels()
-			creator := ""
-			if create, err := s.state.Get(ctx, roomID, eventauth.TypeCreate, ""); err == nil {
-				if event, err := s.eventJSON(ctx, create.EventID); err == nil {
-					creator, _ = contentOfEvent(event)["creator"].(string)
-				}
-			}
-			if creator != "" {
-				levels.Users[creator] = 100
-			}
-			return levels.User(candidate) >= levels.Invite, nil
-		}
-		return false, fmt.Errorf("rooms: cannot read a room's power levels for a join authoriser: %w", err)
-	}
-	plEvent, err := s.eventJSON(ctx, entry.EventID)
+	levels, err := s.powerLevelsForInvite(ctx, roomID, rules)
 	if err != nil {
 		return false, err
-	}
-	levels, err := eventauth.LoadPowerLevels(rules, contentOfEvent(plEvent))
-	if err != nil {
-		return false, fmt.Errorf("rooms: a room's power levels do not load: %w", err)
 	}
 	return levels.User(candidate) >= levels.Invite, nil
 }

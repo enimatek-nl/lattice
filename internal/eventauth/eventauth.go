@@ -1021,6 +1021,22 @@ func powerLevelsFor(rules roomversion.Rules, roomID string, state Snapshot) (*Po
 // (MSC4289) adds `content.additional_creators`, whose users share the creator's infinite power and
 // its immunity to being demoted, so they have to be carried through every power level question
 // rather than only the create event's own validation.
+// CreatorsOf names every user a room treats as its creator under its room version.
+//
+// Exported for one caller, and the reason is a disagreement rather than a convenience. The rooms service
+// answers a question that is really this package's — whether a named user could have invited somebody —
+// and it answered it from the room's power levels event alone. A room version 12 creator is not in that
+// event, because rule 10.4 of the version refuses an event that names a creator, so the service found
+// nobody, used the default of zero, and refused the one user the version says outranks everyone: a
+// version 12 room's own creator could not invite anybody into it through a restricted join rule while the
+// authorisation rules here were treating that same user as infinite.
+//
+// The fix is not for the service to keep a second, narrower copy of the rules. It is for both to ask the
+// same function.
+func CreatorsOf(rules roomversion.Rules, create map[string]any) []string {
+	return creatorsOf(rules, create)
+}
+
 func creatorsOf(rules roomversion.Rules, create map[string]any) []string {
 	primary := creatorOf(rules, create)
 	if !rules.PrivilegedCreators {
