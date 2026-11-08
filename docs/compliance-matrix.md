@@ -216,6 +216,38 @@ membership, alias and M1-regression subset, and it is reported as such.
    that a version 1 room that disagrees between servers is investigated rather than assumed away.
    Interoperability against Synapse on such a room is not tested.
 
+## Targeted run 20261108aa-todayset — every endpoint added today, in one clean run
+
+`RUN='TestRoomForget|TestLeftRoomFixture|TestRelations|TestRelationsPagination|
+TestRelationsPaginationSync|TestThreadsEndpoint|TestFilterMessagesByRelType|
+TestChangePasswordPushers|TestChangePassword$|TestLogout|TestRoomReceipts|TestRoomReadMarkers|^TestSync$'`,
+PARALLEL=1, against the tree at `4433852`. Log
+`.agent-work/next/complement-run-20261108aa-todayset.log`, lists
+`.agent-work/complement-passes-20261108aa-todayset.txt` (14 names) and
+`-failures-20261108aa-todayset.txt` (empty).
+
+    == tally: 14 passing, 0 failing, 0 skipped (top-level tests)
+    == no federation fingerprints in this run: no certificate naming another server,
+       no refused handshake, no 401 on a federation template.
+
+| passing | what it pins |
+|---|---|
+| `TestRelations`, `TestRelationsPagination`, `TestRelationsPaginationSync` | what relates to an event, paged both ways, obeying who may read the room |
+| `TestThreadsEndpoint` | the room's conversations, ordered by each thread's newest event, in the shape clients read |
+| `TestRoomForget` (6 subtests), `TestLeftRoomFixture` (5 subtests) | forgetting, and the state a departed member is owed as of their leaving |
+| `TestFilterMessagesByRelType` | MSC3874's `rel_types` / `not_rel_types` on `/messages` |
+| `TestChangePasswordPushers` (2 subtests), `TestChangePassword` (5), `TestLogout` | pushers belonging to the session that wrote them, and a password change taking the dead sessions' with it |
+| `TestRoomReceipts`, `TestRoomReadMarkers`, `TestSync` | receipts and read markers, and the sync that carries them |
+
+Every one of these was red or unattempted when this stretch of work began. They are gathered into
+one run because the interesting question is not only whether each new thing works but whether the
+new things and the older neighbours of theirs still work together — sync, receipts, logout,
+password changes and reads by departed members are all neighbours of the forget and thread work.
+
+The run still printed the stale-DNS warning before and after it (the aardvark-dns record named
+below is untouched), and it still reported no fingerprints: these tests speak to one server, and
+the fault that has been reddening the two-server tests all day cannot reach them.
+
 ## Targeted run 20261108z-pushers — pushers, and what takes them back
 
 `RUN='TestChangePasswordPushers|TestChangePassword$|TestLogout|TestLoginLogout|TestDeactivateAccount|TestPushRules?'`,

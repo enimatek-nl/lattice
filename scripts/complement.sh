@@ -283,6 +283,12 @@ if [[ $((namespace_confusion + template_401)) -gt 0 ]]; then
 	printf '   %5d  a TLS handshake refusing what a peer presented (tls: bad certificate)\n' "$bad_handshake"
 	printf '   %5d  a peer refusing a request as unsigned (not signed by a server this server trusts)\n' "$unsigned_peer"
 	printf '   %5d  a federation template answered 401, which a room may legitimately do\n' "$template_401"
+else
+	# Said out loud rather than left as an absent block: a run that prints nothing here is a run
+	# with nothing to warn about, and "no warning" should not have to be inferred from a missing
+	# section. It is not a claim that no two-server test ran — only that none of the signatures of
+	# a peer name resolving into somebody else's deployment appeared in this run's own log.
+	echo "== no federation fingerprints in this run: no certificate naming another server, no refused handshake, no 401 on a federation template."
 fi
 if [[ "$namespace_confusion" -gt 0 ]]; then
 	echo "!! those first three are the container network, not this server: a peer server's name resolved into somebody else's deployment. The two-server failures above are contaminated — re-run them alone (PARALLEL=1) before believing them, and clear the stale per-network DNS records the note near the top of this script describes."
