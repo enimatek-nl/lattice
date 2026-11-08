@@ -41,7 +41,7 @@ func (d *Deps) handleJoin(w http.ResponseWriter, r *http.Request) {
 	if identifier == "" {
 		identifier = r.PathValue("roomID")
 	}
-	roomID, ok := d.resolveRoomIdentifier(w, r, identifier)
+	roomID, aliasServers, ok := d.resolveRoomIdentifier(w, r, identifier)
 	if !ok {
 		return
 	}
@@ -54,7 +54,7 @@ func (d *Deps) handleJoin(w http.ResponseWriter, r *http.Request) {
 		Membership: eventauth.MembershipJoin,
 		Reason:     reasonOf(extra),
 		Extra:      extra,
-		Via:        viaServers(r),
+		Via:        joinRoutes(r, d.Cfg.ServerName, aliasServers),
 	})
 	if err != nil {
 		d.serviceError(w, err)
@@ -68,6 +68,28 @@ func (d *Deps) handleJoin(w http.ResponseWriter, r *http.Request) {
 // spells them as repeated `server_name` query parameters; `via` is the older spelling and
 // clients still send it, so both are read. They are only a starting point: which of them holds
 // the room is what the join handshake finds out.
+// joinRoutes is the ordered list of servers a join should try, with the servers an alias query named put
+// in front of the ones the client guessed.
+//
+// Order is the whole point. A join of a remote room goes to the first server that will take it, and the
+// alias owner's own answer is the more recent statement about who is in the room; the `via` hints are what
+// the client hoped, which is sometimes a server that left months ago. Both are tried, because a client
+// that had to pass `via` usually has a reason. This server's own name is dropped from the list: a route
+// through here to get here is a loop with extra steps, and the join path already knows that a room this
+// server holds needs no route at all.
+func joinRoutes(r *http.Request, serverName string, fromAlias []string) []string {
+	routes := make([]string, 0, len(fromAlias)+2)
+	seen := map[string]bool{serverName: true}
+	for _, candidate := range append(append([]string{}, fromAlias...), viaServers(r)...) {
+		if candidate == "" || seen[candidate] {
+			continue
+		}
+		seen[candidate] = true
+		routes = append(routes, candidate)
+	}
+	return routes
+}
+
 func viaServers(r *http.Request) []string {
 	values := append([]string{}, r.URL.Query()["server_name"]...)
 	return append(values, r.URL.Query()["via"]...)
@@ -111,7 +133,7 @@ func (d *Deps) handleKnock(w http.ResponseWriter, r *http.Request) {
 	if identifier == "" {
 		identifier = r.PathValue("roomID")
 	}
-	roomID, ok := d.resolveRoomIdentifier(w, r, identifier)
+	roomID, aliasServers, ok := d.resolveRoomIdentifier(w, r, identifier)
 	if !ok {
 		return
 	}
@@ -124,7 +146,7 @@ func (d *Deps) handleKnock(w http.ResponseWriter, r *http.Request) {
 		Membership: eventauth.MembershipKnock,
 		Reason:     reasonOf(extra),
 		Extra:      extra,
-		Via:        viaServers(r),
+		Via:        joinRoutes(r, d.Cfg.ServerName, aliasServers),
 	}); err != nil {
 		d.serviceError(w, err)
 		return

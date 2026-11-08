@@ -35,7 +35,23 @@ func (d *Deps) handleAliasPut(w http.ResponseWriter, r *http.Request) {
 // `servers` hint means: not "these servers claim to host it", but "this server resolved
 // the alias here".
 func (d *Deps) handleAliasGet(w http.ResponseWriter, r *http.Request) {
-	roomID, err := d.Rooms.ResolveAlias(r.Context(), pathValue(r, "roomAlias"))
+	alias := pathValue(r, "roomAlias")
+	if _, domain, err := matrixid.SplitID(matrixid.SigilAlias, alias); err == nil &&
+		!matrixid.IsLocal(domain, d.Cfg.ServerName) {
+		// Another server's alias is that server's to answer. Asking it is what makes the difference
+		// between "this alias does not exist" and "this server has never looked", and a client that
+		// typed the alias into a join box cannot tell those apart either — but the person on the other
+		// side of it can, and a 404 from a server that never asked is how a working room comes to look
+		// like a deleted one.
+		roomID, servers, err := d.resolveRemoteAlias(r, alias, domain)
+		if err != nil {
+			d.serviceError(w, err)
+			return
+		}
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"room_id": roomID, "servers": servers})
+		return
+	}
+	roomID, err := d.Rooms.ResolveAlias(r.Context(), alias)
 	if err != nil {
 		d.serviceError(w, err)
 		return
@@ -70,38 +86,81 @@ func (d *Deps) handleRoomAliases(w http.ResponseWriter, r *http.Request) {
 
 // resolveRoomIdentifier accepts either a room ID or a local alias in a path, which is
 // what the join endpoint is specified to take.
-func (d *Deps) resolveRoomIdentifier(w http.ResponseWriter, r *http.Request, identifier string) (string, bool) {
+func (d *Deps) resolveRoomIdentifier(w http.ResponseWriter, r *http.Request, identifier string) (string, []string, bool) {
 	if identifier == "" {
 		matrixerr.Write(w, http.StatusBadRequest, matrixerr.New(matrixerr.CodeMissingParams,
 			"A room ID or room alias is required."))
-		return "", false
+		return "", nil, false
 	}
 	if identifier[0] == '#' {
 		if err := matrixid.RoomAliasValid(identifier); err != nil {
 			matrixerr.Write(w, http.StatusBadRequest, matrixerr.Newf(matrixerr.CodeInvalidParam,
 				"%q is not a valid room alias.", identifier))
-			return "", false
+			return "", nil, false
 		}
 		_, domain, err := matrixid.SplitID(matrixid.SigilAlias, identifier)
-		if err != nil || !matrixid.IsLocal(domain, d.Cfg.ServerName) {
-			// Resolving another server's alias means asking that server, which is
-			// federation. A 404 would claim the alias does not exist, which is a
-			// different statement from "this server cannot ask".
-			matrixerr.Write(w, http.StatusNotImplemented, matrixerr.New(matrixerr.CodeUnknown,
-				"This server cannot resolve a room alias owned by another server yet: that requires federation."))
-			return "", false
+		if err != nil {
+			matrixerr.Write(w, http.StatusBadRequest, matrixerr.Newf(matrixerr.CodeInvalidParam,
+				"%q is not a valid room alias.", identifier))
+			return "", nil, false
+		}
+		if !matrixid.IsLocal(domain, d.Cfg.ServerName) {
+			roomID, servers, err := d.resolveRemoteAlias(r, identifier, domain)
+			if err != nil {
+				d.serviceError(w, err)
+				return "", nil, false
+			}
+			return roomID, servers, true
 		}
 		roomID, err := d.Rooms.ResolveAlias(r.Context(), identifier)
 		if err != nil {
 			d.serviceError(w, err)
-			return "", false
+			return "", nil, false
 		}
-		return roomID, true
+		return roomID, nil, true
 	}
 	if err := matrixid.RoomIDValid(identifier); err != nil {
 		matrixerr.Write(w, http.StatusBadRequest, matrixerr.Newf(matrixerr.CodeInvalidParam,
 			"%q is neither a valid room ID nor a room alias.", identifier))
-		return "", false
+		return "", nil, false
 	}
-	return identifier, true
+	return identifier, nil, true
+}
+
+// resolveRemoteAlias asks another server what one of its aliases names, and returns the room along with
+// the servers that could take a join of it.
+//
+// The alias's own server is asked first, because it is the authority on its own alias table and the
+// answer it gives is current. The `via` and `server_name` hints the client sent are tried after it, and
+// only after: they name servers the client *hopes* are in the room, which is a worse authority than the
+// one that owns the name, and a join that goes through them is a join that starts from a server the client
+// chose rather than one the room's own alias pointed at. A client that passes them because its server is
+// unreachable still gets a working join, which is the whole reason the parameter exists.
+func (d *Deps) resolveRemoteAlias(r *http.Request, alias, owner string) (string, []string, error) {
+	if d.RemoteAliases == nil {
+		// Not a refusal to implement — this server is simply not federating. The wording says so,
+		// because a client told "not implemented" goes looking for a version mismatch.
+		return "", nil, matrixerr.New(matrixerr.CodeUnknown,
+			"This server is not federating, so it cannot ask another server what one of its room aliases names.")
+	}
+	attempts := []string{owner}
+	for _, hint := range viaServers(r) {
+		if hint != "" && hint != owner {
+			attempts = append(attempts, hint)
+		}
+	}
+	var lastErr error
+	for _, destination := range attempts {
+		roomID, servers, err := d.RemoteAliases.QueryDirectory(r.Context(), destination, alias)
+		if err == nil {
+			return roomID, servers, nil
+		}
+		lastErr = err
+		d.Log.Warn("client: an alias query to another server did not resolve",
+			"alias", alias, "destination", destination, "error", err)
+	}
+	if lastErr == nil {
+		lastErr = matrixerr.Newf(matrixerr.CodeNotFound, "No server could resolve the room alias %q.", alias)
+	}
+	return "", nil, lastErr
 }

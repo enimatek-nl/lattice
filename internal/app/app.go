@@ -215,7 +215,11 @@ func NewWithOptions(ctx context.Context, cfg *config.Config, log *slog.Logger, o
 	}
 
 	requireAuth := auth.RequireAuth(tokens, userService)
-	client.Register(a.clientRouter, &client.Deps{
+	// The Client-Server dependencies are built before the federation client exists, so they are held in
+	// a variable and completed further down: an alias owned by another server is resolved by asking that
+	// server, and the only way to ask is the federation client, which needs the keyring this function has
+	// not assembled yet.
+	clientDeps := &client.Deps{
 		Cfg:         cfg,
 		Log:         log,
 		Users:       userService,
@@ -235,7 +239,8 @@ func NewWithOptions(ctx context.Context, cfg *config.Config, log *slog.Logger, o
 		DB:            db,
 		Version:       Version,
 		Started:       a.Started,
-	}, requireAuth)
+	}
+	client.Register(a.clientRouter, clientDeps, requireAuth)
 	media.Register(a.clientRouter, &media.Deps{Cfg: cfg, Log: log, Media: mediaService}, requireAuth)
 	// Method negotiation must be consistent across listeners: a federation path
 	// probed on the client port answers 405, not 404.
@@ -299,6 +304,12 @@ func NewWithOptions(ctx context.Context, cfg *config.Config, log *slog.Logger, o
 		a.Sender.ACLs = roomService
 		federationDeps.ACLs = roomService
 		federationDeps.Media = mediaService
+		// A peer asking what one of this server's aliases names is answered from the alias table and
+		// the room's membership, both of which are the room service's; and a client of this server
+		// asking about somebody else's alias is the same question pointed the other way, which is the
+		// federation client's. Wiring both here keeps one answer per question.
+		federationDeps.Aliases = roomService
+		clientDeps.RemoteAliases = client
 		if maxAge := cfg.Federation.QueueMaxAge.Get(); maxAge > 0 {
 			a.Sender.MaxAge = maxAge
 		}

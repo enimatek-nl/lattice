@@ -41,6 +41,10 @@ type Deps struct {
 	// exclusion is room state, and the endpoints and the event-accepting path have to give the
 	// same answer to it.
 	ACLs RoomACLs
+	// Aliases answers a peer's alias query. It is the room service: the alias table and the room's
+	// membership are both its state, and an answer assembled anywhere else would be a second opinion
+	// about where an alias points.
+	Aliases AliasDirectory
 	// Gaps answers what a peer asks for when an event it was handed cites history it was never
 	// given. It is the room service: the answer is a walk over the room's event graph.
 	Gaps GapReader
@@ -77,6 +81,9 @@ func Register(r *httpserver.Router, d *Deps) {
 	// A transaction is authenticated before a single byte of it is processed.
 	r.Handle("PUT", "/_matrix/federation/v1/send/{txnId}", d.requireCredential(d.handleSendTransaction))
 	r.Handle("GET", "/_matrix/federation/v1/event/{eventId}", d.requireCredential(d.handleGetEvent))
+	// A room alias is the identifier a human types, and only the server that owns it can say what it
+	// names, so this query is the front door of every join that starts from an alias on this server.
+	r.Handle("GET", "/_matrix/federation/v1/query/directory", d.requireCredential(d.handleQueryDirectory))
 
 	// The join handshake. A remote user joins by asking a server that is already in the room
 	// for the shape a join by them would take, signing the answer, and handing it back; the

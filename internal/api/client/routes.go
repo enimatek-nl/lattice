@@ -2,6 +2,7 @@
 package client
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -54,9 +55,26 @@ type Deps struct {
 	UserDirectory *userdir.Service
 	E2EKeys       *e2ekeys.Service
 	Sync          *sync.Service
+	// RemoteAliases asks another server what one of its room aliases names. It is the federation
+	// client, and it is nil on a server that is not federating — which is the honest version of the
+	// 501 this used to answer unconditionally, because an alias owned by another server really is a
+	// question this server cannot ask.
+	RemoteAliases RemoteAliasQuerier
 	DB            *persist.Database
 	Version       string
 	Started       time.Time
+}
+
+// RemoteAliasQuerier is the one federation question the Client-Server API has to ask for a client: a
+// user joined `#room:elsewhere`, and only the server that owns that alias can say which room it names and
+// which servers could take the join.
+//
+// It is an interface with one method rather than the federation client itself because the Client-Server
+// API and the federation client are allowed to be built without each other, and because the question is
+// worth naming: everything else about federation is this server accepting or pushing events, and this is
+// the single place a client's ordinary request turns into a request to a stranger.
+type RemoteAliasQuerier interface {
+	QueryDirectory(ctx context.Context, destination, alias string) (roomID string, servers []string, err error)
 }
 
 // serviceError writes a service-layer failure with the status the protocol prescribes
