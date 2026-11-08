@@ -190,6 +190,17 @@ func (s *Service) threadEvents(ctx context.Context, roomID, rootEventID, request
 	if latestRow.Outlier || latestRow.SoftFailed {
 		return nil, nil, nil
 	}
+	// Neither half of the entry is served unless both are readable. A thread whose root the
+	// requester was not part of when it was written is not a conversation they were invited
+	// into, and handing over the newest reply while hiding the root would leave a client
+	// rendering a reply to an event it cannot name.
+	visible, err := s.history.Decide(ctx, []*persist.Event{rootRow, latestRow}, requester)
+	if err != nil {
+		return nil, nil, fmt.Errorf("rooms: cannot decide whether the reader may read this thread: %w", err)
+	}
+	if !visible[rootRow.EventID] || !visible[latestRow.EventID] {
+		return nil, nil, nil
+	}
 	root, err = s.serve.ServeAs(ctx, rootRow, requester)
 	if err != nil {
 		if errors.Is(err, redaction.ErrWithheld) {

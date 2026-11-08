@@ -26,6 +26,7 @@ import (
 	"github.com/enimatek/lattice/internal/e2ekeys"
 	"github.com/enimatek/lattice/internal/eventauth"
 	"github.com/enimatek/lattice/internal/events"
+	"github.com/enimatek/lattice/internal/historyvis"
 	"github.com/enimatek/lattice/internal/persist"
 	"github.com/enimatek/lattice/internal/redaction"
 	"github.com/enimatek/lattice/internal/stream"
@@ -217,7 +218,13 @@ type Service struct {
 	serve *redaction.Servicer
 	// groups reads the state an event was sent against, which is what makes "the state at
 	// the end of this batch" a lookup instead of a replay.
-	groups   persist.StateGroupRepo
+	groups persist.StateGroupRepo
+	// history decides whether a user may be given an event's content at all, judged by the
+	// room's history visibility when the event was written and the user's membership then. It is
+	// the same decision `/messages` and a federation peer get, from one package: a room whose
+	// `/messages` honours `history_visibility: joined` while its sync hands over the older
+	// events is one room with two answers, which is exactly how a leak gets written by accident.
+	history  *historyvis.Service
 	filters  persist.FilterRepo
 	account  persist.AccountDataRepo
 	presence persist.PresenceRepo
@@ -236,6 +243,7 @@ func NewService(db *persist.Database, log *slog.Logger) *Service {
 		state:    db.State,
 		serve:    redaction.NewServicer(db.Events, db.Rooms, db.StateGroups),
 		groups:   db.StateGroups,
+		history:  historyvis.New(db),
 		filters:  db.Filters,
 		account:  db.AccountData,
 		presence: db.Presence,
@@ -478,8 +486,23 @@ func (s *Service) build(ctx context.Context, userID string, since Token, filter 
 	return result, changed, nil
 }
 
-// stateVisibleToOutsider reports whether a room's state may be shown to someone who is
-// no longer in it.
+// stateVisibleToOutsider decides whether someone outside the room — left, or banned — is shown
+// its state section at all.
+//
+// `world_readable` says yes. So does `shared`, and so does a room with no visibility event, which
+// the protocol reads as `shared`: the specification says a user who has left may still see what
+// they were allowed to see before they left, and a shared room allows all of its history to its
+// members — the read horizon is what bounds how far "before they left" reaches, and the section
+// this gates is already cut at that horizon. Emptying the section here would leave a former
+// member with a room they cannot name, which is the same hole `/state` was fixed for.
+//
+// `joined` and `invited` say no, which is imprecise in one direction and that imprecision is
+// recorded rather than hidden: state that those rooms wrote *while the reader was a member* is
+// theirs under the per-event rule, and this room-level answer hides it along with the rest. The
+// per-event answer would run the historyvis decision over the section's events, which needs the
+// stored rows rather than the served ones; that is a follow-up, not something to do by widening
+// this gate, because the same gate is what keeps a `joined` room's pre-joining state from a
+// former member.
 func (s *Service) stateVisibleToOutsider(ctx context.Context, roomID string) (bool, error) {
 	entries, err := s.state.All(ctx, roomID)
 	if err != nil {
@@ -499,9 +522,15 @@ func (s *Service) stateVisibleToOutsider(ctx context.Context, roomID string) (bo
 		}
 		content, _ := body["content"].(map[string]any)
 		visibility, _ := content["history_visibility"].(string)
-		return visibility == "world_readable", nil
+		switch visibility {
+		case "world_readable", "shared", "":
+			return true, nil
+		default:
+			return false, nil
+		}
 	}
-	return false, nil
+	// No visibility event in the room's current state: the protocol reads that as `shared`.
+	return true, nil
 }
 
 // memberCounts counts the room's members by membership for the room summary.
@@ -676,8 +705,19 @@ func (s *Service) room(ctx context.Context, userID, roomID string, since Token, 
 	// On a first sync there is no window, so the timeline is the most recent events.
 	accepted := make([]Event, 0, len(seen))
 	newest := int64(0)
+	// Which of these the user may read at all. Asked once for the whole window rather than per
+	// event, because a window usually sits in a handful of state snapshots.
+	visible, err := s.history.Decide(ctx, seen, userID)
+	if err != nil {
+		return roomUpdate{}, err
+	}
 	for _, event := range seen {
 		if !filter.AllowsTimeline(event.Type) {
+			continue
+		}
+		if !visible[event.EventID] {
+			// Not this user's to be told about: the room's history visibility at the moment
+			// that event was written did not include them in it.
 			continue
 		}
 		body, err := s.clientEvent(ctx, userID, event)

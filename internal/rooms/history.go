@@ -77,6 +77,15 @@ type HistoryPage struct {
 // `unsigned.redacted_because`.
 func (s *Service) Event(ctx context.Context, roomID, eventID, requester string) (map[string]any, error) {
 	if err := s.requireHistoryAccess(ctx, roomID, requester); err != nil {
+		var refused *matrixerr.Error
+		if errors.As(err, &refused) {
+			// `/event/{eventID}` is the one room read where the specification folds "not
+			// allowed" into "not here": it answers 404 when the event "does not exist or is not
+			// visible to the requester". `/messages` keeps its 403, because there the room is
+			// what is being addressed and saying what the requester would need to be to read it
+			// is useful. Here it would only say that an event with that identifier exists.
+			return nil, matrixerr.Newf(matrixerr.CodeNotFound, "Event %q is not known to this server.", eventID)
+		}
 		return nil, err
 	}
 	row, err := s.events.ByID(ctx, eventID)
@@ -89,6 +98,19 @@ func (s *Service) Event(ctx context.Context, roomID, eventID, requester string) 
 	// An event in another room is not this room's to hand over, and the answer is the
 	// same as for an event that does not exist.
 	if row.RoomID != roomID {
+		return nil, matrixerr.Newf(matrixerr.CodeNotFound, "Event %q is not known to this server.", eventID)
+	}
+	// An event this reader is not entitled to reads the same as an event that does not exist.
+	// `/event/{eventID}` is the one room read where the specification asks for that: it says the
+	// answer is 404 when the event "does not exist or is not visible to the requester", so this
+	// door does not tell a caller that a room holds such an event while refusing to hand it over.
+	// `/messages` keeps its 403 for a non-member, because there the room itself is what is being
+	// addressed.
+	allowed, err := s.history.MayRead(ctx, row, requester)
+	if err != nil {
+		return nil, fmt.Errorf("rooms: cannot decide whether the reader may read this event: %w", err)
+	}
+	if !allowed {
 		return nil, matrixerr.Newf(matrixerr.CodeNotFound, "Event %q is not known to this server.", eventID)
 	}
 	event, err := s.serve.ServeAs(ctx, row, requester)
@@ -139,6 +161,15 @@ func (s *Service) History(ctx context.Context, roomID, requester string, req His
 	if err != nil {
 		return HistoryPage{}, err
 	}
+	// Which of these events the requester may read at all, judged event by event against the
+	// room's history visibility *at the moment each was written*. The horizon above is one cut
+	// across the whole page; this is a different question, and a page can fail it in the middle:
+	// a member of a `joined` room may read everything since their own join and nothing before it,
+	// which is a hole in the middle of the room's timeline rather than an edge of it.
+	visible, err := s.history.Decide(ctx, raw, requester)
+	if err != nil {
+		return HistoryPage{}, err
+	}
 	var stop int64
 	if req.To != "" {
 		to, err := stream.Parse(req.To)
@@ -154,7 +185,6 @@ func (s *Service) History(ctx context.Context, roomID, requester string, req His
 		Start: start.String(),
 	}
 	reachedStop := false
-	hiddenByHorizon := false
 	// lastSeen is how far into the window this page's last event sits. The filter can drop
 	// events the window held, so the page's length is no longer an index into it, and where
 	// the page really stopped is what `end` has to name.
@@ -173,7 +203,9 @@ func (s *Service) History(ctx context.Context, roomID, requester string, req His
 		// than their leaving; going forwards it is the case where they ask what happened
 		// after it.
 		if asOf > 0 && event.StreamOrdering > asOf {
-			hiddenByHorizon = true
+			continue
+		}
+		if !visible[event.EventID] {
 			continue
 		}
 		body, err := s.serve.ServeAs(ctx, event, requester)
@@ -194,11 +226,25 @@ func (s *Service) History(ctx context.Context, roomID, requester string, req His
 		page.Chunk = append(page.Chunk, body)
 		lastSeen = rawIndex
 	}
-	// `end` is only worth handing back while there is something further this requester
-	// may read: a short page means the timeline ended in that direction, reaching `to`
-	// means the client asked for this page and no more, and a page whose remaining
-	// events were withheld means the requester has reached their limit.
-	if lastSeen >= 0 && len(raw) > lastSeen+1 && !reachedStop && !hiddenByHorizon {
+	// `end` is only worth handing back while there is something further this requester may
+	// read. A short page means the timeline ended in that direction; reaching `to` means the
+	// client asked for this page and no more. The events this window held but the requester may
+	// not read are asked about rather than assumed: with a room whose history visibility changed
+	// partway through, or a page whose tail is withheld redactions, a page can end in the middle
+	// of events that are further along and perfectly readable, and telling the client there is
+	// nothing more there is its own kind of wrong.
+	further := false
+	for index := lastSeen + 1; index < len(raw); index++ {
+		event := raw[index]
+		if asOf > 0 && event.StreamOrdering > asOf {
+			continue
+		}
+		if visible[event.EventID] {
+			further = true
+			break
+		}
+	}
+	if lastSeen >= 0 && len(raw) > lastSeen+1 && !reachedStop && further {
 		page.End = stream.Position(raw[lastSeen].StreamOrdering).String()
 	}
 

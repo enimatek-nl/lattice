@@ -25,6 +25,7 @@ import (
 
 	"github.com/enimatek/lattice/internal/eventauth"
 	"github.com/enimatek/lattice/internal/events"
+	"github.com/enimatek/lattice/internal/historyvis"
 	"github.com/enimatek/lattice/internal/matrixerr"
 	"github.com/enimatek/lattice/internal/matrixid"
 	"github.com/enimatek/lattice/internal/persist"
@@ -139,6 +140,11 @@ type Service struct {
 	// forgotten records which rooms a user has asked not to be told about. It is the one piece
 	// of room knowledge that is not about the room: the membership events stay untouched.
 	forgotten persist.ForgetRepo
+	// history decides whether a reader may be given an event's content, judged by the room's
+	// history visibility at the moment the event was written and the reader's membership then.
+	// It is a separate service rather than a method here so that the synchronisation service and
+	// the federation fan-out answer from the same rule as these doors do.
+	history *historyvis.Service
 	signer    events.Signer
 	// serve turns a stored event into the form a client is allowed to see. It lives here
 	// so that `/messages`, `/event` and `/sync` answer the redaction question the same
@@ -314,6 +320,7 @@ func New(db *persist.Database, signer events.Signer, presence PresenceNotifier, 
 		receipts:  db.Receipts,
 		relations: db.Relations,
 		forgotten: db.Forgotten,
+		history:   historyvis.New(db),
 		signer:    signer,
 		presence:  presence,
 		upgrades:  upgrades,
@@ -338,6 +345,7 @@ func (s *Service) WithTx(tx *gorm.DB) *Service {
 		receipts:  s.receipts.WithTx(tx),
 		relations: s.relations.WithTx(tx),
 		forgotten: s.forgotten.WithTx(tx),
+		history:   s.history.WithTx(tx),
 		signer:    s.signer,
 		presence:  s.presence,
 		upgrades:  s.upgrades,

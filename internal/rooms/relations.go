@@ -129,7 +129,10 @@ func (s *Service) Relations(ctx context.Context, req RelationsRequest) (Relation
 
 	page := RelationsPage{Chunk: make([]map[string]any, 0, limit)}
 	more := false
-	hiddenByHorizon := false
+	// heldBack says that the window held events this requester may not read — past their read
+	// horizon, or outside the room's history visibility at the moment they were written — which
+	// is a different reason for a short page than the room having no more to give.
+	heldBack := false
 	for index := range rows {
 		if len(page.Chunk) == limit {
 			more = true
@@ -137,7 +140,7 @@ func (s *Service) Relations(ctx context.Context, req RelationsRequest) (Relation
 		}
 		row := rows[index]
 		if horizon > 0 && row.StreamOrdering > horizon {
-			hiddenByHorizon = true
+			heldBack = true
 			continue
 		}
 		stored, err := s.events.ByID(ctx, row.EventID)
@@ -149,6 +152,14 @@ func (s *Service) Relations(ctx context.Context, req RelationsRequest) (Relation
 				continue
 			}
 			return RelationsPage{}, err
+		}
+		allowed, err := s.history.MayRead(ctx, stored, req.Requester)
+		if err != nil {
+			return RelationsPage{}, fmt.Errorf("rooms: cannot decide whether the reader may read a relation: %w", err)
+		}
+		if !allowed {
+			heldBack = true
+			continue
 		}
 		if stored.Outlier || stored.SoftFailed {
 			// Not accepted into the timeline, so not something to show as a reply.
@@ -167,7 +178,7 @@ func (s *Service) Relations(ctx context.Context, req RelationsRequest) (Relation
 		}
 		page.NextBatch = stream.Position(row.StreamOrdering).String()
 	}
-	if !more || hiddenByHorizon {
+	if !more || heldBack {
 		page.NextBatch = ""
 	}
 	return page, nil
