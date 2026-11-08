@@ -273,7 +273,12 @@ func (j *Joiner) joinVia(ctx context.Context, destination, roomID, userID string
 			}
 		}
 	}
-	bundle := rooms.RemoteBundle{PDUs: append(pdusFrom(answer, "auth_chain"), pdusFrom(answer, "state")...)}
+	bundle := rooms.RemoteBundle{
+		PDUs: append(pdusFrom(answer, "auth_chain"), pdusFrom(answer, "state")...),
+		// This server asked for this room by name, so the name is not in question: what is being
+		// checked is whether the create event in the answer is the create event of that room.
+		RoomID: roomID,
+	}
 	bundle.PDUs = append(bundle.PDUs, joinPDU)
 	outcome, err := j.Ingest.AcceptRemoteBundle(ctx, bundle, j.verifier(ctx))
 	if err != nil {

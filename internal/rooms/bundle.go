@@ -49,6 +49,14 @@ type BundleOutcome struct {
 // state, what authorises it, and the event that made the asking server part of it.
 type RemoteBundle struct {
 	PDUs [][]byte
+	// RoomID is the room this bundle was offered as the state of, when the exchange that produced
+	// it knew. A `/send_join` handover does: the join was asked for a room, and the state and auth
+	// chain being handed over are that room's. It matters because room version 12 (MSC4291) names a
+	// room by the hash of its create event, so that event arrives carrying no room identifier of its
+	// own — and a receiver holding both the identifier it asked under and the bytes in front of it
+	// is in a position to check one against the other. Empty means nobody said, and then the create
+	// event's own hash is the only account of what room this is.
+	RoomID string
 }
 
 // AcceptRemoteBundle stores a bundle of events a remote server handed over in one go — the
@@ -107,8 +115,21 @@ func (s *Service) AcceptRemoteBundle(ctx context.Context, bundle RemoteBundle, v
 		eventID, _ := event["event_id"].(string)
 		roomID, _ := event["room_id"].(string)
 		if roomID == "" {
-			outcome.Refused[eventID] = "an event in the bundle carries no room_id"
-			continue
+			// Room version 12 is the case this branch exists for, and it is the case that lost a room
+			// in run 20261108v12probe: a create event that carries no room identifier is well formed
+			// in that version, because the identifier is the hash of the event — so refusing the event
+			// discards the one thing in the bundle that says a room exists, and everything else in the
+			// bundle then fails for want of a room rather than for anything wrong with it.
+			derived, named, err := roomOfNamelessCreate(event, bundle.RoomID)
+			if err != nil {
+				outcome.Refused[eventID] = err.Error()
+				continue
+			}
+			if !named {
+				outcome.Refused[eventID] = "an event in the bundle carries no room_id"
+				continue
+			}
+			roomID = derived
 		}
 		pendingList = append(pendingList, pending{event: event, eventID: eventID, roomID: roomID})
 		rooms[roomID] = true
@@ -123,7 +144,7 @@ func (s *Service) AcceptRemoteBundle(ctx context.Context, bundle RemoteBundle, v
 		} else if !notFound(err) {
 			return outcome, fmt.Errorf("rooms: cannot load a room named by a handed-over bundle: %w", err)
 		}
-		if _, err := s.adoptRemoteRoom(ctx, entry.event); err != nil {
+		if _, err := s.adoptRemoteRoom(ctx, entry.event, entry.roomID); err != nil {
 			outcome.Refused[entry.eventID] = err.Error()
 		}
 	}
@@ -301,6 +322,25 @@ func (s *Service) storeBundleEvent(ctx context.Context, event map[string]any, ru
 		}
 		resolved++
 	}
+	// Resolving an identifier and joining the state an event is authorised against are not the same
+	// permission, and room version 12 is what forces the distinction to be made out loud. Its events
+	// may not cite the create event as an auth event — the room identifier names it instead — so a
+	// rule that has to *read* the create event, 4.3.1's "the only previous event is an m.room.create"
+	// among them, finds it unreachable in a snapshot built only from what the event cites. What that
+	// cost, in run 20261108v12after, was a room's creator refused the first join of their own room by
+	// a rule about invitations, and every event citing that join refused behind it for citing a
+	// rejected auth event.
+	//
+	// So the rest of the bundle is resolvable by identifier here. It is deliberately not added to
+	// `byKey`, which is the state the event is authorised against: authorising an event against state
+	// its sender did not cite is how two servers end up disagreeing about who is in a room. Looking up
+	// one event that came in the same handover, because a named clause of the rules asks what it
+	// says, is the smaller and entirely different thing.
+	for id, body := range known {
+		if _, cited := snapshot.byID[id]; !cited {
+			snapshot.byID[id] = body
+		}
+	}
 	if resolved < len(authIDs) {
 		// Something it relies on for authorisation is nowhere near. That is not a verdict
 		// about the event, and filing one would make the gap permanent.
@@ -356,4 +396,47 @@ func (s *Service) storeBundleEvent(ctx context.Context, event map[string]any, ru
 			slog.String("type", stringOr(event["type"])))
 	}
 	return accepted, outlier, false, nil
+}
+
+// roomOfNamelessCreate works out which room a bundle event with no room identifier is introducing,
+// which in any room version this server has ever implemented before means: nobody.
+//
+// Room version 12 (MSC4291) is the exception, and the reason it is one is worth keeping in front of
+// anyone tempted to make this branch longer. Its `m.room.create` event carries no room identifier
+// because the identifier *is* the hash of that event — an event cannot contain the hash of itself —
+// so the field is not missing information to be filled in from somewhere. Only that event, in that
+// family of versions, may arrive without one, and what names it is the bytes themselves.
+//
+// `expected` is the room the exchange was conducted under, where the exchange knew. It is checked
+// rather than preferred: a create event whose bytes hash to a different identifier is not a second
+// account of the same room, it is an event from another room or an event that has been edited, and
+// either way this server must not record the room under whichever name is more convenient.
+//
+// The second return says whether the event is entitled to name a room at all. It is not an error
+// return because a refused event and a refused bundle are different reports, and the caller has to
+// be able to make one and not the other.
+func roomOfNamelessCreate(event map[string]any, expected string) (string, bool, error) {
+	if eventType, _ := event["type"].(string); eventType != eventauth.TypeCreate {
+		return "", false, nil
+	}
+	content, _ := event["content"].(map[string]any)
+	version, _ := content["room_version"].(string)
+	if version == "" {
+		// A create event that names no version is a room version 1 room, which is what the
+		// specification says a missing version means. Version 1 names its room after a server, so
+		// this event should have carried the identifier and nothing here can invent it.
+		version = "1"
+	}
+	rules, ok := roomversion.Get(version)
+	if !ok || !rules.DomainlessRoomIDs {
+		return "", false, nil
+	}
+	derived, err := events.RoomIDFromCreate(rules, event)
+	if err != nil {
+		return "", true, fmt.Errorf("rooms: the create event in a handed-over bundle cannot name its own room: %w", err)
+	}
+	if expected != "" && expected != derived {
+		return "", true, fmt.Errorf("rooms: a bundle was handed over as room %q, and these create-event bytes make %q", expected, derived)
+	}
+	return derived, true, nil
 }

@@ -177,29 +177,34 @@ func Check(rules roomversion.Rules, event map[string]any, state Snapshot, opts O
 	}
 
 	// Room version 12 rule 2 (MSC4291): the room identifier on an event has to be the create event's
-	// own identifier written with `!`, and that create event has to be one this server accepts. It
-	// is the first time in the protocol that a room identifier is checkable rather than merely
-	// agreed, and it is what a create event with no room_id of its own makes possible: the event that
-	// names the room is the event whose bytes the name is a hash of, so nobody who has not got those
-	// bytes can name the room.
+	// own identifier written with `!`. It is the first time in the protocol that a room identifier is
+	// checkable rather than agreed, and it is what a create event with no room_id of its own makes
+	// possible: whoever names a room has to be holding bytes that hash to it.
 	//
-	// A room state with no create event refuses rather than passes. That is what the rule says — the
-	// identifier has to belong to an accepted create event, and no create event is no such event —
-	// and it stays workable under State Resolution 2.1 for the reason that algorithm gives: the
-	// iterative checks walk the conflicted set in auth order, so the create event is the first thing
-	// in the state and every event after it is checked against a room that already has its own
-	// account of what room it is.
+	// The check runs where a create event is in reach, and the two places that authorise an event
+	// differ in whether one is. Against *room state* — the iterative checks of state resolution, a
+	// client event authorised over the current state — it is there, and the check catches a room whose
+	// create event has been rewritten under the identifier its other events still carry. Against an
+	// event's own *auth chain* it is not there and cannot be, because this same version forbids an
+	// event from citing the create event (rule 3.2) on the grounds that its room identifier already
+	// names it. A clause that demanded the create event in the auth chain would refuse every event in
+	// every valid version 12 room, which is what this one did on its first contact with one, in run
+	// 20261108v12after.
+	//
+	// Nothing is left unguarded by that. On the receipt paths a room's identity is established from
+	// the hash of its create event before any of the room's events are stored — bundle.
+	// roomOfNamelessCreate refuses a bundle handed over as one room whose create-event bytes make
+	// another, and an event naming a room this server does not hold is refused as a room this server
+	// does not hold. This clause is the second look, taken from inside a state that has one.
 	if rules.DomainlessRoomIDs {
-		create, ok := state.State(Key{TypeCreate, ""})
-		if !ok {
-			return Failure{"2", "this room version's room ID is derived from its create event, which is not in the state"}
-		}
-		want, err := events.RoomIDFromCreate(rules, create)
-		if err != nil {
-			return Failure{"2", "the room's create event cannot name its own room: " + err.Error()}
-		}
-		if want != roomID {
-			return Failure{"2", fmt.Sprintf("the room ID %s is not the identifier this room's create event hashes to (%s)", roomID, want)}
+		if create, ok := createEventOf(rules, roomID, state); ok {
+			want, err := events.RoomIDFromCreate(rules, create)
+			if err != nil {
+				return Failure{"2", "the room's create event cannot name its own room: " + err.Error()}
+			}
+			if want != roomID {
+				return Failure{"2", fmt.Sprintf("the room ID %s is not the identifier this room's create event hashes to (%s)", roomID, want)}
+			}
 		}
 	}
 
@@ -209,7 +214,7 @@ func Check(rules roomversion.Rules, event map[string]any, state Snapshot, opts O
 	}
 
 	// Rule 3: a room that opted out of federation accepts no foreign events.
-	if create, ok := state.State(Key{TypeCreate, ""}); ok {
+	if create, ok := createEventOf(rules, roomID, state); ok {
 		if content := contentOf(create); content != nil {
 			if federate, ok := content["m.federate"].(bool); ok && !federate {
 				if serverName(sender) != serverName(stringOfOr(create["sender"], "")) {
@@ -251,7 +256,7 @@ func Check(rules roomversion.Rules, event map[string]any, state Snapshot, opts O
 		return Failure{"5", "sender is not joined to the room"}
 	}
 
-	pl, err := powerLevelsFor(rules, state)
+	pl, err := powerLevelsFor(rules, roomID, state)
 	if err != nil {
 		return err
 	}
@@ -505,6 +510,9 @@ func checkMember(rules roomversion.Rules, event map[string]any, state Snapshot, 
 	content := contentOf(event)
 	membership, hasMembership := stringOf(content, "membership")
 	sender, _ := stringOf(event, "sender")
+	// Needed to find the room's create event, which room version 12 leaves out of the very set this
+	// function is handed as its state.
+	roomID, _ := stringOf(event, "room_id")
 
 	// 4.1
 	if !hasStateKey || !hasMembership {
@@ -531,7 +539,7 @@ func checkMember(rules roomversion.Rules, event map[string]any, state Snapshot, 
 		}
 	}
 
-	pl, err := powerLevelsFor(rules, state)
+	pl, err := powerLevelsFor(rules, roomID, state)
 	if err != nil {
 		return err
 	}
@@ -737,7 +745,7 @@ func checkPowerLevels(rules roomversion.Rules, event map[string]any, state Snaps
 	// list the room's creator. Numbered as the version 12 page numbers it, since that is the page
 	// this rule exists on.
 	if rules.PrivilegedCreators {
-		if create, ok := state.State(Key{TypeCreate, ""}); ok {
+		if create, ok := createEventOf(rules, stringOfOr(event["room_id"], ""), state); ok {
 			if users, ok := stringKeyedMap(content["users"]); ok {
 				for _, creator := range creatorsOf(rules, create) {
 					if _, named := users[creator]; named {
@@ -965,8 +973,8 @@ const MaxPowerLevel = 9007199254740991
 // to grant it). Synapse and gomatrixserverlib both do this; gomatrixserverlib cites
 // Synapse's auth.py directly for it. The number matters: it decides whether a
 // creator can set levels above 100 in that first event.
-func powerLevelsFor(rules roomversion.Rules, state Snapshot) (*PowerLevels, error) {
-	create, hasCreate := state.State(Key{TypeCreate, ""})
+func powerLevelsFor(rules roomversion.Rules, roomID string, state Snapshot) (*PowerLevels, error) {
+	create, hasCreate := createEventOf(rules, roomID, state)
 	ev, ok := state.State(Key{TypePowerLevels, ""})
 	if !ok {
 		pl := DefaultPowerLevels()
@@ -1019,6 +1027,37 @@ func creatorsOf(rules roomversion.Rules, create map[string]any) []string {
 		}
 	}
 	return creators
+}
+
+// createEventOf returns the room's m.room.create event, which several rules need and room
+// version 12 goes out of its way to make hard to obtain.
+//
+// In every earlier version the create event is one of an event's auth events, so a snapshot built
+// from what an event cites holds it. Version 12 forbids citing it — the room identifier *is* its
+// identifier, with `!` where an event identifier carries `$` — so the same snapshot does not, and
+// every rule that reaches for the creator of the room quietly finds nobody: a room's creator
+// arrives with the power level of a stranger, and their first power levels event is refused for
+// wanting a level they hold by the fact that they made the room. That is not a corner case; it is
+// the room's first event, and it is what run 20261108v12after died on.
+//
+// The specification supplies the substitute in the same breath as the rule that removes it: the
+// room ID "being the m.room.create event's ID" implies the create event. So where the state does not
+// carry one, ask the snapshot for the event whose identifier is this room's identifier under `$`.
+// A snapshot that cannot resolve that is answering honestly that it does not know what room this
+// is, and the callers treat it as not knowing, which is the same answer the create event being
+// absent has always meant here.
+func createEventOf(rules roomversion.Rules, roomID string, state Snapshot) (map[string]any, bool) {
+	if create, ok := state.State(Key{TypeCreate, ""}); ok {
+		return create, true
+	}
+	if rules.DomainlessRoomIDs && strings.HasPrefix(roomID, "!") {
+		if create, ok := state.Event("$" + roomID[1:]); ok {
+			if eventType, _ := stringOf(create, "type"); eventType == TypeCreate {
+				return create, true
+			}
+		}
+	}
+	return nil, false
 }
 
 // creatorOf identifies a room's creator for the room version: room versions up to

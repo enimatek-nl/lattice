@@ -50,7 +50,17 @@ func (s *Service) AcceptRemoteEvent(ctx context.Context, pdu []byte, verify Veri
 	}
 	roomID, _ := event["room_id"].(string)
 	if roomID == "" {
-		return "", fmt.Errorf("the event carries no room_id, so its rules cannot be checked")
+		// Room version 12: the create event carries no identifier because its identifier is the hash
+		// of it. Nothing else may arrive without one — an event in a room whose rules this server
+		// cannot read is an event it must not store.
+		derived, named, deriveErr := roomOfNamelessCreate(event, "")
+		if deriveErr != nil {
+			return "", deriveErr
+		}
+		if !named {
+			return "", fmt.Errorf("the event carries no room_id, so its rules cannot be checked")
+		}
+		roomID = derived
 	}
 	room, err := s.rooms.ByRoomID(ctx, roomID)
 	if err != nil && notFound(err) {
@@ -58,7 +68,7 @@ func (s *Service) AcceptRemoteEvent(ctx context.Context, pdu []byte, verify Veri
 		// about: the create event is how a server learns a room exists. Nothing else may
 		// introduce one — an event in an unknown room is an event in a room this server
 		// cannot check the rules of.
-		if created, createErr := s.adoptRemoteRoom(ctx, event); createErr != nil {
+		if created, createErr := s.adoptRemoteRoom(ctx, event, roomID); createErr != nil {
 			return "", createErr
 		} else if !created {
 			return "", fmt.Errorf("room %q is not known to this server", roomID)
@@ -286,7 +296,7 @@ func (s *Service) refuse(ctx context.Context, roomID, eventID, reason string) er
 // The room version comes from the create event, because that is what the room's rules
 // are: a server that assumed its own default version would authorise the room's later
 // events against rules the room never chose.
-func (s *Service) adoptRemoteRoom(ctx context.Context, event map[string]any) (bool, error) {
+func (s *Service) adoptRemoteRoom(ctx context.Context, event map[string]any, roomID string) (bool, error) {
 	eventType, _ := event["type"].(string)
 	stateKey, hasStateKey := event["state_key"].(string)
 	if eventType != eventauth.TypeCreate || !hasStateKey || stateKey != "" {
@@ -303,7 +313,18 @@ func (s *Service) adoptRemoteRoom(ctx context.Context, event map[string]any) (bo
 	if !ok {
 		return false, fmt.Errorf("the room asks for room version %s, which this server cannot handle", version)
 	}
-	roomID, _ := event["room_id"].(string)
+	// Room version 12 arrives here with no identifier on the event and one in hand from the caller,
+	// or with neither and an event that says what it hashes to; either way the event is not the place
+	// to read it from, and `roomOfNamelessCreate` has already made the two agree when both exist.
+	if carried, ok := event["room_id"].(string); ok && carried != "" {
+		if roomID != "" && carried != roomID {
+			return false, fmt.Errorf("rooms: a create event names room %q while it was offered as %q", carried, roomID)
+		}
+		roomID = carried
+	}
+	if roomID == "" {
+		return false, fmt.Errorf("rooms: a create event that names no room and hashes to no room cannot introduce one")
+	}
 	if err := s.rooms.Create(ctx, &persist.Room{
 		RoomID:      roomID,
 		RoomVersion: rules.ID,

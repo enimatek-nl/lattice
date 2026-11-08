@@ -181,7 +181,7 @@ func (b *Backfiller) fill(ctx context.Context, roomID string, destinations, seed
 	// arrived rather than the order it happened in. The chain this call fetched is a small
 	// graph, and its ordering is in the events themselves.
 	ordered := parentsFirst(fetched)
-	bundle := rooms.RemoteBundle{PDUs: ordered}
+	bundle := rooms.RemoteBundle{PDUs: ordered, RoomID: roomID}
 	stored, err := b.Store.AcceptRemoteBundle(ctx, bundle, pduVerifier(ctx, b.Keyring, b.Name, b.LocalKeys))
 	if err != nil {
 		return outcome, err

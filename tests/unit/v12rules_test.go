@@ -240,19 +240,19 @@ func TestMSC4291RoomIDIsCheckedAgainstTheCreateEvent(t *testing.T) {
 		}
 	})
 
-	t.Run("a room with no create event cannot be authorised at all", func(t *testing.T) {
-		// Rule 2 asks for the identifier of an accepted create event; absent one, there is nothing
-		// for the room identifier to match, and inventing a pass would be the hole the rule exists
-		// to close.
+	t.Run("an event authorised against an auth chain is still authorised without the create event", func(t *testing.T) {
+		// The regression this task found by running into a real homeserver. Room version 12 forbids an
+		// event from citing the create event as an auth event — the room identifier names it — so an
+		// event authorised against its own auth chain is authorised against a set that has no create
+		// event in it. A rule 2 that demanded one there refused every event in every valid version 12
+		// room, and nothing short of a federation handshake exercises that path: run 20261108v12after.
 		var held []map[string]any
-		for _, event := range otherStateEvents(t, state, roomID) {
-			held = append(held, event)
-		}
-		bare := eventauth.NewMemoryState(held...)
-		event := nameEventBy("@alice:example.org", roomID)(rules, bare)
-		err := eventauth.Check(rules, event, bare, eventauth.Opts{})
-		if failure, ok := eventauth.AsFailure(err); err == nil || !ok || failure.Rule != "2" {
-			t.Fatalf("refused by %v, wanted rule 2", err)
+		held = append(held, otherStateEvents(t, state, roomID)...)
+		withoutCreate := eventauth.NewMemoryState(held...)
+		event := nameEventBy("@alice:example.org", roomID)(rules, withoutCreate)
+		err := eventauth.Check(rules, event, withoutCreate, eventauth.Opts{})
+		if failure, ok := eventauth.AsFailure(err); ok && failure.Rule == "2" {
+			t.Fatalf("rule 2 refused an event for lacking a create event it is forbidden to cite: %s", failure.Reason)
 		}
 	})
 }
