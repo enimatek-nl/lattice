@@ -273,6 +273,36 @@ including what the first attempt got wrong, is in `.agent-work/TASKS.md` (T-4051
 | REQ-REL-003 | CS §Relations, MSC3440 | A room's threads, newest by each thread's newest event, each carrying its last word, its size, and whether the reader took part | SHOULD | implemented+tested. `GET /rooms/{roomID}/threads`; a thread is an aggregate over the relation index rather than a stored thing, so a root with no reply is not a thread yet. The aggregation travels inside the root's `unsigned.m.relations.m.thread`, which is what implementations and clients read, rather than the sibling `event`/`latest_event`/`total` object the draft sketched | `internal/rooms/threads.go`, `internal/persist/relation.go`; `tests/integration/relations_test.go` (`TestTheRoomThreadListFollowsTheNewestReply`); Complement `TestThreadsEndpoint` (run 20261107r-threads) |
 | REQ-REL-004 | MSC3440 `include`/`exclude` | The type lists choose which events count as part of a thread — and so which threads there are and how big they are — not only which ones are printed | SHOULD | implemented+tested, including the two names the proposal spells that are not event types (`.*`, `.*non-timeline`) | `internal/api/client/relations.go`, `internal/persist/relation.go` (`applyTypeLists`); `tests/integration/relations_test.go` |
 
+
+REQ-REL-005 (MSC3874): an event filter may narrow a stream by the relation its events claim —
+`org.matrix.msc3874.rel_types` and `not_rel_types` — and the same document means the same thing
+on `/rooms/{room}/messages` and on a sync's timeline. The decision is taken from the event's own
+`content.m.relates_to.rel_type`, not from this server's index of relations: an event filter asks
+what the event says. An event that claims no relation is never named by `rel_types` and never
+excluded by `not_rel_types`; `m.relates_to` with no `rel_type` is a reply and belongs with the
+relationless; a list present but empty is the whole answer, as an empty `types` is.
+Implemented; `tests/integration/relationfilter_test.go`, Complement `TestFilterMessagesByRelType`.
+
+### 6.7 Pushers: where a device asks to be woken (added during M4)
+
+REQ-PUSHER-001: a device can ask this server to notify it (`POST /pushers/set`) and can read back
+what its user has asked (`GET /pushers`). A pusher is one row per (pushkey, app_id) — setting that
+pair again replaces rather than adds — with a kind this server delivers (http) and an https
+`data.url`, because a notification POST carries the triggering event's content. An email pusher is
+refused `M_INVALID_EMAIL_PARAM` rather than stored, and `kind: null` removes the pusher the client
+names.
+
+REQ-PUSHER-002: a pusher belongs to the session that wrote it, and stops belonging there when that
+session stops working. A password change drops the pushers of the sessions it ended and keeps the
+one that proved the new password; logging a session out drops its own, logging out everywhere drops
+every one. This is stated as a requirement rather than a detail because the alternative is a leak
+of a private address into a later holder of the same account.
+
+REQ-PUSHER-003 (not implemented, recorded so the two above are not over-read): delivering to a
+pusher — calling the push gateway, `GET /notifications`, and evaluating push rules into
+notifications with counts and highlights — is not implemented (T-3005a). The storage and the doors
+exist; the delivery they exist for does not.
+
 ## 7. Operational requirements
 
 | ID | Source | Requirement | Level | Status | Tests |
