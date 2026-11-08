@@ -550,7 +550,33 @@ not the behaviour the room owes. They are corrected — the value as of the leav
 a later member may appear only as an invite the reader knew about, never as a join — and the
 reason is written next to them. The Complement assertions were not touched.
 
-## Latest full run (2026-11-07s — the cleanest on record, and the relations work measured in it)
+## Latest full run (2026-11-08mm — the baseline, and the first run that can name its own source)
+
+`RUN='.*' COMPLEMENT_LABEL=20261108mm COMPLEMENT_TEST_TIMEOUT=60m PARALLEL=1 UPDATE_BASELINE=1 scripts/complement.sh -v`
+— image built by `scripts/complement-image.sh` from a host-compiled binary, `/REVISION` inside the
+image reading `32793af`/`clean`, so the tree under test is stated by the thing that was tested rather
+than by the working directory at the time the summary was written.
+
+**143 passing, 76 failing, 1 skipped** out of 220 top-level tests.
+
+| Field | Value |
+| --- | --- |
+| Federation fingerprints | **zero of every kind** (`cert-naming-another-server=0 tls-handshake-refused=0 unsigned-peer=0 template-401=0 unbuilt-image=0`) — the second full run on record that can say that, and the first whose image identifies its own source |
+| Parallelism | **1**, deliberately: `tests` and `tests/csapi` each deploy two homeservers into one Docker network, and running them together produced cross-contamination in 20261108j (T-4085). The 20261107s headline was taken with `PARALLEL=2` and its 23 contaminated log lines are why that number is not reused here |
+| Newly passing against 20261108kk | `TestRoomSpecificUsernameAtJoin`, `TestRoomSpecificUsernameChange` — the user directory, and nothing else, which is exactly the code difference between the two images |
+| Newly failing | none |
+| A claim this run retires | 20261108kk (the same suite at `PARALLEL=2`, one commit earlier) recorded 11 wrong-name certificates and 12 refused TLS handshakes in its own log, and this record said its 141 was "a floor, not a ceiling". It was not. Those 23 log lines flipped **no** test: kk and mm differ only by the two user-directory tests. Contamination that shows up in a log does not automatically contaminate the tally, and the two-server failures in this suite are usually real. The fingerprints still belong in the summary — 20261107l really did fake 217 failures with them — but they are evidence to be read, not a reason to discard a number |
+| Where the 76 failures are | `tests` **47**, `tests/csapi` **11**, the fifteen MSC packages **16** (heaviest: `msc4242` 4, `msc4306` 2, `msc2836` 2, `msc3389` 2, `msc3757` 1). Stated as a priority: the Client-Server API is 95/106, and the distributed half of the protocol is 43/90 |
+| Not in this image | `/context` (`52e3d4a`), which landed while the run was in progress and is therefore counted nowhere here; `TestUDDRules` and the MSC3874 relation-filter tests are in it |
+| Complement assertions changed | none |
+
+Lists: `.agent-work/complement-{passes,failures}-20261108mm-serial.txt`; table
+`.agent-work/next/complement-results-20261108mm-serial.tsv`; log
+`.agent-work/next/complement-run-20261108mm-serial.log`; this table is now the comparison baseline at
+`.agent-work/next/complement-baseline.tsv`, so later runs report a delta instead of a fresh number to
+be eyeballed against a remembered one.
+
+## Full run (2026-11-07s — superseded as the headline by 20261108mm)
 
 `RUN='.*' COMPLEMENT_LABEL=20261107s COMPLEMENT_TEST_TIMEOUT=50m PARALLEL=2 scripts/complement.sh -v`
 at tree `2c31072`: **130 passing, 89 failing, 1 skipped** out of 220 top-level tests.

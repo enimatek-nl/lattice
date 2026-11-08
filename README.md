@@ -16,13 +16,23 @@ federation halves of typing and receipts, cross-signing and key backup, search, 
 the MSCs built on it are **not** implemented, and they answer with a protocol error rather than a
 fake success.
 
-The measured position, from the cleanest full run on record (2026-11-07s, at commit `2c31072`):
-**130 Complement top-level tests pass, 89 fail, 1 skipped**, out of 220. That is the honest number,
-not a compliance claim, and it is out of date in one direction: `/forget`, MSC3874's relation
-filters, pushers, history visibility and typing landed after it and are verified by targeted runs
-rather than by a full one, so none of them is counted in 130. A full run worth believing is owed
-once the stale per-network DNS records on the development machine are cleared — until then every
-two-server test on that machine answers with another deployment's certificate. The per-area picture — implemented, tested here, verified by Complement, partial, absent — is in
+The measured position, from a full serial run on 2026-11-08 (label 20261108mm, image built at
+`32793af`, every contamination fingerprint at zero): **143 Complement top-level tests pass, 76 fail,
+1 skipped**, out of 220. That is the honest number and not a compliance claim. Two earlier full runs
+are recorded as unquotable — the last one (20261107s, 130/89/1) died of stale per-network DNS records
+on the development machine, where every two-server test answered with another deployment's
+certificate, and the first attempt at a fresh one (20261108kk, 141/78/1) ran two suites at once and
+put 11 of its failures down to that. What makes 20261108mm believable is stated in its own summary:
+`cert-naming-another-server=0 tls-handshake-refused=0 unsigned-peer=0`. The image it tested also
+declares which source it was built from, so a tally can never again be quoted against the wrong
+tree.
+
+Where the 76 failures are, from the same run's results table (`scripts/complement-tally.sh
+--by-package`): 13 in `tests/csapi`, **47 in `tests`** — which is federation and room semantics —
+and 16 spread over the fifteen MSC packages. The Client-Server API is close to done; what remains is
+the distributed half of the protocol.
+
+The per-area picture — implemented, tested here, verified by Complement, partial, absent — is in
 [`docs/compliance-matrix.md`](docs/compliance-matrix.md), and the raw log and the pass/failure lists
 behind every tally quoted there live under `.agent-work/`, which is working state kept out of
 the repository — a clone will not have them, and re-running the command reproduces them.
@@ -36,13 +46,18 @@ the repository — a clone will not have them, and re-running the command reprod
   (shared secret), the profile endpoints and the membership restatement that follows a profile change.
 - Rooms: `POST /createRoom` (presets, version negotiation, initial state), `PUT /send/{type}/{txn}`
   with per-device idempotency, `PUT /state/{type}[/{key}]`, join / invite / knock / leave / ban / kick /
-  unban, `GET /state*`, `/members`, `/messages`, `/event/{id}`, `PUT /redact/{id}/{txn}`, `/aliases`,
+  unban, `GET /state*`, `/members`, `/messages`, `/event/{id}`, `/context/{id}` — a window around one
+  event, built from `/messages` so the two cannot disagree about what the requester may see —
+  `PUT /redact/{id}/{txn}`, `/aliases`,
   `/directory/room/{alias}`, `/publicRooms`, `/upgrade`, `/joined_rooms`, `/joined_members`,
   `/hierarchy`, `/room_summary/{id}` — and every one of those reads is filtered by
   `m.room.history_visibility` *as it stood when the event was written*, not as the room is set today
   (`docs/requirements.md` §6.8).
 - Synchronisation: `GET /sync` (incremental, `since`, long-poll, `device_lists`, `to_device` absent,
   account data), `GET/PUT /user/{id}/filter`, user `account_data`, presence for one user.
+- User directory: `POST /user_directory/search`, whose rule is stated in
+  `docs/requirements.md` §7 — whom a person may be told about, and under which of the names that
+  person has gone by in the rooms they share.
 - Device keys and encryption support: `POST /keys/upload`, `/keys/query` (including asking a peer for a
   remote user), `/keys/claim`, federation `user/keys/query`, device-list change announcements.
 - Push rules: the whole read/write `/pushrules` API and delivery through `account_data` in `/sync`;

@@ -333,7 +333,9 @@ if [[ -f "$results" && -f "$baseline" ]]; then
 			if (o) printf "other state change (skip involved): %d\n", o
 			printf "unchanged: %d   did not run this time: %d   new since the baseline: %d\n", same, gone, fresh
 		}' "$baseline" "$results" | tee "$delta"
-	delta_section="delta: $(grep '^newly passing:' "$delta" | awk '{print $2}') newly passing, $(grep '^newly failing:' "$delta" | awk '{print $2}') newly failing (baseline $(basename "$baseline")); $(basename "$delta")"
+	np="$(grep '^newly passing:' "$delta" | head -1 | awk -F': ' '{print $2}')"
+	nf="$(grep '^newly failing:' "$delta" | head -1 | awk -F': ' '{print $2}')"
+	delta_section="delta vs $(basename "$baseline"): ${np:-0} newly passing, ${nf:-0} newly failing; detail in $(basename "$delta")"
 	if [[ "${UPDATE_BASELINE:-}" == 1 ]]; then
 		cp "$results" "$baseline"
 		echo "== baseline updated: $baseline (from this run)"
