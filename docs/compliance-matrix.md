@@ -40,6 +40,7 @@ Specification: Matrix v1.19 (`docs/specification-version.md`).
 | Rooms | join / invite / knock / leave, `GET /state`, `/members`, `/messages`, `/event/{eventID}`, redaction (`PUT /redact/{eventID}/{txn}`), aliases, directory, upgrades | implemented | `tests/integration/redaction_test.go`, `tests/integration/history_test.go`, Complement `TestRedact`/`TestPowerLevels` | still missing: `GET /rooms/{roomID}/context/{eventID}` (T-2015), `GET /rooms/{roomID}/event_auth/{eventID}` (T-2016), `GET /_matrix/federation/v1/state_ids` |
 | Sync / messages | `GET /sync` (incremental, `since`, long-poll, joined/invited/left sections, `device_lists`, account data in both scopes, limited timelines, `prev_batch`, MSC4222 `state_after` with `lazy_load_members`), `GET /rooms/{id}/messages` | implemented — MSC4222's `GET /rooms/{id}/members` stream is not (T-4068) | `tests/integration/sync_test.go`, `tests/integration/history_test.go`, `tests/integration/statresolution_test.go`, `tests/integration/stateafter_test.go` | **verified**: `TestSync` (`tests/csapi`), `TestSync` (`tests/msc4222`, both subtests — a different test with the same name; only the qualified results table tells them apart, T-4066), `TestSyncLeaveSection`, `TestGappedSyncLeaveSection`, `TestSyncTimelineGap`, `TestCumulativeJoinLeaveJoinSync`, `TestOlderLeftRoomsNotInLeaveSection`, `TestRoomMessagesLazyLoading`, `TestRoomMessagesLazyLoadingLocalUser`, `TestSyncOmitsStateChangeOnFilteredEvents` (T-4070: a state event a filtered batch hides must still be in the state section). Still red through sync: the presence section (T-3001e), the filter fields that narrow by sender, URL and event fields rather than type (T-4020), and the two-server cases that need the handshake pieces below |
 | Relations, threads | `GET /rooms/{roomID}/relations/{eventID}[/{relType}[/{eventType}]]` and `GET /rooms/{roomID}/threads`, both under `v3` and `v1`: what relates to an event, filtered by relation and event type, walked in either direction with tokens; and the room's conversations, ordered by each thread's newest event. The relation claim stays in the event's content — `event_relations` is an index over it, written where the event is stored and dropped where a redaction takes the content | implemented | yes | **verified** (`TestRelations`, `TestRelationsPagination`, `TestRelationsPaginationSync`, `TestThreadsEndpoint`, run 20261107r-threads) |
+| Leaving and forgetting | `POST /rooms/{roomID}/forget`: the room stops being shown to the user who forgot it, and stops being readable to them, until a join or an invite again clears it. The marker is per user and per room, and is judged per sync window, so a sync asked from before the leaving still answers the leaving. A member who has left is owed the state and roster **as of** their leaving, read from the state group the leaving event was persisted with | implemented | `tests/integration/forget_test.go`, `tests/integration/aliases_test.go` | **verified**: `TestRoomForget` (all six subtests), `TestLeftRoomFixture` (all five subtests), run 20261108u-forget |
 | E2EE device keys | `POST /keys/upload`, `POST /keys/query` (asking a peer for a user who lives elsewhere), `POST /keys/claim`, `GET /keys/changes` (the same addressed rows the sync `device_lists` section reads, asked as a token range), federation `user/keys/query` | implemented — cross-signing and key backup are not (T-3008e) | `tests/integration/keys_test.go`, `tests/integration/federationdevicekeys_test.go`, `tests/integration/keyschanges_test.go` | **verified**: `TestUploadKey`, `TestUploadKeyIdempotency`, `TestUploadKeyIdempotencyOverlap`, `TestKeyClaimOrdering`, `TestKeysQueryWithDeviceIDAsObjectFails`, `TestKeyChangesLocal` (T-4072). Red: `TestFederationKeyUploadQuery` (T-4008's device-list EDUs), `TestE2EKeyBackupReplaceRoomKeyRules` (key backup, T-3008e) |
 | Account | whoami, devices, sessions, profile; `account_data` in both scopes (user, and user-per-room) with write, read and MSC3391 removal reaching `/sync` | partial — no `POST /account/password`, no `POST /account/deactivate` | `tests/integration/auth_test.go`, `tests/integration/direct_test.go`, `tests/integration/pushrules_test.go`, `tests/integration/accountdata_test.go` | **verified**: `TestAddAccountData` (both subtests), `TestRemovingAccountData` (all four subtests — DELETE and empty PUT, user and room scope) from the targeted run `.agent-work/next/complement-run-acctdata4.log`, not from a full suite run. Still red: `TestChangePassword`, `TestDeactivateAccount` (no `/account/password`, no `/account/deactivate`) |
 | Presence | `GET`/`PUT /presence/{userID}/status` for one user, and the `presence` section of `/sync` for users who share a room | partial — there is no idle timeout, so a user who stops asking stays online (T-3001e) | `tests/integration/presence_test.go` | `TestPresence` and `TestPresenceSyncDifferentRooms` pass; `TestRemotePresence` is red (no `m.presence` EDU, T-4008) |
@@ -213,6 +214,72 @@ membership, alias and M1-regression subset, and it is reported as such.
    pages are what the project's precedence rules make normative; the divergence is recorded here so
    that a version 1 room that disagrees between servers is investigated rather than assumed away.
    Interoperability against Synapse on such a room is not tested.
+
+## Targeted run 20261108u-forget — forgetting a room, and the state owed to a member who left
+
+`RUN='TestRoomForget|TestLeftRoomFixture|TestRoomLeave|TestPeekingViaPublicRoomsAndThenJoin'`,
+PARALLEL=1, at tree `e5758b1`. Log `.agent-work/next/complement-run-20261108u-forget.log`,
+table `.agent-work/next/complement-results-20261108u-forget.tsv`,
+lists `.agent-work/complement-passes-20261108u-forget.txt` / `-failures-…` (the failure list is empty).
+
+    == tally: 2 passing, 0 failing, 0 skipped (top-level tests)
+
+Every subtest of both, listed, because both were unattempted before and each subtest pins a
+separate half of the behaviour:
+
+| subtest | now |
+|---|---|
+| `TestRoomForget/Parallel/Forgotten room messages cannot be paginated` | PASS |
+| `TestRoomForget/Parallel/Can forget room you've been kicked from` | PASS |
+| `TestRoomForget/Parallel/Forgetting room does not show up in v2 initial /sync` | PASS |
+| `TestRoomForget/Parallel/Can re-join room if re-invited` | PASS |
+| `TestRoomForget/Parallel/Leave for forgotten room shows up in v2 incremental /sync` | PASS |
+| `TestLeftRoomFixture/Can get rooms/{roomId}/state for a departed room` | PASS |
+| `TestLeftRoomFixture/Can get rooms/{roomId}/members for a departed room` | PASS |
+| `TestLeftRoomFixture/Can get rooms/{roomId}/messages for a departed room` | PASS |
+| `TestLeftRoomFixture/Can get 'm.room.name' state for a departed room` | PASS |
+| `TestLeftRoomFixture/Getting messages going forward is limited for a departed room` | PASS |
+
+`TestRoomLeave` and `TestPeekingViaPublicRoomsAndThenJoin` matched no test in this Complement
+checkout, so the tally counts two tests, not four — said rather than quietly dropped.
+
+The four things this needed, each with the test that kept me honest:
+
+* **A `/forget` marker of our own** (`persist.ForgetRepo`, table `room_forgotten`). Forgetting is
+  said by the user, not done to them: a room the user has left, been kicked from, or has never
+  joined can be forgotten (200 `{}`), while a room they are still in is refused with 400
+  `M_UNKNOWN` (`rooms.ErrStillInRoom` says why in its own words).
+* **Sync must keep answering later** — `TestRoomForget/…/Leave for forgotten room shows up in v2
+  incremental /sync` asks for a sync from *before* the leaving, and the leaving has to come back.
+  So the marker is not absolute: the sync service drops a forgotten room **unless** the requested
+  window still holds that membership event. My first attempt hid the join as well, and that test
+  caught it.
+* **A forgotten room must refuse to be read** — `/messages` answers 403 `M_FORBIDDEN` for the
+  forgetter while the other member still reads it.
+* **Re-joining has to clear the marker**, done at the membership write (a join or an invite) rather
+  than at the sync read, because `/messages` does not go through sync.
+
+`TestLeftRoomFixture` never needed `/forget` at all. What it asked for is that a member who has
+left is still owed the state of the room **as it was when they left**: `/state` and
+`/state/m.room.name` and the roster answered what they knew at that moment, and the history
+stays readable forwards with a bounded window. We were answering with today's state, which the
+reader was never told and was never allowed to see.
+
+    internal/rooms/reads.go   stateFor(ctx, roomID, requester) []persist.StateGroupEntry
+    internal/persist          state_groups, state_group_entries, event_state_groups
+                              (GroupOf, Entries, StateEntryAt)
+
+`stateFor` resolves the member's read horizon to the event they left at, asks which state group
+that event was persisted with, and returns that group's entries. Only a room never seen that way
+falls back to cutting today's state, and the fallback says so in the code rather than pretending.
+
+**One thing to flag: our own tests had pinned the weaker answer.**
+`TestFormerMemberReadsStopAtLeaving` in `tests/integration/aliases_test.go` asserted that state
+written *after* the reader left is hidden as a **404**, and that the departed member's roster
+contains no trace of a member who joined later. Both assertions described the behaviour we had,
+not the behaviour the room owes. They are corrected — the value as of the leaving comes back, and
+a later member may appear only as an invite the reader knew about, never as a join — and the
+reason is written next to them. The Complement assertions were not touched.
 
 ## Latest full run (2026-11-07s — the cleanest on record, and the relations work measured in it)
 
