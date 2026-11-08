@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/enimatek/lattice/internal/matrixid"
 	"github.com/enimatek/lattice/internal/roomversion"
 )
 
@@ -131,6 +132,10 @@ const (
 	TypeThirdPartyInvite = "m.room.third_party_invite"
 )
 
+// AdditionalCreatorsKey is the create-event content key by which room version 12 names
+// creators beyond the sender (MSC4289). Each of them holds infinite power in the room.
+const AdditionalCreatorsKey = "additional_creators"
+
 // JACSKey is the content key naming the user whose signature authorises a
 // restricted join.
 const JACSKey = "join_authorised_via_users_server"
@@ -155,8 +160,15 @@ func Check(rules roomversion.Rules, event map[string]any, state Snapshot, opts O
 	eventType, _ := stringOf(event, "type")
 	roomID, _ := stringOf(event, "room_id")
 	sender, _ := stringOf(event, "sender")
-	if eventType == "" || roomID == "" || sender == "" {
-		return Failure{"0", "event is missing type, room_id or sender"}
+	if eventType == "" || sender == "" {
+		return Failure{"0", "event is missing type or sender"}
+	}
+	// Room version 12 is the first version where an event may legitimately arrive without a room
+	// identifier: its `m.room.create` event carries none, because the room's identifier is that
+	// event's own identifier written with `!` instead of `$` (MSC4291). Requiring the field here
+	// would reject the one event a room is made of before any rule got to read it.
+	if roomID == "" && !(rules.DomainlessRoomIDs && eventType == TypeCreate) {
+		return Failure{"0", "event is missing room_id"}
 	}
 
 	// Rule 1 (v3-v11 page, rule 1): the create event stands on its own.
@@ -252,13 +264,44 @@ func checkCreate(rules roomversion.Rules, event map[string]any, roomID, sender s
 	if prev := events.ReferencedIDs(event, "prev_events"); len(prev) > 0 {
 		return Failure{"1.1", "a create event must have no prev_events"}
 	}
-	if serverName(roomID) != serverName(sender) {
+	if rules.DomainlessRoomIDs {
+		// Room version 12 rewrote this clause. Where versions up to 11 asked that the room ID's
+		// domain be the sender's domain, version 12 asks that the create event carry no room ID at
+		// all, because the identifier is derived from these bytes: `!` plus the hash of this event.
+		// The two rules cannot both be satisfied, which is the whole reason a create event in this
+		// version looks different — and why a create event that brings its own room ID is not a
+		// version difference but a forged room ID, naming a room these events do not create.
+		if _, carriesRoomID := stringOf(event, "room_id"); carriesRoomID {
+			return Failure{"1.2", "a create event in this room version must not carry a room_id"}
+		}
+	} else if serverName(roomID) != serverName(sender) {
 		return Failure{"1.2", "the room ID domain does not match the sender domain"}
 	}
 	content := contentOf(event)
 	if version, ok := stringOf(content, "room_version"); ok {
 		if !roomversion.IsKnown(version) {
 			return Failure{"1.3", "unrecognised room version " + version}
+		}
+	}
+	// Room version 12 rule 1.4 (MSC4289): the room's creators are the sender plus the users this
+	// event names, and each of them holds infinite power in the room from the moment it exists.
+	// A value that is not a user ID is therefore not a malformed optional field — it is an
+	// attempt to hand unlimited power to something the grammar does not accept as a person.
+	if rules.PrivilegedCreators {
+		if raw, named := content[AdditionalCreatorsKey]; named {
+			list, ok := raw.([]any)
+			if !ok {
+				return Failure{"1.4", "content.additional_creators is not an array"}
+			}
+			for _, entry := range list {
+				userID, ok := entry.(string)
+				if !ok {
+					return Failure{"1.4", "content.additional_creators holds a value that is not a string"}
+				}
+				if err := matrixid.UserValid(userID); err != nil {
+					return Failure{"1.4", "content.additional_creators holds an invalid user ID: " + err.Error()}
+				}
+			}
 		}
 	}
 	creator, hasCreator := stringOf(content, "creator")
@@ -317,7 +360,17 @@ func checkAuthEvents(rules roomversion.Rules, event map[string]any, state Snapsh
 	if !sameKeys(got, want) {
 		return Failure{"2.2", "auth events are " + keyList(got) + ", the selection algorithm gives " + keyList(want)}
 	}
-	if !seen[Key{TypeCreate, ""}] {
+	// Room versions up to 11 require the create event to be among the auth events by name. Room
+	// version 12 forbids it, and forbids it twice over: the selection algorithm leaves it out, and
+	// rule 3.2 of that page refuses an event whose auth events do not match the selection. The room
+	// ID every version 12 event carries *is* the create event's identifier, so citing it would say
+	// the same thing in two fields that can then disagree. Selection already reflects that; this is
+	// the other half, and the label follows the page the rule is on.
+	if rules.DomainlessRoomIDs {
+		if seen[Key{TypeCreate, ""}] {
+			return Failure{"3.2", "a create event is not one of this room version's auth events"}
+		}
+	} else if !seen[Key{TypeCreate, ""}] {
 		return Failure{"2.4", "no m.room.create event among the auth events"}
 	}
 	return nil
@@ -331,6 +384,11 @@ func SelectKeys(rules roomversion.Rules, event map[string]any, state Snapshot) [
 	if eventType, _ := stringOf(event, "type"); eventType == TypeCreate {
 		return nil
 	}
+
+	// Room version 12 (MSC4291) takes the create event out of the selection entirely, because the
+	// room ID — which every event in the room carries, and which is the create event's own
+	// identifier — cites it instead. Listing it anyway is a violation of rule 3.2, which compares
+	// an event's auth_events against exactly this list.
 
 	var keys []Key
 	listed := map[Key]bool{}
@@ -348,7 +406,9 @@ func SelectKeys(rules roomversion.Rules, event map[string]any, state Snapshot) [
 		}
 	}
 
-	add(Key{TypeCreate, ""})
+	if !rules.DomainlessRoomIDs {
+		add(Key{TypeCreate, ""})
+	}
 	add(Key{TypePowerLevels, ""})
 
 	sender, _ := stringOf(event, "sender")
@@ -629,6 +689,25 @@ func checkPowerLevels(rules roomversion.Rules, event map[string]any, state Snaps
 		}
 	}
 
+	// Room version 12 rule 10.4 (MSC4289): a creator's power level is not something a power levels
+	// event may set, at any level, not even the level they already hold. The clause is placed here
+	// — ahead of "no previous power levels event, allow", which is the version 11 numbering's 10.5 —
+	// because the specification orders it that way and the difference is real: the first power
+	// levels event of a room is otherwise unconditional, and in room version 12 it still may not
+	// list the room's creator. Numbered as the version 12 page numbers it, since that is the page
+	// this rule exists on.
+	if rules.PrivilegedCreators {
+		if create, ok := state.State(Key{TypeCreate, ""}); ok {
+			if users, ok := stringKeyedMap(content["users"]); ok {
+				for _, creator := range creatorsOf(rules, create) {
+					if _, named := users[creator]; named {
+						return Failure{"10.4", "a power levels event may not name a room creator"}
+					}
+				}
+			}
+		}
+	}
+
 	// 9.4: the first power levels event in the room is unconditional.
 	if _, ok := state.State(Key{TypePowerLevels, ""}); !ok {
 		return nil
@@ -847,11 +926,14 @@ const MaxPowerLevel = 9007199254740991
 // Synapse's auth.py directly for it. The number matters: it decides whether a
 // creator can set levels above 100 in that first event.
 func powerLevelsFor(rules roomversion.Rules, state Snapshot) (*PowerLevels, error) {
+	create, hasCreate := state.State(Key{TypeCreate, ""})
 	ev, ok := state.State(Key{TypePowerLevels, ""})
 	if !ok {
 		pl := DefaultPowerLevels()
-		if create, ok := state.State(Key{TypeCreate, ""}); ok {
-			pl.Users[creatorOf(rules, create)] = MaxPowerLevel
+		if hasCreate {
+			for _, creator := range creatorsOf(rules, create) {
+				pl.Users[creator] = MaxPowerLevel
+			}
 		}
 		return pl, nil
 	}
@@ -859,7 +941,44 @@ func powerLevelsFor(rules roomversion.Rules, state Snapshot) (*PowerLevels, erro
 	if err != nil {
 		return pl, Failure{"state", "the room's m.room.power_levels event is not valid: " + err.Error()}
 	}
+	// Room version 12 (MSC4289): a creator's power level is infinite, and it is not the room's to
+	// take away. Rule 10.4 refuses a power levels event that names a creator at all, so a room
+	// whose rules this server checked itself cannot reach this line with a creator in `users` —
+	// but the state this server authorises against can arrive from a server that did not check it,
+	// and a creator silently demoted to zero is a room whose owner can no longer do anything. The
+	// level is therefore asserted here rather than trusted from the event, which is also what makes
+	// it immune to a room that predates the rule.
+	if rules.PrivilegedCreators && hasCreate {
+		for _, creator := range creatorsOf(rules, create) {
+			pl.Users[creator] = MaxPowerLevel
+		}
+	}
 	return pl, nil
+}
+
+// creatorsOf names every user the room treats as its creator. Room versions up to 11 have one:
+// content.creator, or the sender where the version does not carry the field. Room version 12
+// (MSC4289) adds `content.additional_creators`, whose users share the creator's infinite power and
+// its immunity to being demoted, so they have to be carried through every power level question
+// rather than only the create event's own validation.
+func creatorsOf(rules roomversion.Rules, create map[string]any) []string {
+	primary := creatorOf(rules, create)
+	if !rules.PrivilegedCreators {
+		return []string{primary}
+	}
+	creators := []string{primary}
+	seen := map[string]bool{primary: true}
+	if raw, named := contentOf(create)[AdditionalCreatorsKey]; named {
+		if list, ok := raw.([]any); ok {
+			for _, entry := range list {
+				if userID, ok := entry.(string); ok && !seen[userID] {
+					seen[userID] = true
+					creators = append(creators, userID)
+				}
+			}
+		}
+	}
+	return creators
 }
 
 // creatorOf identifies a room's creator for the room version: room versions up to
