@@ -355,6 +355,93 @@ func TestCreateRoomInRoomVersionTwelve(t *testing.T) {
 	if chunk, _ := messages["chunk"].([]any); len(chunk) == 0 {
 		t.Fatalf("the version 12 room has no history: %v", messages)
 	}
+
+	// What this server answers with, which is the same rule pointing the other way.
+	//
+	// MSC4291: every client endpoint that returns events includes the room identifier on the create
+	// event. The stored event may not carry one — the checks above exist because those bytes are the
+	// room's name — but a client that has just read a timeline has one object in the answer whose room
+	// it would have to recover from the request it made to get the answer, and the server knows it.
+	for _, view := range []struct{ name, path string }{
+		{"/state", "/_matrix/client/v3/rooms/" + url.PathEscape(roomID) + "/state"},
+		{"/state/{type}/?format=event", "/_matrix/client/v3/rooms/" + url.PathEscape(roomID) + "/state/m.room.create/?format=event"},
+		{"/messages", "/_matrix/client/v3/rooms/" + url.PathEscape(roomID) + "/messages?dir=b&limit=50"},
+		{"/event", "/_matrix/client/v3/rooms/" + url.PathEscape(roomID) + "/event/" + url.PathEscape(createEventID)},
+		{"/context", "/_matrix/client/v3/rooms/" + url.PathEscape(roomID) + "/context/" + url.PathEscape(createEventID) + "?limit=5"},
+	} {
+		res := h.get(view.path, token)
+		if res.status != http.StatusOK {
+			t.Fatalf("%s: status %d, %s", view.name, res.status, res.body)
+		}
+		var found bool
+		for _, event := range eventsInBody(t, res.body) {
+			if stringOrEvent(event["type"]) != eventauth.TypeCreate {
+				continue
+			}
+			found = true
+			if carried := stringOrEvent(event["room_id"]); carried != roomID {
+				t.Errorf("%s answers with the create event carrying room_id %q, want %q", view.name, carried, roomID)
+			}
+		}
+		if !found {
+			t.Errorf("%s does not return the room's create event", view.name)
+		}
+	}
+
+	// `/sync` is the documented exception, and an exception asserted is the only kind that stays an
+	// exception. Without this, "stamp the identifier on create events" is one refactor away from
+	// becoming a storage rule, and the moment it is a storage rule every version 12 room this server
+	// made points at a name its own birth certificate no longer agrees to.
+	var syncShowedCreate bool
+	for _, event := range eventsInBody(t, h.get("/_matrix/client/v3/sync?timeout=0", token).body) {
+		if stringOrEvent(event["event_id"]) != createEventID {
+			continue
+		}
+		syncShowedCreate = true
+		if carried, present := event["room_id"]; present {
+			t.Errorf("/sync hands over the create event with room_id %v; the specification takes room identifiers out of sync state, and this server does not put them back there", carried)
+		}
+	}
+	if !syncShowedCreate {
+		// Asserted rather than skipped: an exception nobody can see being taken is indistinguishable
+		// from a rule nobody ever applied, and the reason this endpoint is excluded is a fact about the
+		// specification that a future reader is going to want to break.
+		t.Error("/sync never showed this room's create event, so the exception it grants could not be checked")
+	}
+}
+
+// eventsInBody returns every event in a client API response body, wherever that endpoint keeps it. The
+// alternative is a hand-written path per endpoint, which is a test that quietly stops covering an endpoint
+// when the answer is re-nested — and the whole point of this check is that the rule holds across all of
+// them.
+func eventsInBody(t *testing.T, body []byte) []map[string]any {
+	t.Helper()
+	var value any
+	if len(body) == 0 || json.Unmarshal(body, &value) != nil {
+		return nil
+	}
+	var out []map[string]any
+	var walk func(any)
+	walk = func(node any) {
+		switch typed := node.(type) {
+		case []any:
+			for _, item := range typed {
+				walk(item)
+			}
+		case map[string]any:
+			if _, isTyped := typed["type"].(string); isTyped {
+				if _, hasID := typed["event_id"].(string); hasID {
+					out = append(out, typed)
+					return
+				}
+			}
+			for _, item := range typed {
+				walk(item)
+			}
+		}
+	}
+	walk(value)
+	return out
 }
 
 func stringOrEvent(value any) string {

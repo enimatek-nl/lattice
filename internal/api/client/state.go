@@ -31,6 +31,7 @@ func (d *Deps) handleRoomStateRead(w http.ResponseWriter, r *http.Request) {
 	if state == nil {
 		state = []map[string]any{}
 	}
+	presentEvents(r.PathValue("roomID"), state)
 	httpx.WriteJSON(w, http.StatusOK, state)
 }
 
@@ -68,6 +69,7 @@ func (d *Deps) handleRoomStateSingle(w http.ResponseWriter, r *http.Request) {
 	// `format=event` asks for the whole event rather than only its content, which a
 	// client needs when it wants the sender and the event ID of the state it read.
 	if r.URL.Query().Get("format") == "event" {
+		presentEvent(r.PathValue("roomID"), event)
 		httpx.WriteJSON(w, http.StatusOK, event)
 		return
 	}

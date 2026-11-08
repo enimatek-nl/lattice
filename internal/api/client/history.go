@@ -24,6 +24,7 @@ func (d *Deps) handleRoomEvent(w http.ResponseWriter, r *http.Request) {
 		d.serviceError(w, err)
 		return
 	}
+	presentEvent(pathValue(r, "roomID"), event)
 	httpx.WriteJSON(w, http.StatusOK, event)
 }
 
@@ -52,7 +53,8 @@ func (d *Deps) handleRoomMessages(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = value
 	}
-	page, err := d.Rooms.History(r.Context(), pathValue(r, "roomID"), auth.UserID(r), rooms.HistoryRequest{
+	roomID := pathValue(r, "roomID")
+	page, err := d.Rooms.History(r.Context(), roomID, auth.UserID(r), rooms.HistoryRequest{
 		From:   query.Get("from"),
 		To:     query.Get("to"),
 		Dir:    query.Get("dir"),
@@ -63,6 +65,8 @@ func (d *Deps) handleRoomMessages(w http.ResponseWriter, r *http.Request) {
 		d.serviceError(w, err)
 		return
 	}
+	presentEvents(roomID, page.Chunk)
+	presentEvents(roomID, page.State)
 	httpx.WriteJSON(w, http.StatusOK, page)
 }
 
@@ -97,7 +101,8 @@ func (d *Deps) handleRoomContext(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = &value
 	}
-	page, err := d.Rooms.Context(r.Context(), pathValue(r, "roomID"), eventID, auth.UserID(r), rooms.ContextRequest{
+	roomID := pathValue(r, "roomID")
+	page, err := d.Rooms.Context(r.Context(), roomID, eventID, auth.UserID(r), rooms.ContextRequest{
 		Limit:  limit,
 		Filter: filter,
 	})
@@ -105,5 +110,9 @@ func (d *Deps) handleRoomContext(w http.ResponseWriter, r *http.Request) {
 		d.serviceError(w, err)
 		return
 	}
+	presentEvent(roomID, page.Event)
+	presentEvents(roomID, page.EventsBefore)
+	presentEvents(roomID, page.EventsAfter)
+	presentEvents(roomID, page.State)
 	httpx.WriteJSON(w, http.StatusOK, page)
 }
