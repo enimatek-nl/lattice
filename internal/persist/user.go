@@ -34,6 +34,11 @@ type UserRepo interface {
 	Create(ctx context.Context, user *User) error
 	ByUserID(ctx context.Context, userID string) (*User, error)
 	ByLocalpart(ctx context.Context, localpart string) (*User, error)
+	// ByUserIDs reads the profiles of a set of accounts in one statement, which is what a page of
+	// results that named N people needs. A user this server has no account for is absent from the
+	// result rather than an error and not a zero row: a remote user is a real answer to a directory
+	// search and has no profile here to go with it.
+	ByUserIDs(ctx context.Context, userIDs []string) (map[string]*User, error)
 	SetDeactivated(ctx context.Context, userID string, deactivated bool) error
 	// SetPassword replaces an account's password hash. An empty hash means the account has no
 	// password at all, which is what a deactivated account is left with: nothing to log in
@@ -88,6 +93,26 @@ func (u *UserRepoImpl) ByLocalpart(ctx context.Context, localpart string) (*User
 		return nil, ErrNotFound
 	}
 	return &user, err
+}
+
+// ByUserIDs implements [UserRepo].
+func (u *UserRepoImpl) ByUserIDs(ctx context.Context, userIDs []string) (map[string]*User, error) {
+	profiles := make(map[string]*User, len(userIDs))
+	if len(userIDs) == 0 {
+		return profiles, nil
+	}
+	const chunk = 500
+	for start := 0; start < len(userIDs); start += chunk {
+		end := min(start+chunk, len(userIDs))
+		var users []*User
+		if err := u.db.WithContext(ctx).Where("user_id IN ?", userIDs[start:end]).Find(&users).Error; err != nil {
+			return nil, err
+		}
+		for _, user := range users {
+			profiles[user.UserID] = user
+		}
+	}
+	return profiles, nil
 }
 
 // SetDeactivated implements [UserRepo].

@@ -31,6 +31,7 @@ import (
 	"github.com/enimatek/lattice/internal/sync"
 	"github.com/enimatek/lattice/internal/tlsgen"
 	"github.com/enimatek/lattice/internal/typing"
+	"github.com/enimatek/lattice/internal/userdir"
 	"github.com/enimatek/lattice/internal/users"
 	"golang.org/x/sync/errgroup"
 )
@@ -227,11 +228,13 @@ func NewWithOptions(ctx context.Context, cfg *config.Config, log *slog.Logger, o
 		Pushers:     pushers.NewService(db),
 		Presence:    presenceService,
 		Typing:      typing.New(db),
-		E2EKeys:     deviceKeys,
-		Sync:        sync.NewService(db, log),
-		DB:          db,
-		Version:     Version,
-		Started:     a.Started,
+		// UserDirectory answers "whom may this person be told about" from room state and profiles.
+		UserDirectory: userdir.New(db),
+		E2EKeys:       deviceKeys,
+		Sync:          sync.NewService(db, log),
+		DB:            db,
+		Version:       Version,
+		Started:       a.Started,
 	}, requireAuth)
 	media.Register(a.clientRouter, &media.Deps{Cfg: cfg, Log: log, Media: mediaService}, requireAuth)
 	// Method negotiation must be consistent across listeners: a federation path

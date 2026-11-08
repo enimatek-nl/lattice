@@ -29,20 +29,24 @@ const (
 	// CodeBadRequest reports a request the server could not handle as asked. The
 	// Client-Server API lists it; the Server-Server API has no such list, and a
 	// transaction missing its origin needs a code that is not M_UNKNOWN.
-	CodeBadRequest            Code = "M_BAD_REQUEST"
-	CodeForbidden             Code = "M_FORBIDDEN"
-	CodeUnauthorized          Code = "M_UNAUTHORIZED"
-	CodeUserInUse             Code = "M_USER_IN_USE"
-	CodeInvalidUsername       Code = "M_INVALID_USERNAME"
-	CodeWeakPassword          Code = "M_WEAK_PASSWORD"
-	CodeUserDeactivated       Code = "M_USER_DEACTIVATED"
-	CodeNoAuth                Code = "M_NO_AUTH"
-	CodeMissingParams         Code = "M_MISSING_PARAMS"
-	CodeInvalidParam          Code = "M_INVALID_PARAM"
+	CodeBadRequest      Code = "M_BAD_REQUEST"
+	CodeForbidden       Code = "M_FORBIDDEN"
+	CodeUnauthorized    Code = "M_UNAUTHORIZED"
+	CodeUserInUse       Code = "M_USER_IN_USE"
+	CodeInvalidUsername Code = "M_INVALID_USERNAME"
+	CodeWeakPassword    Code = "M_WEAK_PASSWORD"
+	CodeUserDeactivated Code = "M_USER_DEACTIVATED"
+	CodeNoAuth          Code = "M_NO_AUTH"
+	CodeMissingParams   Code = "M_MISSING_PARAMS"
+	// CodeMissingParam is the Client-Server API's own code for a required parameter absent from a
+	// request. The singular form is what the specification lists under "Other error codes", and it
+	// is not the same string as M_MISSING_PARAMS above, which the User-Interactive Auth flow uses.
+	CodeMissingParam Code = "M_MISSING_PARAM"
+	CodeInvalidParam Code = "M_INVALID_PARAM"
 	// CodeInvalidEmailParam is the push-specific cousin of the one above: the Client-Server API
 	// gives an email address it will not accept its own code, so that a client holding an email
 	// pusher knows this is not something to retry with a different URL.
-	CodeInvalidEmailParam Code = "M_INVALID_EMAIL_PARAM"
+	CodeInvalidEmailParam     Code = "M_INVALID_EMAIL_PARAM"
 	CodeNotYetRegistered      Code = "M_NOT_YET_REGISTERED"
 	CodeGuestAccessForbidden  Code = "M_GUEST_ACCESS_FORBIDDEN"
 	CodeLimitExceeded         Code = "M_LIMIT_EXCEEDED"
@@ -178,6 +182,7 @@ var statusByCode = map[Code]int{
 	CodeUserDeactivated:         http.StatusForbidden,
 	CodeNoAuth:                  http.StatusForbidden,
 	CodeMissingParams:           http.StatusBadRequest,
+	CodeMissingParam:            http.StatusBadRequest,
 	CodeInvalidParam:            http.StatusBadRequest,
 	CodeNotYetRegistered:        http.StatusForbidden,
 	CodeGuestAccessForbidden:    http.StatusForbidden,

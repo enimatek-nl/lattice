@@ -21,6 +21,7 @@ import (
 	"github.com/enimatek/lattice/internal/rooms"
 	"github.com/enimatek/lattice/internal/sync"
 	"github.com/enimatek/lattice/internal/typing"
+	"github.com/enimatek/lattice/internal/userdir"
 	"github.com/enimatek/lattice/internal/users"
 )
 
@@ -46,12 +47,16 @@ type Deps struct {
 	// Typing is who is typing in a room right now, which is shown to that room's members and to
 	// nobody else. It sits beside presence because it is the same kind of thing — a current value
 	// about a person with a timeout — and beside the room because the room decides who sees it.
-	Typing  *typing.Service
-	E2EKeys *e2ekeys.Service
-	Sync    *sync.Service
-	DB      *persist.Database
-	Version string
-	Started time.Time
+	Typing *typing.Service
+	// UserDirectory is who a searcher may be told about and under which names. It sits beside the
+	// room directory conceptually and beside the account store in code: the answer is built from
+	// room state and from profiles, and it adds nothing of its own to keep in step.
+	UserDirectory *userdir.Service
+	E2EKeys       *e2ekeys.Service
+	Sync          *sync.Service
+	DB            *persist.Database
+	Version       string
+	Started       time.Time
 }
 
 // serviceError writes a service-layer failure with the status the protocol prescribes
@@ -223,6 +228,12 @@ func Register(r *httpserver.Router, d *Deps, requireAuth func(http.Handler) http
 	versioned("GET", "/directory/list/room/{roomID}", d.handleRoomDirectoryVisibility)
 	versioned("PUT", "/directory/list/room/{roomID}", d.handleRoomDirectoryVisibility)
 	versioned("GET", "/joined_rooms", d.handleJoinedRooms)
+
+	// The user directory: which people this server will name to whom. Beside the room directory
+	// because it is the same kind of thing with a stricter rule — a room directory lists rooms that
+	// were published, a user directory lists people, and a person's name can be a secret they told
+	// one room.
+	versioned("POST", "/user_directory/search", d.handleUserDirectorySearch)
 
 	// Synchronisation and the filters that shape it.
 	versioned("GET", "/sync", d.handleSync)

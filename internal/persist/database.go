@@ -61,6 +61,11 @@ type Database struct {
 	// Media holds what this server knows about content it stores or has cached, in the content
 	// repository. The bytes themselves are files under the repository's directory.
 	Media MediaRepo
+	// UserDirectory reads who a person may be told about and under which names they appear in each
+	// room. It is a read model over room state and accounts rather than a table of its own, because a
+	// maintained copy of "who is in which room" would be a second answer to a question room state
+	// already answers.
+	UserDirectory UserDirectoryRepo
 }
 
 // Open opens (creating if needed) the SQLite database at path.
@@ -115,6 +120,7 @@ func Open(path string, log *slog.Logger) (*Database, error) {
 	d.Federation = NewFederationRepo(gdb)
 	d.DeviceKeys = NewDeviceKeysRepo(gdb)
 	d.Media = NewMediaRepo(gdb)
+	d.UserDirectory = NewUserDirectoryRepo(gdb)
 	return d, nil
 }
 
