@@ -217,11 +217,18 @@ var registry = map[string]Rules{
 // decade old in many cases and its rules have to be computed as that version states
 // them, or two servers holding it disagree about who is in it.
 //
-// Room version 12 and the unstable versions are deliberately absent: this server has
-// rules for them, so it can recognise and refuse them, but it does not implement the
-// revised state resolution or the pseudo-identifier event format, and offering a
-// version whose semantics cannot be delivered is a promise the server would break.
-var supported = []string{"3", "4", "5", "6", "7", "8", "9", "10", "11", "1", "2"}
+// Room version 12 joined this list when the three things it needs were finished: the authorisation
+// rules of MSC4289 and MSC4291, room identifiers derived from the hash of a create event that carries
+// no identifier of its own, and State Resolution 2.1. Before that it was deliberately absent — this
+// server had rules for it, so it could recognise a version 12 room and refuse it, which is a different
+// thing from offering to run one. The unstable versions stay absent for the same reason they always
+// did: offering a version whose semantics cannot be delivered is a promise the server would break.
+//
+// The default stays at 11. Offering a version and preferring it are separate claims, and the version a
+// server picks for every room that does not ask is a bigger one than its ability to serve a room that
+// does: the room creators cannot be listed in the power levels of a version 12 room, state resolution
+// differs, and a room's identifier is not derivable until its create event is signed.
+var supported = []string{"3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "1", "2"}
 
 // defaultVersion is used when a client asks to create a room without naming a
 // version.

@@ -2,7 +2,9 @@ package integration
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -233,11 +235,13 @@ func TestCreateRoomVersionNegotiation(t *testing.T) {
 		}
 	}
 
-	// Room versions this server has rules for but does not implement, and a version that is
-	// nothing at all. Versions 1 and 2 are absent from this list because they are implemented
-	// and offered: they appear in the loop above, which creates a room in every advertised
-	// version and reads it back.
-	for _, rejected := range []string{"12", "com.example.not-a-version"} {
+	// A version that is nothing at all. Room version 12 is absent from this list because it is
+	// implemented and offered, and it is the loop above that proves the claim: that loop creates a
+	// room in every advertised version and reads the version back, and 12 is now one of them.
+	// Version 12 also gets a test of its own, because what it means to be a version 12 room — an
+	// identifier with no server in it, a create event that does not name its own room, a creator who
+	// is not in the power levels — cannot be checked by round-tripping a version string.
+	for _, rejected := range []string{"com.example.not-a-version"} {
 		res := h.post(t, "/_matrix/client/v3/createRoom", map[string]any{"room_version": rejected}, token)
 		if res.status != http.StatusBadRequest {
 			t.Errorf("room_version %q: status %d, want 400 (body %s)", rejected, res.status, res.body)
@@ -246,6 +250,125 @@ func TestCreateRoomVersionNegotiation(t *testing.T) {
 			t.Errorf("room_version %q: errcode %q, want M_UNSUPPORTED_ROOM_VERSION", rejected, code)
 		}
 	}
+}
+
+// TestCreateRoomInRoomVersionTwelve checks the things that make a room version 12 room a version 12
+// room, none of which a version string round-trip can see.
+//
+// A room is named after its create event here, so the identifier this server returns has to be the hash
+// of the event it also stores — and not the hash of anything else it might have stored, since the same
+// bytes under a different name would be a different room. The create event may not carry a room
+// identifier (rule 1.2 refuses one), so what names the room has to be recoverable from the event alone.
+// And the room's first power levels event may not name its creator (rule 10.4), so the defaults have to
+// be written without them — which means the creator's authority in a version 12 room is never a fact
+// the room states, and every one of those rules has to hold of the events this server signs itself.
+func TestCreateRoomInRoomVersionTwelve(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	_, token, _ := h.register(t, "v12", "pw-v12-pass", "")
+
+	roomID := createRoom(t, h, token, map[string]any{"room_version": "12"})
+	if strings.ContainsRune(roomID, ':') {
+		t.Errorf("a room version 12 identifier names no server, got %q", roomID)
+	}
+	if got := roomVersionOf(t, h, roomID); got != "12" {
+		t.Fatalf("the room is stored as version %q", got)
+	}
+
+	rules := roomversion.MustGet("12")
+	snapshot := newStateSnapshot(t, h, roomID)
+	key := eventauth.Key{Type: eventauth.TypeCreate, StateKey: ""}
+	create, ok := snapshot.byKey[key]
+	if !ok {
+		t.Fatalf("the room has no create event in its state")
+	}
+	if carried, present := create["room_id"].(string); present && carried != "" {
+		t.Errorf("the create event of a room version 12 room carries room_id %q; rule 1.2 refuses an event that does", carried)
+	}
+	if legacy, present := create["content"].(map[string]any)["creator"]; present {
+		t.Errorf("the create event carries the legacy creator property (%v), which room versions 11 and later leave to the sender", legacy)
+	}
+	if version, _ := create["content"].(map[string]any)["room_version"].(string); version != "12" {
+		t.Errorf("the create event names room version %v", version)
+	}
+	createEventID, _ := create["event_id"].(string)
+	if want := "$" + roomID[1:]; createEventID != want {
+		t.Errorf("the room is named %q but its create event is %q: the room identifier is that event's hash with a different sigil", roomID, createEventID)
+	}
+
+	// The room's own events, checked the way a receiving server checks them: this server built and
+	// signed them, which is the reason to be least suspicious and the least good reason to be.
+	//
+	// The distinction in the middle of that loop is the one that matters, and it is not specific to this
+	// room version. An event is authorised against the state that authorised it — the auth events it
+	// carries — and not against the room as it stands afterwards. Checking the room's creator's join
+	// against the finished state asks it to have cited a power levels event that did not exist when it
+	// was made, and every server in the room would then be refusing the room's own history. So the
+	// state below comes from each event's own citations, while identifiers still resolve across the
+	// whole room, because a receiver holding the room can read the create event its identifier names.
+	for stateKey, event := range snapshot.byKey {
+		eventID := mustEventID(t, event)
+		stored := storedEvent(t, h, eventID)
+		recomputed, err := events.EventID(rules, stored)
+		if err != nil {
+			t.Fatalf("cannot recompute the identifier of %s: %v", stateKey, err)
+		}
+		if recomputed != eventID {
+			t.Errorf("%s is stored as %s and hashes to %s", stateKey, eventID, recomputed)
+		}
+		received := &testSnapshot{byKey: map[eventauth.Key]map[string]any{}, byID: snapshot.byID, h: h}
+		for _, cited := range events.ReferencedIDs(stored, "auth_events") {
+			body := storedEvent(t, h, cited)
+			received.byID[cited] = body
+			stateKey, isState := body["state_key"].(string)
+			if isState {
+				received.byKey[eventauth.Key{Type: stringOrEvent(body["type"]), StateKey: stateKey}] = body
+			}
+		}
+		if err := eventauth.Check(rules, stored, received, eventauth.Opts{}); err != nil {
+			t.Errorf("the %s event this server created for a room version 12 room is refused by that version's rules: %v", stateKey, err)
+		}
+	}
+
+	// The power levels of a room whose creator cannot be listed: nobody at all, and a room upgrade
+	// above what an administrator can be given.
+	powerLevels, ok := snapshot.byKey[eventauth.Key{Type: eventauth.TypePowerLevels, StateKey: ""}]
+	if !ok {
+		t.Fatalf("the room has no power levels event")
+	}
+	content, _ := powerLevels["content"].(map[string]any)
+	users, _ := content["users"].(map[string]any)
+	if len(users) != 0 {
+		t.Errorf("a room version 12 room lists %v in its power levels; a creator may not be listed there", users)
+	}
+	if events_, _ := content["events"].(map[string]any); events_["m.room.tombstone"] == nil {
+		t.Errorf("a room version 12 room leaves m.room.tombstone at the default; the room's upgrade has to sit above what an administrator can reach")
+	} else if tombstone, _ := events_["m.room.tombstone"].(json.Number); tombstone != "150" {
+		t.Errorf("m.room.tombstone requires %v, want 150", events_["m.room.tombstone"])
+	}
+
+	// And it is a room: an event goes in and comes back out.
+	if res := send(t, h, roomID, "m.room.message", "v12-first", `{"msgtype":"m.text","body":"hello from a hashed room"}`, token); res.status != http.StatusOK {
+		t.Fatalf("sending a message to the version 12 room: %d %s", res.status, res.body)
+	}
+	messages := h.mustStatus(t, h.get("/_matrix/client/v3/rooms/"+url.PathEscape(roomID)+"/messages?dir=b&limit=10", token), http.StatusOK).decoded(t)
+	if chunk, _ := messages["chunk"].([]any); len(chunk) == 0 {
+		t.Fatalf("the version 12 room has no history: %v", messages)
+	}
+}
+
+func stringOrEvent(value any) string {
+	text, _ := value.(string)
+	return text
+}
+
+func mustEventID(t *testing.T, event map[string]any) string {
+	t.Helper()
+	eventID, _ := event["event_id"].(string)
+	if eventID == "" {
+		t.Fatalf("a stored state event carries no identifier: %v", event["type"])
+	}
+	return eventID
 }
 
 // TestCreateRoomRequiresAuth keeps room creation behind a token: an unauthenticated

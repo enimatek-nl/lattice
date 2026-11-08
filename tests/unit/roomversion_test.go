@@ -150,11 +150,15 @@ func TestPick(t *testing.T) {
 			t.Errorf("Pick(%q) = %+v, %v, %v; room version %s is offered", legacy, chosen, usedDefault, err, legacy)
 		}
 	}
-	// A version this server has rules for but has not implemented is refused rather than
-	// quietly substituted: the client asked for particular semantics, and handing it different
-	// ones without saying so is worse than saying no.
-	if _, _, err := roomversion.Pick("12"); err == nil {
-		t.Errorf("Pick(\"12\") should refuse a registered but unimplemented version instead of substituting one")
+	// Room version 12 is picked, because it is now implemented rather than merely recognised: the
+	// authorisation rules of MSC4289 and MSC4291, identifiers derived from the create event, and State
+	// Resolution 2.1 are all written. What is refused is a version this server has *no* rules for, which
+	// is the case that must be refused rather than substituted — a client asking for particular
+	// semantics handed different ones without being told is worse than a server saying no.
+	if chosen, _, err := roomversion.Pick("12"); err != nil {
+		t.Errorf("Pick(\"12\") = %v; room version 12 is implemented and offered", err)
+	} else if chosen.StateRes != roomversion.StateResV2_1 {
+		t.Errorf("Pick(\"12\") chose state resolution %q, want the version 12 revision", chosen.StateRes)
 	}
 	if _, _, err := roomversion.Pick("Not A Version"); err == nil {
 		t.Errorf("Pick should reject a malformed version")
@@ -174,8 +178,8 @@ func TestAvailable(t *testing.T) {
 			t.Errorf("supported version %s is missing from the capability map", rules.ID)
 		}
 	}
-	if _, ok := available["12"]; ok {
-		t.Errorf("room version 12 must not be advertised while it cannot be created")
+	if available["12"] != "stable" {
+		t.Errorf("room version 12 is %v in the capability map, want stable: the server can create and run one", available["12"])
 	}
 	if !roomversion.IsKnown("1") {
 		t.Errorf("room version 1 must still be known: events in such rooms need its rules")
@@ -187,7 +191,7 @@ func TestAvailable(t *testing.T) {
 			t.Errorf("room version %s is offered for creation but IsOffered says it is not", version.ID)
 		}
 	}
-	for _, version := range []string{"12", "org.matrix.msc4458", "not a version"} {
+	for _, version := range []string{"org.matrix.msc4458", "not a version"} {
 		if roomversion.IsOffered(version) {
 			t.Errorf("IsOffered claims this server runs room version %q", version)
 		}

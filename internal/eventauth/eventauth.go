@@ -965,6 +965,18 @@ func ruleSupportsJoinRule(rules roomversion.Rules, rule string) bool {
 // version rules put on depth.
 const MaxPowerLevel = 9007199254740991
 
+// CreatorPowerLevel is what the power level machinery reports for a room creator in a version that
+// makes them privileged, and it is one more than the largest level a room can express. That is not
+// decoration. MSC4289 says a creator's power is infinite and, in the same breath, that another user can
+// be given any power level the room can hold — including 2^53-1, which Complement hands out deliberately
+// (`creator can kick admin at JSON max value`). Clamp the creator to the ceiling and the two tie, and
+// every comparison that has to be strict — "the target's level must be below the sender's" for a kick, a
+// ban, an unban, and the rule 10 comparisons over `users` — then refuses the creator their own room.
+//
+// The value is never written into an event: rule 10.4 keeps creators out of `users` in the first place,
+// which is what lets the authority be a fact about the room rather than a number in its state.
+const CreatorPowerLevel = MaxPowerLevel + 1
+
 // powerLevelsFor loads the room's current power levels.
 //
 // A room with no m.room.power_levels event is not a room where nobody has power:
@@ -980,7 +992,7 @@ func powerLevelsFor(rules roomversion.Rules, roomID string, state Snapshot) (*Po
 		pl := DefaultPowerLevels()
 		if hasCreate {
 			for _, creator := range creatorsOf(rules, create) {
-				pl.Users[creator] = MaxPowerLevel
+				pl.Users[creator] = CreatorPowerLevel
 			}
 		}
 		return pl, nil
@@ -998,7 +1010,7 @@ func powerLevelsFor(rules roomversion.Rules, roomID string, state Snapshot) (*Po
 	// it immune to a room that predates the rule.
 	if rules.PrivilegedCreators && hasCreate {
 		for _, creator := range creatorsOf(rules, create) {
-			pl.Users[creator] = MaxPowerLevel
+			pl.Users[creator] = CreatorPowerLevel
 		}
 	}
 	return pl, nil

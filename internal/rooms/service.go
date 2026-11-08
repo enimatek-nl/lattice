@@ -391,20 +391,65 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (string, error)
 			"The preset %q is not one this server knows.", string(req.Preset))
 	}
 
-	roomID, err := s.newRoomID()
+	roomID := ""
+	if !rules.DomainlessRoomIDs {
+		// A room whose identifier names the server that created it can pick that identifier before it
+		// has written anything. A room version 12 room cannot: its identifier *is* its create event,
+		// hashed, so the event has to exist — with its timestamp, its depth and its empty reference
+		// lists — before the name it lives under is known. `createRoom` derives it in that case.
+		var err error
+		if roomID, err = s.newRoomID(); err != nil {
+			return "", err
+		}
+	}
+
+	// MSC4289 defines who owns a version 12 room, and the answer is not only the sender of the create
+	// event. Read and validate that before the create event is assembled, because in a version 12 room
+	// these bytes become the room's identifier: content accepted here and dropped later would produce a
+	// room whose name is derived from something other than what it says.
+	creators, err := roomCreators(rules, req.Creator, req.CreationContent, req.Preset, req.Invite)
 	if err != nil {
 		return "", err
 	}
 
 	createContent := map[string]any{}
 	for key, value := range req.CreationContent {
-		if key == "creator" || key == "room_version" || key == "predecessor" {
+		if key == "creator" || key == "room_version" || key == "predecessor" || key == eventauth.AdditionalCreatorsKey {
 			continue
 		}
 		createContent[key] = value
 	}
-	createContent["creator"] = req.Creator
+	// The `creator` property belongs to room versions 1 to 10, where it was the only statement of who
+	// made the room. From version 11 the event's sender is that statement, and the specification says
+	// the property is present in those older versions *only*. Writing it anyway was harmless while a
+	// room's identifier was a random string; in a version 12 room the create event's bytes are the
+	// identifier, so a stale property is a fact about every version 12 room this server will ever make.
+	if rules.CreatorInCreateContent {
+		createContent["creator"] = req.Creator
+	}
+	if rules.PrivilegedCreators && len(creators) > 1 {
+		additional := make([]any, 0, len(creators)-1)
+		for _, user := range creators[1:] {
+			additional = append(additional, user)
+		}
+		createContent[eventauth.AdditionalCreatorsKey] = additional
+	}
 	createContent["room_version"] = rules.ID
+	// A power levels override that lists a creator is refused here rather than at the state event, and
+	// the difference matters: in a version 12 room a creator's power is not a fact the room holds, it is
+	// a fact about what the room is, so an override asking for it is not a request the server can honour
+	// by writing it down. Refusing at creation also beats the alternative of creating the room and then
+	// failing its first state event.
+	if rules.PrivilegedCreators && len(req.PowerLevelOverride) > 0 {
+		if users, ok := req.PowerLevelOverride["users"].(map[string]any); ok {
+			for _, user := range creators {
+				if _, named := users[user]; named {
+					return "", matrixerr.Newf(matrixerr.CodeInvalidParam,
+						"A room creator holds power by being a creator and cannot be listed in the power levels of a room version %s room.", rules.ID)
+				}
+			}
+		}
+	}
 	// A predecessor is taken from `creation_content` but checked rather than copied: the
 	// specification requires both a room and an event in it, and a client that names only
 	// the room is not wrong, it is describing an upgrade it cannot finish by itself.
@@ -418,11 +463,12 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (string, error)
 		}
 	}
 
-	initial := presetState(req.Preset, req.Creator, req.Invite)
+	initial := presetState(req.Preset, req.Creator, req.Invite, rules.PrivilegedCreators)
 	if len(req.PowerLevelOverride) > 0 {
 		initial = append(initial, StateContent{
-			Type:    eventauth.TypePowerLevels,
-			Content: MergePowerLevels(presetPowerLevels(req.Preset, req.Creator, req.Invite), req.PowerLevelOverride),
+			Type: eventauth.TypePowerLevels,
+			Content: MergePowerLevels(presetPowerLevels(req.Preset, req.Creator, req.Invite, rules.PrivilegedCreators),
+				req.PowerLevelOverride),
 		})
 	}
 	// The order is the specification's: the preset builds the defaults, `initial_state`
@@ -620,6 +666,44 @@ func (s *Service) createRoom(ctx context.Context, rules roomversion.Rules, roomI
 			}
 		}
 	}
+	// The create event is built before the room's row, because in room version 12 the room is named
+	// after it: the identifier is this event's reference hash with `!` where an event identifier carries
+	// `$`, and there is nothing to derive it from until the event exists with its timestamp, its depth
+	// and its empty reference lists in place. In every earlier version the two are independent and the
+	// caller's random identifier is used as it always was.
+	createEvent := newStateEvent(s.name, roomID, creator, eventauth.TypeCreate, "", createContent, s.now())
+	if rules.DomainlessRoomIDs {
+		// Rule 1.2 of that version refuses a create event that carries a room_id, so the field is not
+		// merely unnecessary here: putting the room's own name in the event that defines it would make
+		// the room's first event unauthorised in the room it created.
+		delete(createEvent, "room_id")
+		// These are the three fields the loop below gives the first event of a room, set here because the
+		// room's name is a hash of the result. The loop sets them again to the same values, and the loop
+		// checks that the hash it computes for itself matches the name the room is filed under.
+		createEvent["prev_events"] = []any{}
+		createEvent["auth_events"] = []any{}
+		createEvent["depth"] = int64(1)
+		// The reference hash covers the event's content hash — it removes the signatures and the
+		// unsigned values, and keeps `hashes`, which is why the event has to be sealed before it can be
+		// named and why a receiver that recomputes the identifier from the bytes it was handed reaches
+		// the same one. Deriving the name before signing was tried first and the check below caught it:
+		// the two identifiers differed by exactly the hashes the signature pass added.
+		if err := s.nameAndReference(createEvent, ctx, rules, map[string]map[string]any{}); err != nil {
+			return "", err
+		}
+		if err := events.Seal(s.name, rules, createEvent, s.signer); err != nil {
+			return "", fmt.Errorf("rooms: cannot sign the create event of a room version %s room: %w", rules.ID, err)
+		}
+		eventID, err := events.EventID(rules, createEvent)
+		if err != nil {
+			return "", fmt.Errorf("rooms: cannot derive the identifier of a room version %s room from its create event: %w", rules.ID, err)
+		}
+		roomID = "!" + eventID[1:]
+		if err := matrixid.RoomIDValid(roomID); err != nil {
+			return "", fmt.Errorf("rooms: the identifier derived for a room version %s room is not a room ID: %w", rules.ID, err)
+		}
+	}
+
 	if err := s.rooms.Create(ctx, &persist.Room{
 		RoomID:      roomID,
 		RoomVersion: rules.ID,
@@ -633,7 +717,7 @@ func (s *Service) createRoom(ctx context.Context, rules roomversion.Rules, roomI
 	}
 
 	built := []map[string]any{
-		newStateEvent(s.name, roomID, creator, eventauth.TypeCreate, "", createContent, s.now()),
+		createEvent,
 		newStateEvent(s.name, roomID, creator, eventauth.TypeMember, creator,
 			map[string]any{"membership": eventauth.MembershipJoin}, s.now()),
 	}
@@ -668,6 +752,13 @@ func (s *Service) createRoom(ctx context.Context, rules roomversion.Rules, roomI
 		if err != nil {
 			return "", fmt.Errorf("rooms: cannot compute the event ID of the initial state: %w", err)
 		}
+		if index == 0 && rules.DomainlessRoomIDs && eventID != "$"+roomID[1:] {
+			// The room is stored under a name its own create event does not hash to. Every peer server
+			// will refuse this room, and it will refuse it in a way that looks like corruption rather
+			// than like the two lines of code that drifted apart, so it stops here.
+			return "", fmt.Errorf("rooms: the create event of a room version %s room hashed to %s, not to the identifier %s the room is stored under",
+				rules.ID, eventID, roomID)
+		}
 		event["event_id"] = eventID
 		known[eventID] = event
 
@@ -683,7 +774,7 @@ func (s *Service) createRoom(ctx context.Context, rules roomversion.Rules, roomI
 			return "", err
 		}
 		lastStream = stream
-		if err := s.persistEvent(ctx, event, stream); err != nil {
+		if err := s.persistEventIn(ctx, roomID, event, stream); err != nil {
 			return "", err
 		}
 		snapshot.add(event)
@@ -851,7 +942,7 @@ func (s *Service) send(ctx context.Context, req SendRequest) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := s.persistEvent(ctx, event, stream); err != nil {
+	if err := s.persistEventIn(ctx, "", event, stream); err != nil {
 		return "", err
 	}
 	if req.TxnID != "" && req.DeviceID != "" {
@@ -899,7 +990,19 @@ func (s *Service) refused(err error, req SendRequest) error {
 
 // persistEvent writes the event, its reference edges, its state entry and the state
 // that authorised it.
-func (s *Service) persistEvent(ctx context.Context, event map[string]any, stream int64) error {
+// persistEventIn stores an event as belonging to a named room.
+//
+// The room is an argument rather than something read back out of the event, because in room version
+// 12 an event is allowed not to carry one: its `m.room.create` event may not, since its identifier —
+// which is the room's — is a hash of the event itself, and an event cannot contain the hash of itself.
+// Reading the field and shrugging when it is absent is what made that event land in a room of no name:
+// it stored with an empty room identifier, which is why a handed-over version 12 room recorded
+// "cannot record the latest stream position of a handed-over room: persist: not found" — the room was
+// not missing, this server had simply filed its first event somewhere else.
+//
+// An empty roomID means "the event says", which is every other case; an event that says nothing and is
+// not told is refused rather than filed anywhere.
+func (s *Service) persistEventIn(ctx context.Context, roomID string, event map[string]any, stream int64) error {
 	canonical, err := events.Canonical(event)
 	if err != nil {
 		return fmt.Errorf("rooms: cannot encode the event: %w", err)
@@ -913,7 +1016,12 @@ func (s *Service) persistEvent(ctx context.Context, event map[string]any, stream
 			"The event is %d bytes, over this server's limit of %d.", len(canonical), maxPDUSize)
 	}
 	eventID, _ := event["event_id"].(string)
-	roomID, _ := event["room_id"].(string)
+	if roomID == "" {
+		roomID, _ = event["room_id"].(string)
+	}
+	if roomID == "" {
+		return fmt.Errorf("rooms: cannot store event %s without knowing which room it belongs to", eventID)
+	}
 	eventType, _ := event["type"].(string)
 
 	row := &persist.Event{
@@ -1092,10 +1200,10 @@ func (s *Service) newRoomID() (string, error) {
 // so. A server that starts a public room `world_readable` has published its history to the world
 // on the strength of a join rule that says nothing of the kind. What the presets do to the power
 // levels — who may invite, and who the invitees turn out to be — is in presetPowerLevels.
-func presetState(preset Preset, creator string, invitees []string) []StateContent {
+func presetState(preset Preset, creator string, invitees []string, privilegedCreators bool) []StateContent {
 	joinRule := "invite"
 	guestAccess := "can_join"
-	levels := presetPowerLevels(preset, creator, invitees)
+	levels := presetPowerLevels(preset, creator, invitees, privilegedCreators)
 	switch preset {
 	case PresetPublicChat:
 		joinRule = "public"
@@ -1133,8 +1241,17 @@ func presetState(preset Preset, creator string, invitees []string) []StateConten
 // table that is easy to skip because it is not a join rule: every invitee is given the same power
 // level as the creator. A room created as a trusted private chat with three people in it is a room
 // where those three run the room, not a room where one of them can undo everything the other two do.
-func presetPowerLevels(preset Preset, creator string, invitees []string) map[string]any {
-	users := map[string]any{creator: 100}
+func presetPowerLevels(preset Preset, creator string, invitees []string, privilegedCreators bool) map[string]any {
+	users := map[string]any{}
+	if !privilegedCreators {
+		// Before room version 12 the creator's power is a fact the room holds, so the room says it.
+		// In a version 12 room it is a fact about what the room *is*: the creator holds infinite power
+		// and may not appear in this map at all — rule 10.4 of that version's authorisation rules
+		// refuses a power levels event that names one. A server that writes the creator into a version
+		// 12 room's first power levels event produces a room whose own opening state every conforming
+		// server refuses, including this one.
+		users[creator] = 100
+	}
 	levels := map[string]any{
 		"users":          users,
 		"users_default":  0,
@@ -1151,14 +1268,99 @@ func presetPowerLevels(preset Preset, creator string, invitees []string) map[str
 	case PresetPrivateChat, PresetTrustedPrivateChat:
 		levels["invite"] = 0
 	}
-	if preset == PresetTrustedPrivateChat {
+	if preset == PresetTrustedPrivateChat && !privilegedCreators {
 		for _, invitee := range invitees {
 			if invitee != "" {
 				users[invitee] = 100
 			}
 		}
 	}
+	if privilegedCreators {
+		// A room upgrade hands the new room's creator privileges to whoever sent the tombstone, so in a
+		// room where creators are privileged an administrator must not be able to upgrade it: that would
+		// be a route from "admin" to "creator", which is the one privilege this version says cannot be
+		// granted. The specification's answer is a default above the highest level an administrator can
+		// be given, and it is a number rather than a flag because power levels are compared as numbers.
+		//
+		// It is also the reason a creator's power is not merely "high": the ceiling of canonical JSON is
+		// reachable by an administrator, so the creator has to sit above it. `eventauth.MaxPowerLevel` is
+		// that ceiling-plus, and this default only works while the two stay in that order.
+		events := levels["events"].(map[string]any)
+		events["m.room.tombstone"] = 150
+	}
 	return levels
+}
+
+// roomCreators returns the users a room is created with creator privileges for: the sender of the
+// create event first, then any MSC4289 additional creators, without duplicates.
+//
+// Validation lives here rather than in the authorisation rules because this is the only place the
+// difference can still be turned into a 400 for the client that asked. Once the create event exists in
+// a version 12 room it defines the room's identifier, and a room whose creator list was silently
+// trimmed to the sender would be a different room from the one its identifier claims.
+//
+// The `trusted_private_chat` preset contributes invitees. That preset means "a room whose members all
+// trust each other", and MSC4289 decided that in a privileged-creator room it means what it says: the
+// people invited when the room was opened are creators, not merely members. They are *not* put in the
+// power levels map to match, because a creator may not be listed there.
+func roomCreators(rules roomversion.Rules, creator string, creationContent map[string]any, preset Preset, invitees []string) ([]string, error) {
+	creators := []string{creator}
+	added := map[string]bool{creator: true}
+	add := func(user string) error {
+		if err := matrixid.UserValid(user); err != nil {
+			return matrixerr.Newf(matrixerr.CodeInvalidParam, "%q is not a valid user ID.", user)
+		}
+		if added[user] {
+			return nil
+		}
+		added[user] = true
+		creators = append(creators, user)
+		return nil
+	}
+
+	raw, present := creationContent[eventauth.AdditionalCreatorsKey]
+	if present {
+		if !rules.PrivilegedCreators {
+			return nil, matrixerr.Newf(matrixerr.CodeInvalidParam,
+				"additional_creators is a property of room version 12 and later, not of room version %s.", rules.ID)
+		}
+		// A JSON array arrives as []any. The []string case is not dead code: it is what a Go caller
+		// building a CreateRequest by hand produces, and a server that silently ignored additional
+		// creators because the caller used the wrong Go slice would be inventing an API.
+		var list []any
+		switch typed := raw.(type) {
+		case []any:
+			list = typed
+		case []string:
+			for _, user := range typed {
+				list = append(list, user)
+			}
+		default:
+			return nil, matrixerr.New(matrixerr.CodeInvalidParam,
+				"additional_creators must be an array of user IDs.")
+		}
+		for _, entry := range list {
+			user, ok := entry.(string)
+			if !ok {
+				return nil, matrixerr.New(matrixerr.CodeInvalidParam,
+					"additional_creators must contain only user IDs.")
+			}
+			if err := add(user); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if preset == PresetTrustedPrivateChat && rules.PrivilegedCreators {
+		for _, invited := range invitees {
+			if invited == "" {
+				continue
+			}
+			if err := add(invited); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return creators, nil
 }
 
 // MergePowerLevels overlays a client's override on the preset. The nesting is one

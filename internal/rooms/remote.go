@@ -230,7 +230,7 @@ func (s *Service) AcceptRemoteEvent(ctx context.Context, pdu []byte, verify Veri
 		if err != nil {
 			return err
 		}
-		if err := service.persistEvent(ctx, event, position); err != nil {
+		if err := service.persistEventIn(ctx, roomID, event, position); err != nil {
 			return err
 		}
 		stream, accepted = position, eventID

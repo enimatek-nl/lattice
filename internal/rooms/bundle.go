@@ -224,7 +224,7 @@ func (s *Service) AcceptRemoteBundle(ctx context.Context, bundle RemoteBundle, v
 				progress = true
 				continue
 			}
-			accepted, outlier, unresolved, err := s.storeBundleEvent(ctx, entry.event, rules, known, latest)
+			accepted, outlier, unresolved, err := s.storeBundleEvent(ctx, entry.event, rules, known, latest, entry.roomID)
 			if err != nil {
 				outcome.Refused[entry.eventID] = err.Error()
 				progress = true
@@ -274,10 +274,15 @@ func (s *Service) AcceptRemoteBundle(ctx context.Context, bundle RemoteBundle, v
 //
 // The return values say what became of it: its ID once stored, whether it landed without its
 // predecessors, whether it could not be judged yet, and why it was refused.
+//
+// `roomID` is the room this event belongs to, worked out by the caller from the event's own identifier
+// or, for the create event of a room version 12 room, from the event's bytes. It is passed rather than
+// read back here because the field it would be read from is the one that version's create event may not
+// carry, and a room whose first event is filed under an empty room identifier is a room whose history
+// this server cannot find again.
 func (s *Service) storeBundleEvent(ctx context.Context, event map[string]any, rules roomversion.Rules,
-	known map[string]map[string]any, latest map[string]int64) (string, bool, bool, error) {
+	known map[string]map[string]any, latest map[string]int64, roomID string) (string, bool, bool, error) {
 	eventID, _ := event["event_id"].(string)
-	roomID, _ := event["room_id"].(string)
 	// A room's exclusion of servers holds when the room arrives in a bundle as well as when one
 	// event is offered at a time: otherwise a server the room threw out could hand over the whole
 	// room, or slip an event in among a bundle of someone else's.
@@ -373,7 +378,7 @@ func (s *Service) storeBundleEvent(ctx context.Context, event map[string]any, ru
 		if err != nil {
 			return err
 		}
-		if err := service.persistEvent(ctx, event, position); err != nil {
+		if err := service.persistEventIn(ctx, roomID, event, position); err != nil {
 			return err
 		}
 		if outlier {

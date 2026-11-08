@@ -265,13 +265,12 @@ func TestRoomVersionRangeIsWiderThanTheDefault(t *testing.T) {
 			t.Errorf("room created as %s is stored as %s", version, got)
 		}
 	}
-	// Room version 12 has rules this server recognises but does not implement — its revised
-	// state resolution is not written — so it is refused rather than advertised. Advertising a
-	// version whose rules are missing would create rooms this server cannot evaluate.
-	for _, unimplemented := range []string{"12"} {
-		if available[unimplemented] != nil {
-			t.Errorf("room version %s is advertised, but its rules are not implemented", unimplemented)
-		}
+	// Room version 12 is advertised now, and this is the half of the claim that costs something: a
+	// version belongs in this list exactly when the server can run a room in it, so the version joined
+	// the advertised set together with the state resolution, the identifier derivation and the
+	// authorisation rules it needs, and not before. The room created for it above is the evidence.
+	if available["12"] == nil {
+		t.Errorf("room version 12 is not advertised, though this server can create and run one")
 	}
 }
 

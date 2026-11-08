@@ -301,7 +301,7 @@ func (s *Service) storeInvite(ctx context.Context, event map[string]any, roomVer
 	if err != nil {
 		return "", err
 	}
-	if err := s.persistEvent(ctx, event, stream); err != nil {
+	if err := s.persistEventIn(ctx, "", event, stream); err != nil {
 		return "", err
 	}
 	if err := s.rooms.SetLatestStream(ctx, event["room_id"].(string), stream); err != nil {

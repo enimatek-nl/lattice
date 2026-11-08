@@ -131,10 +131,14 @@ func TestRoomUpgradeErrors(t *testing.T) {
 	if unsupported["errcode"] != "M_UNSUPPORTED_ROOM_VERSION" {
 		t.Errorf("an unsupported room version: %v", unsupported)
 	}
-	// A version this server has rules for but has not implemented is the same answer, and it
-	// matters for a different reason than creation does: a room upgraded into such a version
-	// would still exist, still take events, and still be a room this server cannot work out
-	// the state of. Recognising a version is not the same as being able to run it.
+	// Room version 12 is offered for creation and refused as an upgrade target, and the two answers are
+	// about different things. Creation starts from what the client asks for; an upgrade carries a room
+	// across, and carrying one into a privileged-creator room means taking the old room's creators into
+	// the new room's additional_creators — which changes the bytes the new room's identifier is a hash
+	// of — and striking those users out of the power levels event that gets copied, because rule 10.4
+	// refuses a power levels event naming a creator. Doing neither produced a version 12 room whose own
+	// opening state this server refused. The work is T-4105; the answer until then is a 400 that is
+	// true, rather than a 500 that blames the database.
 	if got := h.mustStatus(t, h.post(t, "/_matrix/client/v3/rooms/"+roomID+"/upgrade",
 		map[string]any{"new_version": "12"}, aliceToken), http.StatusBadRequest).decoded(t); got["errcode"] != "M_UNSUPPORTED_ROOM_VERSION" {
 		t.Errorf("an upgrade into a version this server recognises but does not implement: %v", got)

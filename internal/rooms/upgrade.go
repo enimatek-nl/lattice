@@ -85,6 +85,23 @@ func (s *Service) Upgrade(ctx context.Context, req UpgradeRequest) (string, erro
 			"This server does not support that room version.").
 			WithExtra(map[string]any{"room_version": req.NewVersion})
 	}
+	if rules.DomainlessRoomIDs {
+		// Room version 12 can be created and cannot be upgraded into, and the two answers are about
+		// different things. Creating one starts from what the client asks for; upgrading one carries a
+		// room across, and an upgrade into a privileged-creator room has two jobs this server does not
+		// yet do. It would have to take the creators of the old room — the sender of *its* create event
+		// and its `additional_creators` — and carry them into the new room's `additional_creators`,
+		// which changes the bytes the new room's identifier is a hash of. And it would have to strike
+		// those users out of the power levels event it copies across, because rule 10.4 of that version
+		// refuses a power levels event that names a creator: without that, upgrading a version 11 room
+		// produces a version 12 room whose own opening state this server refuses, which is what was
+		// happening here before this refusal existed. Both belong with the upgrade path, not bolted onto
+		// the end of this function, so the answer is a 400 that says what is missing rather than a room
+		// that cannot be entered. T-4105.
+		return "", matrixerr.New(matrixerr.CodeUnsupportedRoomVersion,
+			"This server cannot upgrade a room into room version 12 yet: the room's creators have to be carried across, and the copied power levels must stop naming them.").
+			WithExtra(map[string]any{"room_version": req.NewVersion})
+	}
 	room, err := s.rooms.ByRoomID(ctx, req.RoomID)
 	if err != nil {
 		if errors.Is(err, persist.ErrNotFound) {
