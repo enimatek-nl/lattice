@@ -760,7 +760,11 @@ Required files:
 - BLOCKERS.md
 - FINAL-REPORT.md
 
-Update these files as the implementation evolves.
+Update these files as the implementation evolves. They live in `.agent-work/` in the working
+directory and are kept out of the repository (`.gitignore`): they are the trail rather than the
+product, and they quote paths and logs from the machine that ran the suite. Never `git add` them,
+and do not treat their absence from a clone as a missing document — the state they describe is
+reproducible by running `scripts/complement.sh` and reading its log, tally lists and result table.
 
 After context compaction or restarting:
 
