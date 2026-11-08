@@ -31,6 +31,16 @@ type EventFilter struct {
 	LazyLoadMembers bool `json:"lazy_load_members"`
 	// LazyLoadOptions is the structured form of the flag, held so it is not mistaken for a typo.
 	LazyLoadOptions any `json:"lazy_load_options"`
+	// RelTypes and NotRelTypes select on the relation an event claims — the `rel_type` inside
+	// `content["m.relates_to"]`. They are namespaced names because MSC3874 is a proposal this
+	// server answers before the specification has adopted the plain one; the namespace is the
+	// client's way of saying which question it means, so it is kept rather than normalised away.
+	//
+	// As with the type lists, an absent list is no opinion and a present one is the whole answer.
+	// An event that claims no relation has no relation type at all, so it can never be named by
+	// `rel_types` and is never excluded by `not_rel_types`.
+	RelTypes    *[]string `json:"org.matrix.msc3874.rel_types"`
+	NotRelTypes *[]string `json:"org.matrix.msc3874.not_rel_types"`
 }
 
 // RoomEventFilter is an event filter for a stream that belongs to one room, which adds the room
@@ -80,15 +90,61 @@ func (f EventFilter) AllowsSender(sender string) bool {
 }
 
 // AllowsContent applies the parts of the filter that need the event rather than only its type:
-// the sender lists and the URL question.
+// the sender lists, the relation lists and the URL question.
 func (f EventFilter) AllowsContent(event map[string]any) bool {
 	if sender, _ := event["sender"].(string); !f.AllowsSender(sender) {
+		return false
+	}
+	if !f.AllowsRelation(event) {
 		return false
 	}
 	if f.ContainsURL == nil {
 		return true
 	}
 	return hasURL(event) == *f.ContainsURL
+}
+
+// AllowsRelation reports whether an event survives the filter's relation lists. The question is
+// asked of the event's own claim — `content["m.relates_to"]["rel_type"]` — and not of any index,
+// because the claim is what the event says and an index is only someone's note about it.
+//
+// `m.relates_to` with no `rel_type` is a reply, not a relation of a kind: the specification gives
+// it no relation type, so it is read here as "no relation", which is also how a client filtering
+// by `m.thread` expects a plain reply to behave.
+func (f EventFilter) AllowsRelation(event map[string]any) bool {
+	relTypes, notRelTypes := deref(f.RelTypes), deref(f.NotRelTypes)
+	if relTypes == nil && notRelTypes == nil {
+		return true
+	}
+	relType := relationType(event)
+	if relTypes != nil {
+		for _, wanted := range relTypes {
+			if wanted != "" && wanted == relType {
+				return true
+			}
+		}
+		return false
+	}
+	for _, unwanted := range notRelTypes {
+		if unwanted != "" && unwanted == relType {
+			return false
+		}
+	}
+	return true
+}
+
+// relationType is the relation type an event claims, or the empty string when it claims none.
+func relationType(event map[string]any) string {
+	content, _ := event["content"].(map[string]any)
+	if content == nil {
+		return ""
+	}
+	relatesTo, _ := content["m.relates_to"].(map[string]any)
+	if relatesTo == nil {
+		return ""
+	}
+	relType, _ := relatesTo["rel_type"].(string)
+	return relType
 }
 
 // AllowsIn reports whether an event of this type, from this room, belongs in the stream. It is

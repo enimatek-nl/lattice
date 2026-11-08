@@ -96,6 +96,11 @@ var (
 		{"senders", kindUsers},
 		{"not_senders", kindUsers},
 		{"contains_url", kindBool},
+		// MSC3874's relation lists. Known by their namespaced names only: the plain names belong
+		// to a proposal the specification has not adopted, and answering both would be guessing
+		// which question an older client meant.
+		{"org.matrix.msc3874.rel_types", kindStrings},
+		{"org.matrix.msc3874.not_rel_types", kindStrings},
 	}
 	timelineExtraFields = []eventField{
 		{"rooms", kindRoomIDs},
