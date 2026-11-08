@@ -299,6 +299,23 @@ report_stale_dns
 if [[ "$unbuilt_image" -gt 0 ]]; then
 	echo "!! $unbuilt_image lines say a deployment had no built image: those tests never reached a homeserver, so their failure is the runtime and not the protocol."
 fi
+# The tally, the lists and the fingerprint counts go into a file next to the log. Not because the
+# numbers are interesting on their own — they are not, and this script says so repeatedly — but
+# because the line printed to a terminal is gone by the time anyone reads a tally in a document,
+# and "the run said 21 and 0" is not evidence. This file is derived from $run_log by the commands
+# above, and it says which commit was under test, so a number quoted in docs/compliance-matrix.md
+# can be checked against something that still exists.
+summary="$repo_root/.agent-work/next/complement-summary-$label.txt"
+{
+	echo "label:   $label"
+	echo "tree:    $(git -C "$repo_root" rev-parse --short HEAD 2>/dev/null || echo 'not a git checkout')"
+	echo "filter:  $filter"
+	echo "parallel: $parallel   timeout: $timeout   go test exit: $exit_code"
+	echo "tally:   $passed passing, $failed failing, $skipped skipped (top-level tests)"
+	echo "fingerprints (counted over this run's own log): cert-naming-another-server=$cert_mismatch tls-handshake-refused=$bad_handshake unsigned-peer=$unsigned_peer template-401=$template_401 unbuilt-image=$unbuilt_image"
+	echo "artefacts: $run_log ; $passes ; $failures${results:+ ; $results}"
+} > "$summary"
+echo "== summary written to: $summary"
 rm -f "$output_lines"
 if grep -qE 'failed to deployBaseImage|timed out checking for homeserver to be up' "$run_log"; then
 	echo "!! some deployments never started. Those failures are the container or the environment, not the protocol: check the image starts at all (podman run --rm <image>) and the volume/DNS warnings above."

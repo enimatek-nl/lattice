@@ -32,7 +32,7 @@ Specification: Matrix v1.19 (`docs/specification-version.md`).
 | Discovery | `/.well-known/matrix/client`, `/.well-known/matrix/server` | implemented | yes | n/a |
 | Media | `GET /v3/config` (upload size) | implemented | yes | **verified** (`TestMediaConfig`) |
 | Media | upload (sync and async `create`/`commit`), download including the authenticated `/client/v1/media/...` forms, thumbnail, `config`, remote content fetched once from the origin and served from the copy held here | implemented | `tests/integration/media_test.go`, `tests/unit/media_multipart_test.go` | **verified**: `TestMediaConfig`, `TestContentMediaV1`, `TestContentCSAPIMediaV1`, `TestMediaFilenames`, `TestMediaWithoutFileName`, `TestAsyncUpload`, `TestFederationThumbnail`, `TestLocalPngThumbnail`, `TestRemotePngThumbnail`. `TestRoomImageRoundtrip` and `TestUrlPreview` stay red: previews and the media report endpoint are not implemented |
-| Filters | `POST`/`GET`/`DELETE /user/{id}/filter[/{filterID}]`: filters are stored, validated and read back, and a sync and a `/messages` page consult them. MSC3874's relation lists (`org.matrix.msc3874.rel_types`, `not_rel_types`) narrow both doors, read from the event's own `content.m.relates_to.rel_type` claim rather than from the relation index | partial — the sections and limits a filter names are not all applied (T-4020) | `tests/integration/sync_test.go`, `tests/integration/messagesfilter_test.go`, `tests/integration/relationfilter_test.go` | **verified**: `TestFilterMessagesByRelType` (all six of its filter documents, run 20261108y-relfilter, T-4088), `TestSyncFilter`. `TestFilter` and `TestSyncOmitsStateChangeOnFilteredEvents` are red (T-4020) |
+| Filters | `POST`/`GET`/`DELETE /user/{id}/filter[/{filterID}]`: filters are stored, validated and read back, and a sync and a `/messages` page consult them. MSC3874's relation lists (`org.matrix.msc3874.rel_types`, `not_rel_types`) narrow both doors, read from the event's own `content.m.relates_to.rel_type` claim rather than from the relation index | partial — the sections and limits a filter names are not all applied (T-4020) | `tests/integration/sync_test.go`, `tests/integration/messagesfilter_test.go`, `tests/integration/relationfilter_test.go` | **verified**: `TestFilterMessagesByRelType` (all six of its filter documents, run 20261108y-relfilter, T-4088), `TestSyncFilter`, `TestSyncOmitsStateChangeOnFilteredEvents` (T-4070) and `TestFilter` (a filter whose fields are the wrong shape is refused, T-4079; also green in the full run 20261107s). Still red on this row: nothing currently selected; the unapplied sections and limits stay T-4020 |
 | Rooms | `POST /v3/createRoom`: presets, `room_version` negotiation (`M_UNSUPPORTED_ROOM_VERSION`), `creation_content` limits, initial state, name/topic/avatar shorthand | implemented | yes | not verified (Complement room tests also need membership endpoints) |
 | Events | `PUT /v3/rooms/{roomID}/send/{eventType}/{txnID}`: authorisation, hashing, signing, storage, per-device transaction idempotency; event types outside the reserved `m.` namespace need no dot, since the dotted namespace is a convention and refusing an unqualified type hides the endpoints that would carry it (T-4069) | implemented | `tests/integration/customeventtype_test.go`, `tests/unit/roomslogic_test.go` | not verified by name; the undotted types Complement sends in its filter tests were refused here until T-4069 |
 | Events | `PUT /send/m.room.member/...` refused with 400 `M_UNRECOGNIZED` (membership has its own endpoints) | implemented | yes | not verified |
@@ -40,6 +40,7 @@ Specification: Matrix v1.19 (`docs/specification-version.md`).
 | Rooms | join / invite / knock / leave, `GET /state`, `/members`, `/messages`, `/event/{eventID}`, redaction (`PUT /redact/{eventID}/{txn}`), aliases, directory, upgrades | implemented | `tests/integration/redaction_test.go`, `tests/integration/history_test.go`, Complement `TestRedact`/`TestPowerLevels` | still missing: `GET /rooms/{roomID}/context/{eventID}` (T-2015), `GET /rooms/{roomID}/event_auth/{eventID}` (T-2016), `GET /_matrix/federation/v1/state_ids` |
 | Sync / messages | `GET /sync` (incremental, `since`, long-poll, joined/invited/left sections, `device_lists`, account data in both scopes, limited timelines, `prev_batch`, MSC4222 `state_after` with `lazy_load_members`), `GET /rooms/{id}/messages` | implemented — MSC4222's `GET /rooms/{id}/members` stream is not (T-4068) | `tests/integration/sync_test.go`, `tests/integration/history_test.go`, `tests/integration/statresolution_test.go`, `tests/integration/stateafter_test.go` | **verified**: `TestSync` (`tests/csapi`), `TestSync` (`tests/msc4222`, both subtests — a different test with the same name; only the qualified results table tells them apart, T-4066), `TestSyncLeaveSection`, `TestGappedSyncLeaveSection`, `TestSyncTimelineGap`, `TestCumulativeJoinLeaveJoinSync`, `TestOlderLeftRoomsNotInLeaveSection`, `TestRoomMessagesLazyLoading`, `TestRoomMessagesLazyLoadingLocalUser`, `TestSyncOmitsStateChangeOnFilteredEvents` (T-4070: a state event a filtered batch hides must still be in the state section). Still red through sync: the presence section (T-3001e), the filter fields that narrow by sender, URL and event fields rather than type (T-4020), and the two-server cases that need the handshake pieces below |
 | Relations, threads | `GET /rooms/{roomID}/relations/{eventID}[/{relType}[/{eventType}]]` and `GET /rooms/{roomID}/threads`, both under `v3` and `v1`: what relates to an event, filtered by relation and event type, walked in either direction with tokens; and the room's conversations, ordered by each thread's newest event. The relation claim stays in the event's content — `event_relations` is an index over it, written where the event is stored and dropped where a redaction takes the content | implemented | yes | **verified** (`TestRelations`, `TestRelationsPagination`, `TestRelationsPaginationSync`, `TestThreadsEndpoint`, run 20261107r-threads) |
+| History visibility | `m.room.history_visibility` decides, **at the moment each event was written**, whether a reader may be given that event: `world_readable` to anybody, `shared` (and an absent setting) to members including for the stretch before they arrived, `invited` from the reader's invite, `joined` from their join. Asked by `/event`, `/messages`, `/relations`, `/threads`, a sync's timeline and the federation hand-over from one rule in `internal/historyvis`; a room whose history visibility changes partway through is judged per event, out of the state snapshot each event was persisted with | implemented — the left room's *state section* is gated per room rather than per event, so a `joined` room hides from a former member the state written while they were a member (T-4090) | `tests/integration/historyvisibility_test.go`, `tests/integration/sync_test.go` | **verified**: `TestFetchEvent`, `TestFetchEventWorldReadable`, `TestFetchEventNonWorldReadable`, `TestFetchHistoricalJoinedEventDenied`, `TestFetchHistoricalSharedEvent`, `TestFetchHistoricalInvitedEventFromBeforeInvite`, `TestFetchHistoricalInvitedEventFromBetweenInvite`, `TestArchivedRoomsHistory` (run 20261108ee-histvisdone: 21 passing, 0 failing, no fingerprints) |
 | Pushers | `POST /pushers/set`, `GET /pushers`: a device asking to be woken at a URL, kept as one row per (pushkey, app_id) with the hash of the session that wrote it. A password change drops the pushers of the sessions it ended and keeps the one that proved the new password; logging a session out drops its own, logging out all drops every one. Delivering to them (the push gateway, `GET /notifications`, evaluating rules into notifications) is not implemented (T-3005a) | implemented (storage and the endpoints) | `tests/integration/pushers_test.go` | **verified**: `TestChangePasswordPushers` (both subtests, run 20261108z-pushers) |
 | Leaving and forgetting | `POST /rooms/{roomID}/forget`: the room stops being shown to the user who forgot it, and stops being readable to them, until a join or an invite again clears it. The marker is per user and per room, and is judged per sync window, so a sync asked from before the leaving still answers the leaving. A member who has left is owed the state and roster **as of** their leaving, read from the state group the leaving event was persisted with | implemented | `tests/integration/forget_test.go`, `tests/integration/aliases_test.go` | **verified**: `TestRoomForget` (all six subtests), `TestLeftRoomFixture` (all five subtests), run 20261108u-forget |
 | E2EE device keys | `POST /keys/upload`, `POST /keys/query` (asking a peer for a user who lives elsewhere), `POST /keys/claim`, `GET /keys/changes` (the same addressed rows the sync `device_lists` section reads, asked as a token range), federation `user/keys/query` | implemented — cross-signing and key backup are not (T-3008e) | `tests/integration/keys_test.go`, `tests/integration/federationdevicekeys_test.go`, `tests/integration/keyschanges_test.go` | **verified**: `TestUploadKey`, `TestUploadKeyIdempotency`, `TestUploadKeyIdempotencyOverlap`, `TestKeyClaimOrdering`, `TestKeysQueryWithDeviceIDAsObjectFails`, `TestKeyChangesLocal` (T-4072). Red: `TestFederationKeyUploadQuery` (T-4008's device-list EDUs), `TestE2EKeyBackupReplaceRoomKeyRules` (key backup, T-3008e) |
@@ -224,6 +225,75 @@ membership, alias and M1-regression subset, and it is reported as such.
    pages are what the project's precedence rules make normative; the divergence is recorded here so
    that a version 1 room that disagrees between servers is investigated rather than assumed away.
    Interoperability against Synapse on such a room is not tested.
+
+## Targeted runs 20261108cc-histvis2 / dd-readpaths / ee-histvisdone / ff-histvisverify — history visibility
+
+Three runs, because the first two found bugs rather than only confirming a fix. All PARALLEL=1, code
+at `c915aac`. Logs `.agent-work/next/complement-run-20261108{cc-histvis2,dd-readpaths,ee-histvisdone}.log`,
+pass/failure lists `.agent-work/complement-{passes,failures}-<label>.txt`, package-qualified tables
+`.agent-work/next/complement-results-<label>.tsv`.
+
+Those three logs hold the `go test -json` stream only: the runner's own `==` lines went to a terminal
+and were not captured, so the figures below are recounted straight from the stored `.tsv`
+(`awk -F'\t' '$1=="pass"'` over 11, 26 and 21 rows) — the counts are the file, not a memory of a
+screen. The fourth row is the same selection run again afterwards, to check the first row's number and
+to check a change to the runner: it now writes `complement-summary-<label>.txt` beside the log, carrying
+the tally, the fingerprint counts and the tree under test, so a number quoted here has a stored file
+behind it rather than a terminal that has since scrolled away. The summary is still derived from the log
+by the same commands, not trusted as an oracle:
+
+| run | pass | fail | what it was for |
+|---|---|---|---|
+| `20261108cc-histvis2` | 8 | 3 | `/event` judged by history visibility. Still red: `TestArchivedRoomsHistory`, `TestFetchEventNonWorldReadable`, `TestMessagesOverFederation` |
+| `20261108dd-readpaths` | 24 | 2 | `/messages`, `/relations`, `/threads`, the sync timeline. Still red: `TestArchivedRoomsHistory`, `TestMessagesOverFederation` |
+| `20261108ee-histvisdone` | **21** | **0** | after both fixes below; the leave/visibility neighbourhood, nothing else selected |
+| `20261108ff-histvisverify` | **21** | **0** | the same 20-name filter re-run at the same tree `c915aac`: identical pass list to `ee`, empty failure list, and the first run with a stored summary (`complement-summary-20261108ff-histvisverify.txt`: `tally: 21 passing, 0 failing, 0 skipped`, `tree: c915aac`, `go test exit: 0`) |
+
+Federation fingerprints, counted over the logs with the same patterns the runner uses
+(`certificate is valid for`, `tls: bad certificate`, `answered the … template with 401`):
+`dd-readpaths` 6 + 4 + 0, `cc-histvis2` and `ee-histvisdone` 0 + 0 + 0. So `TestMessagesOverFederation`
+in the first two runs — a two-server test — is the container network's stale DNS record, not a
+regression (see the note under run 20261108w); `ee` ran with no fingerprints at all, yet the stale
+record was still present afterwards, which is why a two-server result from this machine stays
+unusable until the operator clears it.
+
+`TestArchivedRoomsHistory` failing in both of the first two was real and single-server: a left room's
+**state** section was being emptied whenever the room was not `world_readable` — which includes
+`shared`, the protocol's default — so a member who left was handed a room they could not name.
+Fixed, and pinned by `TestALeftMemberIsShownTheStateOfASharedRoom`.
+
+The 21 of `ee-histvisdone`:
+
+| passing | what it pins |
+|---|---|
+| `TestFetchEvent`, `TestFetchEventWorldReadable` | an event a member — and, in a world-readable room, a stranger — may fetch |
+| `TestFetchHistoricalJoinedEventDenied`, `TestFetchHistoricalInvitedEventFromBeforeInvite` | events written before the reader's join (or invite) are **404** under `joined` / `invited` |
+| `TestFetchHistoricalInvitedEventFromBetweenInvite`, `TestFetchHistoricalSharedEvent` | and 200 where the setting at that moment allowed it |
+| `TestFetchEventNonWorldReadable` | a non-member's `/event` refusal refused as `M_NOT_FOUND`, while `/messages` keeps 403 |
+| `TestArchivedRoomsHistory` | a left room's state section under a `limit:0` timeline: the leave event and the state as it stood at the leaving, nothing after |
+| `TestLeftRoomFixture`, `TestRoomForget` | the departed member's reads, unchanged by this |
+| `TestSync` (both packages), `TestSyncFilter`, `TestSyncLeaveSection`, `TestSyncTimelineGap`, `TestSyncOmitsStateChangeOnFilteredEvents`, `TestGappedSyncLeaveSection`, `TestCumulativeJoinLeaveJoinSync`, `TestOlderLeftRoomsNotInLeaveSection` | the syncs whose timeline this filter now runs through, unregressed |
+| `TestRoomMessagesLazyLoading`, `TestRoomMessagesLazyLoadingLocalUser` | the `/messages` page whose `end` token this change touched |
+
+`dd-readpaths` additionally passed `TestRedact`, `TestRelations`, `TestRelationsPagination`,
+`TestRelationsPaginationSync`, `TestRoomReadMarkers`, `TestRoomReceipts`, `TestThreadsEndpoint` — the
+doors whose read paths were touched, which is what that run was selecting for.
+
+What changed underneath: the visibility rule that already existed for handing an event to a
+federation peer moved into `internal/historyvis` and is now asked by `/event`, `/messages`,
+`/relations`, `/threads` and a sync's timeline as well. The specification's own sentence is the
+design — *"These options are applied at the point an event is sent. Checks are performed with the
+state of the `m.room.history_visibility` event when the event in question is added to the DAG"* —
+so the answer comes from the state snapshot the event was persisted with, not from the room's
+setting today. `tests/integration/historyvisibility_test.go` pins a room that narrows its history
+partway through, in both directions at once: the stretch written while the room was `shared` stays
+readable, the fenced stretch does not, and the part after the reader joined does.
+
+Known and recorded, not hidden: for a *left* room the state section is gated room-wide rather than
+event by event, so a `joined` or `invited` room also hides from a former member the state it wrote
+while they were a member. That is the safe direction of the error, our own
+`TestSyncLeftRoomStateFollowsHistoryVisibility` pins that the gate exists, and the per-event answer
+is T-4090.
 
 ## Targeted run 20261108aa-todayset — every endpoint added today, in one clean run
 

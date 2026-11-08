@@ -31,7 +31,9 @@ the repository — a clone will not have them, and re-running the command reprod
   with per-device idempotency, `PUT /state/{type}[/{key}]`, join / invite / knock / leave / ban / kick /
   unban, `GET /state*`, `/members`, `/messages`, `/event/{id}`, `PUT /redact/{id}/{txn}`, `/aliases`,
   `/directory/room/{alias}`, `/publicRooms`, `/upgrade`, `/joined_rooms`, `/joined_members`,
-  `/hierarchy`, `/room_summary/{id}`.
+  `/hierarchy`, `/room_summary/{id}` — and every one of those reads is filtered by
+  `m.room.history_visibility` *as it stood when the event was written*, not as the room is set today
+  (`docs/requirements.md` §6.8).
 - Synchronisation: `GET /sync` (incremental, `since`, long-poll, `device_lists`, `to_device` absent,
   account data), `GET/PUT /user/{id}/filter`, user `account_data`, presence for one user.
 - Device keys and encryption support: `POST /keys/upload`, `/keys/query` (including asking a peer for a

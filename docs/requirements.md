@@ -303,6 +303,37 @@ pusher — calling the push gateway, `GET /notifications`, and evaluating push r
 notifications with counts and highlights — is not implemented (T-3005a). The storage and the doors
 exist; the delivery they exist for does not.
 
+### 6.8 History visibility: which events a reader may be handed (added during M4)
+
+The client specification (v1.11, *Room Events* → `m.room.history_visibility`) states the rule this
+section is about in one sentence, and it is the reason the rule is stored where it is:
+
+> These options are applied at the point an event is sent. Checks are performed with the state of
+> the `m.room.history_visibility` event when the event in question is added to the DAG. This means
+> clients cannot retrospectively choose to show or hide history to new users if the setting at that
+> time was more restrictive.
+
+| ID | Source | Requirement | Level | Status | Where |
+|---|---|---|---|---|---|
+| REQ-VIS-001 | CS v1.11 `m.room.history_visibility` | Decide, for a given reader and a given stored event, whether that reader may be given that event, using **the room's visibility at the moment the event was written** and **the reader's membership at that moment** — not the room's setting today. The four values are `world_readable`, `shared` (the default when the event is absent), `invited`, `joined` | MUST | implemented+tested. One package, `internal/historyvis`, holds the answer; the room's state snapshot per event (`state_groups` / `state_group_entries` / `event_state_groups`) is what makes "as of that moment" a lookup rather than a replay | `internal/historyvis/historyvis.go` |
+| REQ-VIS-002 | CS v1.11, the doors that read events | Every door that hands events to a client asks that question: `GET /rooms/{id}/event/{eventID}`, `GET /rooms/{id}/messages`, `GET /rooms/{id}/relations/…`, `GET /rooms/{id}/threads`, and a `/sync` joined-room timeline. A door that was already asking for a federation peer's benefit (`VisibilityToPeer`) now delegates to the same rule | MUST | implemented+tested | `internal/rooms/history.go`, `internal/rooms/relations.go`, `internal/rooms/threads.go`, `internal/sync/service.go`, `internal/rooms/visibility.go`; `tests/integration/historyvisibility_test.go` |
+| REQ-VIS-003 | CS v1.11 `/event/{eventID}` responses | A `/event` refusal for an event the requester may not see answers 404 `M_NOT_FOUND` — the specification's `/event` error list has no 403 for this, and answering 403 would confirm the event exists | MUST | implemented+tested. `/messages` keeps its specified 403 for a non-member; the two doors answer differently because the specification spells out different error lists for them | `internal/rooms/history.go`; Complement `TestFetchEventNonWorldReadable` (404), `tests/integration/historyvisibility_test.go` (both) |
+| REQ-VIS-004 | CS v1.11, a room that changes its visibility | A room whose `m.room.history_visibility` changes partway through is judged **per event**: the stretch written under a wider setting stays readable to someone who could read it then, and a narrower setting hides only what was written after it took effect | MUST | implemented+tested — `TestHistoryVisibilityIsJudgedAtTheMomentEachEventWasWritten` pins both directions in one room | `tests/integration/historyvisibility_test.go` |
+| REQ-VIS-005 | CS v1.11: "After a user has left a room, they may see any events which they were allowed to see before they left the room, but no events received after they left." | A left room's **state** section shows the state as it stood at the leaving, and nothing written after it | MUST, MUST NOT | partial — the gate exists and is not over-generous, but it is applied room-wide rather than event by event, so a `joined` or `invited` room also hides from a former member state it wrote *while* they were a member. The error is in the hiding direction, which is the safe one to leave, and it is a known deviation, not a passing claim (T-4090) | `internal/sync/service.go` (`stateVisibleToOutsider`), `tests/integration/sync_test.go` (`TestSyncLeftRoomStateFollowsHistoryVisibility`, `TestALeftMemberIsShownTheStateOfASharedRoom`); Complement `TestArchivedRoomsHistory` |
+
+Two decisions recorded rather than smoothed over:
+
+- A membership event naming the reader is always readable by that reader, whatever the room's
+  setting — otherwise a member could not see their own join, and a left member could not see the
+  leave that ended their membership. The specification's four values describe other people's access
+  to the room's story; they were never meant to hide a reader's own membership from them.
+- A `m.room.history_visibility` value outside the four (a `knock`, say, which the proposals discuss
+  and the pinned specification does not list) is treated as `shared`. That is a decision about
+  malformed input, not a spec answer: refusing the value on the way in would be the specified
+  behaviour, and a room already carrying it is served the default rather than being decided by
+  which of the four the typo most resembles.
+
+
 ## 7. Operational requirements
 
 | ID | Source | Requirement | Level | Status | Tests |
