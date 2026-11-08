@@ -111,6 +111,38 @@ func EventID(rules roomversion.Rules, event map[string]any) (string, error) {
 	}
 }
 
+// RoomIDFromCreate returns the room identifier that a create event implies, for the room versions
+// where the room is named after the event that made it: room version 12 (MSC4291).
+//
+// It is the event's own identifier with `!` where the event's identifier carries `$`, computed from
+// the same reference hash. The two facts people reach for here are both consequences of that one
+// construction. The create event cannot carry a `room_id`, because the identifier is a hash of the
+// event and an event cannot contain the hash of itself — which is why rule 1.2 of that page reads
+// "if the event has a room_id, reject". And a receiver can check a room identifier it is handed
+// against the create event it is also handed, which is what makes a forged room identifier fail
+// rather than merely disagree: whoever forges one has to produce create-event bytes that hash to it.
+//
+// The event is not modified, so this can be called on state as stored.
+func RoomIDFromCreate(rules roomversion.Rules, create map[string]any) (string, error) {
+	if !rules.DomainlessRoomIDs {
+		return "", fmt.Errorf("events: room version %s names its room after the server that created it, not after the create event", rules.ID)
+	}
+	if eventType, _ := create["type"].(string); eventType != "m.room.create" {
+		return "", fmt.Errorf("events: a room ID for room version %s comes from the create event, not from a %s event", rules.ID, eventType)
+	}
+	if _, carriesRoomID := create["room_id"].(string); carriesRoomID {
+		return "", errors.New("events: a create event that carries a room_id is not the event this room version's room ID is derived from")
+	}
+	eventID, err := EventID(rules, create)
+	if err != nil {
+		return "", err
+	}
+	if eventID == "" {
+		return "", errors.New("events: cannot derive a room ID from a create event with no identifier")
+	}
+	return "!" + eventID[1:], nil
+}
+
 // AssignEventID works out what an event is called in its room version, records that name in
 // the event, and returns it.
 //

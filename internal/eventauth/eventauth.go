@@ -176,6 +176,33 @@ func Check(rules roomversion.Rules, event map[string]any, state Snapshot, opts O
 		return checkCreate(rules, event, roomID, sender)
 	}
 
+	// Room version 12 rule 2 (MSC4291): the room identifier on an event has to be the create event's
+	// own identifier written with `!`, and that create event has to be one this server accepts. It
+	// is the first time in the protocol that a room identifier is checkable rather than merely
+	// agreed, and it is what a create event with no room_id of its own makes possible: the event that
+	// names the room is the event whose bytes the name is a hash of, so nobody who has not got those
+	// bytes can name the room.
+	//
+	// A room state with no create event refuses rather than passes. That is what the rule says — the
+	// identifier has to belong to an accepted create event, and no create event is no such event —
+	// and it stays workable under State Resolution 2.1 for the reason that algorithm gives: the
+	// iterative checks walk the conflicted set in auth order, so the create event is the first thing
+	// in the state and every event after it is checked against a room that already has its own
+	// account of what room it is.
+	if rules.DomainlessRoomIDs {
+		create, ok := state.State(Key{TypeCreate, ""})
+		if !ok {
+			return Failure{"2", "this room version's room ID is derived from its create event, which is not in the state"}
+		}
+		want, err := events.RoomIDFromCreate(rules, create)
+		if err != nil {
+			return Failure{"2", "the room's create event cannot name its own room: " + err.Error()}
+		}
+		if want != roomID {
+			return Failure{"2", fmt.Sprintf("the room ID %s is not the identifier this room's create event hashes to (%s)", roomID, want)}
+		}
+	}
+
 	// Rule 2: the auth events themselves.
 	if err := checkAuthEvents(rules, event, state); err != nil {
 		return err
@@ -451,8 +478,21 @@ func SelectEventIDs(rules roomversion.Rules, event map[string]any, state Snapsho
 		if !ok {
 			continue
 		}
+		// The room versions that derive their identifiers from the event do not necessarily carry
+		// one — room version 12 events do not — and an outgoing event still has to cite its auth
+		// events by the names every receiver computes for itself. Where the field is absent the name
+		// is worked out here; where it is present it is the name the origin server chose, in the
+		// versions that let one be chosen, and no hash could reconstruct it.
+		//
+		// An event whose identifier cannot be computed is left out of the selection, which is loud
+		// one step later: rule 2.2 compares an event's auth_events against this list, so an event
+		// citing an identifier this server cannot name is refused rather than quietly matched.
 		if id, ok := stringOf(ev, "event_id"); ok {
 			ids = append(ids, id)
+			continue
+		}
+		if computed, err := events.EventID(rules, ev); err == nil {
+			ids = append(ids, computed)
 		}
 	}
 	sort.Strings(ids)
