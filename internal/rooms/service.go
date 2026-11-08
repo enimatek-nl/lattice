@@ -136,6 +136,9 @@ type Service struct {
 	// content; this is the lookup over it, written and removed alongside the event so the
 	// index cannot outlive what it describes.
 	relations persist.RelationRepo
+	// forgotten records which rooms a user has asked not to be told about. It is the one piece
+	// of room knowledge that is not about the room: the membership events stay untouched.
+	forgotten persist.ForgetRepo
 	signer    events.Signer
 	// serve turns a stored event into the form a client is allowed to see. It lives here
 	// so that `/messages`, `/event` and `/sync` answer the redaction question the same
@@ -310,6 +313,7 @@ func New(db *persist.Database, signer events.Signer, presence PresenceNotifier, 
 		alias:     db.Aliases,
 		receipts:  db.Receipts,
 		relations: db.Relations,
+		forgotten: db.Forgotten,
 		signer:    signer,
 		presence:  presence,
 		upgrades:  upgrades,
@@ -333,6 +337,7 @@ func (s *Service) WithTx(tx *gorm.DB) *Service {
 		alias:     s.alias.WithTx(tx),
 		receipts:  s.receipts.WithTx(tx),
 		relations: s.relations.WithTx(tx),
+		forgotten: s.forgotten.WithTx(tx),
 		signer:    s.signer,
 		presence:  s.presence,
 		upgrades:  s.upgrades,

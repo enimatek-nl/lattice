@@ -46,7 +46,10 @@ type Database struct {
 	Receipts ReceiptRepo
 	// Relations indexes which events relate to which, which is what makes a thread view and
 	// an edit chain a lookup rather than a scan of the room.
-	Relations   RelationRepo
+	Relations RelationRepo
+	// Forgotten records which rooms a user has asked not to be told about. It is a fact about
+	// one person's relationship to one room, not about the room.
+	Forgotten   ForgetRepo
 	DeviceLists DeviceListRepo
 	DeviceKeys  DeviceKeysRepo
 	Federation  FederationRepo
@@ -100,6 +103,7 @@ func Open(path string, log *slog.Logger) (*Database, error) {
 	d.Presence = NewPresenceRepo(gdb)
 	d.Receipts = NewReceiptRepo(gdb)
 	d.Relations = NewRelationRepo(gdb)
+	d.Forgotten = NewForgetRepo(gdb)
 	d.DeviceLists = NewDeviceListRepo(gdb)
 	d.Federation = NewFederationRepo(gdb)
 	d.DeviceKeys = NewDeviceKeysRepo(gdb)
@@ -127,7 +131,7 @@ func applyPragmas(gdb *gorm.DB) error {
 // matter for Matrix lookups and are not derived from struct tags.
 func (d *Database) migrate(log *slog.Logger) error {
 	if err := d.db.AutoMigrate(&User{}, &Device{}, &AccessToken{}, &SigningKey{},
-		&Room{}, &Event{}, &EventEdge{}, &RoomState{}, &EventAuthContext{}, &EventTxn{}, &RoomAlias{}, &Filter{}, &AccountData{}, &Presence{}, &Receipt{}, &Relation{}, &DeviceListChange{}, &DeviceKeyDoc{}, &OneTimeKey{},
+		&Room{}, &Event{}, &EventEdge{}, &RoomState{}, &EventAuthContext{}, &EventTxn{}, &RoomAlias{}, &Filter{}, &AccountData{}, &Presence{}, &Receipt{}, &Relation{}, &RoomForget{}, &DeviceListChange{}, &DeviceKeyDoc{}, &OneTimeKey{},
 		&DeviceListStream{},
 		&ServerSigningKey{}, &ServerKeyDocument{}, &FederationTransaction{}, &FederationQueueItem{},
 		&MediaMetadata{},
@@ -160,6 +164,9 @@ func (d *Database) migrate(log *slog.Logger) error {
 
 		// A relation is claimed by exactly one event, and read by what it points at: the
 		// pair of indexes is the endpoint `/relations/{eventID}` and its thread badge.
+		// A user has one forget marker per room, and it is read per user on every sync.
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_room_forgotten_user_room ON room_forgotten(user_id, room_id)",
+
 		"CREATE UNIQUE INDEX IF NOT EXISTS idx_event_relations_event ON event_relations(event_id)",
 		"CREATE INDEX IF NOT EXISTS idx_event_relations_room_target_stream ON event_relations(room_id, target_event_id, stream_ordering)",
 

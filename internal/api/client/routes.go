@@ -169,6 +169,10 @@ func Register(r *httpserver.Router, d *Deps, requireAuth func(http.Handler) http
 	versioned("POST", "/rooms/{roomID}/knock", d.handleKnock)
 	versioned("POST", "/rooms/{roomID}/invite", d.handleInvite)
 	versioned("POST", "/rooms/{roomID}/kick", d.handleKick)
+	// Forgetting a room is a request about the requester's own view, not about the room: the
+	// membership event that took them out stays in the history, and the room stops appearing in
+	// that user's sync and reads.
+	versioned("POST", "/rooms/{roomID}/forget", d.handleRoomForget)
 	versioned("POST", "/rooms/{roomID}/ban", d.handleBan)
 	versioned("POST", "/rooms/{roomID}/unban", d.handleUnban)
 

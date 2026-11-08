@@ -333,8 +333,23 @@ func (s *Service) build(ctx context.Context, userID string, since Token, filter 
 	}
 
 	var fellowMembers []string
+	forgotten, err := s.db.Forgotten.ListForUser(ctx, userID)
+	if err != nil {
+		return nil, false, fmt.Errorf("sync: cannot read the rooms %s has forgotten: %w", userID, err)
+	}
 	for _, membership := range memberships {
 		membershipValue := membershipValueOf(membership)
+		if _, seen := forgotten[membership.RoomID]; seen && membershipValue != eventauth.MembershipJoin {
+			// A room this user asked not to be told about is out of their view. One case survives
+			// the request: a window that still holds the membership event that took them out. The
+			// client has not been told about that leaving yet, and dropping it here would lose it
+			// from the client's record of the room for good — which is why this is judged per
+			// window rather than by the marker alone. A first sync asks where the user is now, and
+			// the answer for a forgotten room is nowhere.
+			if !req.HasSince || membership.StreamOrdering <= int64(since) {
+				continue
+			}
+		}
 		// A room the user is out of is only reported up to the point where they left:
 		// events after that are not theirs to see, and their membership event is the
 		// boundary.

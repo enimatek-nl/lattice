@@ -179,7 +179,7 @@ func (s *Service) SetMembership(ctx context.Context, change MembershipChange) (s
 	if change.Reason != "" {
 		content["reason"] = change.Reason
 	}
-	return s.Send(ctx, SendRequest{
+	eventID, err := s.Send(ctx, SendRequest{
 		RoomID:     change.RoomID,
 		Sender:     change.Sender,
 		DeviceID:   change.DeviceID,
@@ -189,6 +189,19 @@ func (s *Service) SetMembership(ctx context.Context, change MembershipChange) (s
 		Content:    content,
 		Authoriser: authoriser,
 	})
+	if err != nil {
+		return eventID, err
+	}
+	// Coming back to a room undoes an earlier request not to be told about it. Done once the
+	// membership event exists, because a join that was refused should not quietly change what
+	// the user's own sync shows, and a marker left behind after a join that succeeded would hide
+	// the room from the person now standing in it.
+	if change.Membership == eventauth.MembershipJoin || change.Membership == eventauth.MembershipInvite {
+		if err := s.rememberRoomAgain(ctx, change.RoomID, change.Target); err != nil {
+			return eventID, err
+		}
+	}
+	return eventID, nil
 }
 
 // knownMembership accepts only the five memberships the specification defines. An

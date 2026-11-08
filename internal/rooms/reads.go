@@ -21,25 +21,12 @@ func (s *Service) CurrentState(ctx context.Context, roomID, requester string) ([
 	if err := s.requireMembership(ctx, roomID, requester, membershipAny); err != nil {
 		return nil, err
 	}
-	rows, err := s.state.All(ctx, roomID)
-	if err != nil {
-		return nil, err
-	}
-	asOf, err := s.readHorizon(ctx, roomID, requester)
+	rows, err := s.stateFor(ctx, roomID, requester)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
-		if asOf > 0 {
-			stored, err := s.events.ByID(ctx, row.EventID)
-			if err != nil {
-				return nil, err
-			}
-			if stored.StreamOrdering > asOf {
-				continue
-			}
-		}
 		event, err := s.eventJSONFor(ctx, row.EventID, requester)
 		if err != nil {
 			return nil, err
@@ -49,6 +36,70 @@ func (s *Service) CurrentState(ctx context.Context, roomID, requester string) ([
 	return out, nil
 }
 
+// stateFor returns the state entries a requester is entitled to read: this server's current
+// state for someone still in the room, and the room's state as it stood at the moment someone
+// left, for someone who is out of it.
+//
+// The second half is what a departed member's SPEC-216 read really asks. They are not asking
+// what the room looks like now with a few entries missing; they are asking what they left
+// behind, and a room whose name or topic changed after they went is entitled to answer that
+// rather than to say "no such state". The snapshot is the one the room's own authorisation
+// rules judged the boundary event by, so the state a client is shown and the room's view of
+// itself at that moment cannot disagree — which cutting today's rows by stream position does
+// not achieve, because a key that was replaced afterwards has no row left to cut.
+//
+// A room whose boundary event carries no recorded snapshot falls back to cutting today's
+// state. That is a weaker answer, and it is the answer this server used to give everywhere;
+// it stays available rather than turning a missing snapshot into a refusal.
+func (s *Service) stateFor(ctx context.Context, roomID, requester string) ([]persist.StateGroupEntry, error) {
+	horizon, err := s.readHorizon(ctx, roomID, requester)
+	if err != nil {
+		return nil, err
+	}
+	if horizon == 0 {
+		rows, err := s.state.All(ctx, roomID)
+		if err != nil {
+			return nil, err
+		}
+		entries := make([]persist.StateGroupEntry, 0, len(rows))
+		for _, row := range rows {
+			entries = append(entries, persist.StateGroupEntry{
+				Type: row.Type, StateKey: row.StateKey, EventID: row.EventID,
+			})
+		}
+		return entries, nil
+	}
+	boundary, err := s.events.EventsWindow(ctx, roomID, horizon+1, true, 1)
+	if err != nil {
+		return nil, fmt.Errorf("rooms: cannot read the room at the point %s left it: %w", requester, err)
+	}
+	if len(boundary) == 0 {
+		return nil, nil
+	}
+	groupID, err := s.groups.GroupOf(ctx, boundary[0].EventID)
+	if err != nil {
+		rows, err := s.state.All(ctx, roomID)
+		if err != nil {
+			return nil, err
+		}
+		entries := make([]persist.StateGroupEntry, 0, len(rows))
+		for _, row := range rows {
+			stored, err := s.events.ByID(ctx, row.EventID)
+			if err != nil {
+				return nil, err
+			}
+			if stored.StreamOrdering > horizon {
+				continue
+			}
+			entries = append(entries, persist.StateGroupEntry{
+				Type: row.Type, StateKey: row.StateKey, EventID: row.EventID,
+			})
+		}
+		return entries, nil
+	}
+	return s.groups.Entries(ctx, groupID)
+}
+
 // CurrentStateEvent returns one current state entry. The boolean reports whether the
 // room has state for that (type, state key) pair at all, which a handler needs in
 // order to answer 404 rather than an empty object.
@@ -56,33 +107,21 @@ func (s *Service) CurrentStateEvent(ctx context.Context, roomID, eventType, stat
 	if err := s.requireMembership(ctx, roomID, requester, membershipAny); err != nil {
 		return nil, false, err
 	}
-	row, err := s.state.Get(ctx, roomID, eventType, stateKey)
+	entries, err := s.stateFor(ctx, roomID, requester)
 	if err != nil {
-		if notFound(err) {
-			return nil, false, nil
+		return nil, false, err
+	}
+	for _, entry := range entries {
+		if entry.Type != eventType || entry.StateKey != stateKey {
+			continue
 		}
-		return nil, false, err
-	}
-	asOf, err := s.readHorizon(ctx, roomID, requester)
-	if err != nil {
-		return nil, false, err
-	}
-	if asOf > 0 {
-		stored, err := s.events.ByID(ctx, row.EventID)
+		event, err := s.eventJSONFor(ctx, entry.EventID, requester)
 		if err != nil {
 			return nil, false, err
 		}
-		if stored.StreamOrdering > asOf {
-			// The room has state under this key, but not state this requester is
-			// entitled to: it was written after they left.
-			return nil, false, nil
-		}
+		return event, true, nil
 	}
-	event, err := s.eventJSONFor(ctx, row.EventID, requester)
-	if err != nil {
-		return nil, false, err
-	}
-	return event, true, nil
+	return nil, false, nil
 }
 
 // JoinedMembers returns the room's joined members, for a requester who is themselves
@@ -175,28 +214,21 @@ func (s *Service) Members(ctx context.Context, roomID, requester string, filter 
 		}
 		return s.membersAt(ctx, roomID, requester, int64(position), filter)
 	}
-	rows, err := s.state.ByType(ctx, roomID, eventauth.TypeMember)
+	// Someone still in the room reads the roster as it is; someone out of it reads the roster
+	// as it stood when they went out. The second is the same question `?at=` asks with the
+	// token set to the moment of leaving, and it gets the same answer rather than today's
+	// roster with the newcomers cut out of it — which loses the member who joined before the
+	// requester left and left after, because today's state holds no row for them at all.
+	entries, err := s.stateFor(ctx, roomID, requester)
 	if err != nil {
 		return nil, err
 	}
-	asOf, err := s.readHorizon(ctx, roomID, requester)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]map[string]any, 0, len(rows))
-	for _, row := range rows {
-		if asOf > 0 {
-			stored, err := s.events.ByID(ctx, row.EventID)
-			if err != nil {
-				return nil, err
-			}
-			// A member who joined after the requester left is not part of the roster the
-			// requester ever saw.
-			if stored.StreamOrdering > asOf {
-				continue
-			}
+	out := make([]map[string]any, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Type != eventauth.TypeMember {
+			continue
 		}
-		event, err := s.eventJSONFor(ctx, row.EventID, requester)
+		event, err := s.eventJSONFor(ctx, entry.EventID, requester)
 		if err != nil {
 			return nil, err
 		}
@@ -372,6 +404,21 @@ func (s *Service) requireMembership(ctx context.Context, roomID, requester strin
 	membership, err := s.MembershipOf(ctx, roomID, requester)
 	if err != nil {
 		return err
+	}
+	// A room the requester has asked not to be told about is not shown to them, even though a
+	// former member may otherwise read the room they left. Their standing in it has not changed
+	// — they were there — but they have asked for it out of their view, and this server honours
+	// that until they come back. Someone who has actually rejoined is unaffected: coming back
+	// clears the request.
+	if membership != eventauth.MembershipJoin {
+		mark, err := s.forgottenRoom(ctx, roomID, requester)
+		if err != nil {
+			return err
+		}
+		if mark != nil {
+			return matrixerr.New(matrixerr.CodeForbidden,
+				"You have forgotten this room; join it again to read it.")
+		}
 	}
 	switch membership {
 	case eventauth.MembershipJoin:

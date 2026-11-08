@@ -3,6 +3,7 @@ package integration
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -344,8 +345,9 @@ func TestDeleteAliasCorrectsCanonicalAlias(t *testing.T) {
 }
 
 // TestFormerMemberReadsStopAtLeaving checks that a departed member's read of a room is
-// confined to what they were party to: state written afterwards is not handed over, and
-// the roster does not grow with people who joined after they left.
+// confined to what they were party to: the room as they left it, state and roster both — so
+// state written afterwards is not handed over and the roster does not grow with people who
+// joined after they left.
 func TestFormerMemberReadsStopAtLeaving(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
@@ -366,12 +368,16 @@ func TestFormerMemberReadsStopAtLeaving(t *testing.T) {
 	h.mustStatus(t, join(t, h, roomID, carolToken, map[string]any{}), http.StatusOK)
 	h.mustStatus(t, putState(t, h, roomID, "madeup.test.state", "", `{"body":"after"}`, aliceToken), http.StatusOK)
 
-	// bob may still read the room's state, but the entry that was rewritten after he left
-	// reads as absent rather than as the value written without him.
-	if res := h.get("/_matrix/client/v3/rooms/"+roomID+"/state/madeup.test.state/", bobToken); res.status != http.StatusNotFound {
-		t.Errorf("reading state rewritten after leaving: status %d, want 404 (body %s)", res.status, res.body)
+	// bob may still read the room's state, and the entry that was rewritten after he left reads
+	// as what it was when he left — not as the value written without him, and not as absent
+	// either. Saying "no such state" is not the conservative answer it looks like: the room had a
+	// value for that key while he was in it, and he is entitled to the room as he left it. The
+	// snapshot the authorisation rules judged the boundary event by is what answers, which is the
+	// same state the room had at that moment rather than today's state with entries missing.
+	if res := h.mustStatus(t, h.get("/_matrix/client/v3/rooms/"+roomID+"/state/madeup.test.state/", bobToken), http.StatusOK); !strings.Contains(string(res.body), `"before"`) {
+		t.Errorf("reading state rewritten after leaving: body %s, want the value it held when he left", res.body)
 	}
-	// The full state list leaves that entry out, and still carries what he saw.
+	// The full state list agrees with that, and carries nothing written after his leaving.
 	stateRes := h.mustStatus(t, h.get("/_matrix/client/v3/rooms/"+roomID+"/state", bobToken), http.StatusOK)
 	var entries []any
 	if err := json.Unmarshal(stateRes.body, &entries); err != nil {
@@ -380,11 +386,20 @@ func TestFormerMemberReadsStopAtLeaving(t *testing.T) {
 	if len(entries) == 0 {
 		t.Fatalf("a former member got no state at all")
 	}
+	sawTheState := false
 	for _, entry := range entries {
 		event, _ := entry.(map[string]any)
-		if event["type"] == "madeup.test.state" {
+		if event["type"] != "madeup.test.state" {
+			continue
+		}
+		content, _ := event["content"].(map[string]any)
+		if content["body"] != "before" {
 			t.Errorf("the former member was shown state written after they left: %v", event)
 		}
+		sawTheState = true
+	}
+	if !sawTheState {
+		t.Errorf("the state list does not carry the value the room had when he left: %v", entries)
 	}
 	// The roster he may read does not include someone who joined after him.
 	members := h.mustStatus(t, h.get("/_matrix/client/v3/rooms/"+roomID+"/members", bobToken), http.StatusOK).decoded(t)
@@ -392,10 +407,13 @@ func TestFormerMemberReadsStopAtLeaving(t *testing.T) {
 	seenSelf := false
 	for _, entry := range chunk {
 		event, _ := entry.(map[string]any)
-		if event["state_key"] == carol {
-			t.Errorf("a member who joined after bob left appears in bob's roster: %v", event)
-		}
 		content, _ := event["content"].(map[string]any)
+		// carol was invited before bob left and joined only after, so the roster he is shown may
+		// hold her invitation — that is what the room looked like as he went — but not the joining
+		// that happened without him.
+		if event["state_key"] == carol && content["membership"] == "join" {
+			t.Errorf("a member who joined after bob left appears as joined in bob's roster: %v", event)
+		}
 		if event["state_key"] == bob && content["membership"] == "leave" {
 			seenSelf = true
 		}
