@@ -57,12 +57,18 @@ the repository — a clone will not have them, and re-running the command reprod
 
 ## What does not work yet
 
-`/context`, `/event_auth`, `/timestamp`, `/relations`, `/threads`, `/search`, `/keys/changes`,
-cross-signing and key backup, to-device send, receipts and read markers, typing, account
-deactivation and password change, room-scoped account data, pushers and the push gateway, URL
-previews, appservices, refresh tokens, room version 12 (recognised and refused, not invented), and
-the federation halves of leave, invite, knock and `/backfill`. Each is a task in
-[`.agent-work/TASKS.md`](.agent-work/TASKS.md), not a gap in the documentation.
+`/context`, `/event_auth`, `/timestamp`, `/search`, the user directory, typing, to-device send,
+cross-signing and key backup, delivering to a pusher (the push gateway and `GET /notifications`:
+setting and listing pushers works, and a password change expires the right ones, but nothing is
+sent to anybody), receipts scoped to a thread, URL previews, appservices, refresh tokens, room
+version 12 (recognised and refused, not invented), and the federation halves of leave, invite,
+knock and `/backfill`.
+
+Each is a task in the project's task list, and each was also once something this file got wrong by
+being out of date, so treat the list above as current only as far as the compliance matrix's run
+record backs it. `/relations`, `/threads`, `/forget`, `/keys/changes`, receipts and read markers,
+account deactivation and password change, and room-scoped account data are implemented and
+Complement-verified now, and are therefore not in the list.
 
 ## Quick start
 
@@ -110,7 +116,8 @@ tests/unit             protocol primitives, storage, auth, config, logging
 tests/integration      the assembled server over real HTTP and TLS listeners
 deploy/complement      Containerfile and entrypoint for the Complement harness
 scripts/complement.sh  build the image, run Complement from a local checkout
-.agent-work/           project state: plan, tasks, progress, requirements, blockers
+.agent-work/           project state: plan, tasks, progress, requirements, blockers — local working
+                       notes, kept out of the repository on purpose (see .gitignore)
 docs/                  specification version, requirements, compliance matrix
 ```
 
