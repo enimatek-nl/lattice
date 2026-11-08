@@ -172,6 +172,15 @@ Client endpoints the M2 scope named and this server still does not have (`GET /r
 
 Full inventory, commands and the per-test list: `.agent-work/COMPLIANCE-MATRIX.md`.
 
+**Where the evidence is.** Every path below under `.agent-work/` — the run logs, the pass and
+failure lists, the package-qualified result tables — is a file in the working directory of
+whoever ran the suite, and that directory is deliberately not committed (see `.gitignore`). A
+clone of this repository will not contain them. Nothing here should be read as citable from the
+repository alone: the run log and the two lists behind a tally are held locally and can be
+produced by re-running the command named with that run, or asked for from whoever ran it. A
+tally in this document without its log and its lists beside it is a claim, not evidence, and the
+same rule about that applies to whoever reads it.
+
 | Field | Value |
 | --- | --- |
 | Complement checkout | `7b38a63c9db3337292bee5887fc8533be3a57b9f` (2026-11-03) |
@@ -221,7 +230,7 @@ membership, alias and M1-regression subset, and it is reported as such.
 `RUN='TestRoomForget|TestLeftRoomFixture|TestRelations|TestRelationsPagination|
 TestRelationsPaginationSync|TestThreadsEndpoint|TestFilterMessagesByRelType|
 TestChangePasswordPushers|TestChangePassword$|TestLogout|TestRoomReceipts|TestRoomReadMarkers|^TestSync$'`,
-PARALLEL=1, against the tree at `4433852`. Log
+PARALLEL=1, against the tree at `5e20fe5`. Log
 `.agent-work/next/complement-run-20261108aa-todayset.log`, lists
 `.agent-work/complement-passes-20261108aa-todayset.txt` (14 names) and
 `-failures-20261108aa-todayset.txt` (empty).
@@ -251,7 +260,7 @@ the fault that has been reddening the two-server tests all day cannot reach them
 ## Targeted run 20261108z-pushers — pushers, and what takes them back
 
 `RUN='TestChangePasswordPushers|TestChangePassword$|TestLogout|TestLoginLogout|TestDeactivateAccount|TestPushRules?'`,
-PARALLEL=1, against the tree that became `4433852`. Log
+PARALLEL=1, against the tree that became `5e20fe5`. Log
 `.agent-work/next/complement-run-20261108z-pushers.log`, lists
 `.agent-work/complement-passes-20261108z-pushers.txt` / `-failures-…`.
 
@@ -283,7 +292,7 @@ that one and drops the pusher nobody re-wrote.
 
 ## Full run 20261108w — the tally moved, and the container network moved with it
 
-PARALLEL=2, filter `.*`, at tree `e5758b1`. Log
+PARALLEL=2, filter `.*`, at tree `4dc3628`. Log
 `.agent-work/next/complement-run-20261108w.log`, table
 `.agent-work/next/complement-results-20261108w.tsv`, lists
 `.agent-work/complement-passes-20261108w.txt` / `-failures-20261108w.txt`.
@@ -319,7 +328,7 @@ and its `manually_upgrading…` twin — pass in the same run.
 
 ## Targeted run 20261108x-pushupcheck — the flipped test, alone, still contaminated
 
-`RUN='TestPushRuleRoomUpgrade'`, PARALLEL=1, at `e5758b1`, run right after the full one:
+`RUN='TestPushRuleRoomUpgrade'`, PARALLEL=1, at `4dc3628`, run right after the full one:
 
     == tally: 0 passing, 1 failing, 0 skipped
            4  a certificate naming another server   4  a TLS handshake refusing what a peer presented
@@ -339,7 +348,7 @@ because that directory also holds other projects' containers.
 
 ## Targeted run 20261108y-relfilter — MSC3874 relation filters
 
-`RUN='TestFilterMessagesByRelType'`, PARALLEL=1, against the tree that became `66ab7b0`. Log
+`RUN='TestFilterMessagesByRelType'`, PARALLEL=1, against the tree that became `8bd7bc7`. Log
 `.agent-work/next/complement-run-20261108y-relfilter.log`.
 
     == tally: 1 passing, 0 failing, 0 skipped
@@ -355,7 +364,7 @@ rather than everything, an unknown relation type meaning nothing, a bad shape an
 ## Targeted run 20261108u-forget — forgetting a room, and the state owed to a member who left
 
 `RUN='TestRoomForget|TestLeftRoomFixture|TestRoomLeave|TestPeekingViaPublicRoomsAndThenJoin'`,
-PARALLEL=1, at tree `e5758b1`. Log `.agent-work/next/complement-run-20261108u-forget.log`,
+PARALLEL=1, at tree `4dc3628`. Log `.agent-work/next/complement-run-20261108u-forget.log`,
 table `.agent-work/next/complement-results-20261108u-forget.tsv`,
 lists `.agent-work/complement-passes-20261108u-forget.txt` / `-failures-…` (the failure list is empty).
 
@@ -421,7 +430,7 @@ reason is written next to them. The Complement assertions were not touched.
 ## Latest full run (2026-11-07s — the cleanest on record, and the relations work measured in it)
 
 `RUN='.*' COMPLEMENT_LABEL=20261107s COMPLEMENT_TEST_TIMEOUT=50m PARALLEL=2 scripts/complement.sh -v`
-at tree `69eab4f`: **130 passing, 89 failing, 1 skipped** out of 220 top-level tests.
+at tree `2c31072`: **130 passing, 89 failing, 1 skipped** out of 220 top-level tests.
 
 | Field | Value |
 | --- | --- |
@@ -440,7 +449,7 @@ Lists: `.agent-work/complement-{passes,failures}-20261107s.txt`; table
 ## Full run 2026-11-07o — the tally was lost and recovered, and the runner was fixed for it
 
 `RUN='.*' COMPLEMENT_LABEL=20261107o COMPLEMENT_TEST_TIMEOUT=50m PARALLEL=2 scripts/complement.sh -v`
-at tree `3bbb493`. The run finished — 104,803 lines of log, every package reported — and the script
+at tree `c2e0015`. The run finished — 104,803 lines of log, every package reported — and the script
 printed **no tally at all**. `go test -json` had glued two events onto one line at offset 24232, the
 `jq` reading the log stopped there, and with `set -euo pipefail` that took the rest of the script
 down with it. This is worth recording as a runner fault rather than a result: a suite that ran
@@ -469,13 +478,13 @@ Lists: `.agent-work/complement-{passes,failures}-20261107o.txt`; table
 ## Targeted run 2026-11-07p-relationscheck — the four suspects alone, and the first look at `/relations`
 
 `RUN='TestRelations.*|TestThreadsEndpoint|TestDeviceListsUpdateOverFederationOnRoomJoin|TestFederatedClientSpaces|TestRestrictedRoomsLocalJoinNoCreatorsUsesPowerLevelsV11|TestRestrictedRoomsRemoteJoinFailOverInMSC3787Room'`
-at tree `d299829`, `PARALLEL=1`: **6 passing, 2 failing.**
+at tree `3f731a5`, `PARALLEL=1`: **6 passing, 2 failing.**
 
 - Newly green at the first attempt: `TestRelations`, `TestRelationsPagination`,
   `TestRelationsPaginationSync` — the relation endpoint, its two path filters and its tokens.
 - `TestThreadsEndpoint` red: the response was a `{event, latest_event, total}` triple, which is what
   MSC3440's draft spells, while Complement reads `unsigned.m.relations.m.thread.latest_event`
-  inside the root event, which is what every implementation serves. Fixed in `69eab4f`, not by
+  inside the root event, which is what every implementation serves. Fixed in `2c31072`, not by
   touching the assertion.
 - `TestDeviceListsUpdateOverFederationOnRoomJoin`, `TestFederatedClientSpaces` and
   `TestRestrictedRoomsLocalJoinNoCreatorsUsesPowerLevelsV11` pass alone, which is the evidence that
@@ -487,7 +496,7 @@ at tree `d299829`, `PARALLEL=1`: **6 passing, 2 failing.**
 
 ## Targeted run 2026-11-07r-threads — relations and threads together
 
-Same filter as above narrowed to the four relation tests, tree `69eab4f`, `PARALLEL=1`:
+Same filter as above narrowed to the four relation tests, tree `2c31072`, `PARALLEL=1`:
 **4 passing, 0 failing** — `TestRelations`, `TestRelationsPagination`, `TestRelationsPaginationSync`
 and `TestThreadsEndpoint`. Four tests green that were never attempted before, with no assertion
 changed and no test skipped. A thread as an endpoint does not on its own help
@@ -507,7 +516,7 @@ Runner changes along the way, all of them about reading a run honestly rather th
 ## Latest full run (2026-11-07m — after the volume cleanup; contaminated by a stale podman DNS record)
 
 `RUN='.*' COMPLEMENT_LABEL=20261107m COMPLEMENT_TEST_TIMEOUT=40m PARALLEL=2 scripts/complement.sh -v`
-at tree `ca6e6ef` — the first full run after the anonymous-volume store was cleared (0 volumes at the
+at tree `24ae2b0` — the first full run after the anonymous-volume store was cleared (0 volumes at the
 start, `exceeded num_locks` appears 0 times). **117 passing, 102 failing, 1 skipped.** It is *not* a
 cleaner measurement than 20261107h: five tests the tree fixed went green, and nine two-server tests
 went red on the container network rather than on the protocol.
@@ -531,7 +540,7 @@ Isolation run: `.agent-work/complement-{passes,failures}-20261107n-regresscheck.
 ## Latest full run (2026-11-07h — the three targeted fixes of 20261107d/e/g measured together; T-4071 seen again as a 500)
 
 `RUN='.*' COMPLEMENT_LABEL=20261107h COMPLEMENT_TEST_TIMEOUT=40m PARALLEL=2 scripts/complement.sh -v`, Complement
-`7b38a63c9db3`, image built at tree `8972306` (the size ceiling, the UTF-8 rule, the filter shape and
+`7b38a63c9db3`, image built at tree `6f3390f` (the size ceiling, the UTF-8 rule, the filter shape and
 the filter applied at both doors). The `/account/password` and `/account/deactivate` endpoints came
 after this run and are not in it.
 
@@ -551,7 +560,7 @@ qualified table `.agent-work/next/complement-results-20261107h.tsv`; log
 ## Run 2026-11-07l is not a tally: the podman volume store exhausted its locks
 
 `RUN='.*' COMPLEMENT_LABEL=20261107l COMPLEMENT_TEST_TIMEOUT=40m PARALLEL=2 scripts/complement.sh -v`
-was started at tree `d298624` to re-measure the whole suite after the account and receipt work. It
+was started at tree `df8f6fc` to re-measure the whole suite after the account and receipt work. It
 finished with **3 passing, 217 failing, 0 skipped** and the runner's own warning beside it: *some
 deployments never started*. It measures the container runtime, not this server, and it is recorded
 here so that nobody reads 217 as a protocol result.
@@ -689,7 +698,7 @@ log `.agent-work/next/complement-run-20261107d-sizelimit.log`.
 ## Latest full run (2026-11-07c — T-4074 the membership handshakes closed, T-4075/T-4076/T-4077 opened)
 
 `RUN='.*' COMPLEMENT_LABEL=20261107c COMPLEMENT_TEST_TIMEOUT=40m scripts/complement.sh -v`, Complement
-`7b38a63c9db3`, image built at tree `24adc22` (leave/knock handshakes, the invite spelling fix and the
+`7b38a63c9db3`, image built at tree `f18742b` (leave/knock handshakes, the invite spelling fix and the
 room-version/knock-restricted tests in that commit). No name appears in both lists; no `exceeded
 num_locks`; no package hit its 40-minute budget.
 
@@ -768,7 +777,7 @@ runner.
 
 ## Latest full run (2026-11-11, profiles — T-4057 closed, T-4058 opened)
 
-`RUN='.*' COMPLEMENT_LOCAL_MIGRATIONS=true scripts/complement.sh -v`, commit `192c3dc`:
+`RUN='.*' COMPLEMENT_LOCAL_MIGRATIONS=true scripts/complement.sh -v`, commit `4e20c57`:
 **95 pass, 124 fail, 1 skip** (was 90 / 129 / 1). Newly passing: `TestProfileDisplayName`,
 `TestProfileAvatarURL`, `TestDisplayNameUpdate`, `TestAvatarUrlUpdate` (the profile endpoints and the
 member-event restatement that follows a profile change) and `TestPushRuleRoomUpgrade`, which had been
@@ -803,7 +812,7 @@ The per-run logs and failure lists live in `.agent-work/COMPLIANCE-MATRIX.md` an
 ## Latest full run (content repository and the keyring race — T-4059, T-4060 closed, T-4061 opened)
 
 `RUN='.' PARALLEL=2 scripts/complement.sh -v`, Complement `7b38a63c9db3`, image from
-`deploy/complement/Dockerfile` at `69d2378`.
+`deploy/complement/Dockerfile` at `505d252`.
 
 | Field | Value |
 | --- | --- |

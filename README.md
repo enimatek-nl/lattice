@@ -17,7 +17,8 @@ The measured position, from a full run on 2026-11-07: **104 Complement top-level
 1 skipped** (csapi 68 of 107, server-server 34 of 92). That is the honest number, not a compliance
 claim. The per-area picture — implemented, tested here, verified by Complement, partial, absent — is in
 [`docs/compliance-matrix.md`](docs/compliance-matrix.md), and the raw log and the pass/failure lists
-behind every tally quoted there live under `.agent-work/`.
+behind every tally quoted there live under `.agent-work/`, which is working state kept out of
+the repository — a clone will not have them, and re-running the command reproduces them.
 
 ## What works today
 
