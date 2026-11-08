@@ -333,7 +333,13 @@ func (s *Sender) sendBatch(ctx context.Context, destination string, items []*per
 		done = append(done, item)
 	}
 	done = append(done, eduItems...)
-	if err := s.repo.QueueDone(ctx, idsOf(done)); err != nil {
+	// Recording that a delivery succeeded is bookkeeping too. Done on a cancelled context it would
+	// fail after the neighbour has already taken the events, and the next attempt would deliver the
+	// same ones again: an encrypted room whose clients see every message twice is a worse fault than
+	// one whose client waits a moment longer.
+	complete, cancelDone := detached(ctx)
+	defer cancelDone()
+	if err := s.repo.QueueDone(complete, idsOf(done)); err != nil {
 		return 0, fmt.Errorf("federation: cannot clear the delivered items: %w", err)
 	}
 	if len(rejected) > 0 {
@@ -423,6 +429,26 @@ func (s *Sender) Run(ctx context.Context) error {
 	}
 }
 
+// queueBookkeeping is how long a piece of queue bookkeeping may take once its caller has gone away.
+const queueBookkeeping = 30 * time.Second
+
+// detached returns a context that carries ctx's values but survives its cancellation, bounded by a
+// timeout of its own.
+//
+// Queue bookkeeping has to outlive the request that triggered it. A federation attempt made on behalf of
+// a client's `PUT /sendToDevice` is cancelled the instant that client's request finishes — and a delivery
+// to a server that is down is *slow enough to finish after* the client has already been answered. If the
+// failure path then reschedules the row on the dead context, the write fails, the item keeps its old
+// attempt count and its old "try again" time, and the one piece of machinery that exists to survive an
+// outage is the thing the outage breaks. This is why a message queued during a neighbour's restart can
+// simply never arrive: nothing dropped it, and nothing is ever going to try again either.
+//
+// The timeout is not paranoia about a runaway goroutine. A database that is wedged should make this
+// visible as a slow failure rather than as a worker that never returns.
+func detached(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), queueBookkeeping)
+}
+
 // retryItems pushes items back with a delay that grows with the number of attempts.
 func (s *Sender) retryItems(ctx context.Context, items []*persist.FederationQueueItem, now time.Time, cause error) {
 	var keep []*persist.FederationQueueItem
@@ -434,8 +460,12 @@ func (s *Sender) retryItems(ctx context.Context, items []*persist.FederationQueu
 		}
 		keep = append(keep, item)
 	}
+	// The reschedule runs on a context that cannot be cancelled by the request whose delivery
+	// failed. See [detached]: this is the difference between an outage and a lost message.
+	reschedule, cancel := detached(ctx)
+	defer cancel()
 	for _, item := range keep {
-		if err := s.repo.QueueRetry(ctx, item.ID, now.Add(backoff(item.Attempts)), cause.Error()); err != nil {
+		if err := s.repo.QueueRetry(reschedule, item.ID, now.Add(backoff(item.Attempts)), cause.Error()); err != nil {
 			s.log.Warn("federation: cannot reschedule a queued item", "id", item.ID, "error", err)
 		}
 	}
@@ -453,7 +483,9 @@ func (s *Sender) dropItems(ctx context.Context, items []*persist.FederationQueue
 	if len(items) == 0 {
 		return
 	}
-	if err := s.repo.QueueDrop(ctx, idsOf(items), reason); err != nil {
+	drop, cancel := detached(ctx)
+	defer cancel()
+	if err := s.repo.QueueDrop(drop, idsOf(items), reason); err != nil {
 		s.log.Warn("federation: cannot mark queued items as dropped", "error", err)
 	}
 }

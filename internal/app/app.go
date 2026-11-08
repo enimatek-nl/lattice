@@ -216,6 +216,10 @@ func NewWithOptions(ctx context.Context, cfg *config.Config, log *slog.Logger, o
 	}
 
 	requireAuth := auth.RequireAuth(tokens, userService)
+	// The to-device service is built out here because it sits between the two halves of this
+	// function: the Client-Server API writes into it, `/sync` reads out of it, and the federation
+	// queue both carries its messages outward and files the ones that arrive.
+	deviceMessages := devicemessages.NewService(db, cfg.ServerName, log)
 	// The Client-Server dependencies are built before the federation client exists, so they are held in
 	// a variable and completed further down: an alias owned by another server is resolved by asking that
 	// server, and the only way to ask is the federation client, which needs the keyring this function has
@@ -238,7 +242,7 @@ func NewWithOptions(ctx context.Context, cfg *config.Config, log *slog.Logger, o
 		E2EKeys:       deviceKeys,
 		Sync:          sync.NewService(db, log),
 		// The route a Megolm session key takes: one device to another, with no room in between.
-		DeviceMessages: devicemessages.NewService(db, cfg.ServerName, log),
+		DeviceMessages: deviceMessages,
 		DB:             db,
 		Version:        Version,
 		Started:        a.Started,
@@ -313,6 +317,11 @@ func NewWithOptions(ctx context.Context, cfg *config.Config, log *slog.Logger, o
 		// federation client's. Wiring both here keeps one answer per question.
 		federationDeps.Aliases = roomService
 		clientDeps.RemoteAliases = client
+		// A to-device message for a device on another server leaves as an ephemeral unit on the
+		// same queue as events, with the same retry budget, and arrives through the transaction
+		// handler into the same store the local path writes.
+		deviceMessages.EDUs = a.Sender
+		federationDeps.DeviceMessages = deviceMessages
 		if maxAge := cfg.Federation.QueueMaxAge.Get(); maxAge > 0 {
 			a.Sender.MaxAge = maxAge
 		}

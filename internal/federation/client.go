@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"time"
@@ -26,12 +27,55 @@ type Client struct {
 	clients *nameVerifyingClients
 }
 
+// Timeouts for reaching a homeserver that may not be there.
+//
+// Two bounds matter and the overall request timeout is not one of them. A homeserver that is *down* is
+// usually known in the dial — nothing is listening — and a homeserver that is *stuck* is known as soon as
+// the request is written and no answer comes back. The overall timeout exists to stop a large body
+// trickling forever, and a transaction body is small; leaving the first two at the standard library's
+// defaults means one unresponsive neighbour can hold a queue worker for half a minute per attempt.
+//
+// That is not a tuning nicety. The federation queue is the mechanism that survives a neighbour's restart,
+// and a worker parked on a dead socket is a queue that is not moving: a to-device message carrying a
+// Megolm session, retried behind a 30-second stall, arrives after the client on the other end has given
+// up waiting for it. The numbers below say "a server that has not answered in ten seconds is not going
+// to", and let the retry backoff do the waiting instead.
+const (
+	federationConnectTimeout = 5 * time.Second
+	federationHeaderTimeout  = 10 * time.Second
+)
+
+// federationTransport fills in the two bounds above without disturbing anything else the caller's
+// transport was asked to do. A transport that is not an *http.Transport is left exactly as it is: this
+// function is allowed to add a bound, not to replace a proxy or a custom dialer somebody configured on
+// purpose.
+func federationTransport(base http.RoundTripper) http.RoundTripper {
+	transport, ok := base.(*http.Transport)
+	if base != nil && !ok {
+		return base
+	}
+	if transport == nil {
+		transport = http.DefaultTransport.(*http.Transport).Clone()
+	} else {
+		transport = transport.Clone()
+	}
+	if transport.ResponseHeaderTimeout == 0 {
+		transport.ResponseHeaderTimeout = federationHeaderTimeout
+	}
+	if transport.DialContext == nil {
+		dialer := &net.Dialer{Timeout: federationConnectTimeout, KeepAlive: 30 * time.Second}
+		transport.DialContext = dialer.DialContext
+	}
+	return transport
+}
+
 // NewClient returns a client that signs with signer and reaches servers through the
 // resolver.
 func NewClient(resolver Resolver, httpClient *http.Client, origin string, signer Signer, log *slog.Logger) *Client {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 30 * time.Second}
 	}
+	httpClient.Transport = federationTransport(httpClient.Transport)
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}

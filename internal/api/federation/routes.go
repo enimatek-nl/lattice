@@ -66,6 +66,9 @@ type Deps struct {
 	// DeviceLists records, for the local users who may care, that a peer says one of its own
 	// users has devices worth re-reading.
 	DeviceLists DeviceListChanges
+	// DeviceMessages files the messages a peer carried for this server's devices. Without it a
+	// to-device unit is acknowledged and lost, which is the failure mode a client cannot see.
+	DeviceMessages DirectToDevice
 	// Invites stores an invite a peer made for one of this server's users, after signing it
 	// here as the peer asked.
 	Invites InviteAcceptor

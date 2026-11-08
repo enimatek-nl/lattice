@@ -142,6 +142,10 @@ func (d *Deps) handleSendTransaction(w http.ResponseWriter, r *http.Request) {
 			d.noteDeviceListUpdate(r.Context(), transaction.Origin, edu.Content)
 			continue
 		}
+		if edu.Type == directToDeviceEDU {
+			d.noteDirectToDevice(r.Context(), transaction.Origin, edu.Content)
+			continue
+		}
 		// Ephemeral units are acknowledged, and this server does nothing with the others yet:
 		// presence, typing and receipts over federation are their own tasks. Saying so
 		// in the log keeps "we received it" from quietly meaning "we acted on it".

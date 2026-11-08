@@ -20,6 +20,16 @@ import (
 	"github.com/enimatek/lattice/internal/persist"
 )
 
+// Emitter is the federation queue: the way a message leaves this server for another one.
+type Emitter interface {
+	EnqueueEDU(ctx context.Context, destination, eduType string, content map[string]any) error
+}
+
+// EDUType is the ephemeral unit that carries a to-device message between servers. It is the name
+// the specification gives it, and both ends have to agree: a server that invented its own would
+// have a working half of a feature.
+const EDUType = "m.direct_to_device"
+
 // Service stores and hands out the messages waiting on a device.
 type Service struct {
 	db       *persist.Database
@@ -30,6 +40,11 @@ type Service struct {
 	// server's device is not this server's to file: it has to be carried to that server, which is
 	// federation and a separate piece of work.
 	serverName string
+	// EDUs carries a message whose recipient lives on another server. It is the federation
+	// transaction queue, and it is an interface with one method because this service has no
+	// business knowing how a transaction is retried, only that a unit can be handed to
+	// somebody who will.
+	EDUs Emitter
 	// SyncLimit caps how many messages one sync hands over. A device that has not synced while
 	// a busy peer was sharing keys could otherwise be handed thousands of payloads in one
 	// response, and a client that times out on its own sync would ask again.
@@ -85,6 +100,13 @@ func (s *Service) Send(ctx context.Context, sender, senderDevice, eventType, txn
 		}
 		if !matrixid.IsLocal(domain, s.serverName) {
 			remote = append(remote, user)
+			queued, err := s.emitRemote(ctx, sender, senderDevice, user, byDevice, eventType)
+			if err != nil {
+				return err
+			}
+			if queued {
+				remote = remote[:len(remote)-1]
+			}
 			continue
 		}
 		for device, content := range byDevice {
@@ -118,6 +140,97 @@ func (s *Service) Send(ctx context.Context, sender, senderDevice, eventType, txn
 		return matrixerr.New(matrixerr.CodeUnknown, "This server could not file the message for delivery.")
 	}
 	return nil
+}
+
+// emitRemote hands a remote recipient's messages to the federation queue, one ephemeral unit per
+// addressed device.
+//
+// One unit per device rather than one per user is what the specification asks for and what the receiving
+// server can act on without guessing; the exception is `*`, which stays `*` because this server does not
+// know another server's device list, and the server that does is the one holding the recipient's devices.
+//
+// It returns false when there is no queue to hand to, which is the state this server is in until the
+// federation wiring is present: the message is then dropped and logged, and the client's own retry of the
+// key share remains the way the conversation recovers.
+func (s *Service) emitRemote(ctx context.Context, sender, senderDevice, user string, byDevice map[string]json.RawMessage, eventType string) (bool, error) {
+	if s.EDUs == nil {
+		return false, nil
+	}
+	domain, err := matrixid.UserDomain(user)
+	if err != nil {
+		return false, nil
+	}
+	for device, content := range byDevice {
+		var payload any
+		if err := json.Unmarshal(content, &payload); err != nil {
+			// The sender sent something this server cannot re-encode as JSON. Dropping one
+			// device's payload beats failing a send that other recipients already received.
+			s.log.Warn("devicemessages: a remote to-device payload could not be read",
+				"recipient", user, "device", device, "error", err)
+			continue
+		}
+		if err := s.EDUs.EnqueueEDU(ctx, domain, EDUType, map[string]any{
+			"sender":        sender,
+			"sender_device": senderDevice,
+			"user":          user,
+			"device":        device,
+			// `msgtype` is what the specification calls the to-device event's type on the
+			// wire. The name is a fossil from when the only thing worth carrying between
+			// devices was an encrypted room payload; both ends have to use it because there
+			// is no other field that says what the payload is.
+			"msgtype": eventType,
+			"content": payload,
+		}); err != nil {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
+// AcceptRemote files a message that another server carried for one of this server's devices.
+//
+// The trust question is the same one a device-list update answers, and gets the same answer: a peer may
+// speak for users on its own domain and for nobody else's. The transaction this arrived inside is
+// authenticated, which proves *who* said it; this check is about *what* they are allowed to say, and
+// without it any peer could leave a note in any local device's pigeonhole.
+//
+// The content is stored as the peer sent it and read back verbatim. The server cannot see into an
+// encrypted payload and has no business editing one it can see into.
+func (s *Service) AcceptRemote(ctx context.Context, origin, sender, senderDevice, user, device, eventType string, content json.RawMessage) error {
+	if user == "" {
+		return nil
+	}
+	domain, err := matrixid.UserDomain(user)
+	if err != nil || !matrixid.IsLocal(domain, s.serverName) {
+		s.log.Warn("devicemessages: a server carried a to-device message for a user it does not carry",
+			"origin", origin, "user_id", user)
+		return nil
+	}
+	if senderDomain, err := matrixid.UserDomain(sender); sender != "" && err == nil && !matrixid.IsLocal(senderDomain, origin) {
+		s.log.Warn("devicemessages: a server carried a to-device message from a sender it does not speak for",
+			"origin", origin, "sender", sender, "user_id", user)
+		return nil
+	}
+	targets, err := s.targets(ctx, user, device)
+	if err != nil {
+		return err
+	}
+	rows := make([]*persist.DeviceMessage, 0, len(targets))
+	for _, target := range targets {
+		rows = append(rows, &persist.DeviceMessage{
+			SenderID:       sender,
+			SenderDeviceID: senderDevice,
+			UserID:         user,
+			DeviceID:       target,
+			EventType:      eventType,
+			Content:        string(content),
+		})
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	_, err = s.messages.Put(ctx, rows)
+	return err
 }
 
 // targets is the device list a message addressed to `device` of `user` actually goes to. An unknown device
