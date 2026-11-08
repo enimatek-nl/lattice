@@ -9,13 +9,20 @@ repository, device keys, push rules and a first federation layer — discovery, 
 `/send/{txnId}`, the join handshake, `/state_ids`, `/event`, `/event_auth`, `/get_missing_events`,
 backfill, federation media, server ACLs and restricted rooms — are implemented and tested, the last
 several of them against the Complement compliance harness with two homeservers in one deployment.
-Leaves, invites over federation, knocking, threads and relations, receipts and read markers, typing,
-cross-signing and key backup, search, room version 12 and the MSCs built on it are **not** implemented,
-and they answer with a protocol error rather than a fake success.
+`/relations` and `/threads`, receipts and read markers, `/forget`, typing, and history visibility —
+which of a room's events a given reader may be given, judged at the moment each event was written —
+are implemented and Complement-verified as well. Leaves, invites over federation, knocking, the
+federation halves of typing and receipts, cross-signing and key backup, search, room version 12 and
+the MSCs built on it are **not** implemented, and they answer with a protocol error rather than a
+fake success.
 
-The measured position, from a full run on 2026-11-07: **104 Complement top-level tests pass, 115 fail,
-1 skipped** (csapi 68 of 107, server-server 34 of 92). That is the honest number, not a compliance
-claim. The per-area picture — implemented, tested here, verified by Complement, partial, absent — is in
+The measured position, from the cleanest full run on record (2026-11-07s, at commit `2c31072`):
+**130 Complement top-level tests pass, 89 fail, 1 skipped**, out of 220. That is the honest number,
+not a compliance claim, and it is out of date in one direction: `/forget`, MSC3874's relation
+filters, pushers, history visibility and typing landed after it and are verified by targeted runs
+rather than by a full one, so none of them is counted in 130. A full run worth believing is owed
+once the stale per-network DNS records on the development machine are cleared — until then every
+two-server test on that machine answers with another deployment's certificate. The per-area picture — implemented, tested here, verified by Complement, partial, absent — is in
 [`docs/compliance-matrix.md`](docs/compliance-matrix.md), and the raw log and the pass/failure lists
 behind every tally quoted there live under `.agent-work/`, which is working state kept out of
 the repository — a clone will not have them, and re-running the command reproduces them.

@@ -334,6 +334,22 @@ Two decisions recorded rather than smoothed over:
   which of the four the typo most resembles.
 
 
+### 6.9 Typing: an indicator with a lifetime its client sets (added during M4)
+
+| ID | Source | Requirement | Level | Status | Where |
+|---|---|---|---|---|---|
+| REQ-TYPE-001 | CS v1.11 `PUT /rooms/{roomID}/typing/{userId}` | A user says it is typing for `timeout` milliseconds, or says it has stopped; the answer is `{}` | MUST | implemented+tested. `typing` is required and read as a pointer, so a request that does not say which way it means is refused rather than read as "stopped" | `internal/api/client/typing.go`, `internal/typing/service.go`; `tests/integration/typing_test.go` (`TestTypingIsRefusedForWhatItIsNot`) |
+| REQ-TYPE-002 | CS v1.11, the ephemeral section of a sync | The indicator reaches the room's other members as an ephemeral `m.typing` event whose content is `{"user_ids": […]}` — with no `room_id`, because that field belongs to the federation copy and a client would have to strip it back out | MUST | implemented+tested, including the empty list: stopping is an answer, not an absence | `internal/sync/typing.go`; Complement `TestTyping` (run 20261108hh-typingcommit) |
+| REQ-TYPE-003 | the same section's window rules | A change to a room's typing list is inside a sync window exactly as an event is: the write takes a position in the stream every synchronisable value uses, a window that holds no change is not sent the list again, and an indicator expiring is itself a change | MUST | implemented+tested. Rows are emptied rather than deleted, for the same reason MSC3391's account-data removal is a tombstone write: a deleted row leaves no stream position behind, and a stream whose maximum can fall would hand a client a `next_batch` older than the token it holds | `internal/persist/typing.go`, `internal/persist/stream.go`; `tests/integration/typing_test.go` (`TestTypingTakesPartInTheStream`, `TestATypingIndicatorExpiresOnItsOwnClientSetsIt`) |
+| REQ-TYPE-004 | who may see and set an indicator | Typing is the room's: a member of the room may set their own indicator, and only that room's members are shown it | MUST | implemented+tested. A path naming another user is 403 (the presence endpoint already decided this about presence), and a non-member's indicator is refused 403 — the specification's error list for this endpoint names only 200 and 429, so both refusals are this server's reading, recorded here rather than implied | `internal/typing/service.go`; `tests/integration/typing_test.go` (`TestTypingIsNotShownToSomebodyOutsideTheRoom`, `TestTypingIsRefusedForWhatItIsNot`); Complement `TestLeakyTyping` |
+
+Not implemented and recorded so the row above is not over-read: the indicator over federation
+(`m.typing` EDUs out to the servers holding the room's members, and inbound ones applied to the same
+store) is T-4093, and Complement's `TestRemoteTyping` is therefore not green. The five-minute
+ceiling on a client's `timeout` is this server's decision — the specification sets none — because an
+indicator that outlives a crashed client is a hand raised on other people's screens forever.
+
+
 ## 7. Operational requirements
 
 | ID | Source | Requirement | Level | Status | Tests |
