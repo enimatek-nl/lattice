@@ -321,14 +321,18 @@ T-4093 with the two halves that are missing (`EnqueueEDU` has a caller only for 
 the inbound transaction handler acts only on `m.device_list_update`) rather than counted as untested
 by omission.
 
-## Targeted run 20261108ii-idempotentstate — a state write that changes nothing
+## Targeted runs 20261108ii-idempotentstate and 20261108jj-idempotentclean — a state write that changes nothing
 
-`RUN` naming twelve single-server tests, PARALLEL=1, at `345f110`. Stored: log
-`.agent-work/next/complement-run-20261108ii-idempotentstate.log`, table
-`.agent-work/next/complement-results-20261108ii-idempotentstate.tsv`, lists
-`.agent-work/complement-{passes,failures}-20261108ii-idempotentstate.txt`, and the runner's summary
-`complement-summary-20261108ii-idempotentstate.txt` — `tally: 11 passing, 2 failing, 0 skipped`,
-`tree: 345f110`, `go test exit: 0`, fingerprints 0/0/0/0/0.
+`RUN` naming the same twelve single-server tests, PARALLEL=1, run twice: against the working tree
+before the commit (`20261108ii-idempotentstate`) and against the clean commit afterwards
+(`20261108jj-idempotentclean`). The numbers are the same and the pass lists are identical, so the
+commit is stated only to say what the artefact says: the first run's summary records
+`tree: 1a1844f (working tree dirty: 3 paths changed since that commit)` — the image had been built
+from uncommitted work, which is exactly what that note exists to catch — while the second records
+`tree: 5e16577`, `go test exit: 1` (two tests failed, so the exit code is the honest one) and
+`tally: 11 passing, 2 failing, 0 skipped`, fingerprints 0/0/0/0/0. Stored under both labels:
+`complement-run-*.log`, `complement-results-*.tsv`, `complement-{passes,failures}-*.txt` and
+`complement-summary-*.txt`.
 
 | | tests |
 |---|---|
