@@ -111,26 +111,33 @@ fi
 #   for f in "$dns"/*; do n=${f##*/}; [ "$n" = aardvark.pid ] && continue
 #     podman network exists "$n" 2>/dev/null || rm -f "$f"; done
 #   kill "$(cat "$dns/aardvark.pid")" 2>/dev/null || true
-if command -v podman >/dev/null 2>&1; then
+report_stale_dns() {
+	# Named as a function because it is worth asking twice: once before the run, and once after.
+	# The records a run leaves behind are not the ones it started with — a deployment whose network
+	# is deleted partway can leave its aardvark-dns file where the next package's `hs1` lookup will
+	# be answered from it. Run 20261108w printed no warning at its start and finished with 11
+	# certificates naming another server: the preflight alone cannot see that.
+	command -v podman >/dev/null 2>&1 || return 0
+	local dns_dir stale entry name
 	dns_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/containers/networks/aardvark-dns"
-	if [[ -d "$dns_dir" ]]; then
-		# A subshell so nullglob does not leak into the rest of the script. It is needed because a
-		# directory holding only aardvark.pid has nothing to report, and an unexpanded glob would be
-		# reported as a network named "*".
-		(
-			shopt -s nullglob
-			stale=""
-			for entry in "$dns_dir"/*; do
-				name="${entry##*/}"
-				[[ "$name" == *.pid ]] && continue
-				podman network exists "$name" 2>/dev/null || stale="$stale $name"
-			done
-			if [[ -n "$stale" ]]; then
-				echo "!! podman DNS records for networks that no longer exist:$stale — a peer server name can resolve to an address from a deleted deployment, which reads as a TLS or protocol failure (see the comment above for how to clear it)"
-			fi
-		)
-	fi
-fi
+	[[ -d "$dns_dir" ]] || return 0
+	# A subshell so nullglob does not leak into the rest of the script. It is needed because a
+	# directory holding only aardvark.pid has nothing to report, and an unexpanded glob would be
+	# reported as a network named "*".
+	(
+		shopt -s nullglob
+		stale=""
+		for entry in "$dns_dir"/*; do
+			name="${entry##*/}"
+			[[ "$name" == *.pid ]] && continue
+			podman network exists "$name" 2>/dev/null || stale="$stale $name"
+		done
+		if [[ -n "$stale" ]]; then
+			echo "!! podman DNS records for networks that no longer exist:$stale — a peer server name can resolve to an address from a deleted deployment, which reads as a TLS or protocol failure (see the comment above for how to clear it)"
+		fi
+	)
+}
+report_stale_dns	# before the run
 
 # The run, its log, and its tally.
 #
@@ -280,6 +287,9 @@ fi
 if [[ "$namespace_confusion" -gt 0 ]]; then
 	echo "!! those first three are the container network, not this server: a peer server's name resolved into somebody else's deployment. The two-server failures above are contaminated — re-run them alone (PARALLEL=1) before believing them, and clear the stale per-network DNS records the note near the top of this script describes."
 fi
+# And the DNS question again, now that the run is over: this is the state the *next* run will
+# inherit, and it is the state this run's own later packages were answering from.
+report_stale_dns
 if [[ "$unbuilt_image" -gt 0 ]]; then
 	echo "!! $unbuilt_image lines say a deployment had no built image: those tests never reached a homeserver, so their failure is the runtime and not the protocol."
 fi
