@@ -7,9 +7,12 @@
 // room split. The algorithm here follows the "State resolution" section of the
 // pinned room version pages (v1.19) step by step.
 //
-// Room versions 2 through 11 use the algorithm implemented in this file; room version
+// Room versions 2 through 12 use the algorithm implemented in this file; room version
 // 1 uses the older and much smaller algorithm implemented in stateresolutionv1.go.
-// Room version 12's revision is refused rather than approximated.
+// Version 12's revision (MSC4297) differs from version 2's in three sentences, which are
+// marked in the algorithm below and are the reason a version-aware `Resolve` exists: it is
+// not a rewrite of state resolution, it is state resolution with a wider conflicted set and
+// a colder start.
 package state
 
 import (
@@ -71,8 +74,15 @@ func (s *Snapshot) Rejected(id string) bool { return s.graph.Rejected(id) }
 // makes the matching rule reject, which can change a resolved state; callers doing
 // federation work must supply them.
 func Resolve(rules roomversion.Rules, graph Graph, states []State, authChecks eventauth.Opts) (State, error) {
+	// State Resolution 2.1 is State Resolution 2 plus three defined modifications, so it runs
+	// through this function with one flag rather than as a second implementation. That is a
+	// deliberate risk trade: the two algorithms share the parts where a mistake would be silent and
+	// catastrophic (the orderings, the auth difference, the iterative checks), and duplicating them
+	// to keep version 2 untouched would mean two copies to keep in step, which is how two servers
+	// come to disagree about who runs a room.
+	twoPointOne := rules.StateRes == roomversion.StateResV2_1
 	switch rules.StateRes {
-	case roomversion.StateResV2:
+	case roomversion.StateResV2, roomversion.StateResV2_1:
 	case roomversion.StateResV1:
 		return resolveV1(rules, graph, states, authChecks)
 	default:
@@ -96,6 +106,16 @@ func Resolve(rules roomversion.Rules, graph Graph, states []State, authChecks ev
 	// that authorised the state, not only about the state itself.
 	difference := authDifference(graph, states)
 	full := conflicted.union(difference)
+	if twoPointOne {
+		// Modification 3 of the version 12 page: the full conflicted set additionally includes the
+		// conflicted state subgraph — the events sitting on an auth_events path between two events the
+		// fork disagrees about. Version 2 left those out, and version 12 puts them in because its
+		// iterative checks start from nothing (modification 1, below) and therefore have to be able to
+		// *see* the events that authorised the contested ones. Without them the checks would have to
+		// reach outside the set they are given, and an algorithm whose result depends on what a lookup
+		// happened to be able to find is not an algorithm two servers can run independently.
+		full = full.union(conflictedStateSubgraph(graph, conflicted))
+	}
 
 	// Step 1: power events from the full conflicted set, widened by their auth
 	// chains, sorted into the reverse topological power ordering.
@@ -104,7 +124,17 @@ func Resolve(rules roomversion.Rules, graph Graph, states []State, authChecks ev
 
 	// Step 2: iterative auth checks over those events, starting from the state
 	// everyone already agrees on.
-	partial := iterativeAuthChecks(rules, graph, unconflicted, order, authChecks)
+	//
+	// Modification 1 of the version 12 page: that starting state is empty. Version 2 seeded the
+	// checks with the unconflicted state map, which means an event could be authorised by state that
+	// no branch of the fork had to authorise it; version 12 makes the power events justify themselves
+	// from nothing. Step 5 still overwrites with the unconflicted map at the end, so the agreed state
+	// is not lost — it simply stops being an assumption partway through.
+	start := State{}
+	if !twoPointOne {
+		start = unconflicted
+	}
+	partial := iterativeAuthChecks(rules, graph, start, order, authChecks)
 
 	// Step 4: everything else, ordered by the mainline ordering based on the power
 	// levels in the partially resolved state.
@@ -237,6 +267,83 @@ func onlyID(ids map[string]int) string {
 		return id
 	}
 	return ""
+}
+
+// conflictedStateSubgraph returns the events lying on an auth_events path between two events in the
+// conflicted set, endpoints included — the definition room version 12 adds and folds into the full
+// conflicted set.
+//
+// Read literally the definition is about paths between pairs, and it is worth stating the equivalent
+// condition this function implements because the literal reading invites two wrong implementations.
+// An event X is in the subgraph when some conflicted event reaches X by walking `auth_events` edges
+// (so X lies inside a conflicted event's auth chain — that is the universe below) *and* X itself
+// reaches some conflicted event that way. Auth edges point backwards in time, so the second condition
+// asks whether X sits *later* than a contested event, and together the two say exactly "between two
+// contested events".
+//
+// The first wrong implementation takes each conflicted event's auth chain and keeps the conflicted
+// events in it: that is the endpoints and none of what is between them, which is the part the
+// definition is about. The second walks the graph once and marks whatever path it happened to take
+// first — but the definition quantifies over *all* paths between *any* pair, so a first-found path is
+// an answer that depends on iteration order. This walks twice instead: forward to build the universe,
+// then backward from the conflicted events to find which parts of the universe lead back to one. Both
+// passes are linear in the edges the resolution is already walking when it computes the auth
+// difference, so the modification costs a constant factor and no new kind of lookup.
+func conflictedStateSubgraph(graph Graph, conflicted eventSet) eventSet {
+	universe := map[string]bool{}
+	queue := make([]string, 0, len(conflicted))
+	for id := range conflicted {
+		queue = append(queue, id)
+	}
+	for len(queue) > 0 {
+		current := queue[len(queue)-1]
+		queue = queue[:len(queue)-1]
+		if universe[current] {
+			continue
+		}
+		universe[current] = true
+		queue = append(queue, graph.AuthEventIDs(current)...)
+	}
+
+	// The reverse of the edges inside the universe, so a walk starting from the conflicted events finds
+	// every event from which a conflicted event is still reachable.
+	parents := map[string][]string{}
+	for id := range universe {
+		for _, authID := range graph.AuthEventIDs(id) {
+			if universe[authID] {
+				parents[authID] = append(parents[authID], id)
+			}
+		}
+	}
+	between := map[string]bool{}
+	queue = queue[:0]
+	for id := range conflicted {
+		if universe[id] {
+			queue = append(queue, id)
+		}
+	}
+	for len(queue) > 0 {
+		current := queue[len(queue)-1]
+		queue = queue[:len(queue)-1]
+		if between[current] {
+			continue
+		}
+		between[current] = true
+		queue = append(queue, parents[current]...)
+	}
+
+	subgraph := eventSet{}
+	for id := range between {
+		event, ok := graph.Event(id)
+		if !ok {
+			// An event in an auth chain that cannot be read is not something a resolution can put in a
+			// set, which is how the auth difference has always answered the same question: an event is
+			// what its bytes say, not what a reference to it implies.
+			continue
+		}
+		subgraph[id] = event
+	}
+	return subgraph
 }
 
 // authChain walks the auth events of an event, transitively.

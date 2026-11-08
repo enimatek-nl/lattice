@@ -266,21 +266,28 @@ func TestResolveSingleStateIsIdentity(t *testing.T) {
 	}
 }
 
-// TestResolveRefusesOtherAlgorithms checks that a room version whose state resolution this
-// server has not written is refused, not resolved with the wrong one. Room version 1 has its
-// own algorithm and is covered in stateresolvev1_test.go; the revision room version 12 uses is
-// not implemented, and applying version 2's algorithm to it would quietly give a different
-// answer to every other server in the room.
+// TestResolveRefusesOtherAlgorithms checks that a room version whose state resolution this server has
+// not written is refused, not resolved with the wrong one. Room version 1 has its own algorithm and is
+// covered in stateresolutionv1_test.go; versions 2 through 12 are all implemented, so the list of
+// versions that must be refused is now empty and the interesting half of this test runs the other way:
+// version 12 must resolve. The synthetic version at the end is what keeps the refusal honest — with
+// every real version implemented, an error path that nothing asks for is an error path that rots, and
+// applying version 2's algorithm to a version that names something else is exactly the mistake it
+// exists to catch.
 func TestResolveRefusesOtherAlgorithms(t *testing.T) {
 	t.Parallel()
 	base := forkBase()
 	graph := graphWith(base...)
 	states := []state.State{stateOf(base...), stateOf(base...)}
-	for _, version := range []string{"12"} {
-		_, err := state.Resolve(roomversion.MustGet(version), graph, states, eventauth.Opts{})
-		if !errors.Is(err, state.ErrAlgorithmUnsupported) {
-			t.Errorf("room version %s resolution = %v, want ErrAlgorithmUnsupported", version, err)
-		}
+
+	if _, err := state.Resolve(roomversion.MustGet("12"), graph, states, eventauth.Opts{}); err != nil {
+		t.Errorf("room version 12 resolution = %v, want it to resolve: state resolution 2.1 is implemented, and refusing here sends every version 12 room into the error path rather than the algorithm", err)
+	}
+
+	v3 := roomversion.MustGet("11")
+	v3.StateRes = roomversion.StateRes("v3")
+	if _, err := state.Resolve(v3, graph, states, eventauth.Opts{}); !errors.Is(err, state.ErrAlgorithmUnsupported) {
+		t.Errorf("a room version naming an unimplemented algorithm resolved with %v, want ErrAlgorithmUnsupported", err)
 	}
 }
 
