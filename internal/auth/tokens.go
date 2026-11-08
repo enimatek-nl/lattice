@@ -169,6 +169,18 @@ func DeviceID(r *http.Request) string {
 	return ""
 }
 
+// TokenHash returns the hash this server holds for the token the request authenticated with,
+// or the empty string. The hash and not the token is what other rows name a session by, so a
+// feature that belongs to a session — a pusher, a notification address — stores this and never
+// the token itself.
+func TokenHash(r *http.Request) string {
+	s := SessionFromRequest(r)
+	if s == nil {
+		return ""
+	}
+	return hashToken(s.Token)
+}
+
 // ConstantTimeEqual compares two secrets without leaking timing differences.
 func ConstantTimeEqual(a, b string) bool {
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1

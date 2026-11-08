@@ -30,6 +30,13 @@ func (d *Deps) handleLogout(w http.ResponseWriter, r *http.Request) {
 		d.writeInternal(w, "logout", err)
 		return
 	}
+	// The device is gone, so the address it asked to be woken at is gone with it. Leaving it
+	// behind would mean this server still trying to notify an app that can no longer be told
+	// anything, and any later holder of this account inheriting a pusher they never set.
+	if err := d.Pushers.ForgetToken(r.Context(), session.UserID, auth.TokenHash(r)); err != nil {
+		d.writeInternal(w, "logout pushers", err)
+		return
+	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{})
 }
 
@@ -42,6 +49,10 @@ func (d *Deps) handleLogoutAll(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := d.DB.Devices.DeleteByUser(r.Context(), session.UserID); err != nil {
 		d.writeInternal(w, "logout/all", err)
+		return
+	}
+	if err := d.Pushers.ForgetUser(r.Context(), session.UserID); err != nil {
+		d.writeInternal(w, "logout/all pushers", err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{})

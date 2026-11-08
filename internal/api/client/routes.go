@@ -16,6 +16,7 @@ import (
 	"github.com/enimatek/lattice/internal/matrixerr"
 	"github.com/enimatek/lattice/internal/persist"
 	"github.com/enimatek/lattice/internal/presence"
+	"github.com/enimatek/lattice/internal/pushers"
 	"github.com/enimatek/lattice/internal/pushrules"
 	"github.com/enimatek/lattice/internal/rooms"
 	"github.com/enimatek/lattice/internal/sync"
@@ -35,6 +36,11 @@ type Deps struct {
 	Keys        *keys.Service
 	Rooms       *rooms.Service
 	PushRules   *pushrules.Service
+	// Pushers is where a user's devices have asked to be woken. It sits beside the push rules
+	// and not inside them: the rules decide whether an event is worth a notification, the
+	// pushers decide where that notification is sent, and a client can set one without ever
+	// having touched the other.
+	Pushers *pushers.Service
 	Presence    *presence.Service
 	E2EKeys     *e2ekeys.Service
 	Sync        *sync.Service
@@ -255,6 +261,10 @@ func Register(r *httpserver.Router, d *Deps, requireAuth func(http.Handler) http
 	versioned("GET", "/pushrules/{rest...}", d.handlePushRulesGet)
 	versioned("PUT", "/pushrules/{rest...}", d.handlePushRulesPut)
 	versioned("DELETE", "/pushrules/{rest...}", d.handlePushRulesDelete)
+
+	// Pushers: where a device asks to be woken, and where it says what it asked for.
+	versioned("POST", "/pushers/set", d.handlePushersSet)
+	versioned("GET", "/pushers", d.handlePushersList)
 	versioned("GET", "/pushrules", d.handlePushRulesGet)
 
 	// Presence. The user ID in the path is a single segment: a colon inside a path

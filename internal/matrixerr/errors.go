@@ -39,6 +39,10 @@ const (
 	CodeNoAuth                Code = "M_NO_AUTH"
 	CodeMissingParams         Code = "M_MISSING_PARAMS"
 	CodeInvalidParam          Code = "M_INVALID_PARAM"
+	// CodeInvalidEmailParam is the push-specific cousin of the one above: the Client-Server API
+	// gives an email address it will not accept its own code, so that a client holding an email
+	// pusher knows this is not something to retry with a different URL.
+	CodeInvalidEmailParam Code = "M_INVALID_EMAIL_PARAM"
 	CodeNotYetRegistered      Code = "M_NOT_YET_REGISTERED"
 	CodeGuestAccessForbidden  Code = "M_GUEST_ACCESS_FORBIDDEN"
 	CodeLimitExceeded         Code = "M_LIMIT_EXCEEDED"

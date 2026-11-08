@@ -59,6 +59,15 @@ func (d *Deps) handlePasswordChange(w http.ResponseWriter, r *http.Request) {
 			d.writeInternal(w, "password change revoke", err)
 			return
 		}
+		// The pushers go with the sessions they belonged to. A pusher is an app on a device
+		// saying "wake me here", written by one session; when that session stops working the
+		// address stops being anybody's to keep using, and the next person to hold this
+		// account would otherwise inherit a notification path they never asked for. The
+		// session that just proved the new password keeps its own, because it is still here.
+		if err := d.Pushers.ForgetAllButToken(r.Context(), authenticatedAs, auth.TokenHash(r)); err != nil {
+			d.writeInternal(w, "password change pushers", err)
+			return
+		}
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{})
 }
