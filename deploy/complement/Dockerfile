@@ -28,8 +28,18 @@ COPY --from=build /out/lattice /usr/local/bin/lattice
 COPY deploy/complement/entrypoint.sh /entrypoint.sh
 RUN chmod 0755 /entrypoint.sh
 
-ENV LATTICE_DATA_DIR=/data
-VOLUME ["/data"]
+# Provenance, carried by both image paths so `scripts/complement-image.sh` can check either one the
+# same way: it asks the image what tree it came from instead of believing the caller. See the note
+# in Dockerfile.prebuilt for why a run needs that.
+ARG REVISION=unknown
+ARG TREE=unknown
+RUN printf 'revision=%s\ntree=%s\nmode=container\ncompiler=in-build (deploy/complement/Dockerfile)\n' \
+	"$REVISION" "$TREE" > /REVISION
+
+# No VOLUME for /data, for the reason spelled out in Dockerfile.prebuilt: an anonymous volume per
+# homeserver container, ~700 per suite, podman's lock table at 2048, and a run that reports the
+# runtime's exhaustion as protocol failures (20261107l). The entrypoint creates /data; Complement
+# stops and starts the same container, whose own storage survives that.
 
 EXPOSE 8008 8448
 

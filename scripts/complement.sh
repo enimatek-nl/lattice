@@ -40,8 +40,18 @@ if ! command -v "$container_runtime" >/dev/null 2>&1; then
 	exit 1
 fi
 
+# The image, and what it says about itself. The compile happens outside the build and the tree
+# identity goes into the image at /REVISION, so a tally can be checked against the binary that was
+# actually under test rather than against whatever the caller had committed by the time it wrote the
+# note. scripts/complement-image.sh refuses to return successfully when the image does not report
+# the tree it was pointed at; BUILD_MODE=container uses the in-build compile instead, and checks it
+# the same way.
 echo "== building $image"
-"$container_runtime" build -t "$image" -f deploy/complement/Dockerfile .
+IMAGE="$image" CONTAINER_RUNTIME="$container_runtime" scripts/complement-image.sh
+image_origin="unknown"
+if [[ -f "$repo_root/.complement-build/image.env" ]]; then
+	image_origin="$(tr '\n' ' ' < "$repo_root/.complement-build/image.env")"
+fi
 
 # Podman's container network reaches the host under a different name; Complement
 # needs to know which one to advertise to homeservers.
@@ -137,6 +147,60 @@ report_stale_dns() {
 		fi
 	)
 }
+# The other half of the same story: not reporting the stale records, but clearing the ones this
+# harness made. aardvark-dns answers name lookups for a podman network from a file named after that
+# network, and a network that has been deleted can leave its file behind — where its `hs1` keeps
+# being answered, into a subnet that a fresh deployment has since been given. `podman network prune`
+# does not help, because as far as podman is concerned the network is already gone.
+#
+# What makes this safe to do here rather than an operator's call is the name: the files cleared are
+# the ones Complement names for itself (`complement_*`), so nothing another project created is
+# touched. A file is removed only when `podman network exists` says its network is not there, and
+# the daemon restarts aardvark-dns for a network when it needs it.
+#
+# CLEAN=0 leaves the state alone and only reports it. CLEAN=volumes adds the anonymous-volume loop
+# documented above, which is NOT scoped to this project and so stays opt-in.
+clean_podman_state() {
+	command -v podman >/dev/null 2>&1 || return 0
+	case "${CLEAN:-complement}" in
+	0 | off | no) return 0 ;;
+	esac
+	local dns_dir removed f name
+	dns_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/containers/networks/aardvark-dns"
+	[[ -d "$dns_dir" ]] || return 0
+	removed=""
+	shopt -s nullglob
+	for f in "$dns_dir"/complement_*; do
+		name="${f##*/}"
+		podman network exists "$name" 2>/dev/null && continue
+		rm -f "$f" && removed="$removed $name"
+	done
+	shopt -u nullglob
+	if [[ -n "$removed" ]]; then
+		echo "== cleared podman DNS records for Complement networks that no longer exist:$removed"
+		echo "   (CLEAN=0 leaves them in place and only warns; run 20261107m is what they do to a tally)"
+	fi
+	case "${CLEAN:-complement}" in
+	volumes | all) clean_anonymous_volumes ;;
+	esac
+}
+
+# The documented loop, run only when asked for. It deletes anonymous volumes attached to no
+# container, which cannot be attributed to this project by name, so it stays opt-in.
+clean_anonymous_volumes() {
+	command -v podman >/dev/null 2>&1 || return 0
+	local keep v removed=0
+	keep="$(for c in $(podman ps -aq); do podman inspect "$c" --format '{{range .Mounts}}{{.Name}} {{end}}'; done)"
+	for v in $(podman volume ls -q); do
+		case "$v" in *[!0-9a-f]* | "") continue ;; esac
+		[[ ${#v} -eq 64 ]] || continue
+		case "$keep" in *"$v"*) continue ;; esac
+		podman volume rm "$v" >/dev/null 2>&1 && removed=$((removed + 1))
+	done
+	echo "== removed $removed anonymous volumes that were attached to no container"
+}
+
+clean_podman_state
 report_stale_dns	# before the run
 
 # The run, its log, and its tally.
@@ -233,6 +297,56 @@ fi
 echo "== tally: $passed passing, $failed failing, $skipped skipped (top-level tests)"
 echo "== lists: $passes, $failures"
 
+# Against the last run, not against memory.
+#
+# Every tally in this project's documents has been read next to another tally from a different day,
+# a different tree and a different state of the container runtime, and compared by eye. That is how
+# a test ended up described as "newly passing" while the same run's failure list still had it
+# failing. The comparison is now made by this script, over the qualified (package, test) pairs, and
+# what it prints is a set difference rather than an impression.
+#
+# BASELINE names the qualified table to compare against; it defaults to
+# .agent-work/next/complement-baseline.tsv, and UPDATE_BASELINE=1 makes this run the baseline.
+delta_section=""
+baseline="${BASELINE:-$repo_root/.agent-work/next/complement-baseline.tsv}"
+if [[ -f "$results" && -f "$baseline" ]]; then
+	delta="$repo_root/.agent-work/next/complement-delta-$label.txt"
+	# One pass over both tables, keyed on the test name: the baseline's state remembered, this run's
+	# state compared against it. A test in only one of the two tables did not run rather than having
+	# changed state, so it is counted separately and never called a pass or a failure.
+	awk -F'\t' -v base="$baseline" -v now="$results" '
+		NR == FNR { seen[$3] = 1; before[$3] = $1; next }
+		{ present[$3] = 1; after[$3] = $1 }
+		END {
+			for (t in seen) if (present[t]) {
+				if (before[t] == after[t]) same++
+				else if (before[t] == "fail" && after[t] == "pass") { green[++g] = t }
+				else if (before[t] == "pass" && after[t] == "fail") { red[++r] = t }
+				else other[++o] = t
+			} else gone++
+			for (t in present) if (!seen[t]) fresh++
+			printf "delta against baseline: %s\n", base
+			printf "newly passing: %d\n", g
+			for (i = 1; i <= g; i++) printf "  + %s\n", green[i]
+			printf "newly failing: %d\n", r
+			for (i = 1; i <= r; i++) printf "  - %s\n", red[i]
+			if (o) printf "other state change (skip involved): %d\n", o
+			printf "unchanged: %d   did not run this time: %d   new since the baseline: %d\n", same, gone, fresh
+		}' "$baseline" "$results" | tee "$delta"
+	delta_section="delta: $(grep '^newly passing:' "$delta" | awk '{print $2}') newly passing, $(grep '^newly failing:' "$delta" | awk '{print $2}') newly failing (baseline $(basename "$baseline")); $(basename "$delta")"
+	if [[ "${UPDATE_BASELINE:-}" == 1 ]]; then
+		cp "$results" "$baseline"
+		echo "== baseline updated: $baseline (from this run)"
+	fi
+elif [[ ! -f "$baseline" ]]; then
+	echo "== no baseline to compare against at $baseline; this run can become one with UPDATE_BASELINE=1"
+	if [[ "${UPDATE_BASELINE:-}" == 1 && -f "$results" ]]; then
+		mkdir -p "$(dirname "$baseline")"
+		cp "$results" "$baseline"
+		echo "== baseline written: $baseline (this run is the reference from here on)"
+	fi
+fi
+
 # Neither a tally nor an unfinished one: nothing was derived at all. A broken renderer or a
 # `go test` that died before running anything looks, from the tally line alone, like a suite
 # of zero tests.
@@ -320,7 +434,9 @@ summary="$repo_root/.agent-work/next/complement-summary-$label.txt"
 	echo "tree:    $tree"
 	echo "filter:  $filter"
 	echo "parallel: $parallel   timeout: $timeout   go test exit: $exit_code"
+	echo "image:   $image ($image_origin)"
 	echo "tally:   $passed passing, $failed failing, $skipped skipped (top-level tests)"
+	[[ -n "$delta_section" ]] && echo "$delta_section"
 	echo "fingerprints (counted over this run's own log): cert-naming-another-server=$cert_mismatch tls-handshake-refused=$bad_handshake unsigned-peer=$unsigned_peer template-401=$template_401 unbuilt-image=$unbuilt_image"
 	echo "artefacts: $run_log ; $passes ; $failures${results:+ ; $results}"
 } > "$summary"

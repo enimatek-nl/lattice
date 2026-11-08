@@ -79,8 +79,12 @@ image: ## build the release image: one static binary, no shell and no compiler i
 	docker build --build-arg REVISION="$$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" -t lattice:$(VERSION) .
 
 .PHONY: docker
-docker: ## build the Complement-compatible image
-	docker build -t $(IMAGE) -f deploy/complement/Dockerfile .
+docker: ## build the Complement-compatible image (host-compiled binary, tagged with its revision)
+	IMAGE=$(IMAGE) scripts/complement-image.sh
+
+.PHONY: docker-container
+docker-container: ## the same image built the reproducible way: compiled inside the build
+	IMAGE=$(IMAGE) BUILD_MODE=container scripts/complement-image.sh
 
 .PHONY: complement
 complement: ## run the M1-relevant Complement suites against the built image
@@ -90,10 +94,14 @@ complement: ## run the M1-relevant Complement suites against the built image
 complement-all: ## the whole Complement suite; the log and the pass/failure lists are recorded under .agent-work/
 	COMPLEMENT_BASE_IMAGE=$(IMAGE) RUN='.*' COMPLEMENT_LABEL=$(COMPLEMENT_LABEL) scripts/complement.sh
 
+.PHONY: complement-baseline
+complement-baseline: ## the whole suite, and make it the reference the next run is diffed against
+	COMPLEMENT_BASE_IMAGE=$(IMAGE) RUN='.*' UPDATE_BASELINE=1 COMPLEMENT_LABEL=$(COMPLEMENT_LABEL) scripts/complement.sh
+
 .PHONY: generate-config
 generate-config: ## print a documented default configuration
 	$(GO) run ./cmd/lattice generate-config
 
 .PHONY: clean
 clean: ## remove build artefacts
-	rm -rf bin $(COVER) coverage.html
+	rm -rf bin .complement-build $(COVER) coverage.html

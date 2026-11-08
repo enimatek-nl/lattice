@@ -1,0 +1,54 @@
+# Lattice image for the Complement compliance harness, from a binary built outside the build.
+#
+# Why this exists next to Dockerfile rather than instead of it: the harness rebuilds the image
+# every time it runs, and Dockerfile compiles the module inside the build. That compile has no
+# cache to keep — each build starts from the same layer set and runs `go build` over the whole
+# module — so every Complement iteration paid about 45 seconds of wall clock and about three
+# minutes of CPU for a binary the host builds in under two seconds from its own warm cache. The
+# iteration is where the hours go, so the compile moves to the host and this file only assembles.
+#
+# Dockerfile remains the reproducible path: it needs nothing but the repository, and `make docker`
+# and any release build go through it. `BUILD_MODE=container scripts/complement-image.sh` runs
+# that one instead of this, which is the check that the two have not drifted.
+#
+# Complement's image contract (README, "Image requirements") is satisfied by both:
+#   - EXPOSE 8008 (Client-Server API, plain HTTP) and 8448 (federation/key API, HTTPS)
+#   - the server name accepted through SERVER_NAME
+#   - GET /_matrix/client/versions answering 200 OK
+#   - storage managed by the container, entrypoint safe to run more than once
+#   - "complement" as the shared-secret registration secret
+#
+# /REVISION names the tree inside the image. A run whose image was built from a different tree
+# than the commit it is quoted against is not evidence, and the summary file next to a tally now
+# carries what the image itself says about its origin rather than what the caller believed.
+
+FROM docker.io/library/alpine:3.20
+RUN apk add --no-cache ca-certificates && update-ca-certificates
+
+# Built by scripts/complement-image.sh, which writes both files in one breath.
+COPY .complement-build/lattice /usr/local/bin/lattice
+COPY .complement-build/REVISION /REVISION
+COPY deploy/complement/entrypoint.sh /entrypoint.sh
+RUN chmod 0755 /entrypoint.sh
+
+# Same runtime shape as Dockerfile, deliberately: an image the tests pass that behaves differently
+# from an image anyone can build from the repository would make a green run meaningless.
+#
+# No VOLUME for /data. The reason is a leak: an anonymous volume per container, and Complement
+# makes a container per homeserver per test — a full suite is roughly 700 of them — and podman
+# removes the container without removing the volume. Its lock table holds 2048 entries, so a few
+# suites of leaked volumes and the runtime starts refusing new work, which a run reports as test
+# failures at deploy time (run 20261107l: "3 passing, 217 failing", 63 homeservers never started).
+# Cleaning them is an operator's call on someone else's machine; not creating them is nobody's
+# problem. Nothing here needs the data to outlive the container — Complement stops and starts the
+# same container, whose own storage survives that, and no test reads one deployment's data from
+# another. The entrypoint creates /data itself.
+ENV LATTICE_DATA_DIR=/data
+
+EXPOSE 8008 8448
+
+# The binary ships a healthcheck subcommand, so the image needs no curl.
+HEALTHCHECK --interval=5s --timeout=5s --start-period=5s --retries=5 \
+	CMD ["/usr/local/bin/lattice", "healthcheck", "-addr", "127.0.0.1:8008"]
+
+ENTRYPOINT ["/entrypoint.sh"]

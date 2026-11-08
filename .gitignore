@@ -3,6 +3,9 @@
 
 # Build and test output
 bin/
+# The staging directory scripts/complement-image.sh builds into: the binary and the /REVISION file
+# copied into the Complement image. Rebuildable in seconds, and it names this machine's Go toolchain.
+.complement-build/
 coverage.out
 coverage.html
 *.test
