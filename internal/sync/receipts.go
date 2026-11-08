@@ -77,9 +77,9 @@ func (s *Service) receiptsForRoom(ctx context.Context, roomID string, since, unt
 	if err != nil {
 		return nil, fmt.Errorf("sync: cannot read the receipts of %s: %w", roomID, err)
 	}
+	// Copied rather than returned as the repository gave it, so that a caller appending to a
+	// receipt list cannot reach back into the slice the repository handed out.
 	out := make([]*persist.Receipt, 0, len(rows))
-	for _, row := range rows {
-		out = append(out, row)
-	}
+	out = append(out, rows...)
 	return out, nil
 }

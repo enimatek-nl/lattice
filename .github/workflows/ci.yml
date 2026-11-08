@@ -47,7 +47,12 @@ jobs:
         run: go vet ./...
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        # v7 of the action, because the tool below is v2. v6 can only read a v1 configuration,
+        # and it fails the job before installing with "invalid version string 'v2.15.0'" — which
+        # reads like a malformed version and is really a major-version mismatch between the action
+        # and the linter it installs. Worth the comment because the two version numbers are
+        # unrelated, and only one of them is pinned in this file.
+        uses: golangci/golangci-lint-action@v7
         with:
           # The version is pinned, not "latest": a linter release that turns on a new
           # check would otherwise make an unrelated commit red, and the fix would be a

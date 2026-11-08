@@ -167,7 +167,7 @@ func Check(rules roomversion.Rules, event map[string]any, state Snapshot, opts O
 	// identifier: its `m.room.create` event carries none, because the room's identifier is that
 	// event's own identifier written with `!` instead of `$` (MSC4291). Requiring the field here
 	// would reject the one event a room is made of before any rule got to read it.
-	if roomID == "" && !(rules.DomainlessRoomIDs && eventType == TypeCreate) {
+	if roomID == "" && (!rules.DomainlessRoomIDs || eventType != TypeCreate) {
 		return Failure{"0", "event is missing room_id"}
 	}
 

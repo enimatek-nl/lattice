@@ -299,6 +299,6 @@ func tokenise(value string) []string {
 	return strings.FieldsFunc(strings.ToLower(value), func(r rune) bool {
 		// Keep letters and digits, including the accented ones a display name carries; split on the
 		// punctuation that separates words, and on the `@` and `:` that frame a user ID.
-		return !(unicode.IsLetter(r) || unicode.IsDigit(r))
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
 	})
 }
