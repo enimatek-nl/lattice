@@ -321,6 +321,29 @@ T-4093 with the two halves that are missing (`EnqueueEDU` has a caller only for 
 the inbound transaction handler acts only on `m.device_list_update`) rather than counted as untested
 by omission.
 
+## Targeted run 20261108ii-idempotentstate — a state write that changes nothing
+
+`RUN` naming twelve single-server tests, PARALLEL=1, at `345f110`. Stored: log
+`.agent-work/next/complement-run-20261108ii-idempotentstate.log`, table
+`.agent-work/next/complement-results-20261108ii-idempotentstate.tsv`, lists
+`.agent-work/complement-{passes,failures}-20261108ii-idempotentstate.txt`, and the runner's summary
+`complement-summary-20261108ii-idempotentstate.txt` — `tally: 11 passing, 2 failing, 0 skipped`,
+`tree: 345f110`, `go test exit: 0`, fingerprints 0/0/0/0/0.
+
+| | tests |
+|---|---|
+| passing | `TestRoomCreationReportsEventsToMyself` (newly green), `TestRoomCreate`, `TestRoomMembers`, `TestRoomState`, `TestGetRoomMembersAtPoint`, `TestMembershipOnEvents`, `TestRedact`, `TestRoomReceipts`, `TestSendAndFetchMessage`, `TestSync` (csapi and msc4222) |
+| failing | `TestRoomSpecificUsernameAtJoin`, `TestRoomSpecificUsernameChange` — both were red in the last full run too, and both need `POST /user_directory/search`, which this server does not have. Neither exercises the rule this run was about |
+
+`TestRoomCreationReportsEventsToMyself` had been red for two reasons inside one test, and they turned
+out to be one rule: *"setting state twice is idempotent"* (two identical state sends must give back
+the same event ID) and *"joining room twice is idempotent"* (a re-join must not write a second member
+event). Membership is a state write, and a state event is a statement about a `(type, state_key)`
+slot, so a repeat of the statement that is already in the slot is not an event. `internal/rooms`
+now asks that question after authorising the write — see DEC-047 in `docs/requirements.md` for what
+counts as no change, and for the three answers of "unchanged" that are wrong: over a redaction, from
+a different sender, and for a write the caller has lost the power to make.
+
 ## Targeted run 20261108aa-todayset — every endpoint added today, in one clean run
 
 `RUN='TestRoomForget|TestLeftRoomFixture|TestRelations|TestRelationsPagination|
