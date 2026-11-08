@@ -20,7 +20,14 @@ import (
 // streamTables are the tables that take part in the stream. Adding a table here is how a
 // new kind of synchronisable data joins it; forgetting to is how a sync token would start
 // answering "nothing changed" about data the client has not seen.
-var streamTables = []string{"events", "account_data", "receipts", "presence", "typing", "device_list_changes", "device_keys"}
+var streamTables = []string{
+	"events", "account_data", "receipts", "presence", "typing",
+	"device_list_changes", "device_keys",
+	// Device messages take part because a sync token answers "what have I not seen" over one
+	// clock: a table left out of this list hands its rows a position the token cannot reach, and
+	// the client is told nothing changed about a key that arrived a second ago.
+	"device_messages",
+}
 
 // nextStreamPosition returns the position the next change should take.
 func nextStreamPosition(ctx context.Context, db *gorm.DB) (int64, error) {

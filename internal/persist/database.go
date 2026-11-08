@@ -56,8 +56,12 @@ type Database struct {
 	// one person's relationship to one room, not about the room.
 	Forgotten   ForgetRepo
 	DeviceLists DeviceListRepo
-	DeviceKeys  DeviceKeysRepo
-	Federation  FederationRepo
+	// DeviceMessages holds the events waiting to be picked up by a device in `/sync`. They are
+	// not room events and they outlive no room: this is how a device receives a key request
+	// addressed to it alone, which is what an encrypted conversation is built out of.
+	DeviceMessages DeviceMessageRepo
+	DeviceKeys     DeviceKeysRepo
+	Federation     FederationRepo
 	// Media holds what this server knows about content it stores or has cached, in the content
 	// repository. The bytes themselves are files under the repository's directory.
 	Media MediaRepo
@@ -113,6 +117,7 @@ func Open(path string, log *slog.Logger) (*Database, error) {
 	d.Presence = NewPresenceRepo(gdb)
 	d.Typing = NewTypingRepo(gdb)
 	d.Receipts = NewReceiptRepo(gdb)
+	d.DeviceMessages = NewDeviceMessageRepo(gdb)
 	d.Relations = NewRelationRepo(gdb)
 	d.Forgotten = NewForgetRepo(gdb)
 	d.Pushers = NewPusherRepo(gdb)
@@ -145,7 +150,7 @@ func applyPragmas(gdb *gorm.DB) error {
 func (d *Database) migrate(log *slog.Logger) error {
 	if err := d.db.AutoMigrate(&User{}, &Device{}, &AccessToken{}, &SigningKey{},
 		&Room{}, &Event{}, &EventEdge{}, &RoomState{}, &EventAuthContext{}, &EventTxn{}, &RoomAlias{}, &Filter{}, &AccountData{}, &Presence{}, &Receipt{}, &Relation{}, &RoomForget{}, &Pusher{}, &DeviceListChange{}, &DeviceKeyDoc{}, &OneTimeKey{}, &Typing{},
-		&DeviceListStream{},
+		&DeviceListStream{}, &DeviceMessage{},
 		&ServerSigningKey{}, &ServerKeyDocument{}, &FederationTransaction{}, &FederationQueueItem{},
 		&MediaMetadata{},
 		&EventRejection{}, &Redaction{},

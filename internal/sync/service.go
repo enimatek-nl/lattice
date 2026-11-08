@@ -76,6 +76,11 @@ type Request struct {
 	FullState bool
 	// Timeout is how long the server may wait for something new.
 	Timeout time.Duration
+	// DeviceID is the device the token belongs to. To-device messages are read per device,
+	// so a sync cannot hand them out without knowing which device is asking; a token with no
+	// device behind it is a legacy access token, and is owed no messages it could not have
+	// asked for by name.
+	DeviceID string
 	// SetPresence is the presence this user wants reported while they sync. An empty
 	// value means the client asked for nothing; an unknown one is ignored rather than
 	// refused, because a client that mistypes a word should still get its events.
@@ -110,10 +115,14 @@ type Result struct {
 	// Presence reports the users who share a room with this one and whose presence
 	// changed since their token. It is a section of its own because it is not room data:
 	// a client shows a dot beside a name, not beside a room.
-	Presence    Events       `json:"presence"`
-	ToDevice    []Event      `json:"to_device,omitempty"`
-	Complete    bool         `json:"complete"`
-	DeviceLists *DeviceLists `json:"device_lists,omitempty"`
+	Presence Events `json:"presence"`
+	// ToDevice is what arrived for the syncing *device* rather than for any room it is in.
+	// It carries its own `next_batch` because a device reads it at its own pace: the token
+	// inside is the same position the response's own `next_batch` names, which keeps one
+	// number answering "what happened in this room" and "what arrived for this device".
+	ToDevice    *ToDeviceSection `json:"to_device,omitempty"`
+	Complete    bool             `json:"complete"`
+	DeviceLists *DeviceLists     `json:"device_lists,omitempty"`
 }
 
 // DeviceLists names the users whose keys a client should re-fetch, and the users whose
@@ -145,6 +154,18 @@ type Event map[string]any
 
 // Events is the array wrapper the specification uses everywhere. `Limited` says the
 // timeline is not the whole window; `PrevBatch` is the token a client uses to page back.
+// ToDeviceSection is the `to_device` section of a sync response: the messages addressed to this
+// device, and the position to resume from.
+//
+// The section is a room-less one, and that is the point. A Megolm session key is not an event in a
+// room, has no state to be judged against, and is addressed to one device rather than to everyone who
+// can see a room — which is why a client can be told a room exists, be joined to it, and still be
+// unable to read it until this section starts arriving.
+type ToDeviceSection struct {
+	Events    []Event `json:"events"`
+	NextBatch string  `json:"next_batch,omitempty"`
+}
+
 type Events struct {
 	Events    []Event `json:"events"`
 	PrevBatch string  `json:"prev_batch,omitempty"`
@@ -209,6 +230,10 @@ type LeftRoom struct {
 }
 
 // Service answers sync requests against stored events.
+// deviceMessageSyncLimit caps how many to-device messages one sync hands over. A device that
+// slept through a busy peer's key sharing would otherwise be handed the whole pile at once.
+const deviceMessageSyncLimit = 100
+
 type Service struct {
 	db     *persist.Database
 	events persist.EventRepo
@@ -220,6 +245,8 @@ type Service struct {
 	// groups reads the state an event was sent against, which is what makes "the state at
 	// the end of this batch" a lookup instead of a replay.
 	groups persist.StateGroupRepo
+	// deviceMessages reads what was addressed to the syncing device rather than to a room.
+	deviceMessages persist.DeviceMessageRepo
 	// history decides whether a user may be given an event's content at all, judged by the
 	// room's history visibility when the event was written and the user's membership then. It is
 	// the same decision `/messages` and a federation peer get, from one package: a room whose
@@ -243,19 +270,20 @@ type Service struct {
 // NewService wires the synchronisation service to the storage layer.
 func NewService(db *persist.Database, log *slog.Logger) *Service {
 	return &Service{
-		db:       db,
-		events:   db.Events,
-		state:    db.State,
-		serve:    redaction.NewServicer(db.Events, db.Rooms, db.StateGroups),
-		groups:   db.StateGroups,
-		history:  historyvis.New(db),
-		typing:   typing.New(db),
-		filters:  db.Filters,
-		account:  db.AccountData,
-		presence: db.Presence,
-		devLists: db.DeviceLists,
-		log:      log,
-		now:      time.Now,
+		db:             db,
+		events:         db.Events,
+		state:          db.State,
+		serve:          redaction.NewServicer(db.Events, db.Rooms, db.StateGroups),
+		groups:         db.StateGroups,
+		history:        historyvis.New(db),
+		typing:         typing.New(db),
+		filters:        db.Filters,
+		account:        db.AccountData,
+		presence:       db.Presence,
+		devLists:       db.DeviceLists,
+		deviceMessages: db.DeviceMessages,
+		log:            log,
+		now:            time.Now,
 	}
 }
 
@@ -485,10 +513,56 @@ func (s *Service) build(ctx context.Context, userID string, since Token, filter 
 		result.DeviceLists = lists
 	}
 
+	// What arrived for this device, addressed to it and to nobody else in any room. This is
+	// read after the room work because it cannot change any of it: a key that arrived while the
+	// client was away is not a room event and is not judged as one, and a device that is not in
+	// a single room still has to be able to receive it.
+	if waiting, err := s.deviceMessagesFor(ctx, userID, req.DeviceID, int64(since), int64(position)); err != nil {
+		return nil, false, err
+	} else if len(waiting) > 0 {
+		result.ToDevice = &ToDeviceSection{Events: waiting, NextBatch: Token(position).String()}
+	}
+
 	changed := result.Rooms.Join != nil || result.Rooms.Invite != nil ||
 		result.Rooms.Leave != nil || result.Rooms.Knock != nil ||
-		len(accountEvents) > 0 || roomAccountChanges || len(presenceEvents) > 0
+		len(accountEvents) > 0 || roomAccountChanges || len(presenceEvents) > 0 || result.ToDevice != nil
 	return result, changed, nil
+}
+
+// deviceMessagesFor reads the messages filed for one device between two positions and puts them in the
+// shape the specification gives: a type, the sender who addressed it, and the content as it was sent.
+//
+// The content is decoded rather than passed through as text, and re-encoding it is safe here for one
+// reason worth naming: the bytes were stored exactly as the sender sent them and are put back through
+// `json.RawMessage`, so an encrypted payload this server cannot see into is reproduced field for field
+// rather than normalised by whoever happens to be marshalling it.
+func (s *Service) deviceMessagesFor(ctx context.Context, userID, deviceID string, since, until int64) ([]Event, error) {
+	if s.deviceMessages == nil || deviceID == "" {
+		return nil, nil
+	}
+	rows, err := s.deviceMessages.ListFor(ctx, userID, deviceID, since, until, deviceMessageSyncLimit)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	out := make([]Event, 0, len(rows))
+	for _, row := range rows {
+		content := json.RawMessage(row.Content)
+		if !json.Valid(content) {
+			// Cannot happen from a send this server accepted, and if a database holds a row
+			// that does, the honest answer is an empty object rather than a sync that fails
+			// forever on one bad row.
+			content = json.RawMessage("{}")
+		}
+		out = append(out, Event{
+			"type":    row.EventType,
+			"sender":  row.SenderID,
+			"content": content,
+		})
+	}
+	return out, nil
 }
 
 // stateVisibleToOutsider decides whether someone outside the room — left, or banned — is shown

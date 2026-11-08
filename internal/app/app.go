@@ -16,6 +16,7 @@ import (
 	"github.com/enimatek/lattice/internal/api/media"
 	"github.com/enimatek/lattice/internal/auth"
 	"github.com/enimatek/lattice/internal/config"
+	"github.com/enimatek/lattice/internal/devicemessages"
 	"github.com/enimatek/lattice/internal/e2ekeys"
 	"github.com/enimatek/lattice/internal/events"
 	"github.com/enimatek/lattice/internal/federation"
@@ -236,9 +237,11 @@ func NewWithOptions(ctx context.Context, cfg *config.Config, log *slog.Logger, o
 		UserDirectory: userdir.New(db),
 		E2EKeys:       deviceKeys,
 		Sync:          sync.NewService(db, log),
-		DB:            db,
-		Version:       Version,
-		Started:       a.Started,
+		// The route a Megolm session key takes: one device to another, with no room in between.
+		DeviceMessages: devicemessages.NewService(db, cfg.ServerName, log),
+		DB:             db,
+		Version:        Version,
+		Started:        a.Started,
 	}
 	client.Register(a.clientRouter, clientDeps, requireAuth)
 	media.Register(a.clientRouter, &media.Deps{Cfg: cfg, Log: log, Media: mediaService}, requireAuth)

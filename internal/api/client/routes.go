@@ -11,6 +11,7 @@ import (
 	"github.com/enimatek/lattice/internal/auth"
 
 	"github.com/enimatek/lattice/internal/config"
+	"github.com/enimatek/lattice/internal/devicemessages"
 	"github.com/enimatek/lattice/internal/e2ekeys"
 	"github.com/enimatek/lattice/internal/httpserver"
 	"github.com/enimatek/lattice/internal/keys"
@@ -60,9 +61,13 @@ type Deps struct {
 	// 501 this used to answer unconditionally, because an alias owned by another server really is a
 	// question this server cannot ask.
 	RemoteAliases RemoteAliasQuerier
-	DB            *persist.Database
-	Version       string
-	Started       time.Time
+	// DeviceMessages delivers the events one device addresses to another: the route a Megolm
+	// session key takes, and therefore the difference between an encrypted room a client can
+	// read and one it can only watch.
+	DeviceMessages *devicemessages.Service
+	DB             *persist.Database
+	Version        string
+	Started        time.Time
 }
 
 // RemoteAliasQuerier is the one federation question the Client-Server API has to ask for a client: a
@@ -183,6 +188,12 @@ func Register(r *httpserver.Router, d *Deps, requireAuth func(http.Handler) http
 	versioned("POST", "/createRoom", d.handleCreateRoom)
 	versioned("PUT", "/rooms/{roomID}/send/{eventType}/{txnID}", d.handleRoomSend)
 	versioned("POST", "/rooms/{roomID}/upgrade", d.handleRoomUpgrade)
+	// The stable path is `sendToDevice`; `send_to_device` is registered beside it because the
+	// sync field it feeds is spelled that way and clients have copied the difference. A client
+	// should not have to guess which of two spellings a server chose in order to share a key.
+	versioned("PUT", "/sendToDevice/{eventType}/{txnId}", d.handleSendToDevice)
+	versioned("PUT", "/send_to_device/{eventType}/{txnId}", d.handleSendToDevice)
+
 	versioned("PUT", "/rooms/{roomID}/state/{eventType}", d.handleRoomState)
 	versioned("PUT", "/rooms/{roomID}/state/{eventType}/{stateKey}", d.handleRoomState)
 	// The empty state key is addressed with a trailing slash, which Go's mux treats

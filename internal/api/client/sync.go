@@ -25,6 +25,9 @@ func (d *Deps) handleSync(w http.ResponseWriter, r *http.Request) {
 		Filter:      query.Get("filter"),
 		FullState:   query.Get("full_state") == "true",
 		SetPresence: query.Get("set_presence"),
+		// The device behind the token, because to-device messages are addressed to a device and
+		// a sync cannot hand them out without knowing which pigeonhole to read.
+		DeviceID: auth.DeviceID(r),
 	}
 	// MSC4222's state section, under whichever name the client used. The two flags mean the
 	// same thing; the name decides what the response calls it, because a client that asked
