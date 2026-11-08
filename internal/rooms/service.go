@@ -145,7 +145,7 @@ type Service struct {
 	// It is a separate service rather than a method here so that the synchronisation service and
 	// the federation fan-out answer from the same rule as these doors do.
 	history *historyvis.Service
-	signer    events.Signer
+	signer  events.Signer
 	// serve turns a stored event into the form a client is allowed to see. It lives here
 	// so that `/messages`, `/event` and `/sync` answer the redaction question the same
 	// way; when each path decided for itself, the same event could come back with its
@@ -822,6 +822,24 @@ func (s *Service) send(ctx context.Context, req SendRequest) (string, error) {
 	}
 	if err := eventauth.Check(rules, event, snapshot, s.authOpts(ctx, rules)); err != nil {
 		return "", s.refused(err, req)
+	}
+	// A state write that would not change the room is not an event, and the caller is given the
+	// ID of the one that already says it. Asked *after* authorisation and not before: somebody who
+	// has lost the power to set a room's topic is refused whether or not the topic already says
+	// what they are typing. See [unchangedStateEvent] for what counts as no change, and for why
+	// this one rule is what "setting state twice is idempotent" and "joining a room twice is
+	// idempotent" both are.
+	if req.IsState {
+		unchanged, err := s.unchangedStateEvent(ctx, event)
+		if err != nil {
+			return "", err
+		}
+		if unchanged != "" {
+			if err := s.recordRepeatSend(ctx, req, unchanged); err != nil {
+				return "", err
+			}
+			return unchanged, nil
+		}
 	}
 	eventID, err := events.EventID(rules, event)
 	if err != nil {
