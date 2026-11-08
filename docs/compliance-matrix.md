@@ -40,6 +40,7 @@ Specification: Matrix v1.19 (`docs/specification-version.md`).
 | Rooms | join / invite / knock / leave, `GET /state`, `/members`, `/messages`, `/event/{eventID}`, redaction (`PUT /redact/{eventID}/{txn}`), aliases, directory, upgrades | implemented | `tests/integration/redaction_test.go`, `tests/integration/history_test.go`, Complement `TestRedact`/`TestPowerLevels` | still missing: `GET /rooms/{roomID}/context/{eventID}` (T-2015), `GET /rooms/{roomID}/event_auth/{eventID}` (T-2016), `GET /_matrix/federation/v1/state_ids` |
 | Sync / messages | `GET /sync` (incremental, `since`, long-poll, joined/invited/left sections, `device_lists`, account data in both scopes, limited timelines, `prev_batch`, MSC4222 `state_after` with `lazy_load_members`), `GET /rooms/{id}/messages` | implemented — MSC4222's `GET /rooms/{id}/members` stream is not (T-4068) | `tests/integration/sync_test.go`, `tests/integration/history_test.go`, `tests/integration/statresolution_test.go`, `tests/integration/stateafter_test.go` | **verified**: `TestSync` (`tests/csapi`), `TestSync` (`tests/msc4222`, both subtests — a different test with the same name; only the qualified results table tells them apart, T-4066), `TestSyncLeaveSection`, `TestGappedSyncLeaveSection`, `TestSyncTimelineGap`, `TestCumulativeJoinLeaveJoinSync`, `TestOlderLeftRoomsNotInLeaveSection`, `TestRoomMessagesLazyLoading`, `TestRoomMessagesLazyLoadingLocalUser`, `TestSyncOmitsStateChangeOnFilteredEvents` (T-4070: a state event a filtered batch hides must still be in the state section). Still red through sync: the presence section (T-3001e), the filter fields that narrow by sender, URL and event fields rather than type (T-4020), and the two-server cases that need the handshake pieces below |
 | Relations, threads | `GET /rooms/{roomID}/relations/{eventID}[/{relType}[/{eventType}]]` and `GET /rooms/{roomID}/threads`, both under `v3` and `v1`: what relates to an event, filtered by relation and event type, walked in either direction with tokens; and the room's conversations, ordered by each thread's newest event. The relation claim stays in the event's content — `event_relations` is an index over it, written where the event is stored and dropped where a redaction takes the content | implemented | yes | **verified** (`TestRelations`, `TestRelationsPagination`, `TestRelationsPaginationSync`, `TestThreadsEndpoint`, run 20261107r-threads) |
+| Pushers | `POST /pushers/set`, `GET /pushers`: a device asking to be woken at a URL, kept as one row per (pushkey, app_id) with the hash of the session that wrote it. A password change drops the pushers of the sessions it ended and keeps the one that proved the new password; logging a session out drops its own, logging out all drops every one. Delivering to them (the push gateway, `GET /notifications`, evaluating rules into notifications) is not implemented (T-3005a) | implemented (storage and the endpoints) | `tests/integration/pushers_test.go` | **verified**: `TestChangePasswordPushers` (both subtests, run 20261108z-pushers) |
 | Leaving and forgetting | `POST /rooms/{roomID}/forget`: the room stops being shown to the user who forgot it, and stops being readable to them, until a join or an invite again clears it. The marker is per user and per room, and is judged per sync window, so a sync asked from before the leaving still answers the leaving. A member who has left is owed the state and roster **as of** their leaving, read from the state group the leaving event was persisted with | implemented | `tests/integration/forget_test.go`, `tests/integration/aliases_test.go` | **verified**: `TestRoomForget` (all six subtests), `TestLeftRoomFixture` (all five subtests), run 20261108u-forget |
 | E2EE device keys | `POST /keys/upload`, `POST /keys/query` (asking a peer for a user who lives elsewhere), `POST /keys/claim`, `GET /keys/changes` (the same addressed rows the sync `device_lists` section reads, asked as a token range), federation `user/keys/query` | implemented — cross-signing and key backup are not (T-3008e) | `tests/integration/keys_test.go`, `tests/integration/federationdevicekeys_test.go`, `tests/integration/keyschanges_test.go` | **verified**: `TestUploadKey`, `TestUploadKeyIdempotency`, `TestUploadKeyIdempotencyOverlap`, `TestKeyClaimOrdering`, `TestKeysQueryWithDeviceIDAsObjectFails`, `TestKeyChangesLocal` (T-4072). Red: `TestFederationKeyUploadQuery` (T-4008's device-list EDUs), `TestE2EKeyBackupReplaceRoomKeyRules` (key backup, T-3008e) |
 | Account | whoami, devices, sessions, profile; `account_data` in both scopes (user, and user-per-room) with write, read and MSC3391 removal reaching `/sync` | partial — no `POST /account/password`, no `POST /account/deactivate` | `tests/integration/auth_test.go`, `tests/integration/direct_test.go`, `tests/integration/pushrules_test.go`, `tests/integration/accountdata_test.go` | **verified**: `TestAddAccountData` (both subtests), `TestRemovingAccountData` (all four subtests — DELETE and empty PUT, user and room scope) from the targeted run `.agent-work/next/complement-run-acctdata4.log`, not from a full suite run. Still red: `TestChangePassword`, `TestDeactivateAccount` (no `/account/password`, no `/account/deactivate`) |
@@ -214,6 +215,39 @@ membership, alias and M1-regression subset, and it is reported as such.
    pages are what the project's precedence rules make normative; the divergence is recorded here so
    that a version 1 room that disagrees between servers is investigated rather than assumed away.
    Interoperability against Synapse on such a room is not tested.
+
+## Targeted run 20261108z-pushers — pushers, and what takes them back
+
+`RUN='TestChangePasswordPushers|TestChangePassword$|TestLogout|TestLoginLogout|TestDeactivateAccount|TestPushRules?'`,
+PARALLEL=1, against the tree that became `4433852`. Log
+`.agent-work/next/complement-run-20261108z-pushers.log`, lists
+`.agent-work/complement-passes-20261108z-pushers.txt` / `-failures-…`.
+
+    == tally: 5 passing, 1 failing, 0 skipped
+    --- PASS: TestChangePasswordPushers (1.94s)
+        --- PASS: …/Pushers created with a different access token are deleted on password change
+        --- PASS: …/Pushers created with the same access token are not deleted on password change
+    --- PASS: TestChangePassword (0.72s)      — all five subtests
+    --- PASS: TestDeactivateAccount          — password flow, wrong password, deactivation
+    --- PASS: TestLogout
+    --- PASS: TestPushRuleCacheHealth
+
+The one failure is `TestPushRuleRoomUpgrade`, and this run still carries the container network's
+fingerprints — 4 certificates naming another server and 4 refused handshakes — so it is the same
+environment fault as `20261108x-pushupcheck`, not a consequence of the pusher work: its two local
+subtests pass and its two remote-join subtests fail on `certificate is valid for hs2, localhost,
+not hs1`. Nothing that was green before this change went red here (`TestChangePassword`,
+`TestDeactivateAccount`, `TestLogout` were already green and stay green).
+
+`TestChangePasswordPushers` had been red because there was nothing to be red about: `/pushers/set`
+and `/pushers` did not exist. Implemented as one row per (user, pushkey, app_id) carrying the hash
+of the token that wrote it, with a password change dropping the pushers of the sessions it ended.
+`tests/integration/pushers_test.go` asks what the Complement test does not: that an email pusher
+is refused `M_INVALID_EMAIL_PARAM` rather than stored, that an http pusher whose `data.url` is not
+https is refused (a notification carries the event's content, so plain http would put it on the
+open network), that `kind: null` removes rather than adds, and that replacing a pusher from a
+second session hands its ownership to that session — which is why a later password change keeps
+that one and drops the pusher nobody re-wrote.
 
 ## Full run 20261108w — the tally moved, and the container network moved with it
 
