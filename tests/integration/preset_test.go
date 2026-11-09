@@ -37,7 +37,7 @@ func TestRoomPresetsFollowTheSpecificationTable(t *testing.T) {
 		state := presetStateOf(t, h, roomID, token)
 		wantStateContent(t, state, "m.room.join_rules", "join_rule", tc.joinRule, tc.preset)
 		wantStateContent(t, state, "m.room.history_visibility", "history_visibility", tc.history, tc.preset)
-		wantStateContent(t, state, "m.room.guest_access", "guest_access", tc.guestRead, tc.preset)
+		wantGuestAccess(t, state, tc.guestRead, tc.preset)
 	}
 
 	// No preset named, but the room asked for in public: the specification reads the visibility as
@@ -46,7 +46,7 @@ func TestRoomPresetsFollowTheSpecificationTable(t *testing.T) {
 	state := presetStateOf(t, h, roomID, token)
 	wantStateContent(t, state, "m.room.join_rules", "join_rule", "public", "visibility=public with no preset")
 	wantStateContent(t, state, "m.room.history_visibility", "history_visibility", "shared", "visibility=public with no preset")
-	wantStateContent(t, state, "m.room.guest_access", "guest_access", "forbidden", "visibility=public with no preset")
+	wantGuestAccess(t, state, "forbidden", "visibility=public with no preset")
 }
 
 // presetStateOf reads a room's current state as events, not as the per-key content the state
@@ -62,6 +62,26 @@ func presetStateOf(t *testing.T, h *harness, roomID, token string) []map[string]
 }
 
 // wantStateContent asserts what one state event in the room says.
+// wantGuestAccess asserts what the room says about guests, which is not the same as asserting that a
+// particular event exists. The event's schema makes absence mean `forbidden`, and this server writes
+// the event only where it grants something — so a room whose preset keeps guests out is required to
+// behave as `forbidden`, by event or by silence, and either is correct.
+func wantGuestAccess(t *testing.T, state []map[string]any, want, why string) {
+	t.Helper()
+	access := "forbidden"
+	for _, event := range state {
+		if event["type"] != "m.room.guest_access" || event["state_key"] != "" {
+			continue
+		}
+		content, _ := event["content"].(map[string]any)
+		access, _ = content["guest_access"].(string)
+	}
+	if access != want {
+		t.Errorf("guest access of the room created for %s = %q, want %q (absence of m.room.guest_access means %q)",
+			why, access, want, "forbidden")
+	}
+}
+
 func wantStateContent(t *testing.T, state []map[string]any, eventType, key, want, why string) {
 	t.Helper()
 	for _, event := range state {

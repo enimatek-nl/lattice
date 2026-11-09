@@ -1217,12 +1217,27 @@ func presetState(preset Preset, creator string, invitees []string, privilegedCre
 	// says who may write should be the one this server holds before it writes anything else;
 	// and a peer walking the history oldest-first sees the authority of the room before the
 	// state that authority permitted.
-	return []StateContent{
+	batch := []StateContent{
 		{Type: eventauth.TypePowerLevels, Content: levels},
 		{Type: eventauth.TypeJoinRules, Content: map[string]any{"join_rule": joinRule}},
 		{Type: "m.room.history_visibility", Content: map[string]any{"history_visibility": "shared"}},
-		{Type: "m.room.guest_access", Content: map[string]any{"guest_access": guestAccess}},
 	}
+	// A guest_access event is written only when it permits something.
+	//
+	// `forbidden` is what a room without the event means, so an event carrying it says nothing the
+	// room does not already say, and the difference between the two rooms is observable only as an
+	// extra event in the history — extra depth, an extra entry when a peer fills a hole, and a room
+	// whose first events differ from every other server's for a room that behaves identically. The
+	// reading rule is the same either way: the absence of the event *is* the answer `forbidden`.
+	//
+	// It is also what the reference implementation does, and not by accident — it emits the event
+	// only for the presets whose guests may join. Where a room's shape is not fixed by the
+	// specification, matching the server that everyone else federates with is worth more than an
+	// expression of an agreement we already have.
+	if guestAccess != "forbidden" {
+		batch = append(batch, StateContent{Type: "m.room.guest_access", Content: map[string]any{"guest_access": guestAccess}})
+	}
+	return batch
 }
 
 // presetPowerLevels is the power level layout a new room starts with.

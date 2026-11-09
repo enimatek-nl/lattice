@@ -190,23 +190,31 @@ func (s *Service) joinRule(ctx context.Context, roomID string) (string, error) {
 	return rule, nil
 }
 
-// guestsAllowed reads m.room.guest_access. The room's answer is a string — `can_join` or
-// `forbidden` — and a room without that event, or with a value this server does not know, allows
-// guests: that is the default the protocol states, not a decision this server is free to make. A
-// public room made with the `public_chat` preset does say `forbidden`, so reading the wrong event
-// here would advertise guest access to a room that refused it.
+// guestsAllowed reads m.room.guest_access.
+//
+// Absence is an answer, and it is `forbidden`: the event's own schema says a room without it is to
+// be treated as one that carries it with the value `forbidden`. This used to read the other way
+// round — absence allowed guests — which was invisible while every room this server created wrote
+// the event explicitly, and became a real bug the moment a room arrived from another server without
+// it, or without any event at all: the room directory and a space's summary then advertised as
+// guest-accessible a room whose state says nothing of the kind.
+//
+// The same reasoning closes the other two paths. A room whose event cannot be read is a room whose
+// guest access is not established, and a value outside `can_join`/`forbidden` is a value no server
+// defined. Advertising access on the strength of not knowing is the one mistake a reader cannot undo,
+// because the bytes are already in somebody else's client.
 func (s *Service) guestsAllowed(ctx context.Context, roomID string) bool {
 	entry, err := s.state.Get(ctx, roomID, "m.room.guest_access", "")
 	if err != nil {
-		return true
+		return false
 	}
 	event, err := s.eventJSON(ctx, entry.EventID)
 	if err != nil {
-		return true
+		return false
 	}
 	content, _ := event["content"].(map[string]any)
 	access, _ := content["guest_access"].(string)
-	return access != "forbidden"
+	return access == "can_join"
 }
 
 // canonicalAliasOf reads the alias the room calls itself by.
