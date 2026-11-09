@@ -2,12 +2,60 @@ package rooms
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sort"
 
+	"github.com/enimatek/lattice/internal/events"
 	"github.com/enimatek/lattice/internal/persist"
+	"github.com/enimatek/lattice/internal/roomversion"
 )
+
+// NameRemotePDUs gives events another server sent their identifiers, in the order they were given,
+// empty where an event cannot be named in this room.
+//
+// This exists because from room version 2 a PDU does not carry its own identifier: the identifier
+// is a hash of the event's contents under the room version's rules, so only a component that knows
+// which room the events belong to can say what any of them is called. The room service is that
+// component, and it is the only one.
+//
+// It matters wherever a batch of PDUs has to be handled as a set. A fetcher that keys the events it
+// has just received by the `event_id` field silently collects nothing for a modern room — and
+// silently means the count of what arrived is wrong too, so a peer that answered a request in full
+// looks like a peer that answered nothing. Naming them first is also what makes it possible to
+// order them, since the citations inside an event name hashes, and an event that has not been named
+// cannot be recognised as its own predecessor.
+func (s *Service) NameRemotePDUs(ctx context.Context, roomID string, pdus [][]byte) ([]string, error) {
+	names := make([]string, len(pdus))
+	if len(pdus) == 0 {
+		return names, nil
+	}
+	room, err := s.rooms.ByRoomID(ctx, roomID)
+	if err != nil {
+		return nil, fmt.Errorf("rooms: cannot name events for room %q: %w", roomID, err)
+	}
+	rules, ok := roomversion.Get(room.RoomVersion)
+	if !ok {
+		return nil, fmt.Errorf("rooms: room %q uses room version %s, which this server cannot name events in",
+			roomID, room.RoomVersion)
+	}
+	for index, raw := range pdus {
+		var event map[string]any
+		if err := json.Unmarshal(raw, &event); err != nil {
+			continue
+		}
+		// A sender that did label an event may be trusted with its label: the hash is what this
+		// server files under, and an event whose label disagrees with its contents is filed by
+		// contents, which is the only answer two servers can agree on.
+		id, err := events.EventID(rules, event)
+		if err != nil {
+			continue
+		}
+		names[index] = id
+	}
+	return names, nil
+}
 
 // MissingPredecessorsError says that an event offered to this server cites predecessors this
 // server does not hold. It is deliberately not a refusal: the event may be perfectly good, and this

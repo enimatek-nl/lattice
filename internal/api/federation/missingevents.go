@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/enimatek/lattice/internal/httpx"
 	"github.com/enimatek/lattice/internal/matrixerr"
@@ -112,7 +113,9 @@ func (d *Deps) handleGetMissingEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pdus := make([]json.RawMessage, 0, len(events))
+	kinds := make([]string, 0, len(events))
 	for _, event := range events {
+		kinds = append(kinds, event.Type)
 		raw, err := d.pduForPeer(r.Context(), event, origin, rules)
 		if err != nil {
 			// An event this server cannot put into the form the peer is entitled to is left
@@ -124,5 +127,10 @@ func (d *Deps) handleGetMissingEvents(w http.ResponseWriter, r *http.Request) {
 		}
 		pdus = append(pdus, json.RawMessage(raw))
 	}
+	// Logged, because a hole this server answers is the difference between two copies of a room
+	// that agree and two that never will again, and the shapes in the answer are the first thing
+	// anybody needs when a peer says the answer was wrong.
+	d.Log.Info("federation: a peer's request for missing events was answered",
+		"room_id", roomID, "origin", origin, "events", len(pdus), "in_order", strings.Join(kinds, ","))
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"events": pdus})
 }

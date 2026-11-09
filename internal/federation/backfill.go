@@ -58,6 +58,10 @@ type GapStore interface {
 	// not a guess at how far back the copy goes, but the events this server holds that nothing
 	// here cites as their successor.
 	ForwardExtremities(ctx context.Context, roomID string) ([]string, error)
+	// NameRemotePDUs gives a batch of events their identifiers under the room's version rules.
+	// A fetcher cannot compute those itself — from room version 2 they are not in the bytes — and
+	// a fetcher that keys received events by a field that is not there quietly stores nothing.
+	NameRemotePDUs(ctx context.Context, roomID string, pdus [][]byte) ([]string, error)
 }
 
 // FillOutcome says how much of a room's history arrived.
@@ -68,6 +72,10 @@ type FillOutcome struct {
 	Stored []string
 	// Refused maps a fetched event to the reason this server would not store it.
 	Refused map[string]string
+	// Unresolved names the fetched events this server stored but could not place, because what
+	// *they* cite is still missing. It is neither accepted nor refused: it is the next thing to
+	// ask about, and the reason a fetch is a loop rather than a call.
+	Unresolved []string
 	// Linked counts the events that stopped being outliers: their predecessors are here now, so
 	// this server knows where they sit and clients can read them.
 	Linked int
@@ -399,6 +407,33 @@ func (b *Backfiller) FillBehind(ctx context.Context, roomID string, destinations
 	if limit <= 0 {
 		limit = 100
 	}
+	// Fetched events can be storable and still unplaceable: an event whose own citations reach
+	// further than this one answer did. That is not a failure to report and stop on, because the
+	// events that just arrived say exactly what is still missing, by name — and unlike the hole this
+	// call set out to close, those names are known, so they can be asked for directly. One follow-up
+	// pass, and only one: a room that never stops producing new holes is a room to stop fetching, not
+	// a room to fetch forever, and the next incoming event will start the loop again anyway.
+	follow := func(filled FillOutcome) FillOutcome {
+		if len(filled.Unresolved) == 0 {
+			return filled
+		}
+		b.Log.Info("federation: a filled hole left events this server still cannot place",
+			slog.String("room_id", roomID), slog.Int("unresolved", len(filled.Unresolved)))
+		next, err := b.FillFrom(ctx, roomID, destinations, filled.Unresolved)
+		if err != nil {
+			b.Log.Warn("federation: the events behind a filled hole could not be fetched",
+				slog.String("room_id", roomID), slog.Any("error", err))
+			return filled
+		}
+		filled.Fetched = append(filled.Fetched, next.Fetched...)
+		filled.Stored = append(filled.Stored, next.Stored...)
+		filled.Linked += next.Linked
+		for id, reason := range next.Refused {
+			filled.Refused[id] = reason
+		}
+		return filled
+	}
+
 	var lastErr error
 	for _, destination := range destinations {
 		events, err := b.Client.GetMissingEvents(ctx, destination, roomID, earliest, []string{newest}, limit)
@@ -413,27 +448,42 @@ func (b *Backfiller) FillBehind(ctx context.Context, roomID string, destinations
 			// failure.
 			return outcome, nil
 		}
+		// Named before being filed. The events a peer sends for a hole carry no `event_id` — from
+		// room version 2 the identifier is a hash of the event, which the room's version rules
+		// compute and nothing else can — so this is not a lookup of a field but an ask of the one
+		// component that knows the room. Keying by the field instead drops the whole answer and
+		// counts it as zero events received, which is how a peer that answered everything gets
+		// logged as a peer that answered nothing.
+		bodies := make([][]byte, len(events))
+		for index, raw := range events {
+			bodies[index] = raw
+		}
+		named, err := b.Store.NameRemotePDUs(ctx, roomID, bodies)
+		if err != nil {
+			return outcome, err
+		}
 		byID := make(map[string][]byte, len(events))
-		for _, raw := range events {
-			id := eventIDOf(raw)
+		for index, raw := range bodies {
+			id := ""
+			if index < len(named) {
+				id = named[index]
+			}
 			if id == "" {
-				// Dropped, for now, and deliberately not keyed by a stand-in name.
-				//
-				// A PDU with no `event_id` field is not unnamed: its name is a hash of its contents
-				// under the room version's rules, which this package cannot compute without the room.
-				// Keying such an event by a synthetic placeholder keeps it in the set and stores it —
-				// measured, and it is wrong: the local regression test for a remote user reading a
-				// room's history went red, because history arrived in the wrong shape rather than not
-				// at all. The right fix is to ask the room service, which knows the room's version, to
-				// name the events before they are ordered; that is T-4216 step 2 and it needs the
-				// `GapStore` interface to carry a name-for-pdu operation, so it is a change of a
-				// different shape than the one-line thing this comment replaced.
+				// Only an event that cannot be named in this room is dropped: it is not an event
+				// of this room, and storing it would be filing a stranger's event where a client
+				// would later read it as history.
+				b.Log.Warn("federation: a server sent an event that is not part of this room",
+					slog.String("room_id", roomID))
 				continue
 			}
 			byID[id] = raw
 			outcome.Fetched = append(outcome.Fetched, id)
 		}
-		return b.store(ctx, roomID, byID, outcome)
+		filled, err := b.store(ctx, roomID, byID, outcome)
+		if err != nil {
+			return filled, err
+		}
+		return follow(filled), nil
 	}
 	if lastErr != nil {
 		return outcome, lastErr
@@ -455,6 +505,7 @@ func (b *Backfiller) store(ctx context.Context, roomID string, fetched map[strin
 		return outcome, err
 	}
 	outcome.Stored = append(outcome.Stored, stored.Accepted...)
+	outcome.Unresolved = append(outcome.Unresolved, stored.Unresolved...)
 	for eventID, reason := range stored.Refused {
 		outcome.Refused[eventID] = reason
 	}
