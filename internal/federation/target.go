@@ -81,7 +81,21 @@ const (
 	// taking a moment to come up, a resolver that dropped one query — and a peer that cannot be
 	// resolved cannot be joined, cannot be sent to, and cannot have its keys verified, so the memory
 	// of one bad second keeps a healthy server unreachable long after it recovered.
-	resolutionFailureTTL = 2 * time.Second
+	// No negative caching at all, after measuring what caching bought.
+	//
+	// A second was already a compromise, and on a Complement run it was still enough to fail a join:
+	// four parallel subtests, each with freshly started containers, hammer a container runtime's DNS with
+	// the same name, one lookup times out, and for the next second every code path that needs that peer —
+	// join, send, verify its keys — reads "resolved recently and could not be found" and gives up. The
+	// message describes a fact about the peer; it is a memory of this server's own bad second.
+	//
+	// The stampede protection the cache was supposed to give is worth little here, because a failed lookup
+	// is cheap in a way that a failed connect is not: nobody is holding a socket, and the next caller is
+	// allowed to try the lookup that just failed rather than inherit its verdict. If lookups ever become
+	// the bottleneck, the fix is to share one in-flight lookup between concurrent callers — a single-flight,
+	// which answers "don't ask DNS eleven times at once" without any of "don't ask again for a second even
+	// though the first ask was a timeout".
+	resolutionFailureTTL = 0
 	// srvService is the registered service name; srvLegacy is the unregistered one
 	// that the specification still asks servers to try before giving up.
 	srvService = "_matrix-fed._tcp."
@@ -416,6 +430,11 @@ func (d *Discovery) rememberResolutionFailure(serverName string) {
 }
 
 func (d *Discovery) rememberFailureFor(serverName string, ttl time.Duration) {
+	if ttl <= 0 {
+		// Nothing is remembered, so a failure is only ever felt by the request that hit it.
+		delete(d.cache.entries, serverName)
+		return
+	}
 	d.cache.mu.Lock()
 	defer d.cache.mu.Unlock()
 	d.cache.entries[serverName] = cacheEntry{expiry: d.now().Add(ttl)}

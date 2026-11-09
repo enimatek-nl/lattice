@@ -124,18 +124,59 @@ func (k *Keyring) LookupForRoom(ctx context.Context, rules roomversion.Rules) fu
 		if err != nil {
 			return nil, err
 		}
-		for _, row := range rows {
-			if row.KeyID != keyID {
-				continue
+		if key, ok, err := keyAmong(rows, keyID); ok || err != nil {
+			return key, err
+		}
+		// The credential names a key this server does not hold, which is a question about the
+		// other server's publishing rather than about the credential's honesty, and it is asked
+		// most often at the worst possible moment: the first request from a server whose key
+		// document this one has not yet managed to read. A server that has just generated a key,
+		// or rotated one, or whose document was fetched a heartbeat before its own publication,
+		// all look identical to an attacker here — and the way to tell them apart is to ask.
+		//
+		// One extra fetch, on a mismatch, once per throttle window. That is bounded twice over:
+		// the refresh goes through the same interval bookkeeping as an ordinary ask, so a
+		// credential forged with a nonsense key ID costs one request rather than one per request,
+		// and a credential signed with a key the server really does publish succeeds the moment the
+		// document arrives. The failure this removes is not exotic; it is the intermittent 401 on
+		// a first join between two servers that have just been started side by side.
+		if fresh, err := k.forceKeys(ctx, origin, enforce); err == nil {
+			if key, ok, keyErr := keyAmong(fresh, keyID); ok || keyErr != nil {
+				return key, keyErr
 			}
-			if len(row.Key) != ed25519.PublicKeySize {
-				return nil, fmt.Errorf("federation: the recorded key %s for %s is %d bytes", keyID, origin, len(row.Key))
-			}
-			return ed25519.PublicKey(row.Key), nil
+			rows = fresh
 		}
 		return nil, fmt.Errorf("federation: %s has never published a key %s that this server holds (%s)",
 			origin, keyID, heldKeyIDs(rows))
 	}
+}
+
+// keyAmong finds one key in a set, and says whether the name matched at all. A row whose
+// key is the wrong length is reported rather than skipped: that is a database that has
+// been written wrongly, and treating it as "not this key" would turn it into a
+// verification failure against an innocent peer.
+func keyAmong(rows []persist.ServerSigningKey, keyID string) (ed25519.PublicKey, bool, error) {
+	for _, row := range rows {
+		if row.KeyID != keyID {
+			continue
+		}
+		if len(row.Key) != ed25519.PublicKeySize {
+			return nil, true, fmt.Errorf("federation: the recorded key %s for %s is %d bytes", keyID, row.ServerName, len(row.Key))
+		}
+		return ed25519.PublicKey(row.Key), true, nil
+	}
+	return nil, false, nil
+}
+
+// forceKeys asks a server for its keys again right now, once, ignoring the interval that
+// ordinarily spaces the asks out. It exists for the case where the interval would encode a
+// guess as knowledge: "we do not have this key" is only a fact about a server until the
+// server has been asked again.
+func (k *Keyring) forceKeys(ctx context.Context, serverName string, enforceExpiry bool) ([]persist.ServerSigningKey, error) {
+	k.mu.Lock()
+	delete(k.lastFetch, serverName)
+	k.mu.Unlock()
+	return k.keys(ctx, serverName, enforceExpiry)
 }
 
 // keys returns the cached keys for a server, refreshing them when they are missing or
