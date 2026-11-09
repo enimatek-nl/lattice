@@ -163,6 +163,11 @@ type Service struct {
 	// until federation is wired up, and a room service without one works exactly as
 	// before: local rooms stay local.
 	relayer Relayer
+	// backfill asks another server for the history behind an event, for the one reader that cannot
+	// answer from what this server holds: a client paging back through a room this server joined
+	// yesterday. It is optional in the same way the relayer is, and for the same reason — a server
+	// with no federation is not wrong to say the history it has is the history there is.
+	backfill HistoryBackfiller
 	// deviceListAnnouncer tells a user's other servers about their devices; nil until
 	// [Service.SetDeviceListAnnouncer].
 	deviceListAnnouncer DeviceListAnnouncer
@@ -232,6 +237,22 @@ type Relayer interface {
 // SetRelayer connects the federation sender. Without it this server keeps rooms to
 // itself, which is the honest state of a server with federation not yet wired in.
 func (s *Service) SetRelayer(relayer Relayer) { s.relayer = relayer }
+
+// HistoryBackfiller asks a server that holds this room for the history before an event, and reports
+// how many events it stored here. The room service implements the asking by way of the federation
+// layer, which owns when it goes and what happens if the peer is down; what the room service needs is
+// to know whether asking is even possible, and whether it is worth reading the page again.
+type HistoryBackfiller interface {
+	// FetchHistoryBefore asks for the history behind an event. It returns how many events this server
+	// did not have and now does, which is the only honest way to know whether to read the page again
+	// — a peer that answered with events this server already holds has not extended the room.
+	FetchHistoryBefore(ctx context.Context, roomID, eventID string) (int, error)
+}
+
+// SetHistoryBackfiller wires the read path to a way of asking other servers for history. Without it
+// this server answers a page from what it holds, which is the right answer for a room it has in full
+// and a short one for a room it joined last week.
+func (s *Service) SetHistoryBackfiller(backfill HistoryBackfiller) { s.backfill = backfill }
 
 // KeyRingFor returns the key lookup for a room version. The room version matters because the
 // versions differ in what a signature covers and in how long a key stays usable.

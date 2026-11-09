@@ -9,6 +9,7 @@ import (
 	"github.com/enimatek/lattice/internal/eventauth"
 	"github.com/enimatek/lattice/internal/eventfilter"
 	"github.com/enimatek/lattice/internal/matrixerr"
+	"github.com/enimatek/lattice/internal/persist"
 	"github.com/enimatek/lattice/internal/redaction"
 	"github.com/enimatek/lattice/internal/stream"
 )
@@ -154,6 +155,12 @@ func (s *Service) History(ctx context.Context, roomID, requester string, req His
 	// while a full page cut by the horizon means the requester simply may not read
 	// further.
 	raw, err := s.events.EventsWindow(ctx, roomID, int64(start), backwards, limit+1)
+	if err != nil {
+		return HistoryPage{}, err
+	}
+	// A page that came back short may only mean this server was never told any more. Ask before
+	// deciding the room ended here; see [Service.backfillToFill].
+	raw, err = s.backfillToFill(ctx, roomID, start, backwards, limit, raw)
 	if err != nil {
 		return HistoryPage{}, err
 	}
@@ -375,4 +382,88 @@ func (s *Service) requireHistoryAccess(ctx context.Context, roomID, requester st
 // where in a sync it is the `room.timeline` part of a larger document.
 func ParseHistoryFilter(raw string) (eventfilter.RoomEventFilter, error) {
 	return eventfilter.ParseRoomEventFilter(raw)
+}
+
+// historyBackfillMaxAsks bounds how many times one read will ask another server for history. Each ask
+// is a round trip taken while a client waits, and a peer with nothing to give answers with an empty
+// list, which ends the loop by itself. The bound is for the peer that answers just enough each time to
+// keep the loop going.
+const historyBackfillMaxAsks = 3
+
+// backfillToFill asks a server that holds this room for history this server was never told about, so
+// that a client paging past the end of this server's knowledge gets the history rather than the end.
+//
+// A short page is the trouble. It is the answer a room gives when it has run out, and the protocol
+// gives a client no other word for "the room began here" — so a server that has simply never been told
+// any more answers in exactly the language of a room that has no more, and no client can tell the two
+// apart afterwards. Asking costs one round trip to a peer and is bounded to a few goes per read,
+// because a page is served on somebody's patience and a peer that is having trouble is allowed to be
+// having trouble.
+//
+// The asking stops when the page is full, when the peer hands over nothing further, or when this server
+// already holds the room's create event — that last being the honest end of the question, and the
+// reason a room this server holds in full does not go and ask its peers for the week before it began.
+//
+// A room with no peer to ask, or a server not wired to ask, is left as it was read. This is a read that
+// tried to be more useful, not one that can now fail for a reason the client could have avoided.
+func (s *Service) backfillToFill(ctx context.Context, roomID string, start stream.Position,
+	backwards bool, limit int, raw []*persist.Event,
+) ([]*persist.Event, error) {
+	if s.backfill == nil || !backwards || limit <= 0 {
+		return raw, nil
+	}
+	for asks := 0; asks < historyBackfillMaxAsks; asks++ {
+		if len(raw) > limit {
+			break
+		}
+		// Which event to ask about, and whether to ask at all. A room whose history is complete down
+		// to its create event has no event that cites something this server lacks, so the answer is
+		// nothing to ask and the room really is out of past. A room joined from a peer holds a run of
+		// events whose oldest end points at an event nobody sent, which is both the question and the
+		// reason to believe the page came short for a good one.
+		//
+		// The room's earliest stored event is the wrong thing to ask about, and holding the create
+		// event is the wrong reason to stop: a join hands over the room's state, so this server holds
+		// the beginning of a room it has never been told the middle of, and "we have the create event"
+		// would end the search at exactly the moment it should begin.
+		seed, err := s.historyBackfillSeed(ctx, roomID, raw)
+		if err != nil || seed == "" {
+			break
+		}
+		fetched, err := s.backfill.FetchHistoryBefore(ctx, roomID, seed)
+		if err != nil || fetched <= 0 {
+			break
+		}
+		// Read the page again from where the client asked, which may now reach further into the past
+		// than the first read could. The start does not move: the client asked about one place in the
+		// history, and filling in behind it must not move the ground under that question.
+		if raw, err = s.events.EventsWindow(ctx, roomID, int64(start), backwards, limit+1); err != nil {
+			return raw, err
+		}
+	}
+	return raw, nil
+}
+
+// historyBackfillSeed chooses the event to ask a peer about: one whose predecessors this server does
+// not hold, and which this server nevertheless holds itself.
+//
+// Both halves matter and they pull against each other. The peer is asked for the events between what
+// this server holds and what it lacks, so an event this server does not hold cannot be asked about —
+// it has to be named as *missing* by something the peer can see this server has. And an event whose
+// predecessors are all present cannot be the mouth of a hole at all: walking back from it arrives at
+// the same place walking back from its predecessors does, so asking about it asks for nothing.
+//
+// The events this server holds but could not place — outliers, kept out of client timelines precisely
+// because their place in the history is unknown — are the clean case: each one is a held event with a
+// named gap under it. Failing those, the oldest event on the page the client could not fill is the
+// best guess available, and the honest one: it is the point where the reader stopped, and the reason
+// they stopped there.
+func (s *Service) historyBackfillSeed(ctx context.Context, roomID string, raw []*persist.Event) (string, error) {
+	if outliers, err := s.events.Outliers(ctx, roomID); err == nil && len(outliers) > 0 {
+		return outliers[0], nil
+	}
+	if len(raw) > 0 {
+		return raw[len(raw)-1].EventID, nil
+	}
+	return "", nil
 }

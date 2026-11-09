@@ -357,6 +357,14 @@ func NewWithOptions(ctx context.Context, cfg *config.Config, log *slog.Logger, o
 			Log:       log,
 		}
 		a.Backfill = backfiller
+		// Not wired yet, deliberately, and the reason is a failing test rather than a preference.
+		// Connecting it makes a client's backwards page ask a peer for the history this server was
+		// never given; measured, that ask also took a test that was green before it
+		// (TestBackfillBudgetLeavesAGapAskable), which is the read path spending a backfill budget
+		// that another reader was relying on. The pieces are in place either side of this line:
+		// `/backfill` served and asked, and the rooms service willing to use one. Wiring them is
+		// T-4206 and starts by settling who pays for a fetch taken on a client's behalf.
+		_ = &federation.RoomHistory{Backfill: backfiller, Servers: roomService, Name: string(cfg.ServerName)}
 		federationDeps.Backfill = backfiller
 		joiner := &federation.Joiner{
 			Client:    client,
