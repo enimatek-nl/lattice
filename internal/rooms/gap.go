@@ -154,24 +154,6 @@ func (s *Service) MissingPredecessors(ctx context.Context, roomID string, limit 
 	return out, nil
 }
 
-// ShareReceivedEvents offers events that arrived from a peer to the other servers in the room, the
-// way an event that was pushed at this server is offered.
-//
-// History that this server fetched is not its own business alone. A server that closes a hole has
-// learned events that the other servers in the room may not have — and in the case of a hole another
-// server asked it to close, definitely has not told it — so a room whose members each keep the parts
-// they happen to hold is a room where no two readers see the same history. Fetched events are not
-// soft-failed and no longer outliers, or [Service.applySideEffects] declines them: an event this
-// server does not believe in, or cannot place in the history, is one it should not be spreading.
-func (s *Service) ShareReceivedEvents(ctx context.Context, roomID string, eventIDs []string) {
-	for _, eventID := range eventIDs {
-		if eventID == "" {
-			continue
-		}
-		s.applySideEffects(ctx, eventID)
-	}
-}
-
 // ResolveOutliers clears the outlier flag from the events this server can now place in a room's
 // history, and returns how many it cleared.
 //
@@ -217,14 +199,6 @@ func (s *Service) ResolveOutliers(ctx context.Context, roomID string) (int, erro
 			}
 			if err := s.events.MarkOutlier(ctx, eventID, false); err != nil {
 				return cleared, fmt.Errorf("rooms: cannot link an event this server can place: %w", err)
-			}
-			// Placed in the history, and now put where the history says it belongs: an event that
-			// arrived before the events it came after was filed as the newest thing in the room, and a
-			// user who is shown the room's first week after its last day has been told a story in the
-			// wrong order. Only now can this be corrected, because only now does this server know what
-			// the event came after.
-			if err := s.events.PlaceInTimeline(ctx, eventID, predecessors); err != nil {
-				return cleared, fmt.Errorf("rooms: cannot put a linked event where its history belongs: %w", err)
 			}
 			cleared++
 			progress++

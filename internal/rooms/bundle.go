@@ -43,10 +43,6 @@ type BundleOutcome struct {
 	// here. That is a gap, not a verdict, and it is what a missing-event fetch (T-4007) would
 	// close.
 	Unresolved []string
-	// Holes names, for an event stored without its predecessors, the predecessors that were
-	// missing. A peer cannot be told this much from an event ID alone, and a server that intends to
-	// go and fetch needs the names rather than the count.
-	Holes map[string][]string
 }
 
 // RemoteBundle is one room's worth of events as another server handed them over: the room's
@@ -229,17 +225,6 @@ func (s *Service) AcceptRemoteBundle(ctx context.Context, bundle RemoteBundle, v
 				continue
 			}
 			accepted, outlier, unresolved, err := s.storeBundleEvent(ctx, entry.event, rules, known, latest, entry.roomID)
-			if outlier && outcome.Holes == nil {
-				outcome.Holes = map[string][]string{}
-			}
-			if outlier {
-				// Named for the caller's sake. A server that has taken an event it cannot place
-				// is going to want to ask somebody about it, and the question it has to ask —
-				// "fetch these, by name" — needs the names, which only this computation has.
-				if names, err := s.missingPredecessorIDs(ctx, entry.event, known); err == nil && len(names) > 0 {
-					outcome.Holes[accepted] = names
-				}
-			}
 			if err != nil {
 				outcome.Refused[entry.eventID] = err.Error()
 				progress = true
@@ -295,27 +280,8 @@ func (s *Service) AcceptRemoteBundle(ctx context.Context, bundle RemoteBundle, v
 // read back here because the field it would be read from is the one that version's create event may not
 // carry, and a room whose first event is filed under an empty room identifier is a room whose history
 // this server cannot find again.
-// missingPredecessorIDs names the events an event cites as coming before it that this server does
-// not hold, counting the ones carried by the bundle being stored as held: the batch that arrives
-// together is one history, and an event whose parent is the next item in the batch is not a hole.
-func (s *Service) missingPredecessorIDs(ctx context.Context, event map[string]any, known map[string]map[string]any) ([]string, error) {
-	var missing []string
-	for _, id := range events.ReferencedIDs(event, "prev_events") {
-		if _, ok := known[id]; ok {
-			continue
-		}
-		held, err := s.events.ByID(ctx, id)
-		if err == nil && held != nil {
-			continue
-		}
-		missing = append(missing, id)
-	}
-	return missing, nil
-}
-
 func (s *Service) storeBundleEvent(ctx context.Context, event map[string]any, rules roomversion.Rules,
-	known map[string]map[string]any, latest map[string]int64, roomID string,
-) (string, bool, bool, error) {
+	known map[string]map[string]any, latest map[string]int64, roomID string) (string, bool, bool, error) {
 	eventID, _ := event["event_id"].(string)
 	// A room's exclusion of servers holds when the room arrives in a bundle as well as when one
 	// event is offered at a time: otherwise a server the room threw out could hand over the whole
@@ -392,11 +358,17 @@ func (s *Service) storeBundleEvent(ctx context.Context, event map[string]any, ru
 
 	// An event whose predecessors arrived with the bundle is linked into the history; one
 	// whose predecessors did not is an outlier.
-	missing, err := s.missingPredecessorIDs(ctx, event, known)
-	if err != nil {
-		return "", false, false, err
+	outlier := false
+	for _, id := range events.ReferencedIDs(event, "prev_events") {
+		if _, ok := known[id]; ok {
+			continue
+		}
+		if held, err := s.events.ByID(ctx, id); err == nil && held != nil {
+			continue
+		}
+		outlier = true
+		break
 	}
-	outlier := len(missing) > 0
 
 	var accepted string
 	var stream int64
@@ -408,22 +380,6 @@ func (s *Service) storeBundleEvent(ctx context.Context, event map[string]any, ru
 		}
 		if err := service.persistEventIn(ctx, roomID, event, position); err != nil {
 			return err
-		}
-		if !outlier {
-			// Filed where its own history puts it rather than at the end of the stream this server
-			// happens to be at. A bundle is by nature history arriving after the fact — a join
-			// handover, a run of events fetched to close a hole — so the order it arrives in says
-			// nothing about the order it happened in, and a stream position is the order a client
-			// reads the room in. Getting this wrong is not cosmetic: a reader of a room that has just
-			// caught up would be shown its oldest week as its newest, and unlike a hole that is not
-			// something a client can notice.
-			//
-			// An event stored as an outlier is not placed. This server does not yet know what it came
-			// after, and inventing a place for it is the failure this call exists to avoid; it is
-			// placed by [Service.ResolveOutliers] when the missing predecessor arrives.
-			if err := service.events.PlaceInTimeline(ctx, eventID, events.ReferencedIDs(event, "prev_events")); err != nil {
-				return err
-			}
 		}
 		if outlier {
 			if err := service.events.MarkOutlier(ctx, eventID, true); err != nil {

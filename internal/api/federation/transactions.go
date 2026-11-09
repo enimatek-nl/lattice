@@ -25,23 +25,6 @@ import (
 // it cannot. It is implemented by [*rooms.Service].
 type PDUAcceptor interface {
 	AcceptRemoteEvent(ctx context.Context, pdu []byte, verify rooms.VerifyPDU) (string, error)
-	// AcceptRemoteBundle is how a single offered event is judged as well as a batch, because the
-	// batch is the path that knows what to do with an event it cannot place: it stores it as an
-	// outlier, whose state counts and whose absence from a client's timeline is the room's way of
-	// saying that a piece is missing. `AcceptRemoteEvent` refuses those events instead, which reads
-	// to a peer as a verdict on an event that is merely early.
-	AcceptRemoteBundle(ctx context.Context, bundle rooms.RemoteBundle, verify rooms.VerifyPDU) (rooms.BundleOutcome, error)
-}
-
-// hole is a piece of history this server has taken and cannot yet place: the event itself, filed
-// where it arrived, and the room to look underneath it in.
-type hole struct {
-	roomID  string
-	eventID string
-	// citations are the named events this one relies on and this server lacks — the shape of hole
-	// that can be asked for by name, as opposed to a run of history whose names are the very thing
-	// that is missing.
-	citations []string
 }
 
 // transactionResponse is the body a transaction is answered with. The specification
@@ -138,12 +121,8 @@ func (d *Deps) handleSendTransaction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response := transactionResponse{PDUs: map[string]transactionResult{}}
-	holes := make([]hole, 0, len(transaction.PDUs))
 	for _, raw := range transaction.PDUs {
-		eventID, problem, missing := d.acceptPDU(r, raw)
-		if missing != nil {
-			holes = append(holes, *missing)
-		}
+		eventID, problem := d.acceptPDU(r, raw)
 		switch {
 		case problem != "":
 			key := eventID
@@ -201,9 +180,6 @@ func (d *Deps) handleSendTransaction(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(encoded)
-	// Answered. Only now does this server go and repair what the answer left open — see
-	// (*Deps).fillHoles for why the order is the whole design.
-	d.fillHoles(r.Context(), transaction.Origin, holes)
 }
 
 // deviceListUpdateEDU is the ephemeral unit type that announces a device list change. It is the
@@ -246,123 +222,87 @@ func (d *Deps) noteDeviceListUpdate(ctx context.Context, origin string, content 
 
 // acceptPDU checks and stores one PDU, returning its event ID and, if it could not be
 // taken, the reason the sender is told.
-func (d *Deps) acceptPDU(r *http.Request, raw []byte) (eventID, problem string, missing *hole) {
+func (d *Deps) acceptPDU(r *http.Request, raw []byte) (eventID, problem string) {
 	var envelope struct {
 		EventID string `json:"event_id"`
 		RoomID  string `json:"room_id"`
 	}
 	_ = json.Unmarshal(raw, &envelope)
 	if int64(len(raw)) > d.federationBodyLimit() {
-		return envelope.EventID, "the event is too large", nil
+		return envelope.EventID, "the event is too large"
 	}
 	if origin, _ := r.Context().Value(originContextKey{}).(string); d.roomExcludes(r, envelope.RoomID, origin) {
 		// A transaction is answered per event, not as a whole: a room that excludes this server
 		// refuses this event, and whatever else the transaction carries is still processed.
-		return envelope.EventID, "the room excludes the server that sent this event", nil
+		return envelope.EventID, "the room excludes the server that sent this event"
 	}
 	verify := func(event map[string]any, rules roomversion.Rules) error {
 		return events.Verify(rules, event, d.Keyring.LookupForRoom(r.Context(), rules))
 	}
-	// One event is offered to the room service exactly as a batch is, because the batch is the path
-	// that knows what to do with an event it cannot place.
-	//
-	// The alternative — which is what this handler used to do — is to refuse an event whose
-	// predecessors have not arrived yet, and then to go and fetch them and try again before
-	// answering. Fetching is right and is kept; answering the peer with "not stored here" first is
-	// not. A refusal is a verdict, and the sender is entitled to treat it as one: try another
-	// server, drop the event, or never offer it again. Meanwhile the event may be perfectly good and
-	// merely early, and a room whose two copies differ by one event is a room neither copy can
-	// resolve its way out of.
-	//
-	// So the event is taken. An event with a hole beneath it becomes an outlier: its state counts,
-	// it is excluded from a client's timeline until the hole closes, and its absence there is the
-	// honest signal — the `limited` flag on a sync, a client paginating — that this server holds a
-	// room it cannot yet narrate. Closing the hole then happens after the peer has been answered, in
-	// fillHoles, and not one request earlier: closing a gap synchronously is what let a client believe
-	// it had a continuous history that this server had assembled half a second before it said so.
 	id, err := d.Rooms.AcceptRemoteEvent(r.Context(), raw, verify)
-	if err == nil {
-		return id, "", nil
+	if gap, ok := missingHistory(err); ok && d.Backfill != nil && envelope.RoomID != "" {
+		origin, _ := r.Context().Value(originContextKey{}).(string)
+		// The event's own ID comes from the error, not from the bytes. From room version 2 a PDU
+		// carries no `event_id` field at all — the ID is a hash computed under the room version's
+		// rules — so the envelope above is empty for most rooms this server handles, and asking a
+		// peer for "the history behind " is asking for nothing at all. The room service computes
+		// the ID in order to file its refusal, so it is the one place that can say which event
+		// this gap is about.
+		eventID := gap.CitedEvent()
+		if eventID == "" {
+			eventID = envelope.EventID
+		}
+		envelope.EventID = eventID
+		// The event has not been refused. This server is one fetch away from judging it, and the
+		// server that just offered it is the one that holds what is missing.
+		//
+		// Two asks are made, cheapest first. The good one says "I hold everything up to my
+		// frontier, I was just given this event, what lies between?" — which closes a hole of any
+		// length in one round trip, and crucially does not need to know the names of the missing
+		// events, which is exactly what a hole in the middle of a chain hides. The fallback walks
+		// the citations this event *did* make, one event at a time, for the case where a peer
+		// answers `/event` but not `/get_missing_events`.
+		//
+		// Acceptance is then retried, in this same request. Answering with the reason and waiting
+		// for a resend is technically honest and practically a divergence: a sender that is told
+		// "not stored" may try a different server, give up, or never offer it again, and two copies
+		// of a room that differ by one event are a room that will not resolve its way out of it.
+		filled := false
+		if outcome, fillErr := d.Backfill.FillBehind(r.Context(), envelope.RoomID, []string{origin}, eventID); fillErr != nil {
+			// Warn, not Debug. A hole this server could not close is the reason a room's history
+			// stops short for a user, and the difference between "nobody had it" and "we never
+			// asked" is the first thing anybody needs to know about that.
+			d.Log.Warn("federation: the history behind an incoming event could not be fetched",
+				"event_id", envelope.EventID, "room_id", envelope.RoomID, "origin", origin, "error", fillErr)
+		} else {
+			filled = len(outcome.Stored) > 0
+		}
+		if !filled {
+			if missing := gap.MissingEvents(); len(missing) > 0 {
+				if _, fillErr := d.Backfill.FillFrom(r.Context(), envelope.RoomID, []string{origin}, missing); fillErr != nil {
+					d.Log.Warn("federation: the events an incoming event cites could not be fetched",
+						"event_id", envelope.EventID, "room_id", envelope.RoomID, "origin", origin, "error", fillErr)
+				} else {
+					filled = true
+				}
+			}
+		}
+		if filled {
+			id, err = d.Rooms.AcceptRemoteEvent(r.Context(), raw, verify)
+		}
 	}
-	// Only one kind of refusal is not a refusal, and it is the narrowest one: an event whose own
-	// predecessors have not arrived yet. The event may be perfectly good and merely early, so this
-	// server takes it — as an outlier, whose state counts and whose absence from a client's timeline
-	// is the room's way of saying a piece is missing — and repairs the hole after the peer has been
-	// answered. See (*Deps).fillHoles for why the order is the design.
-	//
-	// Every other refusal is kept exactly as the room service gave it. An event this server cannot
-	// authorise is not an event it has accepted; a message in a room it has never heard of is not a
-	// room it has agreed to join; and a hole it could close by fetching a named event is a different
-	// ask, with a different endpoint, and is not quietly relabelled here.
-	var predecessors *rooms.MissingPredecessorsError
-	if !errors.As(err, &predecessors) || d.Rooms == nil {
+	if err != nil {
 		if id == "" {
 			id = envelope.EventID
 		}
-		return id, err.Error(), nil
+		d.Log.Debug("federation: refused an event",
+			"event_id", id, "room_id", envelope.RoomID, "reason", err.Error())
+		// The sender is told the reason in the per-PDU result, which is where the
+		// specification puts it: a transaction that was delivered is answered, not
+		// errored as a whole.
+		return id, err.Error()
 	}
-	stored, problem, missing := d.takeEventWithHole(r, raw, envelope, verify, predecessors)
-	if problem != "" {
-		return stored, problem, nil
-	}
-	return stored, "", missing
-}
-
-// takeEventWithHole stores an event this server declined only because its predecessors are absent,
-// and reports the hole it left.
-//
-// The second door is the room service's own batch path, which is the one that knows how to keep an
-// event it cannot place: the single-event path refuses, and a refusal is a verdict that the sender is
-// entitled to act on — try another server, drop the event, never offer it again.
-func (d *Deps) takeEventWithHole(r *http.Request, raw []byte, envelope struct {
-	EventID string `json:"event_id"`
-	RoomID  string `json:"room_id"`
-}, verify rooms.VerifyPDU, predecessors *rooms.MissingPredecessorsError) (string, string, *hole) {
-	outcome, err := d.Rooms.AcceptRemoteBundle(r.Context(),
-		rooms.RemoteBundle{PDUs: [][]byte{raw}, RoomID: envelope.RoomID}, verify)
-	if err != nil {
-		return envelope.EventID, err.Error(), nil
-	}
-	// The event's name comes back from the room service rather than out of the bytes, which is the
-	// only correct source: from room version 2 a PDU carries no `event_id`, and an event that is not
-	// named in the per-event answer is an event the sender cannot be told anything about.
-	id, reason, refused := verdictFor(outcome, envelope.EventID)
-	if refused {
-		return id, reason, nil
-	}
-	if len(outcome.Accepted) == 0 && len(outcome.Outliers) == 0 {
-		// Nothing stored, nothing refused. Saying so beats answering as though the event were safe.
-		return id, "this server did not store the event", nil
-	}
-	if len(outcome.Outliers) == 0 {
-		// Placed outright, which happens when the predecessors arrived in the moment between the
-		// two doors. No hole, nothing to repair.
-		return id, "", nil
-	}
-	name := outcome.Outliers[0]
-	citations := outcome.Holes[name]
-	if len(citations) == 0 {
-		citations = predecessors.Missing
-	}
-	if envelope.RoomID == "" {
-		return id, "", nil
-	}
-	return id, "", &hole{roomID: envelope.RoomID, eventID: name, citations: citations}
-}
-
-// verdictFor reads a single-event bundle's answer: the event's name as this server computes it, and
-// the reason it was not taken if it was not.
-func verdictFor(outcome rooms.BundleOutcome, fallback string) (string, string, bool) {
-	for refusedID, reason := range outcome.Refused {
-		if refusedID != "" {
-			fallback = refusedID
-		}
-		return fallback, reason, true
-	}
-	if len(outcome.Accepted) > 0 && outcome.Accepted[0] != "" {
-		return outcome.Accepted[0], "", false
-	}
-	return fallback, "", false
+	return id, ""
 }
 
 // transactionRetention is how long a processed transaction stays remembered. A sender
