@@ -331,6 +331,11 @@ func NewWithOptions(ctx context.Context, cfg *config.Config, log *slog.Logger, o
 		// Every event this server accepts is offered to the other servers in the room.
 		// Queuing is not delivery: an unreachable remote cannot make a local send fail.
 		roomService.SetRelayer(a.Sender)
+		// A join is also a device-list event: the servers being introduced to the joiner hold
+		// the room this user can now encrypt in, and nothing else ever tells them the joiner
+		// exists. Without this an encrypted cross-server room refuses to decrypt for the new
+		// member and reports nothing, because "we have never heard of their keys" is not an error.
+		roomService.SetDeviceListAnnouncer(deviceKeys)
 		// A user joining from here is a new device list to the rest of the room, and only this
 		// server can say so.
 		roomService.SetDeviceListAnnouncer(deviceKeys)

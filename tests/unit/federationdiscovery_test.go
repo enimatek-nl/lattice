@@ -295,15 +295,19 @@ func TestFederationDiscoveryRetriesALookupFailureSoon(t *testing.T) {
 	}
 	first := atomic.LoadInt32(&hostLookups)
 
-	// Asked again in the same moment, the answer is the cached one: a room full of traffic to one
-	// bad name must not turn into a DNS storm.
-	if _, err := d.Resolve(ctx, "flaky.example"); err == nil ||
-		!strings.Contains(err.Error(), "recently") {
-		t.Errorf("the second attempt = %v, wanting the cached refusal to be used", err)
+	// Asked again in the same moment, the name is looked up again — and succeeds. Nothing is
+	// remembered about a failed lookup, because the answer was produced by a timeout or a SERVFAIL
+	// and is not a fact about the peer: handing that verdict to the next request is what turned one
+	// bad second in a container network into a lockout on a healthy homeserver, three requests
+	// later. The storm the cache was meant to prevent costs little here, because a failed lookup
+	// holds nothing open, unlike a failed connection.
+	if _, err := d.Resolve(ctx, "flaky.example"); err != nil {
+		t.Errorf("the second attempt = %v, wanting the fresh lookup to reach the name that now resolves", err)
 	}
-	if got := atomic.LoadInt32(&hostLookups); got != first {
-		t.Errorf("the second attempt looked the name up again (%d lookups), wanting the cached answer", got)
+	if got := atomic.LoadInt32(&hostLookups); got <= first {
+		t.Errorf("the second attempt made %d host lookups, wanting the name looked up again rather than a refusal reused", got)
 	}
+	first = atomic.LoadInt32(&hostLookups)
 
 	// Once the short window has passed, the name is asked about again. This is the part that
 	// matters operationally: the failure was a moment, and treating it as a fact about the other
@@ -316,8 +320,12 @@ func TestFederationDiscoveryRetriesALookupFailureSoon(t *testing.T) {
 	if target.DialURL != "https://203.0.113.44:8448" {
 		t.Errorf("the retry resolved to %q, wanting the address the lookup now gives", target.DialURL)
 	}
-	if got := atomic.LoadInt32(&hostLookups); got != first+1 {
-		t.Errorf("after a minute there have been %d host lookups, wanting one more than before", got)
+	// The success is still cached, and that is the half of the behaviour worth keeping: what a
+	// peer's name means does not change minute to minute, and asking again would be the same
+	// rudeness on every event. It is only the failure that is refused the dignity of being
+	// remembered.
+	if got := atomic.LoadInt32(&hostLookups); got != first {
+		t.Errorf("after a minute there have been %d host lookups, wanting the answer still cached from the last attempt (%d)", got, first)
 	}
 }
 
