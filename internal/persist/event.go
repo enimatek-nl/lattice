@@ -272,6 +272,11 @@ type EventRepo interface {
 	// NextStreamOrdering returns a fresh global ordering number. Callers must hold a
 	// transaction, so concurrent senders cannot take the same number.
 	NextStreamOrdering(ctx context.Context) (int64, error)
+	// PlaceInTimeline gives an event the stream position its own history implies, moving the room's
+	// older events out of the way when the place is taken. Called as an event that arrived before its
+	// predecessors is linked into the room's history, so that a server which has caught up on a room
+	// does not tell its users that the oldest thing it was told about is the newest thing there.
+	PlaceInTimeline(ctx context.Context, eventID string, predecessorIDs []string) error
 
 	// TxnLookup returns the event a device's transaction ID already produced in a room.
 	TxnLookup(ctx context.Context, deviceID, roomID, txnID string) (*EventTxn, error)
@@ -561,6 +566,77 @@ func (r *eventRepo) MarkOutlier(ctx context.Context, eventID string, outlier boo
 	}
 	return r.db.WithContext(ctx).Model(&Event{}).Where("event_id = ?", eventID).
 		Update("outlier", outlier).Error
+}
+
+// PlaceInTimeline implements [EventRepo].
+//
+// A stream position is an insertion order, so an event that arrived before the events it belongs to is
+// filed as though it had just happened: not wrongly stored, wrongly *ordered*, which a client reads as
+// history in the wrong sequence. Once the predecessors are held, the room knows where the event belongs
+// — after every predecessor, before whatever was newest when it arrived — and can correct the position
+// as it links the event into the history.
+//
+// Predecessors are passed in rather than read back from the reference table so a caller that has just
+// computed them, and so knows they are all present, need not compute them again.
+//
+// Opening the gap moves the room's *older* events down rather than its newer ones up. That direction is
+// not a preference. A client reading a room backwards starts at the highest stream position this server
+// holds and asks for what lies below it; push a room's newer events up and one of them lands on the
+// position the read starts from, which excludes it, and the room's newest event disappears from the
+// first page of its own history. Downward is unbounded and costs nothing but large numbers, which is
+// also how the reference implementation fits history that predates a client's account of a room.
+func (r *eventRepo) PlaceInTimeline(ctx context.Context, eventID string, predecessorIDs []string) error {
+	var self Event
+	if err := r.db.WithContext(ctx).Where("event_id = ?", eventID).First(&self).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		return err
+	}
+	// Where the event belongs: after the newest of the events it cites as coming before it. An event
+	// on a fork cites several and belongs after all of them.
+	var below int64
+	if err := r.db.WithContext(ctx).Model(&Event{}).
+		Where("event_id IN ? AND room_id = ?", predecessorIDs, self.RoomID).
+		Select("COALESCE(MAX(stream_ordering), 0)").Scan(&below).Error; err != nil {
+		return err
+	}
+	if below == 0 || self.StreamOrdering == below+1 {
+		// Either there is no predecessor in this room to order against, or the event already sits
+		// where its history puts it. Reordering anyway would move a room's whole past for an event
+		// that was already right.
+		return nil
+	}
+	var next Event
+	err := r.db.WithContext(ctx).
+		Where("room_id = ? AND stream_ordering > ? AND event_id <> ?", self.RoomID, below, eventID).
+		Order("stream_ordering ASC").First(&next).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		// Nothing happened in this room after the event's predecessors, so the event is the newest
+		// thing that occurred here and its position is already after them all.
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if next.StreamOrdering-below > 1 {
+		// There is room. Take the position after the predecessors and disturb nothing.
+		return r.db.WithContext(ctx).Model(&Event{}).
+			Where("event_id = ?", eventID).
+			UpdateColumn("stream_ordering", below+1).Error
+	}
+	// No room. The position the event belongs in is taken by the event that arrived in its place, so
+	// the room's past — the predecessors and everything before them, which excludes the event itself —
+	// moves down one and the event takes the position they have vacated.
+	if err := r.db.WithContext(ctx).Exec(
+		`UPDATE events SET stream_ordering = stream_ordering - 1 WHERE room_id = ? AND stream_ordering <= ? AND event_id <> ?`,
+		self.RoomID, below, eventID,
+	).Error; err != nil {
+		return err
+	}
+	return r.db.WithContext(ctx).Model(&Event{}).
+		Where("event_id = ?", eventID).
+		UpdateColumn("stream_ordering", below).Error
 }
 
 // NextStreamOrdering implements [EventRepo].

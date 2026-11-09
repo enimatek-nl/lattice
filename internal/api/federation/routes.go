@@ -7,6 +7,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/enimatek/lattice/internal/config"
@@ -72,6 +73,12 @@ type Deps struct {
 	// Invites stores an invite a peer made for one of this server's users, after signing it
 	// here as the peer asked.
 	Invites InviteAcceptor
+
+	// fillMu, fillStarted and fillSlots pace the background hole filling in holefill.go. They are
+	// lazily created because a Deps is written out as a literal where the server is wired.
+	fillMu      sync.Mutex
+	fillStarted map[string]time.Time
+	fillSlots   chan struct{}
 }
 
 // DeviceListChanges is the receiving end of a peer's device list announcement.
@@ -122,6 +129,7 @@ func Register(r *httpserver.Router, d *Deps) {
 	r.Handle("GET", "/_matrix/federation/v1/state_ids/{roomId}", d.requireCredential(d.handleStateIDs))
 	r.Handle("GET", "/_matrix/federation/v1/event_auth/{roomId}/{eventId}", d.requireCredential(d.handleEventAuth))
 	r.Handle("POST", "/_matrix/federation/v1/get_missing_events/{roomId}", d.requireCredential(d.handleGetMissingEvents))
+	r.Handle("GET", "/_matrix/federation/v1/backfill/{roomId}", d.requireCredential(d.handleBackfill))
 
 	// The content repository's server-server endpoints. They are signed for the same reason every other
 	// federation read is signed: the caller is a server, not a user, and an open file endpoint is a way to
