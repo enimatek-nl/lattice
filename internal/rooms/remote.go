@@ -209,7 +209,15 @@ func (s *Service) AcceptRemoteEvent(ctx context.Context, pdu []byte, verify Veri
 			// somebody can still fill, not a judgement about this event. Recording it would refuse
 			// the event forever, and then refuse every event that cites it — which is how a room
 			// whose events arrived out of order turns into a room that can never be joined.
-			return "", &MissingAuthEventsError{EventID: eventID, RoomID: roomID}
+			//
+			// The names are handed over for the same reason the loading site hands them over, and
+			// a caller that is going to fetch needs them: a gap described only as "something is
+			// missing" can be reported but not closed. Where the auth rules wanted a state key that
+			// is not among the citations at all, the list is empty and the gap is real but not yet
+			// addressable by name — which is the honest answer, and is what asking a peer for this
+			// event's auth chain (`/event_auth`) would be able to close.
+			return "", &MissingAuthEventsError{EventID: eventID, RoomID: roomID,
+				Missing: missingCitations(authIDs, authEvents, refusals)}
 		}
 		return "", s.refuse(ctx, roomID, eventID, reason)
 	}
