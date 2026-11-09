@@ -417,6 +417,17 @@ func (b *Backfiller) FillBehind(ctx context.Context, roomID string, destinations
 		for _, raw := range events {
 			id := eventIDOf(raw)
 			if id == "" {
+				// Dropped, for now, and deliberately not keyed by a stand-in name.
+				//
+				// A PDU with no `event_id` field is not unnamed: its name is a hash of its contents
+				// under the room version's rules, which this package cannot compute without the room.
+				// Keying such an event by a synthetic placeholder keeps it in the set and stores it —
+				// measured, and it is wrong: the local regression test for a remote user reading a
+				// room's history went red, because history arrived in the wrong shape rather than not
+				// at all. The right fix is to ask the room service, which knows the room's version, to
+				// name the events before they are ordered; that is T-4216 step 2 and it needs the
+				// `GapStore` interface to carry a name-for-pdu operation, so it is a change of a
+				// different shape than the one-line thing this comment replaced.
 				continue
 			}
 			byID[id] = raw
