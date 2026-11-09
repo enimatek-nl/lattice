@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 
 	"github.com/enimatek/lattice/internal/events"
 	"github.com/enimatek/lattice/internal/rooms"
@@ -537,4 +538,146 @@ func eventIDOf(raw json.RawMessage) string {
 		return ""
 	}
 	return envelope.EventID
+}
+
+// GetBackfill asks a peer for the history of a room before an event this server holds.
+//
+// This is the ask that `/get_missing_events` cannot make. That endpoint walks between two points the
+// asker names, and it needs both: a server whose room runs out behind it has nothing to name below its
+// oldest event, which is the whole reason it is asking. So it names the one event it does have and asks
+// what came before, and the peer walks its own graph back from there.
+//
+// A server that does not answer this is a server whose clients are told, politely and by implication,
+// that a room began on the day this server first heard of it.
+func (c *Client) GetBackfill(ctx context.Context, destination, roomID, since string, limit int) ([]json.RawMessage, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 100
+	}
+	target := "/_matrix/federation/v1/backfill/" + url.PathEscape(roomID) +
+		// `origin` is deliberately absent: this server's identity travels in the request's signature,
+		// which is what the peer checks it against, and a query parameter saying who is asking is a
+		// claim rather than evidence.
+		"?v=1&source=" + url.QueryEscape(since) +
+		"&limit=" + strconv.Itoa(limit)
+	response, err := c.Do(ctx, destination, http.MethodGet, target, nil)
+	if err != nil {
+		return nil, err
+	}
+	if response.StatusCode < 200 || response.StatusCode > 299 {
+		return nil, fmt.Errorf("federation: %s answered the request for history with %d", destination, response.StatusCode)
+	}
+	var answer struct {
+		PDUs []json.RawMessage `json:"pdus"`
+	}
+	if err := json.Unmarshal(response.Body, &answer); err != nil {
+		return nil, fmt.Errorf("federation: %s answered the request for history with something unreadable: %v", destination, err)
+	}
+	return answer.PDUs, nil
+}
+
+// BackfillBefore fills the history of a room behind an event this server holds, and reports what it
+// stored. It is [Backfiller.FillBehind]'s counterpart for a room that runs out rather than opens: no
+// hole, no citing event, no names to ask for — only a floor, and a client waiting above it.
+func (b *Backfiller) BackfillBefore(ctx context.Context, roomID string, destinations []string, oldest string) (FillOutcome, error) {
+	outcome := FillOutcome{Refused: map[string]string{}}
+	if b.Client == nil || b.Store == nil || oldest == "" || len(destinations) == 0 {
+		return outcome, nil
+	}
+	limit := b.MaxEvents
+	if limit <= 0 || limit > 100 {
+		limit = 100
+	}
+	var lastErr error
+	for _, destination := range destinations {
+		events, err := b.Client.GetBackfill(ctx, destination, roomID, oldest, limit)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if len(events) == 0 {
+			// The peer walked back from this event and reached the beginning of the room. That is an
+			// answer, and the kind that ends the asking.
+			return outcome, nil
+		}
+		bodies := make([][]byte, len(events))
+		for index, raw := range events {
+			bodies[index] = raw
+		}
+		named, err := b.Store.NameRemotePDUs(ctx, roomID, bodies)
+		if err != nil {
+			return outcome, err
+		}
+		byID := make(map[string][]byte, len(events))
+		for index, raw := range bodies {
+			if index < len(named) && named[index] != "" {
+				byID[named[index]] = raw
+				outcome.Fetched = append(outcome.Fetched, named[index])
+			}
+		}
+		return b.store(ctx, roomID, byID, outcome)
+	}
+	return outcome, lastErr
+}
+
+// RoomHistory serves a reader who has run out of history. It is the room service's history backfiller:
+// the client API's `/messages` has to be able to tell "this is where the room began" apart from "this
+// is where this server stopped being told", and the only way to tell them apart is to ask somebody who
+// was there earlier.
+//
+// It sits here rather than in the rooms service because the two things it needs live on either side of
+// the federation boundary: which servers are in a room is a fact about this server's database, and how
+// to ask one of them for events is a fact about signing a request and putting up with the answer.
+type RoomHistory struct {
+	Backfill *Backfiller
+	// Servers lists the servers that are in a room, which is who may be asked. A room with nobody
+	// else in it has nobody to ask, and that is a different answer from asking a peer who had nothing
+	// to give: the first means this server is the whole room, the second means the room really is out
+	// of events.
+	Servers RoomServers
+	// Name is this server's own name, which is excluded from the list of servers to ask. Asking for
+	// history from the server that ran short of it is a round trip to a mirror.
+	Name string
+}
+
+// RoomServers is the ability RoomHistory needs from the room service.
+type RoomServers interface {
+	ServersInRoom(ctx context.Context, roomID string) ([]string, error)
+}
+
+// FetchHistoryBefore asks a server in this room for the history behind an event and reports how many
+// events this server did not hold and now does.
+//
+// The count is the useful part, and it is not the number of events the peer answered with. A peer that
+// replies with events this server already has has not extended the room by one event, and a reader that
+// went back for a second look after such an answer would be reading the same page twice and calling it
+// progress.
+//
+// Nobody being available to ask is reported as zero rather than an error: a room whose members are all
+// local has no peer to consult, and the history this server holds is then genuinely the history there
+// is.
+func (h *RoomHistory) FetchHistoryBefore(ctx context.Context, roomID, eventID string) (int, error) {
+	if h == nil || h.Backfill == nil || h.Servers == nil || eventID == "" {
+		return 0, nil
+	}
+	servers, err := h.Servers.ServersInRoom(ctx, roomID)
+	if err != nil {
+		return 0, err
+	}
+	peers := make([]string, 0, len(servers))
+	for _, server := range servers {
+		if server == "" || server == h.Name {
+			continue
+		}
+		peers = append(peers, server)
+	}
+	if len(peers) == 0 {
+		return 0, nil
+	}
+	// `/backfill` is the ask, not `/get_missing_events`: there is no hole here to name a floor by,
+	// because the events below this one were never sent to this server at all.
+	outcome, err := h.Backfill.BackfillBefore(ctx, roomID, peers, eventID)
+	if err != nil {
+		return 0, err
+	}
+	return len(outcome.Stored), nil
 }
