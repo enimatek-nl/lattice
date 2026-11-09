@@ -711,3 +711,114 @@ func lastOf(values []string) string {
 	}
 	return values[len(values)-1]
 }
+
+// TestAFilledGapLandsInTheTimelineWhereItHappened checks a filled hole where a client notices it: in
+// the timeline it is handed, not merely in what the database holds.
+//
+// `/messages` cannot show the fault. It walks what is stored, so history that arrived late and was
+// filed above everything else still reads there — in the order it was received rather than the order it
+// happened, which a user sees as a room whose oldest week is its newest. A `/sync` from the beginning is
+// what a client actually consumes, and it is the read that turns "we have it" into "we told anybody".
+func TestAFilledGapLandsInTheTimelineWhereItHappened(t *testing.T) {
+	t.Parallel()
+	// Fails, and is kept failing in the only form a repository can carry one: skipped, with what it
+	// prints. A room joined with too small a fetch budget and then caught up serves
+	// `[five six one two three four]` — the history in the order it arrived, because a stream position
+	// is an insertion order and nothing else orders a room's timeline.
+	//
+	// A fix was attempted and measured: renumbering an event's position when it is linked into the
+	// history (`PlaceInTimeline`, moving the room's older events down to open a place). It takes this
+	// test from never passing to passing 6 times in 10, which is not a fix — the position chosen for an
+	// event depends on which other events have been positioned yet, so the walk's order is still an
+	// arrival order, merely a better-behaved one. The durable fix is to order a room's timeline by the
+	// depth the events themselves carry, and keep the stream position for what it is honest about: what
+	// this server has delivered to a client. T-4206 and T-4218 both sit downstream of that.
+	t.Skip("history is read in insertion order: a filled gap arrives as [five six one two three four]")
+	hs1, hs2 := federationPair(t)
+
+	alice := hs1.registerUser(t, "prolific", "pw-prolific")
+	_, created := hs1.clientDo(t, http.MethodPost, "/_matrix/client/v3/createRoom",
+		map[string]any{"preset": "public_chat", "name": "a room joined late"}, alice)
+	roomID, _ := created["room_id"].(string)
+
+	for _, body := range []string{"one", "two", "three", "four", "five", "six"} {
+		if status, answer := hs1.clientDo(t, http.MethodPut,
+			"/_matrix/client/v3/rooms/"+roomID+"/send/m.room.message/gap-"+body,
+			map[string]any{"msgtype": "m.text", "body": body}, alice); status != http.StatusOK {
+			t.Fatalf("a message on %s: %d %v", hs1.name, status, answer)
+		}
+	}
+
+	beaToken := hs2.registerUser(t, "late", "pw-late")
+	// Join with a fetch budget of two, so the room arrives with a hole in it: this server holds the end
+	// of the history and events citing a predecessor nobody sent.
+	hs2.app.Backfill.MaxEvents = 2
+	if status, answer := hs2.clientDo(t, http.MethodPost,
+		"/_matrix/client/v3/join/"+roomID, map[string]any{}, beaToken); status != http.StatusOK {
+		t.Fatalf("%s could not join %s: %d %v", hs2.name, roomID, status, answer)
+	}
+	gaps, err := hs2.app.Rooms.MissingPredecessors(context.Background(), roomID, 10)
+	if err != nil || len(gaps) == 0 {
+		t.Fatalf("%s has no gap to fill, so this test would measure nothing (gaps: %v, err: %v)", hs2.name, gaps, err)
+	}
+
+	// Fill it, with the budget of a server that means to catch up.
+	hs2.app.Backfill.MaxEvents = 0
+	if _, err := hs2.app.Backfill.Fill(context.Background(), roomID, []string{hs1.name}); err != nil {
+		t.Fatalf("%s could not fill the gap in %s: %v", hs2.name, roomID, err)
+	}
+
+	// Nothing may still be an outlier: an event with no place in the history is kept out of every
+	// client's timeline, and after a successful fill this room has no such event left.
+	if !waitFor(t, 15*time.Second, func() bool {
+		outliers, err := hs2.app.DB.Events.Outliers(context.Background(), roomID)
+		return err == nil && len(outliers) == 0
+	}) {
+		outliers, _ := hs2.app.DB.Events.Outliers(context.Background(), roomID)
+		t.Fatalf("%s filled the hole and still has %d events with no place in its history: %v",
+			hs2.name, len(outliers), outliers)
+	}
+
+	// And a client reading the room from the beginning is given the whole history, in the order it
+	// happened. This is the assertion Complement's TestSyncTimelineGap makes, and the one `/messages`
+	// forgives.
+	var seen []string
+	if !waitFor(t, 15*time.Second, func() bool {
+		_, answered := hs2.clientDo(t, http.MethodGet, "/_matrix/client/v3/sync", nil, beaToken)
+		seen = syncBodies(t, answered, roomID)
+		return len(seen) == 6
+	}) {
+		t.Fatalf("%s told a client reading from the beginning about %d of the 6 messages in a room it has "+
+			"filled: %v", hs2.name, len(seen), seen)
+	}
+	want := []string{"one", "two", "three", "four", "five", "six"}
+	for i := range want {
+		if seen[i] != want[i] {
+			t.Fatalf("%s put the room's history in the order it arrived rather than the order it happened: "+
+				"position %d holds %q, wanting %q (whole timeline: %v)",
+				hs2.name, i, seen[i], want[i], seen)
+		}
+	}
+}
+
+// syncBodies reads one room's message bodies out of a `/sync` response, oldest first.
+func syncBodies(t *testing.T, answered map[string]any, roomID string) []string {
+	t.Helper()
+	joined, _ := answered["rooms"].(map[string]any)
+	rooms, _ := joined["join"].(map[string]any)
+	room, _ := rooms[roomID].(map[string]any)
+	timeline, _ := room["timeline"].(map[string]any)
+	events, _ := timeline["events"].([]any)
+	var bodies []string
+	for _, item := range events {
+		event, _ := item.(map[string]any)
+		if type_, _ := event["type"].(string); type_ != "m.room.message" {
+			continue
+		}
+		content, _ := event["content"].(map[string]any)
+		if body, _ := content["body"].(string); body != "" {
+			bodies = append(bodies, body)
+		}
+	}
+	return bodies
+}
