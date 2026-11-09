@@ -75,7 +75,13 @@ const (
 	// hour during which a perfectly healthy peer cannot be contacted at all, and the message the
 	// operator sees ("resolved recently and could not be found") reads like a durable fact about
 	// the other server rather than a memory of this one.
-	resolutionFailureTTL = 30 * time.Second
+	// A second is enough to do the job. Concurrent joins to one unreachable name share a lookup
+	// rather than each hammering DNS, and that is the whole purpose of the cache; thirty seconds of
+	// "could not be found" outlives the kind of failure it is meant to absorb — a container network
+	// taking a moment to come up, a resolver that dropped one query — and a peer that cannot be
+	// resolved cannot be joined, cannot be sent to, and cannot have its keys verified, so the memory
+	// of one bad second keeps a healthy server unreachable long after it recovered.
+	resolutionFailureTTL = 2 * time.Second
 	// srvService is the registered service name; srvLegacy is the unregistered one
 	// that the specification still asks servers to try before giving up.
 	srvService = "_matrix-fed._tcp."
