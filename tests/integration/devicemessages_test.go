@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
+	"time"
 )
 
 // TestToDeviceMessagesReachOneDevice covers the route a Megolm session key takes: one device to another,
@@ -181,4 +183,47 @@ func toDeviceEventsSince(t *testing.T, h *harness, token, since string) []map[st
 		}
 	}
 	return out
+}
+
+// TestToDeviceMessageCrossesTheFederation divides a to-device send between two homeservers: a
+// recipient who lives elsewhere is not filed locally, and the message has to reach her server as an
+// ephemeral unit for her client to ever read it.
+//
+// This is the half of the feature that a local test cannot see. A key share that never crossed the
+// room leaves both clients holding ciphertext and neither able to explain why, and the server looks
+// healthy from either side of that conversation.
+func TestToDeviceMessageCrossesTheFederation(t *testing.T) {
+	t.Parallel()
+	hs1, hs2 := federationPair(t)
+
+	alice := hs1.registerUser(t, "hostess", "pw-alice-feds2d")
+	beaToken := hs2.registerUser(t, "bea", "pw-bea-feds2d")
+	bea := "@bea:" + hs2.name
+
+	// The `*` device means "every device she has", which hs1 has no way of knowing. It is the
+	// receiving server's job to expand it, and this send is addressed that way deliberately: the
+	// form a sender can actually produce is the form that has to work.
+	if status, answer := hs1.clientDo(t, http.MethodPut,
+		"/_matrix/client/v3/sendToDevice/m.room.encrypted/feds2d-1",
+		map[string]any{"messages": map[string]any{
+			bea: map[string]any{"*": map[string]any{
+				"algorithm":  "m.megolm.v1.aes-sha2",
+				"session_id": "feds2d-session",
+			}},
+		}}, alice); status != http.StatusOK {
+		t.Fatalf("%s refused the to-device send: %d %v", hs1.name, status, answer)
+	}
+
+	// Bea's client has to be told. The unit travels on the federation queue, so this waits for the
+	// queue rather than for a handoff that never happens.
+	var last any
+	if !waitFor(t, 20*time.Second, func() bool {
+		_, answered := hs2.clientDo(t, http.MethodGet, "/_matrix/client/v3/sync", nil, beaToken)
+		raw, err := json.Marshal(answered)
+		last = answered["to_device"]
+		return err == nil && strings.Contains(string(raw), "feds2d-session")
+	}) {
+		t.Fatalf("%s never told %s that a to-device message was waiting for her: her sync's to_device held %v",
+			hs2.name, bea, last)
+	}
 }
