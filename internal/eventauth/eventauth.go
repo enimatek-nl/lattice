@@ -1099,11 +1099,31 @@ func creatorOf(rules roomversion.Rules, create map[string]any) string {
 	return stringOfOr(create["sender"], "")
 }
 
+// serverName is the homeserver an identifier belongs to.
+//
+// The domain begins at the identifier's *first* colon and may contain another one, because a
+// Matrix server name is allowed to carry a port: the server everybody federates with on 8448, and
+// the deployment in front of a test suite on some ephemeral port, are both ordinary. Splitting at
+// the last colon instead — which is what an identifier grammar without a package for it tends to
+// produce — reads `example.org:8448` as `8448`, and then every rule in this file that compares two
+// servers is quietly wrong for exactly those servers: a membership event is refused by the rule
+// that asks whether its target lives here, a room's creator looks foreign to its own room, and an
+// authorising server is not recognised as the one that signed. Nothing fails loudly. The rules
+// simply decide, on a name that was never a server name, about rooms nobody can join.
+//
+// The grammar lives in matrixid, which knows the sigils and knows that an event ID's opaque part
+// may itself hold colons; an identifier this is asked about that is not a user ID, room ID or alias
+// has no server in it as far as authorisation is concerned, and the empty answer sends the rule the
+// strict way.
 func serverName(id string) string {
-	if i := strings.LastIndex(id, ":"); i >= 0 {
-		return id[i+1:]
+	if id == "" {
+		return ""
 	}
-	return ""
+	_, domain, err := matrixid.SplitID(id[0], id)
+	if err != nil {
+		return ""
+	}
+	return domain
 }
 
 func stringOfOr(v any, fallback string) string {

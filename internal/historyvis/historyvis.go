@@ -26,10 +26,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
 
 	"gorm.io/gorm"
 
+	"github.com/enimatek/lattice/internal/matrixid"
 	"github.com/enimatek/lattice/internal/persist"
 )
 
@@ -356,7 +356,16 @@ func contentString(row *persist.Event, key string) string {
 }
 
 // userOnServer asks whether a Matrix user ID names a user on the given homeserver.
+// userOnServer asks whether a user ID belongs to a homeserver, by its grammar rather than by
+// splitting on a colon. The difference is not cosmetic: a server name may end in a port, and a
+// last-colon split compares the port alone against a full server name, so a peer called
+// `example.org:8448` holds nothing in every room it is a member of. History visibility turns on
+// exactly that question, which is how a whole federation test deployment reads as a room of
+// strangers and receives its own history redacted.
 func userOnServer(userID, serverName string) bool {
-	at := strings.LastIndex(userID, ":")
-	return at >= 0 && userID[at+1:] == serverName
+	domain, err := matrixid.UserDomain(userID)
+	if err != nil {
+		return false
+	}
+	return domain == serverName
 }
