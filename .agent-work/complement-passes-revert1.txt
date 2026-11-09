@@ -1,3 +1,0 @@
-TestGetMissingEventsGapFilling
-TestInboundCanReturnMissingEvents
-TestOutboundFederationEventSizeGetMissingEvents

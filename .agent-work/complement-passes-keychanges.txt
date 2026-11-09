@@ -1,5 +1,0 @@
-TestKeyClaimOrdering
-TestKeysQueryWithDeviceIDAsObjectFails
-TestUploadKey
-TestUploadKeyIdempotency
-TestUploadKeyIdempotencyOverlap

@@ -1,6 +1,0 @@
-fail	tests	TestDeviceListsUpdateOverFederation
-pass	tests/csapi	TestKeyChangesLocal
-pass	tests/csapi	TestSync
-pass	tests/msc4222	TestSync
-pass	tests	TestDeviceListsUpdateOverFederationOnRoomJoin
-pass	tests	TestUserAppearsInChangedDeviceListOnJoinOverFederation

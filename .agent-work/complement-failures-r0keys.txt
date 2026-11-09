@@ -1,3 +1,0 @@
-TestDeviceListUpdates
-TestE2EKeyBackupReplaceRoomKeyRules
-TestDeviceListsUpdateOverFederation

@@ -1,6 +1,0 @@
-fail	tests/csapi	TestMessagesOverFederation
-fail	tests	TestCorruptedAuthChain
-fail	tests	TestGetMissingEventsGapFilling
-fail	tests	TestInboundCanReturnMissingEvents
-fail	tests	TestOutboundFederationEventSizeGetMissingEvents
-pass	tests	TestOutboundFederationSend

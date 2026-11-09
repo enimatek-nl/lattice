@@ -1,4 +1,0 @@
-fail	tests/csapi	TestSyncTimelineGap
-fail	tests	TestGetMissingEventsGapFilling
-fail	tests	TestUnrejectRejectedEvents
-pass	tests/csapi	TestPushRuleRoomUpgrade

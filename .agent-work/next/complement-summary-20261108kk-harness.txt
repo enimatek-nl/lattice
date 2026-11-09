@@ -1,8 +1,0 @@
-label:   20261108kk-harness
-tree:    e9925bf (working tree dirty: 6 paths changed since that commit)
-filter:  TestVersionStructure|TestUnknownEndpoints|TestRegistration|TestLogin|TestLogout|TestServerCapabilities|TestDeviceManagement|TestCanRegisterAdmin
-parallel: 2   timeout: 30m   go test exit: 0
-image:   complement-lattice:latest (IMAGE_REVISION=e9925bf IMAGE_TREE=dirty IMAGE_MODE=host )
-tally:   8 passing, 0 failing, 0 skipped (top-level tests)
-fingerprints (counted over this run's own log): cert-naming-another-server=0 tls-handshake-refused=0 unsigned-peer=0 template-401=0 unbuilt-image=0
-artefacts: /home/enimatek/Projects/lattice/.agent-work/next/complement-run-20261108kk-harness.log ; /home/enimatek/Projects/lattice/.agent-work/complement-passes-20261108kk-harness.txt ; /home/enimatek/Projects/lattice/.agent-work/complement-failures-20261108kk-harness.txt ; /home/enimatek/Projects/lattice/.agent-work/next/complement-results-20261108kk-harness.tsv

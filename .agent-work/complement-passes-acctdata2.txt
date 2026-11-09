@@ -1,3 +1,0 @@
-TestAddAccountData
-TestRemovingAccountData
-TestSync

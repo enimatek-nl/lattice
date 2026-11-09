@@ -1,4 +1,0 @@
-fail	tests/csapi	TestSyncTimelineGap
-pass	tests	TestGetMissingEventsGapFilling
-pass	tests	TestInboundCanReturnMissingEvents
-pass	tests	TestOutboundFederationEventSizeGetMissingEvents

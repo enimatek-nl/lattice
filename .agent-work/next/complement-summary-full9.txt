@@ -1,9 +1,0 @@
-label:   full9
-tree:    405ddc1 (working tree dirty: 13 paths changed since that commit)
-filter:  .*
-parallel: 8   timeout: 90m   go test exit: 1
-image:   complement-lattice:latest (IMAGE_REVISION=405ddc1 IMAGE_TREE=dirty IMAGE_MODE=host )
-tally:   154 passing, 65 failing, 1 skipped (top-level tests)
-delta vs complement-baseline.tsv: 6 newly passing, 3 newly failing; detail in complement-delta-full9.txt
-fingerprints (counted over this run's own log): cert-naming-another-server=0 tls-handshake-refused=0 unsigned-peer=0 template-401=0 unbuilt-image=0
-artefacts: /home/enimatek/Projects/lattice/.agent-work/next/complement-run-full9.log ; /home/enimatek/Projects/lattice/.agent-work/complement-passes-full9.txt ; /home/enimatek/Projects/lattice/.agent-work/complement-failures-full9.txt ; /home/enimatek/Projects/lattice/.agent-work/next/complement-results-full9.tsv

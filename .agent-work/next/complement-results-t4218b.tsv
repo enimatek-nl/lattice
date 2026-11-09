@@ -1,6 +1,0 @@
-fail	tests/csapi	TestMessagesOverFederation
-fail	tests/csapi	TestSyncTimelineGap
-fail	tests	TestCorruptedAuthChain
-fail	tests	TestGetMissingEventsGapFilling
-fail	tests	TestOutboundFederationEventSizeGetMissingEvents
-pass	tests	TestInboundCanReturnMissingEvents

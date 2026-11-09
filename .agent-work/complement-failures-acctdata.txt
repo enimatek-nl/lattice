@@ -1,4 +1,0 @@
-TestAddAccountData
-TestRemovingAccountData
-TestSync
-TestSyncOmitsStateChangeOnFilteredEvents

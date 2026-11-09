@@ -1,9 +1,0 @@
-label:   norefresh
-tree:    1d487ae (working tree dirty: 1 paths changed since that commit)
-filter:  TestPushRuleRoomUpgrade
-parallel: 1   timeout: 10m   go test exit: 1
-image:   complement-lattice:latest (IMAGE_REVISION=1d487ae IMAGE_TREE=dirty IMAGE_MODE=host )
-tally:   0 passing, 1 failing, 0 skipped (top-level tests)
-delta vs complement-baseline.tsv: 0 newly passing, 1 newly failing; detail in complement-delta-norefresh.txt
-fingerprints (counted over this run's own log): cert-naming-another-server=0 tls-handshake-refused=0 unsigned-peer=0 template-401=0 unbuilt-image=0
-artefacts: /home/enimatek/Projects/lattice/.agent-work/next/complement-run-norefresh.log ; /home/enimatek/Projects/lattice/.agent-work/complement-passes-norefresh.txt ; /home/enimatek/Projects/lattice/.agent-work/complement-failures-norefresh.txt ; /home/enimatek/Projects/lattice/.agent-work/next/complement-results-norefresh.tsv

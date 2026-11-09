@@ -1,4 +1,0 @@
-TestSync
-TestSync/parallel
-TestSync/parallel/Initial_sync_with_lazy-loading_room_members_->_private_room_`state_after`_includes_all_members_from_timeline
-TestSync/parallel/Initial_sync_with_lazy-loading_room_members_->_public_room_`state_after`_includes_all_members_from_timeline

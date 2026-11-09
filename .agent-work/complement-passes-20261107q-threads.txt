@@ -1,3 +1,0 @@
-TestRelations
-TestRelationsPagination
-TestRelationsPaginationSync

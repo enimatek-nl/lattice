@@ -1,6 +1,0 @@
-delta against baseline: /home/enimatek/Projects/lattice/.agent-work/next/complement-baseline.tsv
-newly passing: 1
-  + TestInboundCanReturnMissingEvents
-newly failing: 1
-  - TestSyncTimelineGap
-unchanged: 4   did not run this time: 213   new since the baseline: 0

@@ -1,8 +1,0 @@
-label:   20261108kk-baseline
-tree:    0b5eb07 (working tree dirty: 4 paths changed since that commit)
-filter:  .*
-parallel: 2   timeout: 45m   go test exit: 1
-image:   complement-lattice:latest (IMAGE_REVISION=0b5eb07 IMAGE_TREE=clean IMAGE_MODE=host )
-tally:   141 passing, 78 failing, 1 skipped (top-level tests)
-fingerprints (counted over this run's own log): cert-naming-another-server=11 tls-handshake-refused=12 unsigned-peer=0 template-401=0 unbuilt-image=0
-artefacts: /home/enimatek/Projects/lattice/.agent-work/next/complement-run-20261108kk-baseline.log ; /home/enimatek/Projects/lattice/.agent-work/complement-passes-20261108kk-baseline.txt ; /home/enimatek/Projects/lattice/.agent-work/complement-failures-20261108kk-baseline.txt ; /home/enimatek/Projects/lattice/.agent-work/next/complement-results-20261108kk-baseline.tsv

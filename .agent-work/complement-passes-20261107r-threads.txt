@@ -1,4 +1,0 @@
-TestRelations
-TestRelationsPagination
-TestRelationsPaginationSync
-TestThreadsEndpoint

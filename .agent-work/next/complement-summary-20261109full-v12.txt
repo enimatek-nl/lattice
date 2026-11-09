@@ -1,9 +1,0 @@
-label:   20261109full-v12
-tree:    25969be
-filter:  .*
-parallel: 1   timeout: 90m   go test exit: 1
-image:   complement-lattice:latest (IMAGE_REVISION=def259a IMAGE_TREE=clean IMAGE_MODE=host )
-tally:   151 passing, 68 failing, 1 skipped (top-level tests)
-delta vs complement-baseline.tsv: 7 newly passing, 0 newly failing; detail in complement-delta-20261109full-v12.txt
-fingerprints (counted over this run's own log): cert-naming-another-server=0 tls-handshake-refused=0 unsigned-peer=0 template-401=0 unbuilt-image=0
-artefacts: /home/enimatek/Projects/lattice/.agent-work/next/complement-run-20261109full-v12.log ; /home/enimatek/Projects/lattice/.agent-work/complement-passes-20261109full-v12.txt ; /home/enimatek/Projects/lattice/.agent-work/complement-failures-20261109full-v12.txt ; /home/enimatek/Projects/lattice/.agent-work/next/complement-results-20261109full-v12.tsv

@@ -1,3 +1,0 @@
-TestRoomImageRoundtrip
-TestSearch
-TestFilterMessagesByRelType

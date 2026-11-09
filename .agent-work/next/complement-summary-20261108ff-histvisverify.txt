@@ -1,7 +1,0 @@
-label:   20261108ff-histvisverify
-tree:    c915aac
-filter:  ^TestArchivedRoomsHistory$|^TestCumulativeJoinLeaveJoinSync$|^TestFetchEvent$|^TestFetchEventNonWorldReadable$|^TestFetchEventWorldReadable$|^TestFetchHistoricalInvitedEventFromBeforeInvite$|^TestFetchHistoricalInvitedEventFromBetweenInvite$|^TestFetchHistoricalJoinedEventDenied$|^TestFetchHistoricalSharedEvent$|^TestGappedSyncLeaveSection$|^TestLeftRoomFixture$|^TestOlderLeftRoomsNotInLeaveSection$|^TestRoomForget$|^TestRoomMessagesLazyLoading$|^TestRoomMessagesLazyLoadingLocalUser$|^TestSync$|^TestSyncFilter$|^TestSyncLeaveSection$|^TestSyncTimelineGap$|^TestSyncOmitsStateChangeOnFilteredEvents$
-parallel: 1   timeout: 20m   go test exit: 0
-tally:   21 passing, 0 failing, 0 skipped (top-level tests)
-fingerprints (counted over this run's own log): cert-naming-another-server=0 tls-handshake-refused=0 unsigned-peer=0 template-401=0 unbuilt-image=0
-artefacts: /home/enimatek/Projects/lattice/.agent-work/next/complement-run-20261108ff-histvisverify.log ; /home/enimatek/Projects/lattice/.agent-work/complement-passes-20261108ff-histvisverify.txt ; /home/enimatek/Projects/lattice/.agent-work/complement-failures-20261108ff-histvisverify.txt ; /home/enimatek/Projects/lattice/.agent-work/next/complement-results-20261108ff-histvisverify.tsv

@@ -1,9 +1,0 @@
-label:   finalsolo
-tree:    100668f
-filter:  TestSyncTimelineGap
-parallel: 1   timeout: 20m   go test exit: 1
-image:   complement-lattice:latest (IMAGE_REVISION=100668f IMAGE_TREE=clean IMAGE_MODE=host )
-tally:   0 passing, 1 failing, 0 skipped (top-level tests)
-delta vs complement-baseline.tsv: 0 newly passing, 1 newly failing; detail in complement-delta-finalsolo.txt
-fingerprints (counted over this run's own log): cert-naming-another-server=0 tls-handshake-refused=0 unsigned-peer=0 template-401=0 unbuilt-image=0
-artefacts: /home/enimatek/Projects/lattice/.agent-work/next/complement-run-finalsolo.log ; /home/enimatek/Projects/lattice/.agent-work/complement-passes-finalsolo.txt ; /home/enimatek/Projects/lattice/.agent-work/complement-failures-finalsolo.txt ; /home/enimatek/Projects/lattice/.agent-work/next/complement-results-finalsolo.tsv

@@ -1,9 +1,0 @@
-label:   gap1
-tree:    cefa286 (working tree dirty: 5 paths changed since that commit)
-filter:  TestGetMissingEventsGapFilling|TestCorruptedAuthChain|TestOutboundFederationEventSizeGetMissingEvents|TestInboundCanReturnMissingEvents|TestOutboundFederationSend|TestMessagesOverFederation
-parallel: 1   timeout: 25m   go test exit: 1
-image:   complement-lattice:latest (IMAGE_REVISION=cefa286 IMAGE_TREE=dirty IMAGE_MODE=host )
-tally:   1 passing, 5 failing, 0 skipped (top-level tests)
-delta vs complement-baseline.tsv: 1 newly passing, 0 newly failing; detail in complement-delta-gap1.txt
-fingerprints (counted over this run's own log): cert-naming-another-server=0 tls-handshake-refused=0 unsigned-peer=0 template-401=0 unbuilt-image=0
-artefacts: /home/enimatek/Projects/lattice/.agent-work/next/complement-run-gap1.log ; /home/enimatek/Projects/lattice/.agent-work/complement-passes-gap1.txt ; /home/enimatek/Projects/lattice/.agent-work/complement-failures-gap1.txt ; /home/enimatek/Projects/lattice/.agent-work/next/complement-results-gap1.tsv

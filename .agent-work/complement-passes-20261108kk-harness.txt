@@ -1,8 +1,0 @@
-TestCanRegisterAdmin
-TestDeviceManagement
-TestLogin
-TestLogout
-TestRegistration
-TestServerCapabilities
-TestVersionStructure
-TestUnknownEndpoints

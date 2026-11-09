@@ -1,3 +1,0 @@
-TestArchivedRoomsHistory
-TestFetchEventNonWorldReadable
-TestMessagesOverFederation

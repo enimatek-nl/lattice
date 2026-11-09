@@ -1,9 +1,0 @@
-label:   full7
-tree:    2533d98 (working tree dirty: 10 paths changed since that commit)
-filter:  TestVersionStructure|TestUnknownEndpoints|TestRegistration|TestLogin|TestLogout|TestServerCapabilities|TestDeviceManagement|TestCanRegisterAdmin
-parallel: 4   timeout: 45m   go test exit: 0
-image:   complement-lattice:latest (IMAGE_REVISION=2533d98 IMAGE_TREE=dirty IMAGE_MODE=host )
-tally:   8 passing, 0 failing, 0 skipped (top-level tests)
-delta vs complement-baseline.tsv: 0 newly passing, 0 newly failing; detail in complement-delta-full7.txt
-fingerprints (counted over this run's own log): cert-naming-another-server=0 tls-handshake-refused=0 unsigned-peer=0 template-401=0 unbuilt-image=0
-artefacts: /home/enimatek/Projects/lattice/.agent-work/next/complement-run-full7.log ; /home/enimatek/Projects/lattice/.agent-work/complement-passes-full7.txt ; /home/enimatek/Projects/lattice/.agent-work/complement-failures-full7.txt ; /home/enimatek/Projects/lattice/.agent-work/next/complement-results-full7.tsv

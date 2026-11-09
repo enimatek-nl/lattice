@@ -1,6 +1,0 @@
-TestChangePassword
-TestDeactivateAccount
-TestDeviceManagement
-TestLogin
-TestLogout
-TestRegistration

@@ -1,8 +1,0 @@
-pass	tests/csapi	TestLeakyTyping
-pass	tests/csapi	TestRoomReadMarkers
-pass	tests/csapi	TestRoomReceipts
-pass	tests/csapi	TestSendAndFetchMessage
-pass	tests/csapi	TestSync
-pass	tests/csapi	TestSyncFilter
-pass	tests/csapi	TestTyping
-pass	tests/msc4222	TestSync

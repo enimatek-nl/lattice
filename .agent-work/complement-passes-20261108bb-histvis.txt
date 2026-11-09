@@ -1,4 +1,0 @@
-TestFetchEvent
-TestFetchEventWorldReadable
-TestFetchHistoricalInvitedEventFromBetweenInvite
-TestFetchHistoricalSharedEvent

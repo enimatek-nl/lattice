@@ -1,6 +1,0 @@
-fail	tests/csapi	TestPushRuleRoomUpgrade
-pass	tests/csapi	TestChangePassword
-pass	tests/csapi	TestChangePasswordPushers
-pass	tests/csapi	TestDeactivateAccount
-pass	tests/csapi	TestLogout
-pass	tests/csapi	TestPushRuleCacheHealth

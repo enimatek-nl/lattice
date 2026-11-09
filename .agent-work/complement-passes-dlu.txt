@@ -1,3 +1,0 @@
-TestKeyChangesLocal
-TestDeviceListsUpdateOverFederationOnRoomJoin
-TestUserAppearsInChangedDeviceListOnJoinOverFederation

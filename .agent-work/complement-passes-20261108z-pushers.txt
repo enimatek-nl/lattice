@@ -1,5 +1,0 @@
-TestChangePassword
-TestChangePasswordPushers
-TestDeactivateAccount
-TestLogout
-TestPushRuleCacheHealth

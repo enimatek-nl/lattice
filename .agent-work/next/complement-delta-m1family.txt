@@ -1,7 +1,0 @@
-delta against baseline: /home/enimatek/Projects/lattice/.agent-work/next/complement-baseline.tsv
-newly passing: 3
-  + TestRemoteAliasRequestsUnderstandUnicode
-  + TestOutboundFederationSend
-  + TestJoinFederatedRoomWithUnverifiableEvents
-newly failing: 0
-unchanged: 11   did not run this time: 205   new since the baseline: 0

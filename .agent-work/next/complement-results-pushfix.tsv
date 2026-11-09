@@ -1,3 +1,0 @@
-fail	tests/csapi	TestPushRuleRoomUpgrade
-fail	tests	TestToDeviceMessagesOverFederation
-pass	tests	TestOutboundFederationSend

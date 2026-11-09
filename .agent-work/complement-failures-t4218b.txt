@@ -1,5 +1,0 @@
-TestMessagesOverFederation
-TestSyncTimelineGap
-TestCorruptedAuthChain
-TestGetMissingEventsGapFilling
-TestOutboundFederationEventSizeGetMissingEvents

@@ -1,8 +1,0 @@
-pass	tests/csapi	TestCanRegisterAdmin
-pass	tests/csapi	TestDeviceManagement
-pass	tests/csapi	TestLogin
-pass	tests/csapi	TestLogout
-pass	tests/csapi	TestRegistration
-pass	tests/csapi	TestServerCapabilities
-pass	tests/csapi	TestVersionStructure
-pass	tests	TestUnknownEndpoints

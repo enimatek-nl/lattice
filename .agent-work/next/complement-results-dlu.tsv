@@ -1,4 +1,0 @@
-fail	tests	TestDeviceListsUpdateOverFederation
-pass	tests/csapi	TestKeyChangesLocal
-pass	tests	TestDeviceListsUpdateOverFederationOnRoomJoin
-pass	tests	TestUserAppearsInChangedDeviceListOnJoinOverFederation

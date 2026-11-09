@@ -1,2 +1,0 @@
-fail	tests/csapi	TestPushRuleRoomUpgrade
-pass	tests	TestOutboundFederationSend

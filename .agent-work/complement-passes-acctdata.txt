@@ -1,8 +1,0 @@
-TestIsDirectFlagLocal
-TestPushRuleCacheHealth
-TestPushSync
-TestSync
-TestSyncFilter
-TestSyncLeaveSection
-TestSyncTimelineGap
-TestWriteMDirectAccountData

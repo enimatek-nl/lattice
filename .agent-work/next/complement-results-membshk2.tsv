@@ -1,6 +1,0 @@
-fail	tests/csapi	TestLeftRoomFixture
-fail	tests/csapi	TestRoomForget
-fail	tests	TestKnocking
-fail	tests	TestKnockingInMSC3787Room
-pass	tests/csapi	TestRoomsInvite
-pass	tests	TestFederationRejectInvite

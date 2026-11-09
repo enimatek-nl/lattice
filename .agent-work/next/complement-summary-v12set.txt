@@ -1,9 +1,0 @@
-label:   v12set
-tree:    15f897d (working tree dirty: 6 paths changed since that commit)
-filter:  V12|MSC4291|MSC4289|MSC4297|MSC4311|MSC3757|JoinFederated|Federation
-parallel: 1   timeout: 25m   go test exit: 1
-image:   complement-lattice:latest (IMAGE_REVISION=15f897d IMAGE_TREE=dirty IMAGE_MODE=host )
-tally:   8 passing, 34 failing, 0 skipped (top-level tests)
-delta vs complement-baseline.tsv: 1 newly passing, 0 newly failing; detail in complement-delta-v12set.txt
-fingerprints (counted over this run's own log): cert-naming-another-server=0 tls-handshake-refused=0 unsigned-peer=0 template-401=0 unbuilt-image=0
-artefacts: /home/enimatek/Projects/lattice/.agent-work/next/complement-run-v12set.log ; /home/enimatek/Projects/lattice/.agent-work/complement-passes-v12set.txt ; /home/enimatek/Projects/lattice/.agent-work/complement-failures-v12set.txt ; /home/enimatek/Projects/lattice/.agent-work/next/complement-results-v12set.tsv
