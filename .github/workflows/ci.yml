@@ -47,18 +47,31 @@ jobs:
         run: go vet ./...
 
       - name: golangci-lint
-        # v7 of the action, because the tool below is v2. v6 can only read a v1 configuration,
-        # and it fails the job before installing with "invalid version string 'v2.15.0'" — which
-        # reads like a malformed version and is really a major-version mismatch between the action
-        # and the linter it installs. Worth the comment because the two version numbers are
-        # unrelated, and only one of them is pinned in this file.
-        uses: golangci/golangci-lint-action@v7
-        with:
-          # The version is pinned, not "latest": a linter release that turns on a new
-          # check would otherwise make an unrelated commit red, and the fix would be a
-          # guess about which rule changed.
-          version: v2.15.0
-          args: --timeout=5m
+        # Installed from the Go module proxy rather than with golangci/golangci-lint-action.
+        #
+        # The action is a fine way to run a linter, and it was the way here until it started
+        # failing the job with `Unexpected HTTP response: 504` from inside its own run step: the
+        # action talks to the GitHub API and to github.com/…/releases during a build — to resolve
+        # and verify the version it is asked to install — and that makes whether this repository
+        # passes CI depend on a second service being healthy. Those calls are not incidental and
+        # cannot be switched off in a way that keeps the version pinning, so the pipeline no longer
+        # makes them. `go install` reaches the module proxy, which is the same place the build
+        # already gets everything, and the binary lands in the Go module cache that setup-go warms.
+        #
+        # The version stays pinned, not "latest": a linter release that turns on a new check would
+        # otherwise make an unrelated commit red, and the fix would be a guess about which rule
+        # changed. The retry is for a proxy hiccup, not for the linter's verdict — a real finding
+        # still fails the step, on the last attempt like the first.
+        run: |
+          for attempt in 1 2 3; do
+            if go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then exit 1; fi
+            echo "golangci-lint could not be installed (attempt $attempt), retrying" >&2
+            sleep 5
+          done
+          "${HOME}/go/bin/golangci-lint" run --timeout=5m
 
       - name: race tests
         run: go test -race -count=1 -timeout 15m ./tests/...
