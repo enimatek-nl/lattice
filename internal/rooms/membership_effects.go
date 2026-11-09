@@ -130,6 +130,14 @@ func (s *Service) announceArrival(ctx context.Context, roomID, joiner string) {
 		// ...and the joiner's are the members'.
 		s.recordDeviceListChange(ctx, roomID, member, joiner, persist.DeviceListChanged)
 	}
+	// The joiner's own other devices are told too, and they are not in the loop above, which
+	// skips the joiner. From their point of view this user just became somebody who shares a
+	// room with new servers, which is one of the two things that makes a device list worth
+	// re-publishing; a client on a phone and a client on a laptop are separate verifiers of each
+	// other, and neither learns about the other from a timeline.
+	if domain, err := matrixid.UserDomain(joiner); err == nil && matrixid.IsLocal(domain, s.name) {
+		s.recordDeviceListChange(ctx, roomID, joiner, joiner, persist.DeviceListChanged)
+	}
 	s.announceUser(ctx, roomID, joiner)
 }
 
@@ -149,6 +157,14 @@ func (s *Service) announceUser(ctx context.Context, roomID, userID string) {
 		return
 	}
 	for _, member := range members {
+		if member == userID {
+			// Somebody's arrival is not news to the person who arrived, and this is not the
+			// self-notification that a device list needs: the exception for a joiner is written
+			// once, deliberately, in [Service.announceArrival]. Written here it would fire for
+			// every member of the room on every join, and a user would find their own name in
+			// `device_lists.changed` each time somebody else walked in.
+			continue
+		}
 		s.recordDeviceListChange(ctx, roomID, member, userID, persist.DeviceListChanged)
 	}
 
@@ -164,8 +180,14 @@ func (s *Service) announceUser(ctx context.Context, roomID, userID string) {
 // recordDeviceListChange notes, for one observer, that another user's device list should be
 // re-read or is no longer worth keeping.
 func (s *Service) recordDeviceListChange(ctx context.Context, roomID, observerID, userID, kind string) {
-	if observerID == userID {
-		// A user's own changes are not reported back to them.
+	if observerID == userID && kind != persist.DeviceListChanged {
+		// Someone who left is not told, in a room they are no longer in, about the people they
+		// can no longer see. A change to a user's *own* device list, on the other hand, is
+		// precisely the news that user's remaining devices need: a second device that appears
+		// is a device the first one will otherwise never encrypt to, and a client cannot be told
+		// to re-read its own user's keys by any other route, because the change is not in any
+		// room's timeline. This is the rule the specification gives for `device_lists.changed`,
+		// and the reason a user appears in their own list after they join a room.
 		return
 	}
 	if _, err := s.db.DeviceLists.Record(ctx, roomID, observerID, userID, kind); err != nil {

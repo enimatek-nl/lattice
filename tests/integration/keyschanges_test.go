@@ -84,8 +84,10 @@ func TestKeysChangesAgreesWithTheSyncSection(t *testing.T) {
 		t.Errorf("/keys/changes says %v and the sync says %v for the same range", got, saidLeft)
 	}
 
-	// A user's own changes are not reported back to them: alice uploading her own keys is not
-	// news she needs to be told about.
+	// A user's own changes ARE reported to them, because "them" is a user and not a device: the
+	// laptop that uploaded the keys knows, and the phone has to be told that the set of devices
+	// carrying @alice's keys grew. Excluding self here leaves a client that never learns about a
+	// device it should now encrypt to, and there is no other channel for that news.
 	ownKeys := newTestKeys(t, alice, aliceDevice, "Z")
 	h.mustStatus(t, h.post(t, "/_matrix/client/v3/keys/upload", map[string]any{
 		"device_keys": ownKeys.DeviceKeys, "one_time_keys": ownKeys.OneTimeKeys,
@@ -93,8 +95,8 @@ func TestKeysChangesAgreesWithTheSyncSection(t *testing.T) {
 	_, ownTo := syncNow(t, h, aliceToken, "&since="+url.QueryEscape(leftTo))
 	changes = h.mustStatus(t, h.get("/_matrix/client/v3/keys/changes?from="+
 		url.QueryEscape(leftTo)+"&to="+url.QueryEscape(ownTo), aliceToken), http.StatusOK).decoded(t)
-	if got := stringList(t, changes, "changed"); containsString(got, alice) {
-		t.Errorf("alice is told her own device list moved: %v", got)
+	if got := stringList(t, changes, "changed"); !containsString(got, alice) {
+		t.Errorf("alice is not told her own device list moved: %v", got)
 	}
 }
 

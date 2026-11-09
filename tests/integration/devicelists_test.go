@@ -37,9 +37,14 @@ func TestDeviceListsTrackMembership(t *testing.T) {
 		t.Fatalf("charlie's join is not in alice's device_lists.changed: %v", body["device_lists"])
 	}
 
-	// The joiner is not told about their own arrival.
-	if mine, _ := syncNow(t, h, charlieToken, "&since="+charlieSince); inDeviceListSection(t, mine, "changed", charlie) {
-		t.Errorf("charlie was told about their own device list: %v", mine["device_lists"])
+	// The joiner is told about their own arrival, and this is the half that a single-device
+	// mental model gets wrong. The device that sent the join already knows what it did; the
+	// phone in the other room does not, and it has no other route to the fact that this user now
+	// shares a room with new servers and that their keys need re-publishing, because a device
+	// list is not an event in any timeline. Complement checks the same thing from the other side
+	// (TestDeviceListsUpdateOverFederation expects a user in their own device_lists.changed).
+	if mine, _ := syncNow(t, h, charlieToken, "&since="+charlieSince); !inDeviceListSection(t, mine, "changed", charlie) {
+		t.Errorf("charlie was not told about their own device list: %v", mine["device_lists"])
 	}
 
 	// The leaver's own token, taken before the leave, so that his side of the notice can be

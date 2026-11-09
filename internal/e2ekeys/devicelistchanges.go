@@ -21,6 +21,10 @@ import (
 // The same rule as the sync section, on purpose: `GET /keys/changes` and the `device_lists`
 // section of a sync are the same fact asked two ways, and a client that gets one answer from
 // each would have no way to tell which to believe.
+//
+// It no longer drops the observer's own changes wholesale, and the comment that said it should
+// was written before a multi-device client was considered: see the loop below for the rule that
+// replaced it.
 func (s *Service) DeviceChanges(ctx context.Context, observerID string, from, to int64) (changed, left []string, err error) {
 	rows, err := s.devices.ListFor(ctx, observerID, from, to)
 	if err != nil {
@@ -36,7 +40,15 @@ func (s *Service) DeviceChanges(ctx context.Context, observerID string, from, to
 func DeviceListSections(rows []*persist.DeviceListChange, observerID string) (changed, left []string) {
 	seenChanged, seenLeft := map[string]bool{}, map[string]bool{}
 	for _, row := range rows {
-		if row.UserID == "" || row.UserID == observerID {
+		if row.UserID == "" {
+			continue
+		}
+		// A user's own changes are kept for `changed` and dropped for `left`, which is the
+		// difference between two questions: "has this user's device list changed?" is news to
+		// this user's *other* devices — a device nobody announces is a device that never gets an
+		// encryption key, and no room timeline carries that news — while "has this user gone?"
+		// is not news to anybody who went with them.
+		if row.UserID == observerID && row.Kind != persist.DeviceListChanged {
 			continue
 		}
 		switch row.Kind {
