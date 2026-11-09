@@ -1,0 +1,8 @@
+fail	tests/csapi	TestArchivedRoomsHistory
+fail	tests/csapi	TestFetchEventNonWorldReadable
+fail	tests/csapi	TestFetchHistoricalInvitedEventFromBeforeInvite
+fail	tests/csapi	TestFetchHistoricalJoinedEventDenied
+pass	tests/csapi	TestFetchEvent
+pass	tests/csapi	TestFetchEventWorldReadable
+pass	tests/csapi	TestFetchHistoricalInvitedEventFromBetweenInvite
+pass	tests/csapi	TestFetchHistoricalSharedEvent

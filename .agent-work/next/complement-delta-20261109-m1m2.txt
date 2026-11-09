@@ -1,0 +1,16 @@
+delta against baseline: /home/enimatek/Projects/lattice/.agent-work/next/complement-baseline.tsv
+newly passing: 4
+  + TestOutboundFederationSend
+  + TestMSC4291RoomIDAsHashOfCreateEvent_RoomIDIsOnCreateEvent
+  + TestToDeviceMessages
+  + TestJoinFederatedRoomWithUnverifiableEvents
+newly failing: 8
+  - TestContentMediaV1
+  - TestPushRuleRoomUpgrade
+  - TestUnbanViaInvite
+  - TestUserAppearsInChangedDeviceListOnJoinOverFederation
+  - TestCannotSendNonLeaveViaSendLeaveV1
+  - TestFederationRejectInvite
+  - TestDeviceListsUpdateOverFederationOnRoomJoin
+  - TestJoinViaRoomIDAndServerName
+unchanged: 207   did not run this time: 0   new since the baseline: 0

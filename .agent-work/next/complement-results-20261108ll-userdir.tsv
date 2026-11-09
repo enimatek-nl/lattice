@@ -1,0 +1,13 @@
+pass	tests/csapi	TestGetRoomMembersAtPoint
+pass	tests/csapi	TestMembershipOnEvents
+pass	tests/csapi	TestRedact
+pass	tests/csapi	TestRoomCreate
+pass	tests/csapi	TestRoomCreationReportsEventsToMyself
+pass	tests/csapi	TestRoomMembers
+pass	tests/csapi	TestRoomReceipts
+pass	tests/csapi	TestRoomSpecificUsernameAtJoin
+pass	tests/csapi	TestRoomSpecificUsernameChange
+pass	tests/csapi	TestRoomState
+pass	tests/csapi	TestSendAndFetchMessage
+pass	tests/csapi	TestSync
+pass	tests/msc4222	TestSync

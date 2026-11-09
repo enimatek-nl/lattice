@@ -1,0 +1,14 @@
+fail	tests/csapi	TestMessagesOverFederation
+fail	tests/msc4155	TestInviteFiltering
+fail	tests	TestFederationRedactSendsWithoutEvent
+fail	tests	TestFederationRoomsInvite
+fail	tests	TestJoinFederatedRoomFailOver
+fail	tests	TestJoinFederatedRoomFromApplicationServiceBridgeUser
+fail	tests	TestKnocking
+fail	tests	TestKnockingInMSC3787Room
+fail	tests	TestOutboundFederationEventSizeGetMissingEvents
+fail	tests	TestOutboundFederationIgnoresMissingEventWithBadJSONForRoomVersion6
+fail	tests	TestOutboundFederationProfile
+pass	tests	TestJoinFederatedRoomWithUnverifiableEvents
+pass	tests	TestOutboundFederationSend
+pass	tests	TestRemoteAliasRequestsUnderstandUnicode

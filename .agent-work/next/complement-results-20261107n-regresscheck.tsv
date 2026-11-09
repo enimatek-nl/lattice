@@ -1,0 +1,9 @@
+pass	tests	TestFederatedClientSpaces
+pass	tests	TestKnockRestrictedRoomsLocalJoinNoCreatorsUsesPowerLevelsV11
+pass	tests	TestMediaFilenames
+pass	tests	TestMediaWithoutFileNameCSMediaV1
+pass	tests	TestRemotePngThumbnail
+pass	tests	TestRestrictedRoomsLocalJoinNoCreatorsUsesPowerLevelsV11
+pass	tests	TestRestrictedRoomsRemoteJoin
+pass	tests	TestRestrictedRoomsRemoteJoinLocalUser
+pass	tests	TestRestrictedRoomsSpacesSummaryFederation

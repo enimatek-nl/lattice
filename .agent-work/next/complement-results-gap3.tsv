@@ -1,0 +1,4 @@
+fail	tests	TestCorruptedAuthChain
+fail	tests	TestGetMissingEventsGapFilling
+fail	tests	TestInboundCanReturnMissingEvents
+pass	tests	TestOutboundFederationSend

@@ -1,0 +1,2 @@
+TestThreadsEndpoint
+TestRestrictedRoomsRemoteJoinFailOverInMSC3787Room

@@ -1,0 +1,5 @@
+TestAddAccountData
+TestRoomMessagesLazyLoading
+TestRoomMessagesLazyLoadingLocalUser
+TestSync
+TestSync

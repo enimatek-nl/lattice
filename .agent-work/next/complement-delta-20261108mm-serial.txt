@@ -1,0 +1,6 @@
+delta against baseline: /home/enimatek/Projects/lattice/.agent-work/next/complement-baseline.tsv
+newly passing: 2
+  + TestRoomSpecificUsernameChange
+  + TestRoomSpecificUsernameAtJoin
+newly failing: 0
+unchanged: 217   did not run this time: 0   new since the baseline: 0

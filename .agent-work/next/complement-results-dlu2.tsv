@@ -1,0 +1,2 @@
+fail	tests	TestDeviceListsUpdateOverFederation
+pass	tests	TestDeviceListsUpdateOverFederationOnRoomJoin

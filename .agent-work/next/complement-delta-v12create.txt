@@ -1,0 +1,9 @@
+delta against baseline: /home/enimatek/Projects/lattice/.agent-work/next/complement-baseline.tsv
+newly passing: 5
+  + TestMSC4291RoomIDAsHashOfCreateEvent_AuthEventsOmitsCreateEvent
+  + TestMSC4291RoomIDAsHashOfCreateEvent
+  + TestMSC4289PrivilegedRoomCreators_InvitedAreCreators
+  + TestMSC4289PrivilegedRoomCreators_AdditionalCreatorsAndInvited
+  + TestMSC4289PrivilegedRoomCreators_AdditionalValidation
+newly failing: 0
+unchanged: 14   did not run this time: 200   new since the baseline: 0

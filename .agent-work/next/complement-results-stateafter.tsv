@@ -1,0 +1,7 @@
+fail	tests/csapi	TestDeviceListUpdates
+fail	tests	TestSyncOmitsStateChangeOnFilteredEvents
+pass	tests/csapi	TestAddAccountData
+pass	tests/csapi	TestRoomMessagesLazyLoading
+pass	tests/csapi	TestRoomMessagesLazyLoadingLocalUser
+pass	tests/csapi	TestSync
+pass	tests/msc4222	TestSync

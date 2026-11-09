@@ -1,0 +1,6 @@
+delta against baseline: /home/enimatek/Projects/lattice/.agent-work/next/complement-baseline.tsv
+newly passing: 1
+  + TestOutboundFederationSend
+newly failing: 1
+  - TestPushRuleRoomUpgrade
+unchanged: 1   did not run this time: 216   new since the baseline: 0

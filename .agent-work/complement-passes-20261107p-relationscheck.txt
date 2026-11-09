@@ -1,0 +1,6 @@
+TestRelations
+TestRelationsPagination
+TestRelationsPaginationSync
+TestDeviceListsUpdateOverFederationOnRoomJoin
+TestFederatedClientSpaces
+TestRestrictedRoomsLocalJoinNoCreatorsUsesPowerLevelsV11

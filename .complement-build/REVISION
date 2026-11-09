@@ -1,0 +1,5 @@
+revision=405ddc1
+tree=clean
+built=2026-11-09T10:53:53Z
+mode=host
+compiler=linux/amd64 go1.26.10-X:nodwarf5 linux/amd64

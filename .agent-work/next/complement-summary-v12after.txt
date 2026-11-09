@@ -1,0 +1,9 @@
+label:   v12after
+tree:    15f897d (working tree dirty: 4 paths changed since that commit)
+filter:  TestComplementCanCreateValidV12Rooms
+parallel: 1   timeout: 12m   go test exit: 1
+image:   complement-lattice:latest (IMAGE_REVISION=15f897d IMAGE_TREE=dirty IMAGE_MODE=host )
+tally:   0 passing, 1 failing, 0 skipped (top-level tests)
+delta vs complement-baseline.tsv: 0 newly passing, 0 newly failing; detail in complement-delta-v12after.txt
+fingerprints (counted over this run's own log): cert-naming-another-server=0 tls-handshake-refused=0 unsigned-peer=0 template-401=0 unbuilt-image=0
+artefacts: /home/enimatek/Projects/lattice/.agent-work/next/complement-run-v12after.log ; /home/enimatek/Projects/lattice/.agent-work/complement-passes-v12after.txt ; /home/enimatek/Projects/lattice/.agent-work/complement-failures-v12after.txt ; /home/enimatek/Projects/lattice/.agent-work/next/complement-results-v12after.tsv

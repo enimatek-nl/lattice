@@ -1,0 +1,7 @@
+fail	tests/csapi	TestDeviceListUpdates
+fail	tests/csapi	TestKeyChangesLocal
+pass	tests/csapi	TestKeyClaimOrdering
+pass	tests/csapi	TestKeysQueryWithDeviceIDAsObjectFails
+pass	tests/csapi	TestUploadKey
+pass	tests/csapi	TestUploadKeyIdempotency
+pass	tests/csapi	TestUploadKeyIdempotencyOverlap

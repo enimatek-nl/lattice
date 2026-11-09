@@ -1,0 +1,3 @@
+fail	tests	TestInboundCanReturnMissingEvents
+pass	tests/csapi	TestPublicRooms
+pass	tests/csapi	TestRoomCreationReportsEventsToMyself

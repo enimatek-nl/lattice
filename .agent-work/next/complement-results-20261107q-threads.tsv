@@ -1,0 +1,4 @@
+fail	tests/csapi	TestThreadsEndpoint
+pass	tests/csapi	TestRelations
+pass	tests/csapi	TestRelationsPagination
+pass	tests/csapi	TestRelationsPaginationSync

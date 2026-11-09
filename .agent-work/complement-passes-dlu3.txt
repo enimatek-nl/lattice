@@ -1,0 +1,9 @@
+TestGappedSyncLeaveSection
+TestKeyChangesLocal
+TestOlderLeftRoomsNotInLeaveSection
+TestSync
+TestSyncFilter
+TestSyncLeaveSection
+TestSync
+TestDeviceListsUpdateOverFederationOnRoomJoin
+TestUserAppearsInChangedDeviceListOnJoinOverFederation

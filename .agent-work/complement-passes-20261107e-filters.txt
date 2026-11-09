@@ -1,0 +1,10 @@
+TestFilter
+TestMediaConfig
+TestPublicRooms
+TestRoomMessagesLazyLoading
+TestRoomMessagesLazyLoadingLocalUser
+TestSendAndFetchMessage
+TestSendMessageWithTxn
+TestSync
+TestSyncFilter
+TestSync

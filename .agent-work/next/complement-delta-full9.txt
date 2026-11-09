@@ -1,0 +1,13 @@
+delta against baseline: /home/enimatek/Projects/lattice/.agent-work/next/complement-baseline.tsv
+newly passing: 6
+  + TestInboundCanReturnMissingEvents
+  + TestRemoteAliasRequestsUnderstandUnicode
+  + TestOutboundFederationSend
+  + TestMSC4291RoomIDAsHashOfCreateEvent_RoomIDIsOnCreateEvent
+  + TestToDeviceMessages
+  + TestJoinFederatedRoomWithUnverifiableEvents
+newly failing: 3
+  - TestPushRuleRoomUpgrade
+  - TestSyncTimelineGap
+  - TestUnrejectRejectedEvents
+unchanged: 210   did not run this time: 0   new since the baseline: 0

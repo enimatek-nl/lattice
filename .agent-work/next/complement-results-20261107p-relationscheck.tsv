@@ -1,0 +1,8 @@
+fail	tests/csapi	TestThreadsEndpoint
+fail	tests	TestRestrictedRoomsRemoteJoinFailOverInMSC3787Room
+pass	tests/csapi	TestRelations
+pass	tests/csapi	TestRelationsPagination
+pass	tests/csapi	TestRelationsPaginationSync
+pass	tests	TestDeviceListsUpdateOverFederationOnRoomJoin
+pass	tests	TestFederatedClientSpaces
+pass	tests	TestRestrictedRoomsLocalJoinNoCreatorsUsesPowerLevelsV11

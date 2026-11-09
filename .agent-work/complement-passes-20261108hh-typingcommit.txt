@@ -1,0 +1,8 @@
+TestLeakyTyping
+TestRoomReadMarkers
+TestRoomReceipts
+TestSendAndFetchMessage
+TestSync
+TestSyncFilter
+TestTyping
+TestSync

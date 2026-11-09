@@ -1,0 +1,2 @@
+pass	tests/csapi	TestLeftRoomFixture
+pass	tests/csapi	TestRoomForget

@@ -1,0 +1,11 @@
+fail	tests/csapi	TestThreadReceiptsInSyncMSC4102
+pass	tests/csapi	TestRoomMessagesLazyLoading
+pass	tests/csapi	TestRoomMessagesLazyLoadingLocalUser
+pass	tests/csapi	TestRoomReadMarkers
+pass	tests/csapi	TestRoomReceipts
+pass	tests/csapi	TestSync
+pass	tests/csapi	TestSyncFilter
+pass	tests/csapi	TestSyncLeaveSection
+pass	tests/csapi	TestSyncTimelineGap
+pass	tests/msc4222	TestSync
+pass	tests	TestSyncOmitsStateChangeOnFilteredEvents

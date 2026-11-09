@@ -1,0 +1,4 @@
+TestArchivedRoomsHistory
+TestFetchEventNonWorldReadable
+TestFetchHistoricalInvitedEventFromBeforeInvite
+TestFetchHistoricalJoinedEventDenied

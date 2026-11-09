@@ -1,0 +1,5 @@
+delta against baseline: /home/enimatek/Projects/lattice/.agent-work/next/complement-baseline.tsv
+newly passing: 1
+  + TestComplementCanCreateValidV12Rooms
+newly failing: 0
+unchanged: 218   did not run this time: 0   new since the baseline: 0

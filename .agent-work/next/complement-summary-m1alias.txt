@@ -1,0 +1,9 @@
+label:   m1alias
+tree:    faab8c3 (working tree dirty: 8 paths changed since that commit)
+filter:  TestOutboundFederationSend|TestRemoteAliasRequests
+parallel: 1   timeout: 12m   go test exit: 1
+image:   complement-lattice:latest (IMAGE_REVISION=faab8c3 IMAGE_TREE=dirty IMAGE_MODE=host )
+tally:   1 passing, 1 failing, 0 skipped (top-level tests)
+delta vs complement-baseline.tsv: 1 newly passing, 0 newly failing; detail in complement-delta-m1alias.txt
+fingerprints (counted over this run's own log): cert-naming-another-server=0 tls-handshake-refused=0 unsigned-peer=0 template-401=0 unbuilt-image=0
+artefacts: /home/enimatek/Projects/lattice/.agent-work/next/complement-run-m1alias.log ; /home/enimatek/Projects/lattice/.agent-work/complement-passes-m1alias.txt ; /home/enimatek/Projects/lattice/.agent-work/complement-failures-m1alias.txt ; /home/enimatek/Projects/lattice/.agent-work/next/complement-results-m1alias.tsv

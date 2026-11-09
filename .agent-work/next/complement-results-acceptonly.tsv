@@ -1,0 +1,3 @@
+fail	tests/csapi	TestSyncTimelineGap
+fail	tests	TestGetMissingEventsGapFilling
+fail	tests	TestOutboundFederationEventSizeGetMissingEvents

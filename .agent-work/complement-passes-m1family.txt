@@ -1,0 +1,3 @@
+TestJoinFederatedRoomWithUnverifiableEvents
+TestOutboundFederationSend
+TestRemoteAliasRequestsUnderstandUnicode

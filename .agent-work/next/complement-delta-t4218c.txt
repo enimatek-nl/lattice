@@ -1,0 +1,6 @@
+delta against baseline: /home/enimatek/Projects/lattice/.agent-work/next/complement-baseline.tsv
+newly passing: 0
+newly failing: 2
+  - TestSyncTimelineGap
+  - TestUnrejectRejectedEvents
+unchanged: 2   did not run this time: 215   new since the baseline: 0

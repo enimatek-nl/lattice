@@ -1,0 +1,14 @@
+TestChangePassword
+TestChangePasswordPushers
+TestLeftRoomFixture
+TestLogout
+TestRelations
+TestRelationsPagination
+TestRelationsPaginationSync
+TestRoomForget
+TestRoomReadMarkers
+TestRoomReceipts
+TestSync
+TestThreadsEndpoint
+TestFilterMessagesByRelType
+TestSync

@@ -1,0 +1,9 @@
+label:   limited1
+tree:    2a910f9 (working tree dirty: 1 paths changed since that commit)
+filter:  TestSyncTimelineGap
+parallel: 1   timeout: 20m   go test exit: 1
+image:   complement-lattice:latest (IMAGE_REVISION=2a910f9 IMAGE_TREE=dirty IMAGE_MODE=host )
+tally:   0 passing, 1 failing, 0 skipped (top-level tests)
+delta vs complement-baseline.tsv: 0 newly passing, 1 newly failing; detail in complement-delta-limited1.txt
+fingerprints (counted over this run's own log): cert-naming-another-server=0 tls-handshake-refused=0 unsigned-peer=0 template-401=0 unbuilt-image=0
+artefacts: /home/enimatek/Projects/lattice/.agent-work/next/complement-run-limited1.log ; /home/enimatek/Projects/lattice/.agent-work/complement-passes-limited1.txt ; /home/enimatek/Projects/lattice/.agent-work/complement-failures-limited1.txt ; /home/enimatek/Projects/lattice/.agent-work/next/complement-results-limited1.tsv

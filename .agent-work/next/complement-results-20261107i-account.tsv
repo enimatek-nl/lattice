@@ -1,0 +1,7 @@
+fail	tests/csapi	TestChangePasswordPushers
+pass	tests/csapi	TestChangePassword
+pass	tests/csapi	TestDeactivateAccount
+pass	tests/csapi	TestDeviceManagement
+pass	tests/csapi	TestLogin
+pass	tests/csapi	TestLogout
+pass	tests/csapi	TestRegistration

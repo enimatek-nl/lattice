@@ -1,0 +1,9 @@
+label:   dlu2
+tree:    eb111db
+filter:  TestDeviceListsUpdateOverFederation/good_connectivity
+parallel: 1   timeout: 15m   go test exit: 1
+image:   complement-lattice:latest (IMAGE_REVISION=eb111db IMAGE_TREE=clean IMAGE_MODE=host )
+tally:   1 passing, 1 failing, 0 skipped (top-level tests)
+delta vs complement-baseline.tsv: 0 newly passing, 0 newly failing; detail in complement-delta-dlu2.txt
+fingerprints (counted over this run's own log): cert-naming-another-server=0 tls-handshake-refused=0 unsigned-peer=0 template-401=0 unbuilt-image=0
+artefacts: /home/enimatek/Projects/lattice/.agent-work/next/complement-run-dlu2.log ; /home/enimatek/Projects/lattice/.agent-work/complement-passes-dlu2.txt ; /home/enimatek/Projects/lattice/.agent-work/complement-failures-dlu2.txt ; /home/enimatek/Projects/lattice/.agent-work/next/complement-results-dlu2.tsv

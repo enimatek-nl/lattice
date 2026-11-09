@@ -1,0 +1,4 @@
+TestLeftRoomFixture
+TestRoomForget
+TestKnocking
+TestKnockingInMSC3787Room

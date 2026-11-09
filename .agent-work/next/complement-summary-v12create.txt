@@ -1,0 +1,9 @@
+label:   v12create
+tree:    2d0dddf (working tree dirty: 10 paths changed since that commit)
+filter:  V12|MSC4291|MSC4289|MSC4297|MSC4311
+parallel: 1   timeout: 35m   go test exit: 1
+image:   complement-lattice:latest (IMAGE_REVISION=2d0dddf IMAGE_TREE=dirty IMAGE_MODE=host )
+tally:   6 passing, 13 failing, 0 skipped (top-level tests)
+delta vs complement-baseline.tsv: 5 newly passing, 0 newly failing; detail in complement-delta-v12create.txt
+fingerprints (counted over this run's own log): cert-naming-another-server=0 tls-handshake-refused=0 unsigned-peer=0 template-401=0 unbuilt-image=0
+artefacts: /home/enimatek/Projects/lattice/.agent-work/next/complement-run-v12create.log ; /home/enimatek/Projects/lattice/.agent-work/complement-passes-v12create.txt ; /home/enimatek/Projects/lattice/.agent-work/complement-failures-v12create.txt ; /home/enimatek/Projects/lattice/.agent-work/next/complement-results-v12create.tsv

@@ -1,0 +1,9 @@
+label:   20261108ll-userdir
+tree:    32793af
+filter:  ^TestRoomCreationReportsEventsToMyself$|^TestRoomState$|^TestRoomMembers$|^TestRoomCreate$|^TestRoomSpecificUsernameAtJoin$|^TestRoomSpecificUsernameChange$|^TestRedact$|^TestSync$|^TestSendAndFetchMessage$|^TestMembershipOnEvents$|^TestGetRoomMembersAtPoint$|^TestRoomReceipts$
+parallel: 1   timeout: 30m   go test exit: 0
+image:   complement-lattice:latest (IMAGE_REVISION=32793af IMAGE_TREE=clean IMAGE_MODE=host )
+tally:   13 passing, 0 failing, 0 skipped (top-level tests)
+delta: passing: newly passing, failing: newly failing (baseline complement-baseline.tsv); complement-delta-20261108ll-userdir.txt
+fingerprints (counted over this run's own log): cert-naming-another-server=0 tls-handshake-refused=0 unsigned-peer=0 template-401=0 unbuilt-image=0
+artefacts: /home/enimatek/Projects/lattice/.agent-work/next/complement-run-20261108ll-userdir.log ; /home/enimatek/Projects/lattice/.agent-work/complement-passes-20261108ll-userdir.txt ; /home/enimatek/Projects/lattice/.agent-work/complement-failures-20261108ll-userdir.txt ; /home/enimatek/Projects/lattice/.agent-work/next/complement-results-20261108ll-userdir.tsv
