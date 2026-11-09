@@ -53,6 +53,11 @@ type GapStore interface {
 	// does not ask this re-fetches a history it has, and a chain that is partly held should not
 	// be fetched at all.
 	HoldsEvents(ctx context.Context, eventIDs []string) (map[string]bool, error)
+	// ForwardExtremities says where this server's knowledge of a room ends. A peer asked for a
+	// hole has to be told both edges of it, and this is the lower one: not "the beginning", and
+	// not a guess at how far back the copy goes, but the events this server holds that nothing
+	// here cites as their successor.
+	ForwardExtremities(ctx context.Context, roomID string) ([]string, error)
 }
 
 // FillOutcome says how much of a room's history arrived.
@@ -180,26 +185,7 @@ func (b *Backfiller) fill(ctx context.Context, roomID string, destinations, seed
 	// it stores it, and a history fetched newest-first would be read by clients in the order it
 	// arrived rather than the order it happened in. The chain this call fetched is a small
 	// graph, and its ordering is in the events themselves.
-	ordered := parentsFirst(fetched)
-	bundle := rooms.RemoteBundle{PDUs: ordered, RoomID: roomID}
-	stored, err := b.Store.AcceptRemoteBundle(ctx, bundle, pduVerifier(ctx, b.Keyring, b.Name, b.LocalKeys))
-	if err != nil {
-		return outcome, err
-	}
-	outcome.Stored = append(outcome.Stored, stored.Accepted...)
-	for eventID, reason := range stored.Refused {
-		outcome.Refused[eventID] = reason
-	}
-	linked, err := b.Store.ResolveOutliers(ctx, roomID)
-	if err != nil {
-		return outcome, err
-	}
-	outcome.Linked = linked
-	b.Log.Info("federation: a room's history was filled in",
-		slog.String("room_id", roomID), slog.Int("fetched", len(outcome.Fetched)),
-		slog.Int("stored", len(stored.Accepted)), slog.Int("linked", linked),
-		slog.Int("refused", len(stored.Refused)))
-	return outcome, nil
+	return b.store(ctx, roomID, fetched, outcome)
 }
 
 // fetch asks the named servers, in order, for one event by ID.
@@ -341,4 +327,152 @@ func pduVerifier(ctx context.Context, keyring *Keyring, name string, local Local
 		}
 		return events.Verify(rules, event, keyring.LookupForRoom(ctx, rules))
 	}
+}
+
+// GetMissingEvents asks a peer for the events in a room between two points of its history.
+//
+// This is the endpoint the Server-Server specification provides for a hole, and it is the one that
+// fits the shape of the problem: the asking server names what it holds at both ends — `earliest`
+// is where its own knowledge stops, `latest` is the event that cited something absent — and the
+// peer walks its graph between those two and hands back what lies in between. A server reduced to
+// asking for events one at a time by ID has to know the IDs first, which is exactly the thing it
+// lacks; a hole in the middle of a chain is then unaskable, because the names of what is missing
+// only become known once the missing events arrive.
+//
+// The limit is the caller's, not the peer's, and a peer is entitled to answer with less: the walk
+// is bounded at both ends precisely so that answering cannot be made to do unbounded work.
+func (c *Client) GetMissingEvents(ctx context.Context, destination, roomID string, earliest, latest []string, limit int) ([]json.RawMessage, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	body, err := json.Marshal(map[string]any{
+		"earliest_events": earliest,
+		"latest_events":   latest,
+		"limit":           limit,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("federation: cannot make the request for a room's missing events: %w", err)
+	}
+	target := "/_matrix/federation/v1/get_missing_events/" + url.PathEscape(roomID)
+	response, err := c.Do(ctx, destination, http.MethodPost, target, body)
+	if err != nil {
+		return nil, err
+	}
+	if response.StatusCode < 200 || response.StatusCode > 299 {
+		return nil, fmt.Errorf("federation: %s answered the request for missing events with %d", destination, response.StatusCode)
+	}
+	var answer struct {
+		Events []json.RawMessage `json:"events"`
+	}
+	if err := json.Unmarshal(response.Body, &answer); err != nil {
+		return nil, fmt.Errorf("federation: %s answered the request for missing events with something unreadable: %v", destination, err)
+	}
+	return answer.Events, nil
+}
+
+// FillBehind closes the hole underneath an event this server was just handed.
+//
+// The shape of the ask is what makes this different from [Backfiller.FillFrom]. An event arrives
+// citing predecessors this server does not hold, and the server that offered it plainly has them —
+// but their IDs are inside the events that are missing, so asking for them by name asks for
+// nothing. This server instead says "I hold everything up to my frontier, and I was just given
+// this event: what lies between?", which is a question the peer can answer from its own graph, and
+// one round trip closes a hole of any length.
+//
+// One pass, oldest-first storage, and the outliers re-linked: an event that was parked because it
+// could not be placed becomes readable history the moment its predecessors arrive, and that
+// relinking is the difference between a room that catches up and a room whose events sit in a
+// drawer forever, correct and unseen.
+func (b *Backfiller) FillBehind(ctx context.Context, roomID string, destinations []string, newest string) (FillOutcome, error) {
+	outcome := FillOutcome{Refused: map[string]string{}}
+	if b.Client == nil || b.Store == nil {
+		return outcome, errors.New("federation: backfill is not wired up")
+	}
+	if newest == "" || len(destinations) == 0 {
+		return outcome, nil
+	}
+	earliest, err := b.Store.ForwardExtremities(ctx, roomID)
+	if err != nil {
+		return outcome, err
+	}
+	limit := b.MaxEvents
+	if limit <= 0 {
+		limit = 100
+	}
+	var lastErr error
+	for _, destination := range destinations {
+		events, err := b.Client.GetMissingEvents(ctx, destination, roomID, earliest, []string{newest}, limit)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if len(events) == 0 {
+			// An empty answer is an answer: the peer walked between the two points and found
+			// nothing this server lacked. Trying the next server would be asking the same
+			// question of somebody else, which is worth doing once and not worth logging as a
+			// failure.
+			return outcome, nil
+		}
+		byID := make(map[string][]byte, len(events))
+		for _, raw := range events {
+			id := eventIDOf(raw)
+			if id == "" {
+				continue
+			}
+			byID[id] = raw
+			outcome.Fetched = append(outcome.Fetched, id)
+		}
+		return b.store(ctx, roomID, byID, outcome)
+	}
+	if lastErr != nil {
+		return outcome, lastErr
+	}
+	return outcome, nil
+}
+
+// store places a fetched set of events in this server's room, parents before children, and reports
+// what happened. It is shared by the two ways a hole gets closed so that both leave the room in the
+// same shape: an event stored out of order is a position in the history that no later reader can
+// reconstruct.
+func (b *Backfiller) store(ctx context.Context, roomID string, fetched map[string][]byte, outcome FillOutcome) (FillOutcome, error) {
+	ordered := parentsFirst(fetched)
+	pdus := make([][]byte, 0, len(ordered))
+	pdus = append(pdus, ordered...)
+	bundle := rooms.RemoteBundle{PDUs: pdus, RoomID: roomID}
+	stored, err := b.Store.AcceptRemoteBundle(ctx, bundle, pduVerifier(ctx, b.Keyring, b.Name, b.LocalKeys))
+	if err != nil {
+		return outcome, err
+	}
+	outcome.Stored = append(outcome.Stored, stored.Accepted...)
+	for eventID, reason := range stored.Refused {
+		outcome.Refused[eventID] = reason
+	}
+	linked, err := b.Store.ResolveOutliers(ctx, roomID)
+	if err != nil {
+		return outcome, err
+	}
+	outcome.Linked = linked
+	// `unresolved` is logged because it is the number that explains a hole that stays a hole. An
+	// event can arrive, be well made, be signed by somebody we trust, and still be something this
+	// server cannot place, because *its* citations reach further than the fetch did. Counted here,
+	// that reads as "the peer gave us three events and we could use none of them yet", which is a
+	// step — the next fetch has three more names to ask about. Uncounted, it reads exactly like
+	// "the peer gave us nothing", and the operator stops looking.
+	b.Log.Info("federation: a room's history was filled in",
+		slog.String("room_id", roomID), slog.Int("fetched", len(outcome.Fetched)),
+		slog.Int("stored", len(stored.Accepted)), slog.Int("linked", linked),
+		slog.Int("refused", len(stored.Refused)), slog.Int("unresolved", len(stored.Unresolved)))
+	return outcome, nil
+}
+
+// eventIDOf reads the identifier out of an event without deciding whether the event is any good:
+// the ID is the name the rest of this package files things under, and a bad event still has one.
+func eventIDOf(raw json.RawMessage) string {
+	var envelope struct {
+		EventID string `json:"event_id"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return ""
+	}
+	return envelope.EventID
 }

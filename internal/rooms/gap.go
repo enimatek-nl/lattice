@@ -27,6 +27,51 @@ func (e *MissingPredecessorsError) Error() string {
 		len(e.Missing))
 }
 
+// MissingEvents names what this server would have to hold to place the event, and CitedEvent
+// names the event that could not be placed. Both gap errors answer both, so a caller that can go
+// and fetch has one question to ask rather than two type switches.
+//
+// CitedEvent matters more than it looks: from room version 2 onwards a PDU does not carry its own
+// ID — the ID is a hash of the event, computed per room version, which is why only this package can
+// name the event it just declined to place. A caller that needs to ask a peer for the history
+// behind that event, or to name it in the per-event answer of a transaction, cannot recover the ID
+// from the bytes, and getting it wrong looks like a server that never asks.
+func (e *MissingPredecessorsError) MissingEvents() []string { return e.Missing }
+func (e *MissingPredecessorsError) CitedEvent() string      { return e.EventID }
+
+// MissingEventsError is what both gap errors have in common: an event this server could not
+// place, and the names of the events that would let it. A caller with a server to ask matches on
+// this rather than on each concrete type, because the action is the same whichever half of the
+// citation was absent.
+type MissingEventsError interface {
+	error
+	MissingEvents() []string
+	// CitedEvent names the event this server could not place. It is computed here because it is
+	// not in the bytes the caller has: recent room versions carry no event ID field.
+	CitedEvent() string
+}
+
+// ForwardExtremities lists the events at the frontier of this server's knowledge of a room: the
+// events it holds that nothing else cites as their predecessor.
+//
+// This is what a peer needs as `earliest_events` when this server asks for a hole to be filled:
+// it says "I know everything up to here" without making the asker guess how far back this
+// server's copy of the room reaches. The list is capped because the parameter is a walk instruction
+// rather than a summary, and a room in the middle of a long unmerged fork can have more extremities
+// than a peer should have to plan a walk around.
+func (s *Service) ForwardExtremities(ctx context.Context, roomID string) ([]string, error) {
+	extremities, err := s.events.ForwardExtremities(ctx, roomID)
+	if err != nil {
+		return nil, fmt.Errorf("rooms: cannot read the frontier of a room's history: %w", err)
+	}
+	const cap = 10
+	if len(extremities) > cap {
+		sort.Strings(extremities)
+		extremities = extremities[len(extremities)-cap:]
+	}
+	return extremities, nil
+}
+
 // MissingPredecessors names the holes in a room's history: events this room's own events cite as
 // predecessors, and which this server does not hold. They are not damage. A room that was joined
 // rather than created here has holes by construction — a join cites the room's forward

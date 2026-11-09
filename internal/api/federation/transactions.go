@@ -240,17 +240,54 @@ func (d *Deps) acceptPDU(r *http.Request, raw []byte) (eventID, problem string) 
 		return events.Verify(rules, event, d.Keyring.LookupForRoom(r.Context(), rules))
 	}
 	id, err := d.Rooms.AcceptRemoteEvent(r.Context(), raw, verify)
-	var missing *rooms.MissingPredecessorsError
-	if errors.As(err, &missing) && d.Backfill != nil && envelope.RoomID != "" {
-		// The server that just offered this event plainly has the events it descends from. Asking
-		// it for those, and re-offering once, is the difference between a room this server can
-		// catch up on and a room it will keep refusing for as long as the hole stays. One ask, one
-		// retry: a sender that keeps offering unplaceable events is not given an open-ended fetch.
+	if gap, ok := missingHistory(err); ok && d.Backfill != nil && envelope.RoomID != "" {
 		origin, _ := r.Context().Value(originContextKey{}).(string)
-		if _, fillErr := d.Backfill.FillFrom(r.Context(), envelope.RoomID, []string{origin}, missing.Missing); fillErr != nil {
-			d.Log.Warn("federation: the events an incoming event descends from could not be fetched",
+		// The event's own ID comes from the error, not from the bytes. From room version 2 a PDU
+		// carries no `event_id` field at all — the ID is a hash computed under the room version's
+		// rules — so the envelope above is empty for most rooms this server handles, and asking a
+		// peer for "the history behind " is asking for nothing at all. The room service computes
+		// the ID in order to file its refusal, so it is the one place that can say which event
+		// this gap is about.
+		eventID := gap.CitedEvent()
+		if eventID == "" {
+			eventID = envelope.EventID
+		}
+		envelope.EventID = eventID
+		// The event has not been refused. This server is one fetch away from judging it, and the
+		// server that just offered it is the one that holds what is missing.
+		//
+		// Two asks are made, cheapest first. The good one says "I hold everything up to my
+		// frontier, I was just given this event, what lies between?" — which closes a hole of any
+		// length in one round trip, and crucially does not need to know the names of the missing
+		// events, which is exactly what a hole in the middle of a chain hides. The fallback walks
+		// the citations this event *did* make, one event at a time, for the case where a peer
+		// answers `/event` but not `/get_missing_events`.
+		//
+		// Acceptance is then retried, in this same request. Answering with the reason and waiting
+		// for a resend is technically honest and practically a divergence: a sender that is told
+		// "not stored" may try a different server, give up, or never offer it again, and two copies
+		// of a room that differ by one event are a room that will not resolve its way out of it.
+		filled := false
+		if outcome, fillErr := d.Backfill.FillBehind(r.Context(), envelope.RoomID, []string{origin}, eventID); fillErr != nil {
+			// Warn, not Debug. A hole this server could not close is the reason a room's history
+			// stops short for a user, and the difference between "nobody had it" and "we never
+			// asked" is the first thing anybody needs to know about that.
+			d.Log.Warn("federation: the history behind an incoming event could not be fetched",
 				"event_id", envelope.EventID, "room_id", envelope.RoomID, "origin", origin, "error", fillErr)
 		} else {
+			filled = len(outcome.Stored) > 0
+		}
+		if !filled {
+			if missing := gap.MissingEvents(); len(missing) > 0 {
+				if _, fillErr := d.Backfill.FillFrom(r.Context(), envelope.RoomID, []string{origin}, missing); fillErr != nil {
+					d.Log.Warn("federation: the events an incoming event cites could not be fetched",
+						"event_id", envelope.EventID, "room_id", envelope.RoomID, "origin", origin, "error", fillErr)
+				} else {
+					filled = true
+				}
+			}
+		}
+		if filled {
 			id, err = d.Rooms.AcceptRemoteEvent(r.Context(), raw, verify)
 		}
 	}
@@ -429,4 +466,25 @@ func encodeCanonical(w http.ResponseWriter, status int, object any) error {
 	}
 	httpx.WriteRawJSON(w, status, body)
 	return nil
+}
+
+// missingHistory decides whether an event-acceptance failure was a gap or a verdict.
+//
+// The distinction is the whole difference between a room this server can catch up on and a room it
+// should not accept events from. A verdict — bad signature, failed authorisation, a state rule
+// broken — is about the event, and asking anybody about it would be asking the same question and
+// getting the same answer forever. A gap is about *this server's copy* of the room: the event may
+// be perfectly good and the missing pieces are on the machine that just sent it. Conflating the
+// two is how a homeserver quietly loses history, because the log line for a gap looks like the log
+// line for a refusal, and the operator has no way to know that one of them was recoverable by
+// making a request.
+func missingHistory(err error) (rooms.MissingEventsError, bool) {
+	var gap rooms.MissingEventsError
+	if err == nil {
+		return nil, false
+	}
+	if errors.As(err, &gap) {
+		return gap, true
+	}
+	return nil, false
 }

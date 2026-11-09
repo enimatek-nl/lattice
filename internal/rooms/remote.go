@@ -158,10 +158,12 @@ func (s *Service) AcceptRemoteEvent(ctx context.Context, pdu []byte, verify Veri
 	}
 	dropStoredRefusals(refusals, authEvents)
 	if len(authEvents)+len(refusals) < len(authIDs) {
-		// Nothing is known about at least one of the events it relies on. That is a gap,
-		// not a verdict: the gap may be filled (T-4007) and the same event may then be
-		// perfectly good. It is therefore not recorded as a refusal.
-		return "", fmt.Errorf("the auth events it cites are not stored here, so it cannot be authorised")
+		// Nothing is known about at least one of the events it relies on. That is a gap, not a
+		// verdict: the gap may be filled and the same event may then be perfectly good, so
+		// nothing is recorded against it — and the names of what is absent travel with the
+		// error, which is what turns the gap into something the receiver can close.
+		return "", &MissingAuthEventsError{EventID: eventID, RoomID: roomID,
+			Missing: missingCitations(authIDs, authEvents, refusals)}
 	}
 	prevIDs := events.ReferencedIDs(event, "prev_events")
 	if len(prevIDs) > 0 {
@@ -382,6 +384,26 @@ func (s *Service) clearStaleVerdict(ctx context.Context, eventID string) {
 		slog.String("event_id", eventID), slog.String("previous_verdict", reasons[eventID]))
 }
 
+// missingCitations lists the cited events that neither the held events nor the refusals filed
+// against them account for. A refusal counts as known: it is an answer about an event, and asking
+// a peer to resend something this server has already judged would be a loop with extra steps.
+func missingCitations(cited []string, held []*persist.Event, refused map[string]string) []string {
+	known := make(map[string]bool, len(held)+len(refused))
+	for _, event := range held {
+		known[event.EventID] = true
+	}
+	for eventID := range refused {
+		known[eventID] = true
+	}
+	var absent []string
+	for _, id := range cited {
+		if !known[id] {
+			absent = append(absent, id)
+		}
+	}
+	return absent
+}
+
 // MissingAuthEventsError says an event could not be judged because events it cites for its
 // authorisation are not held here. It is named rather than folded into a refusal so that a caller
 // can go and ask for them, and so that nothing is recorded against an event this server never
@@ -389,7 +411,17 @@ func (s *Service) clearStaleVerdict(ctx context.Context, eventID string) {
 type MissingAuthEventsError struct {
 	EventID string
 	RoomID  string
+	// Missing names the cited auth events this server does not hold. Every site that raises
+	// this error can say which ones, and the names are the whole point: the server that offered
+	// the event is the one to ask, and it cannot be asked by a message that only reports that
+	// something is absent.
+	Missing []string
 }
+
+// MissingEvents names what would have to be fetched to judge the event, and CitedEvent names the
+// event itself (computed from its bytes, since recent room versions do not carry an ID).
+func (e *MissingAuthEventsError) MissingEvents() []string { return e.Missing }
+func (e *MissingAuthEventsError) CitedEvent() string      { return e.EventID }
 
 func (e *MissingAuthEventsError) Error() string {
 	return fmt.Sprintf("rooms: %s cannot be judged: the events it cites for authorisation are not held here", e.EventID)
