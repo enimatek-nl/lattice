@@ -61,8 +61,19 @@ if [ -f "$CERT" ] && [ -f "$KEY" ]; then
 	TLS_ARGS="-tls-addr $FEDERATION_ADDR -tls-cert $CERT -tls-key $KEY"
 fi
 
+# Complement's contract is that the homeserver under test does not invent limits of its own.
+# The suite says nothing about rate limiting and sends in bursts - TestMessagesOverFederation
+# alone puts three hundred events through one room - so a server that answers any of them with
+# M_LIMIT_EXCEEDED is failed for a reason the harness never asked for. Synapse gets the same
+# treatment from complement's own config, and its rate-limit cases run in a deployment that
+# switches limiting back on; Lattice is asked the same way, with the flag an operator would use.
+RATE_ARGS="-no-rate-limit"
+case "${LATTICE_RATE_LIMITING_ENABLED:-}" in
+	true | TRUE | 1) RATE_ARGS="" ;;
+esac
+
 # LATTICE_ARGS carries whatever the person running the suite wants to add: a
-# different room version default, a slower outbox, the rate limits switched off.
+# different room version default, a slower outbox, the rate limits switched back on.
 exec /usr/local/bin/lattice \
 	-server-name "$SERVER_NAME" \
 	-db "$DB_PATH" \
@@ -70,4 +81,5 @@ exec /usr/local/bin/lattice \
 	-addr "$CLIENT_ADDR" \
 	$TLS_ARGS \
 	$CA_ARGS \
+	$RATE_ARGS \
 	${LATTICE_ARGS:-}
