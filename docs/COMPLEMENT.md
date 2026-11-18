@@ -8,6 +8,26 @@ server-server names in it should be refreshed against a fresh run.
 
 ---
 
+## Run of 2026-11-18 — the package finishes now, and its number is lower
+
+Against Complement `7b38a63`, both fixes on `main` (`/messages` omitting `end`, and the image
+running with `-no-rate-limit`): **`tests/csapi` completes in about six minutes — 78 green, 26 red,
+2 skipped.** It could not be run to completion before: `TestMessagesOverFederation` paged a room
+whose `end` token never went away, and the server answered every one of those pages at 100% CPU
+until the 40-minute ceiling fell. That also means the 95-of-106 recorded below was never measured
+in one run; from today the honest figure is the one a single completing run prints.
+
+Two names left the red list with it (`TestTxnInEvent`, `TestTxnScopeOnLocalEcho`: events now carry
+`unsigned.transaction_id` for the device that sent them), and one arrived as something to work on
+rather than something to wait out — `TestMessagesOverFederation` walks the room and the early
+history is simply not there, which is the backfill-for-late-joiners gap, named. `TestTxnIdWithRefreshToken`
+refuses at `POST /refresh` with `M_UNKNOWN_TOKEN`: refresh tokens are a separate gap.
+
+The 26 names and what each is waiting for are in [TODO.md](TODO.md).
+
+
+---
+
 ## Complement — the upstream suite (running since 2026-11-01)
 
 Tally, complete run of 2026-11-02 against Complement `e3fcff1`: **40 of 106**

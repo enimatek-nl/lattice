@@ -596,3 +596,42 @@ unlocks:
    subscriptions (MSC4306), invite filtering (MSC4155), poll push rules (MSC3930), relation
    filters in `/messages` (MSC3874), account-data deletion (MSC3391); a full-text search index
    instead of substring matching; `m.room.retention`; fuzz targets; a load harness.
+
+
+---
+
+## Findings of 2026-11-18 — three of them cost a Complement run each
+
+- **An `/messages` response has to be able to say it is finished.** `end` was in every answer,
+  including the empty page at the start of a room, where it repeated `from`. The specification's
+  only way of telling a client the walk is over is the *absence* of the property ("If no further
+  events are available ... this property is omitted from the response"), so a client that obeys
+  the specification — Complement's `TestMessagesOverFederation` does, in a loop with no other exit
+  condition — asks for the same page forever, and each ask re-walks the room. Symptom on the
+  server: one core at 100% for the rest of the suite's timeout, no log lines. The walk now fetches
+  `limit+1` and never shows the extra row; that row is what it knows "beyond" from, and a page
+  bounded by `to` ends at its bound.
+- **A suite that cannot finish produces numbers nobody can disbelieve.** `docs/TODO.md` claimed 95
+  green of 106 while `docs/COMPLEMENT.md` recorded that the same package "did not finish in its 40
+  minute budget" — the figure cannot have come from one run, and the honest one (78 of 106, the
+  package finishing in six minutes) only appeared once the hang was gone. When a suite has a test
+  that never returns, every number in the file next to it is suspect; fix the hang before trusting
+  the tally.
+- **The Complement deployment runs without invented rate limits.** The suite says nothing about
+  rate limiting and sends in bursts — `TestMessagesOverFederation` alone puts 300 events through
+  one room — so answering any of them with `M_LIMIT_EXCEEDED` fails a test for a reason the
+  harness never asked about. `deploy/complement/entrypoint.sh` passes `-no-rate-limit`;
+  `LATTICE_RATE_LIMITING_ENABLED=true` puts them back for whoever wants to measure them. Same
+  agreement Complement keeps with Synapse through its configuration.
+- **`unsigned.transaction_id` belongs to a device, not to a user.** It is the reader's own note
+  about a send it made — how a client that lost the answer to `PUT /send` recognises the event —
+  so it is stored with the device that wrote it (`persist.Txn.DeviceID`, indexed with the event id)
+  and looked up per reader by user *and* device, one batched query per page
+  (`Service.transactionsFor`). It is served on `GET /rooms/{id}/event/{id}`, the `/sync` timeline
+  and a page of `/messages`, and to nobody else: another device of the same user gets silence,
+  which is also why the device is part of the query rather than a filter applied after it.
+- **`TestMessagesOverFederation` is now a real failure, and it names a real gap.** It used to hang;
+  now it walks the room, and the room's early history is not there: a member who joined after the
+  events were written is not given them, because nothing backfills a late joiner's `/messages` from
+  a peer. That is the backfill gap, not a pagination bug, and it is the same shape as the queue's
+  "gap filling both ways" line.

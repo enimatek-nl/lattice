@@ -28,24 +28,31 @@ layer, federation) are complete or described by the steps below; the old PLAN.md
 because it said nothing these steps do not.
 
 
-## Where the server stands (measured 2026-11-04)
+## Where the server stands (measured 2026-11-18)
 
 | Measure | Now |
 |---|---|
-| `make build vet lint` | clean, 0 issues |
-| this repository's own tests | **326** — 167 client-API compatibility, 89 two-server federation, 70 offline unit (`go test ./...`, green) |
-| Complement `tests/csapi` | **95 green of 106** |
-| Complement server-server (`tests`, not `tests/federation`) | **78 green of 91** (measured 2026-11-04 evening, after the state-handshake change) |
-| endpoints | **180 of 234** indexed routes implemented, 43 routes the index does not name (`make endpoints`) |
+| `make build vet` | clean; `make lint` reports **7 issues** (6 staticcheck, 1 unused) from golangci-lint 2.15 — pre-existing quickfix-style findings, none from the 2026-11-18 work |
+| this repository's own tests | **329** — 170 client-API compatibility, 89 two-server federation, 70 offline unit (`go test ./...`, green) |
+| Complement `tests/csapi` | **78 green of 106**, 2 skipped, and the package **finishes** (~6 min) — it did not finish before 2026-11-18, see [COMPLEMENT.md](COMPLEMENT.md) |
+| Complement server-server (`tests`, not `tests/federation`) | **78 green of 91** (measured 2026-11-04 evening, after the state-handshake change; not re-run since) |
+| endpoints | **180 of 234** indexed routes implemented, 44 routes the index does not name (`make endpoints`, measured 2026-11-18) |
 | spec | v1.19, room versions 1-12 understood, new rooms default to v11 |
 | federation | live behind `-federation` (default off); one rulebook judges what this server signs and what a peer sends (step 20) |
 
-The client-API tally moved 66 → 91 → 95 green on 2026-11-04, in the steps that put MSC2675, the
-sync filters, the `leave` section, lazy loading, the ignore list and the as-of state reads right.
+The 2026-11-04 tally of "95 green of 106" was not produced by one completing run — the package
+never completed, because `/messages` kept handing back an `end` at the start of a room and
+`TestMessagesOverFederation` paged until the 40-minute ceiling. Two changes closed that (the
+pagination answer saying when it is finished, and the Complement image no longer rate-limiting the
+suite) and events now carry `unsigned.transaction_id` for the device that sent them; the number
+above is what a single run prints. It also found the csapi tally was 15 names redder than this file
+admitted, which is what the next section is for.
 
 ## What is red, and what each one is waiting for
 
-`tests/csapi` (11):
+`tests/csapi` (**26 red, 2 skipped**, measured 2026-11-18 in the first run of this package that
+finished; the names carried over from 2026-11-04 keep what they were waiting for, and the rest are
+labelled as not yet triaged):
 
 | Test | Waiting on |
 |---|---|
@@ -56,10 +63,17 @@ sync filters, the `leave` section, lazy loading, the ignore list and the as-of s
 | `TestSearch` | a real search index — this server matches substrings |
 | `TestDeviceListUpdates` | device-list change delivery at suite speed (passes on its own; see the flakiness note below) |
 | `TestRoomImageRoundtrip` | media: URL previews / `POST /_matrix/media/v1/report` and the roundtrip the case asserts |
-| `TestMembershipOnEvents` | membership carried on events |
+| `TestMembershipOnEvents` | `unsigned.membership`: the membership a reader had when an event was written |
 | `TestPowerLevels` | power-level corner the case pushes on |
 | `TestPushSync` | push rules as a client sees them in sync (delivery to a gateway is a queue item below) |
 | `TestLeftRoomFixture` | **one check away** — the `/messages` chunk of a departed `joined`-visibility room (step 24) |
+| `TestMessagesOverFederation` | **backfill for a late joiner**: the walk now finishes and the early history is simply not on the server — the queue's "gap filling both ways" line, one floor down |
+| `TestTxnIdWithRefreshToken` | refresh tokens — `POST /refresh` answers `M_UNKNOWN_TOKEN`; the txn half of the case is green since 2026-11-18 |
+| `TestRoomSpecificUsernameAtJoin`, `TestRoomSpecificUsernameChange` | the user directory revealing a room's member name only to those who share the room — and `results` being an array when nothing matches (today it is `null`) |
+| `TestUrlPreview` | `GET /_matrix/media/v1/preview_url` (and the report endpoint the roundtrip test also wants) |
+| `TestUploadKey` | a key-upload corner the case pushes on — not yet triaged |
+| `TestSync`, `TestSyncTimelineGap`, `TestRoomSummary`, `TestMembersLocal`, `TestPresenceSyncDifferentRooms`, `TestPushRuleRoomUpgrade` | all fail inside `MustSyncUntil` on a state/timeline the suite expects within 5s; **not triaged** — 2026-11-04 recorded `TestSync` timing out in parallel runs and passing alone, and `TestSyncTimelineGap` as a `limited` flag the federated batch does not set |
+| `TestThreadsEndpoint`, `TestThreadedReceipts`, `TestThreadReceiptsInSyncMSC4102` | threads and threaded receipts as the suite drives them — not triaged |
 
 Server-server, the `tests` package (**13 red of 91**; this package also holds
 `TestJumpToDateEndpoint`, which is why it never showed up in the 106):
@@ -86,6 +100,15 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
 ### A. Things left half-open by the last steps (cheapest real wins)
 
 - [ ] The `/messages` chunk of a departed `joined` room — `TestLeftRoomFixture` is one check from green (step 24).
+- [ ] `TestMessagesOverFederation`: **backfill what a late joiner never had.** The pagination walk
+      finishes since 2026-11-18 and finds the room's early history missing, which is a peer read
+      this server does not make: a member who joined after the events were written is entitled to
+      them under `shared`, and nothing asks a peer for them. Same family as the gap-filling line
+      below, one floor down (queue C).
+- [x] `/messages` says when the walk is over: `end` is omitted once there is nothing further — at
+      the beginning of the room and at a `to` bound — instead of repeating `from` for as long as the
+      client is willing to ask. A conforming client stops on the absence, so an always-present `end`
+      was a loop, and an expensive one: it pinned the suite for 40 minutes (2026-11-18).
 - [x] The federation state handshake in both directions: this server now serves the v3 query form (`GET /_matrix/federation/v3/state/{roomId}?event_id=`) as well as the v1/v2 path forms, and asks peers v2 → v1 → v3 before falling back to `state_ids` plus a fetch per event. Asking only the query form was answered with nothing by a server that has the state and not that route (step 11's machinery, closed 2026-11-04).
 - [ ] `TestJumpToDateEndpoint`: `timestamp_to_event` should walk the graph, not stream positions (step 26).
 - [x] `/messages?to=` is honoured: `from` is exclusive and `to` inclusive in both directions, so a window asked by its two ends returns that window and not the rest of the room (closed 2026-11-04; `TestRoomMessagesLazyLoading`, which passes `to=`, is green again).
