@@ -11,7 +11,7 @@ server-server names in it should be refreshed against a fresh run.
 ## Run of 2026-11-18 — the package finishes now, and its number is lower
 
 Against Complement `7b38a63`, both fixes on `main` (`/messages` omitting `end`, and the image
-running with `-no-rate-limit`): **`tests/csapi` completes in about six minutes — 79 green, 25 red,
+running with `-no-rate-limit`): **`tests/csapi` completes in about six minutes — 82 green, 22 red,
 2 skipped.** It could not be run to completion before: `TestMessagesOverFederation` paged a room
 whose `end` token never went away, and the server answered every one of those pages at 100% CPU
 until the 40-minute ceiling fell. That also means the 95-of-106 recorded below was never measured
@@ -25,7 +25,13 @@ history is simply not there, which is the backfill-for-late-joiners gap, named.
 query string while the specification puts it in the JSON body, so the refresh was refused before the
 case could reach the transaction id it is about.
 
-The 25 names and what each is waiting for are in [TODO.md](TODO.md). The run this all comes from:
+Two more pairs of names went the same way the same afternoon: `TestMembershipOnEvents`, once events
+carried MSC4115's `unsigned.membership` — the reader's own membership at the moment each event was
+written — and `TestRoomSpecificUsernameAtJoin` with `TestRoomSpecificUsernameChange`, once the user
+directory answered a list instead of `null` and started opening a private room's members to the
+people in it.
+
+The 22 names and what each is waiting for are in [TODO.md](TODO.md). The run this all comes from:
 `COMPLEMENT_BASE_IMAGE=localhost/lattice-complement:latest go test -timeout=30m -count=1 -v
 ./tests/csapi` on Complement `7b38a63` — 79 `--- PASS`, 25 `--- FAIL`, 2 `--- SKIP`, `ok` in 365s,
 `--- FAIL: github.com/matrix-org/complement/tests/csapi (365.18s)` as the closing line, 329 own
@@ -187,7 +193,6 @@ suite's own skips are not hiding any of them:
 | Presence — deferred on purpose (no `m.presence`), so these are expected red | TestPresence, TestPresenceSyncDifferentRooms, TestMembersLocal |
 | Device list updates: `GET /users/{id}/sync` and the `device_lists` edges they feed | TestDeviceListUpdates, TestInviteFromIgnoredUsersDoesNotAppearInSync |
 | Threads and relations: `/threads`, `/relations` pagination, threaded receipts, MSC4102 | TestThreadsEndpoint, TestRelationsPagination, TestRelationsPaginationSync, TestThreadedReceipts, TestThreadReceiptsInSyncMSC4102 |
-| Room-specific member display names: writing your own `m.room.member` through the state endpoint, and the user directory and room summary that read it | TestRoomSpecificUsernameAtJoin, TestRoomSpecificUsernameChange |
 | `GET /rooms/{roomID}/members?at=<sync token>` — membership at a sync position | TestGetRoomMembersAtPoint |
 | Push rules in the first sync as **`m.push_rules` account data** (the `pushrules` key is served now), and a rule change waking an incremental sync | TestPushSync |
 | Room forget: `/forget` then reading the room, and the sync `leave` section that follows it | TestRoomForget |
@@ -196,7 +201,6 @@ suite's own skips are not hiding any of them:
 | `/search` results across a room upgrade | TestSearch |
 | `/keys/upload` refusing a bad one-time key with 400, and `/keys/query` for the device behind it | TestUploadKey |
 | Registration edges: `/register/available` wants 400 `M_USER_IN_USE` for a taken name (Complement's expectation, not Synapse's 200 `available: false`), and a UIA body without the `session` the server issued wants 401 | TestRegistration |
-| MSC4115 `unsigned.membership` on served events | TestMembershipOnEvents |
 | URL previews (`GET /_matrix/media/v3/preview_url`) — unimplemented, and this test does not skip on `M_UNRECOGNIZED` | TestUrlPreview |
 | Two-server behaviour, which needs inbound PDU processing and joins (steps 9–10) | TestMessagesOverFederation, TestPushRuleRoomUpgrade |
 

@@ -643,19 +643,27 @@ unlocks:
   a peer. That is the backfill gap, not a pagination bug, and it is the same shape as the queue's
   "gap filling both ways" line.
 
-What those three leave at the front of the queue, decided but not built:
+- **MSC4115's `unsigned.membership` is about the reader, not the sender.** The message alice wrote
+  before bob joined reads `leave` to bob and `join` to alice, and a client cannot reconstruct it
+  afterwards: a room that opens its history at the join never shows the membership events that would
+  have said so. No state-at-event storage was needed — the room's own `m.room.member` events in the
+  order it applied them are one person's membership history, and the history gate already read them
+  to decide whether an event may be shown at all. That reading became a shared `membershipTrack`, and
+  an event is answered by the last change at or before its own stream position, `leave` before the
+  first. Served by the `/sync` timeline, its leave sections, `GET /messages`, `GET /event` and
+  `GET /context`.
+- **The user directory was public-rooms-only, and answered `null`.** `results` is a required
+  property, so an empty answer is `[]`; and because the candidates were the members of public rooms,
+  the people of a private room were findable by nobody — including each other. A public room now
+  opens its members to anybody and a room the searcher stands in opens them to the searcher, with up
+  to three rooms named per entry. What an entry *displays* stays the account-level display name: a
+  name chosen for one room is that room's business, so it is neither returned nor matched on. Doing
+  the room-specific names properly means indexing them per room and matching a searcher only against
+  the rooms they share, which costs a state read per shared room and is not yet built — Synapse does
+  it, and `TestRoomSpecificUsername*` does not ask for it.
 
-- **`unsigned.membership` (MSC4115) is about the reader, not the sender.** Complement's
-  `TestMembershipOnEvents` reads a message alice wrote *before* bob joined and expects `leave` on
-  it in bob's timeline, so the field answers "what was my membership when this was written", not
-  "what was the sender's". No state-at-event storage is needed for it: a room's `m.room.member`
-  events, ordered by stream position, are the reader's membership history, and an event's answer is
-  the last transition at or before its own position. One query per timeline page, then a search in
-  memory. Wants to be served by `/sync`, `/messages`, `/event` and `/context` alike.
-- **The user directory has to stop being public-only.** `DirectoryUsers` lists joined users of
-  *public* rooms, which is why `TestRoomSpecificUsernameAtJoin` cannot answer the second half of
-  its own name: a private room's members are discoverable by the people in that room, and a name
-  someone chose for one room must not surface to a person who is only in another one. The shape is
-  candidates = members of public rooms (visible to anyone) union members of rooms the searcher is in
-  (visible to those), matching on user id and on every name the searcher is entitled to see, and
-  returning the *profile* display name; `results` becomes an array where it is `null` today.
+What is next at the front of the queue, in the order it reads cheapest-first: `GET /rooms/{roomID}/members?at=<sync token>`
+— membership at a sync position, which the `membershipTrack` above is half of, and which
+`TestGetRoomMembersAtPoint` waits on — then backfill for a late joiner, the gap
+`TestMessagesOverFederation` now names, which needs a federation read this server has never made.
+The six names that fail inside `MustSyncUntil` are still untriaged and belong before either.
