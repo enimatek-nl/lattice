@@ -228,7 +228,27 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 //	@Success	200	{object}	service.SessionResult
 //	@Router		/_matrix/client/v3/refresh [post]
 func (a *App) handleRefresh(w http.ResponseWriter, r *http.Request) {
-	token := queryValue(r, "refresh_token", "")
+	// The credential is a field of the JSON body: {"refresh_token": "..."}, or, for clients still
+	// on the older spelling, {"access_token": "..."} carrying the same value. A query parameter is
+	// consulted only when the body named nothing, because a token in a URL outlives its purpose -
+	// it ends up in every proxy and access log between the client and here - and no client that
+	// read the specification puts one there. Answering only the query form is how this endpoint
+	// managed to exist for years while every client that used it was told M_UNKNOWN_TOKEN.
+	var body struct {
+		RefreshToken string `json:"refresh_token"`
+		AccessToken  string `json:"access_token"`
+	}
+	if err := decodeBody(r, &body); err != nil {
+		a.writeError(w, r, err)
+		return
+	}
+	token := body.RefreshToken
+	if token == "" {
+		token = body.AccessToken
+	}
+	if token == "" {
+		token = queryValue(r, "refresh_token", "")
+	}
 	result, err := a.svc.Refresh(r.Context(), token)
 	if err != nil {
 		a.writeError(w, r, err)

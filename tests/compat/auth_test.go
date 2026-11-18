@@ -420,6 +420,70 @@ func TestRefresh(t *testing.T) {
 	}
 }
 
+// TestRefreshTokenTravelsInTheBody is the part of `TestRefresh` above that this server had wrong
+// for as long as it had refresh tokens: the specification puts the credential in the JSON body -
+// `{"refresh_token": "..."}`, or the deprecated `{"access_token": "..."}` spelled the same way -
+// and every client that follows the specification sends it there. Reading it from the query string
+// answered them with M_UNKNOWN_TOKEN, which is also why TestTxnIdWithRefreshToken was red: it
+// never got past the refresh to the transaction id it is really about.
+func TestRefreshTokenTravelsInTheBody(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	roomID := server.CreateRoom(alice, map[string]any{})
+	const txnID = "txn-before-the-refresh"
+	eventID := server.Send(alice, roomID, txnID, "sent on the first access token")
+
+	resp := server.MustDo(http.MethodPost, "/_matrix/client/v3/refresh", "", map[string]any{
+		"refresh_token": alice.Refresh,
+	}, http.StatusOK)
+	fresh := resp.String("access_token")
+	if fresh == "" || fresh == alice.Token {
+		t.Fatalf("a refresh in the body returned no new access token: %s", resp.Raw)
+	}
+	if resp.String("refresh_token") == "" || resp.String("refresh_token") == alice.Refresh {
+		t.Errorf("the response did not rotate the refresh token: %s", resp.Raw)
+	}
+	if resp.Int("expires_in_ms") <= 0 {
+		t.Errorf("the response carried no usable expires_in_ms: %s", resp.Raw)
+	}
+	if who := server.Do(http.MethodGet, "/_matrix/client/v3/account/whoami", alice.Token, nil); who.Status != http.StatusUnauthorized {
+		t.Errorf("the spent access token still works: %d %s", who.Status, who.Raw)
+	}
+
+	// A new token on the same device: what refresh buys is a fresh credential, not a new device -
+	// and every note the device wrote under the old token has to stay its own.
+	who := server.MustDo(http.MethodGet, "/_matrix/client/v3/account/whoami", fresh, nil, http.StatusOK)
+	if who.String("user_id") != alice.UserID || who.String("device_id") != alice.DeviceID {
+		t.Fatalf("the refreshed token belongs to %s on %s, want %s on %s: %s",
+			who.String("user_id"), who.String("device_id"), alice.UserID, alice.DeviceID, who.Raw)
+	}
+
+	if got, ok := eventTransactionID(t, server, fresh, roomID, eventID); !ok || got != txnID {
+		t.Errorf("after a refresh the sending device reads unsigned.transaction_id = %q present=%v, want %q", got, ok, txnID)
+	}
+	again := server.MustDo(http.MethodPut,
+		"/_matrix/client/v3/rooms/"+roomID+"/send/m.room.message/"+txnID, fresh,
+		map[string]any{"msgtype": "m.text", "body": "the client never saw the answer"}, http.StatusOK)
+	if again.String("event_id") != eventID {
+		t.Errorf("the transaction id stopped deduplicating across a refresh: %s then %s", eventID, again.Raw)
+	}
+
+	// The deprecated name for the same field, on a session that has not been spent yet.
+	second := server.Login("alice", "wonderland")
+	resp = server.MustDo(http.MethodPost, "/_matrix/client/v3/refresh", "", map[string]any{
+		"access_token": second.Refresh,
+	}, http.StatusOK)
+	if resp.String("access_token") == "" {
+		t.Errorf("the deprecated body field was not accepted: %s", resp.Raw)
+	}
+
+	if bad := server.Do(http.MethodPost, "/_matrix/client/v3/refresh", "", map[string]any{
+		"refresh_token": "never minted",
+	}); bad.Status != http.StatusUnauthorized {
+		t.Errorf("an unknown refresh token in the body answered %d, want 401: %s", bad.Status, bad.Raw)
+	}
+}
+
 // TestDeviceListing covers the device endpoints.
 func TestDeviceListing(t *testing.T) {
 	server := NewServer(t)
