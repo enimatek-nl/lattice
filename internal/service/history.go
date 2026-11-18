@@ -143,6 +143,14 @@ func (s *Service) History(ctx context.Context, params HistoryParams) (*HistoryRe
 	if err := s.transactionsFor(params.UserID, params.DeviceID, result.Chunk); err != nil {
 		return nil, err
 	}
+	// MSC4115: a page of history also says what the reader was in the room at the moment each of
+	// these events happened, which is the only way a client can tell a message older than its own
+	// join from one it simply has not read yet.
+	track, err := s.trackMembership(params.RoomID, params.UserID)
+	if err != nil {
+		return nil, err
+	}
+	track.mark(readable, result.Chunk)
 	if err := s.annotateThreads(params.RoomID, params.UserID, result.Chunk); err != nil {
 		return nil, err
 	}
@@ -257,6 +265,11 @@ func (s *Service) RoomEvent(ctx context.Context, roomID, eventID, userID, device
 	if err := s.transactionsFor(userID, deviceID, annotated); err != nil {
 		return nil, err
 	}
+	track, err := s.trackMembership(roomID, userID)
+	if err != nil {
+		return nil, err
+	}
+	track.mark([]*persist.Event{event}, annotated)
 	if err := s.annotateThreads(roomID, userID, annotated); err != nil {
 		return nil, err
 	}
@@ -326,7 +339,16 @@ func (s *Service) EventContext(ctx context.Context, roomID, eventID, userID stri
 	if err := s.annotateThreads(roomID, userID, centre); err != nil {
 		return nil, err
 	}
+	// The whole answer is history, so the whole answer says what the reader was in the room when
+	// each of these events was written - the event asked about and the neighbours around it.
+	track, err := s.trackMembership(roomID, userID)
+	if err != nil {
+		return nil, err
+	}
+	track.mark([]*persist.Event{center}, centre)
 	result.Event = centre[0]
+	track.mark(before, result.EventsBefore)
+	track.mark(after, result.EventsAfter)
 	if err := s.annotateThreads(roomID, userID, result.EventsBefore); err != nil {
 		return nil, err
 	}
@@ -799,11 +821,83 @@ func (s *Service) ReportUser(ctx context.Context, targetID, reporterID, reason s
 type historyGate struct {
 	visibility string
 	userID     string
-	// positions and memberships are where this user's membership of the room changed and
-	// what it became there, oldest first: the room's own record of the user's comings and
-	// goings.
+	// track is where this user's membership of the room changed and what it became there.
+	// It is only read when the room opened its history on a membership; a room that is open
+	// to everyone costs no query for it.
+	track *membershipTrack
+}
+
+// membershipTrack is one user's membership history of one room: where it changed, in the order the
+// room applied the changes, and what it became there. The room's own `m.room.member` events are the
+// only record of it, and two features ask the same question of them - whether a room that opens its
+// history at the join may show an event, and (MSC4115) what the reader's membership was when an
+// event they are now being shown was written.
+type membershipTrack struct {
 	positions   []uint64
 	memberships []string
+}
+
+// trackMembership reads that record. An empty reader - a server-internal read, a session that has
+// been logged out - is answered with a track that knows nothing rather than an error, because both
+// features that ask have a sensible answer for "nobody is reading".
+func (s *Service) trackMembership(roomID, userID string) (*membershipTrack, error) {
+	if userID == "" {
+		return nil, nil
+	}
+	rows, err := s.db.EventRepo.StateHistory(roomID, matrix.TypeMember, userID)
+	if err != nil {
+		return nil, matrix.ErrInternal(err)
+	}
+	track := &membershipTrack{}
+	for _, row := range rows {
+		var content matrix.MemberContent
+		if err := matrix.DecodeContent(matrix.RawMessage(row.Content), &content); err != nil || content.Membership == "" {
+			continue
+		}
+		track.positions = append(track.positions, row.StreamPos)
+		track.memberships = append(track.memberships, content.Membership)
+	}
+	return track, nil
+}
+
+// at is the membership at a position: the last change at or before it, and nothing when the room
+// says the user was not in it yet. A track that is not there never was.
+func (t *membershipTrack) at(pos uint64) string {
+	if t == nil {
+		return ""
+	}
+	membership := ""
+	for i, at := range t.positions {
+		if at > pos {
+			break
+		}
+		membership = t.memberships[i]
+	}
+	return membership
+}
+
+// mark writes the answer of MSC4115 into the `unsigned` block of every event of a page: the
+// reader's membership at the moment that event was written. `rows` and `wire` are the same events
+// twice, once as the database rows that carry the stream position and once as the object a client
+// is being answered with.
+//
+// Before the first membership event of theirs a room did not know this user, and the specification
+// calls not being a member `leave` - which is also the only answer a client can act on, because a
+// room whose history opens at the join never shows the events that would have said otherwise.
+func (t *membershipTrack) mark(rows []*persist.Event, wire []matrix.Event) {
+	if t == nil || len(rows) != len(wire) {
+		return
+	}
+	for i, row := range rows {
+		membership := t.at(row.StreamPos)
+		if membership == "" {
+			membership = matrix.MembershipLeave
+		}
+		if wire[i].Unsigned == nil {
+			wire[i].Unsigned = matrix.Object{}
+		}
+		wire[i].Unsigned["membership"] = membership
+	}
 }
 
 // historyGateFor builds the gate for one room and one user. Callers have already decided that
@@ -813,18 +907,11 @@ func (s *Service) historyGateFor(ctx context.Context, roomID, userID string) (*h
 	if gate.visibility != matrix.HistoryJoined && gate.visibility != matrix.HistoryInvited {
 		return gate, nil
 	}
-	rows, err := s.db.EventRepo.StateHistory(roomID, matrix.TypeMember, userID)
+	track, err := s.trackMembership(roomID, userID)
 	if err != nil {
-		return nil, matrix.ErrInternal(err)
+		return nil, err
 	}
-	for _, row := range rows {
-		var content matrix.MemberContent
-		if err := matrix.DecodeContent(matrix.RawMessage(row.Content), &content); err != nil || content.Membership == "" {
-			continue
-		}
-		gate.positions = append(gate.positions, row.StreamPos)
-		gate.memberships = append(gate.memberships, content.Membership)
-	}
+	gate.track = track
 	return gate, nil
 }
 
@@ -841,7 +928,7 @@ func (g *historyGate) allows(event *persist.Event) bool {
 	if event.Type == matrix.TypeMember && event.StateKey == g.userID {
 		return true
 	}
-	switch g.membershipAt(event.StreamPos) {
+	switch g.track.at(event.StreamPos) {
 	case matrix.MembershipJoin:
 		return true
 	case matrix.MembershipInvite:
@@ -850,19 +937,6 @@ func (g *historyGate) allows(event *persist.Event) bool {
 		return g.visibility == matrix.HistoryInvited
 	}
 	return false
-}
-
-// membershipAt is what the user's membership was at a position: the last change at or before it,
-// and nothing when the room says the user was not in it yet.
-func (g *historyGate) membershipAt(pos uint64) string {
-	membership := ""
-	for i, at := range g.positions {
-		if at > pos {
-			break
-		}
-		membership = g.memberships[i]
-	}
-	return membership
 }
 
 // keepReadable drops from a batch the events this user may not read, and says how many it

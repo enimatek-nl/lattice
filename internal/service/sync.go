@@ -302,6 +302,14 @@ func (s *Service) joinedRoomSync(ctx context.Context, userID, deviceID, roomID s
 	if err := s.transactionsFor(userID, deviceID, room.Timeline.Events); err != nil {
 		return nil, false, err
 	}
+	// MSC4115: each event of the timeline also says what the reader's own membership of the room
+	// was when it was written, which is how a client knows it is being shown a message older than
+	// the room it is in - a room that opens its history at the join cannot show otherwise.
+	track, err := s.trackMembership(roomID, userID)
+	if err != nil {
+		return nil, false, err
+	}
+	track.mark(events, room.Timeline.Events)
 	if err := s.annotateThreads(roomID, userID, room.Timeline.Events); err != nil {
 		return nil, false, err
 	}

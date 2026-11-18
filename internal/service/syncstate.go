@@ -516,6 +516,14 @@ func (s *Service) leftRoomSync(ctx context.Context, userID, roomID string, since
 		},
 		State: matrix.State{Events: state, PrevBatch: s.Token(since)},
 	}
+	// A leave section is history seen from outside the room, and MSC4115 asks the same question of
+	// it: the events up to the leave were written while the reader was in it, and saying so is what
+	// lets a client render the last days of a room it left without pretending they are new.
+	track, err := s.trackMembership(roomID, userID)
+	if err != nil {
+		return nil, false, err
+	}
+	track.mark(kept, room.Timeline.Events)
 	if len(window) > 0 {
 		room.Timeline.PrevBatch = s.Token(window[0].StreamPos)
 	} else {
