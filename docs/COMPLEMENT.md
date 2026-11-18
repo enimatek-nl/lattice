@@ -11,7 +11,7 @@ server-server names in it should be refreshed against a fresh run.
 ## Run of 2026-11-18 — the package finishes now, and its number is lower
 
 Against Complement `7b38a63`, both fixes on `main` (`/messages` omitting `end`, and the image
-running with `-no-rate-limit`): **`tests/csapi` completes in about six minutes — 78 green, 26 red,
+running with `-no-rate-limit`): **`tests/csapi` completes in about six minutes — 79 green, 25 red,
 2 skipped.** It could not be run to completion before: `TestMessagesOverFederation` paged a room
 whose `end` token never went away, and the server answered every one of those pages at 100% CPU
 until the 40-minute ceiling fell. That also means the 95-of-106 recorded below was never measured
@@ -20,10 +20,16 @@ in one run; from today the honest figure is the one a single completing run prin
 Two names left the red list with it (`TestTxnInEvent`, `TestTxnScopeOnLocalEcho`: events now carry
 `unsigned.transaction_id` for the device that sent them), and one arrived as something to work on
 rather than something to wait out — `TestMessagesOverFederation` walks the room and the early
-history is simply not there, which is the backfill-for-late-joiners gap, named. `TestTxnIdWithRefreshToken`
-refuses at `POST /refresh` with `M_UNKNOWN_TOKEN`: refresh tokens are a separate gap.
+history is simply not there, which is the backfill-for-late-joiners gap, named.
+`TestTxnIdWithRefreshToken` went green the same day: `POST /v3/refresh` read its token from the
+query string while the specification puts it in the JSON body, so the refresh was refused before the
+case could reach the transaction id it is about.
 
-The 26 names and what each is waiting for are in [TODO.md](TODO.md).
+The 25 names and what each is waiting for are in [TODO.md](TODO.md). The run this all comes from:
+`COMPLEMENT_BASE_IMAGE=localhost/lattice-complement:latest go test -timeout=30m -count=1 -v
+./tests/csapi` on Complement `7b38a63` — 79 `--- PASS`, 25 `--- FAIL`, 2 `--- SKIP`, `ok` in 365s,
+`--- FAIL: github.com/matrix-org/complement/tests/csapi (365.18s)` as the closing line, 329 own
+tests across three packages in the same tree.
 
 
 ---
@@ -174,7 +180,7 @@ suite's own skips are not hiding any of them:
 
 | Missing | Tests |
 | --- | --- |
-| `unsigned.transaction_id` on the local echo of a `PUT /send` (`/sync`, `/event`, `/messages`) — the transaction log already stores it | TestTxnInEvent, TestTxnScopeOnLocalEcho, TestTxnIdWithRefreshToken |
+| `unsigned.transaction_id` on the local echo of a `PUT /send` (`/sync`, `/event`, `/messages`) — shipped 2026-11-18, and green except where `POST /v3/refresh` stood in the way, which read its token from the query string until the same day | TestTxnInEvent, TestTxnScopeOnLocalEcho, TestTxnIdWithRefreshToken |
 | History visibility on `GET /rooms/{roomID}/event/{eventID}`: refuse non-members, and events from before the join — **addressed by step 23**, unverified against the suite since; `TestLeaveEventVisibility` may still be red, because a user who has left reads nothing here (see step 23's openings) | TestFetchEventNonWorldReadable, TestFetchHistoricalJoinedEventDenied, TestFetchHistoricalInvitedEventFromBeforeInvite, TestLeaveEventVisibility |
 | Sync `leave` sections and timeline gaps: a left room reappearing with its old history, `limited` + `prev_batch` on a gapped timeline, room summaries for rooms with no timeline | TestSync, TestSyncTimelineGap, TestGappedSyncLeaveSection, TestOlderLeftRoomsNotInLeaveSection, TestLeftRoomFixture, TestArchivedRoomsHistory, TestRoomSummary |
 | `lazy_load_state` in `/messages` | TestRoomMessagesLazyLoading, TestRoomMessagesLazyLoadingLocalUser |

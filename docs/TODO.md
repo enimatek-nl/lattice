@@ -34,7 +34,7 @@ because it said nothing these steps do not.
 |---|---|
 | `make build vet` | clean; `make lint` reports **7 issues** (6 staticcheck, 1 unused) from golangci-lint 2.15 — pre-existing quickfix-style findings, none from the 2026-11-18 work |
 | this repository's own tests | **329** — 170 client-API compatibility, 89 two-server federation, 70 offline unit (`go test ./...`, green) |
-| Complement `tests/csapi` | **78 green of 106**, 2 skipped, and the package **finishes** (~6 min) — it did not finish before 2026-11-18, see [COMPLEMENT.md](COMPLEMENT.md) |
+| Complement `tests/csapi` | **79 green of 106**, 2 skipped, and the package **finishes** (~6 min) — it did not finish before 2026-11-18, see [COMPLEMENT.md](COMPLEMENT.md) |
 | Complement server-server (`tests`, not `tests/federation`) | **78 green of 91** (measured 2026-11-04 evening, after the state-handshake change; not re-run since) |
 | endpoints | **180 of 234** indexed routes implemented, 44 routes the index does not name (`make endpoints`, measured 2026-11-18) |
 | spec | v1.19, room versions 1-12 understood, new rooms default to v11 |
@@ -45,12 +45,14 @@ never completed, because `/messages` kept handing back an `end` at the start of 
 `TestMessagesOverFederation` paged until the 40-minute ceiling. Two changes closed that (the
 pagination answer saying when it is finished, and the Complement image no longer rate-limiting the
 suite) and events now carry `unsigned.transaction_id` for the device that sent them; the number
-above is what a single run prints. It also found the csapi tally was 15 names redder than this file
+above is what a single run prints. `TestTxnIdWithRefreshToken`, filed against the transaction ids,
+was held up by `POST /v3/refresh` reading its token from the query string instead of the JSON body,
+and is green since the same day. It also found the csapi tally was 15 names redder than this file
 admitted, which is what the next section is for.
 
 ## What is red, and what each one is waiting for
 
-`tests/csapi` (**26 red, 2 skipped**, measured 2026-11-18 in the first run of this package that
+`tests/csapi` (**25 red, 2 skipped**, measured 2026-11-18 in the first run of this package that
 finished; the names carried over from 2026-11-04 keep what they were waiting for, and the rest are
 labelled as not yet triaged):
 
@@ -68,7 +70,6 @@ labelled as not yet triaged):
 | `TestPushSync` | push rules as a client sees them in sync (delivery to a gateway is a queue item below) |
 | `TestLeftRoomFixture` | **one check away** — the `/messages` chunk of a departed `joined`-visibility room (step 24) |
 | `TestMessagesOverFederation` | **backfill for a late joiner**: the walk now finishes and the early history is simply not on the server — the queue's "gap filling both ways" line, one floor down |
-| `TestTxnIdWithRefreshToken` | refresh tokens — `POST /refresh` answers `M_UNKNOWN_TOKEN`; the txn half of the case is green since 2026-11-18 |
 | `TestRoomSpecificUsernameAtJoin`, `TestRoomSpecificUsernameChange` | the user directory revealing a room's member name only to those who share the room — and `results` being an array when nothing matches (today it is `null`) |
 | `TestUrlPreview` | `GET /_matrix/media/v1/preview_url` (and the report endpoint the roundtrip test also wants) |
 | `TestUploadKey` | a key-upload corner the case pushes on — not yet triaged |

@@ -47,8 +47,7 @@ the current numbers are in [TODO.md](TODO.md).
   writes and what a peer sends (step 20). The transport itself is not among the reasons:
   knocking, restricted rooms and the space summary that authorises them are green (steps 17-19);
   what is left is room versions past v11, application services, presence, the federation
-  `PUT /invite` endpoint, and redaction of an event the peer has never seen. The
-  The federation
+  `PUT /invite` endpoint, and redaction of an event the peer has never seen. The federation
   media cases are green; see step 16.
 - The three bugs the federation suite found were not federation bugs: access tokens died
   at every restart (the signing secret was per process, the sessions are in the
@@ -611,6 +610,14 @@ unlocks:
   server: one core at 100% for the rest of the suite's timeout, no log lines. The walk now fetches
   `limit+1` and never shows the extra row; that row is what it knows "beyond" from, and a page
   bounded by `to` ends at its bound.
+- **A token an endpoint never looks for is still a token that works.** `POST /v3/refresh` answered
+  `M_UNKNOWN_TOKEN` to every client that obeyed the specification, because it read the credential
+  from the query string while the specification puts it in the JSON body — `{"refresh_token": "..."}`,
+  or the older `{"access_token": "..."}` holding the same value. The case that proved it was filed
+  against the wrong feature: `TestTxnIdWithRefreshToken` reads as a transaction-id failure and never
+  got as far as the transaction id. The query parameter is still read when the body named nothing, and
+  nothing that read the document sends one — a token in a URL is copied into every log between the
+  client and the server.
 - **A suite that cannot finish produces numbers nobody can disbelieve.** `docs/TODO.md` claimed 95
   green of 106 while `docs/COMPLEMENT.md` recorded that the same package "did not finish in its 40
   minute budget" — the figure cannot have come from one run, and the honest one (78 of 106, the
