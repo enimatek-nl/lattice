@@ -65,7 +65,7 @@ labelled as not yet triaged):
 | `TestSearch` | a real search index — this server matches substrings |
 | `TestDeviceListUpdates` | device-list change delivery at suite speed (passes on its own; see the flakiness note below) |
 | `TestRoomImageRoundtrip` | media: URL previews / `POST /_matrix/media/v1/report` and the roundtrip the case asserts |
-| `TestMembershipOnEvents` | `unsigned.membership`: the membership a reader had when an event was written |
+| `TestMembershipOnEvents` | `unsigned.membership` (MSC4115): the **reader's** membership at the time each event was written — derivable from the room's `m.room.member` events ordered by stream position, no state-at-event storage needed; wanted in `/sync`, `/messages`, `/event` and `/context` |
 | `TestPowerLevels` | power-level corner the case pushes on |
 | `TestPushSync` | push rules as a client sees them in sync (delivery to a gateway is a queue item below) |
 | `TestLeftRoomFixture` | **one check away** — the `/messages` chunk of a departed `joined`-visibility room (step 24) |

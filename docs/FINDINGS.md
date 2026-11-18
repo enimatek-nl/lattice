@@ -642,3 +642,20 @@ unlocks:
   events were written is not given them, because nothing backfills a late joiner's `/messages` from
   a peer. That is the backfill gap, not a pagination bug, and it is the same shape as the queue's
   "gap filling both ways" line.
+
+What those three leave at the front of the queue, decided but not built:
+
+- **`unsigned.membership` (MSC4115) is about the reader, not the sender.** Complement's
+  `TestMembershipOnEvents` reads a message alice wrote *before* bob joined and expects `leave` on
+  it in bob's timeline, so the field answers "what was my membership when this was written", not
+  "what was the sender's". No state-at-event storage is needed for it: a room's `m.room.member`
+  events, ordered by stream position, are the reader's membership history, and an event's answer is
+  the last transition at or before its own position. One query per timeline page, then a search in
+  memory. Wants to be served by `/sync`, `/messages`, `/event` and `/context` alike.
+- **The user directory has to stop being public-only.** `DirectoryUsers` lists joined users of
+  *public* rooms, which is why `TestRoomSpecificUsernameAtJoin` cannot answer the second half of
+  its own name: a private room's members are discoverable by the people in that room, and a name
+  someone chose for one room must not surface to a person who is only in another one. The shape is
+  candidates = members of public rooms (visible to anyone) union members of rooms the searcher is in
+  (visible to those), matching on user id and on every name the searcher is entitled to see, and
+  returning the *profile* display name; `results` becomes an array where it is `null` today.
