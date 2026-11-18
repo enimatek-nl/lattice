@@ -38,6 +38,7 @@ because it said nothing these steps do not.
 | Complement server-server (`tests`, not `tests/federation`) | **78 green of 91** (measured 2026-11-04 evening, after the state-handshake change; not re-run since) |
 | endpoints | **180 of 234** indexed routes implemented, 44 routes the index does not name (`make endpoints`, measured 2026-11-18) |
 | spec | target v1.19 (the endpoint index it is built from), room versions 1-12 understood, new rooms default to v11; `/versions` advertises v1.0-v1.11 — see queue A |
+| release | **v0.2.0** tagged 2026-11-18 at `3323056` — the first tag of this history; `ghcr.io/enimatek-nl/lattice` publishes `0.2.0`, `0.2` and `latest` (index `sha256:737101900ffb…`) for `linux/amd64` and `linux/arm64`, and the image answers `lattice 0.2.0` and `/versions` when it is started |
 | federation | live behind `-federation` (default off); one rulebook judges what this server signs and what a peer sends (step 20) |
 
 The 2026-11-04 tally of "95 green of 106" was not produced by one completing run — the package
