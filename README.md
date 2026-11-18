@@ -192,7 +192,10 @@ the whole of opting in; a room that belongs to one server alone is created with
   with the parent named in the per-event answer.
 - **Delivery that survives a peer being down.** Outbound traffic goes through a queue,
   retried with the same transaction id and the same bytes, backing off from five
-  seconds to ten minutes. `m.room.server_acl` is honoured in both directions.
+  seconds to ten minutes. One pass takes a bounded number of destinations, and events go
+  before ephemeral messages: a device list update owed to a server that stopped existing
+  is not a reason for a room's message to a live server to wait behind it.
+  `m.room.server_acl` is honoured in both directions.
 - **The encryption plumbing between servers.** A device that uploads, renames or deletes
   its keys sends `m.device_list_update` to every server that shares a room with that user,
   and a join carries the device lists of the room to the server that just arrived — inside

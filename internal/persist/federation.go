@@ -327,11 +327,18 @@ func (r *OutboxRepoImpl) Pack(txn *OutboundTxn) error {
 func (r *OutboxRepoImpl) DueDestinations(now int64, limit int) ([]string, error) {
 	// A destination is due when it has queued items and no transaction in flight that
 	// is still backing off.
+	//
+	// A destination holding an event comes before one holding only ephemeral messages,
+	// and within those the oldest work goes first. The order earns its keep when more
+	// destinations are due than one flush takes: a device list update for a server that
+	// stopped existing a week ago is not a reason for a room's message to a live server
+	// to wait behind it.
 	q := r.db.Model(&OutboxItem{}).
 		Joins("LEFT JOIN outbound_txns ON outbound_txns.destination = outbox_items.destination").
 		Where("outbox_items.destination <> ''").
 		Where("outbound_txns.id IS NULL OR outbound_txns.next_try <= ?", now).
 		Group("outbox_items.destination").
+		Order(clause.OrderByColumn{Column: clause.Column{Raw: true, Name: "sum(case when outbox_items.kind = 'pdu' then 1 else 0 end)"}, Desc: true}).
 		Order("min(outbox_items.created_ts) asc")
 	if limit > 0 {
 		q = q.Limit(limit)
@@ -343,9 +350,14 @@ func (r *OutboxRepoImpl) DueDestinations(now int64, limit int) ([]string, error)
 	}
 	// A destination whose only work is the outstanding transaction itself - its items
 	// were packed and retired from the queue view - is due when its retry time has
-	// come.
+	// come; the attempt that has waited longest goes first.
 	var inFlight []string
-	r.db.Model(&OutboundTxn{}).Where("next_try <= ?", now).Pluck("destination", &inFlight)
+	if err := r.db.Model(&OutboundTxn{}).
+		Where("next_try <= ?", now).
+		Order("next_try asc").
+		Pluck("destination", &inFlight).Error; err != nil {
+		return nil, err
+	}
 	seen := make(map[string]bool, len(destinations)+len(inFlight))
 	out := make([]string, 0, len(destinations)+len(inFlight))
 	for _, destination := range append(destinations, inFlight...) {
@@ -354,6 +366,14 @@ func (r *OutboxRepoImpl) DueDestinations(now int64, limit int) ([]string, error)
 		}
 		seen[destination] = true
 		out = append(out, destination)
+	}
+	// The limit bounds a whole pass, which is what the caller asked it to bound: a
+	// flush costs one attempt per destination, and an attempt against a peer that is not
+	// there costs the timeout of that attempt. Cutting the combined list rather than the
+	// first query alone is what keeps a second source of work from making the pass longer
+	// than the caller agreed to.
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
 	}
 	return out, nil
 }

@@ -722,3 +722,37 @@ federation: the state of !hezP…:cluephone.org carries $abW…, which this serv
   `--add-host=<name>:host-gateway` per name, is the fix; the log now says which address it settled on
   being unable to delegate, which is where an operator looks.
 
+## Finding of 2026-11-18, late — the number that was wrong was the waiting
+
+The same room produced a second bug, and this one was hiding in a log line an operator would read as
+"the internet is bad today":
+
+```
+federation: rixo.nl is not answering, transaction l-…-nv4L6HNGMXO2 (0 PDU(s), 3 EDU(s))
+  retried in -15278539382ms: … dial tcp: lookup rixo.nl …: no such host
+```
+
+- **A negative wait is the tell, and the unit was the crime.** The backoff drew its random shave in
+  nanoseconds and subtracted it as milliseconds:
+  `delay -= time.Duration(n.Int64()) * time.Millisecond` with `n` already a nanosecond count. At the
+  ten-minute ceiling that is a subtraction of up to four and a half *years*, so `next_try` landed far
+  in the past and the promise "asked again in a while" meant "asked again on the next flush" — every
+  second, forever, for a server whose DNS record no longer exists.
+- **No backoff does not merely waste time; it starves the peers that answer.** One pass takes a
+  bounded number of destinations, ordered by the oldest queued work, and dead servers hold the oldest
+  work: their ephemeral backlog predates everything a live peer is waiting for. So five gone-away
+  servers occupied every slot of every pass and a room's message to a server that was *alive* was
+  never picked up. The symptom an operator sees is a message that never arrives with no error about
+  the destination it was addressed to — because nothing was ever attempted to it.
+- **The pass bound has to bound the pass.** `DueDestinations` reads two sources — destinations with
+  queued items, and destinations whose outstanding transaction has reached its retry time — and the
+  limit applied to the first alone, so a pass could be longer than the caller agreed to. It now
+  applies to the combined list, and queued events are preferred over ephemeral messages: a device
+  list update owed to a server that stopped existing is not a reason for a message to wait.
+- **`OutboxRepo.Prune` is written and not wired.** Backlog that a peer will never receive is kept
+  forever today, which is harmless in one room and permanent in the one that holds members of servers
+  that have disappeared: those device list updates are re-queued and retried indefinitely. Leaving,
+  forgetting and rejoining such a room removes the reason to queue them; the alternative is the prune
+  the repo already offers, run on maintenance.
+
+

@@ -134,6 +134,17 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
 
 ### C. Federation and interop
 
+- [ ] Wire `OutboxRepo.Prune` to maintenance. The queue keeps what a peer never received, which is
+      right for an hour and permanent for a month: a room holding members of servers that disappeared
+      re-queues device list updates for them forever, and each of those is an attempt some live peer
+      waits behind. The repo method exists and takes an age; nothing calls it.
+- [x] **The queue's backoff never engaged, and that starved the peers that answer.** The jitter was
+      drawn in nanoseconds and subtracted as milliseconds, putting the next attempt up to four and a
+      half years in the past: five gone-away servers were due on every flush, held the oldest work, and so
+      took every destination slot a message to a live server could have used. The delay is now one
+      exported, tested function (`service.OutboxRetryDelay`), the pass bound covers both of
+      `DueDestinations`' sources instead of one, and queued events go before ephemeral messages
+      (2026-11-18, found from `retried in -15278539382ms` in a live log).
 - [ ] A join has no budget of its own. A key document is fetched under ten seconds and a server that
       answered nothing is asked again only after a hold-back, but the first pass over a room whose
       state names five gone-away servers still waits for each of them one after another. The complete

@@ -754,8 +754,8 @@ func (s *Service) attemptTransaction(ctx context.Context, transport *federation.
 		EDUs:           payloadObjects(payload["edus"]),
 	})
 	if err != nil {
-		next := s.retryDelay(txn.Tries)
-		if markErr := s.db.OutboxRepo.Retry(txn.Destination, txn.TxnID, next, truncate(err.Error(), 255)); markErr != nil {
+		delay := OutboxRetryDelay(txn.Tries)
+		if markErr := s.db.OutboxRepo.Retry(txn.Destination, txn.TxnID, s.NowMS()+delay.Milliseconds(), truncate(err.Error(), 255)); markErr != nil {
 			log.Printf("federation: could not record the retry of %s to %s: %v", txn.TxnID, txn.Destination, markErr)
 		} else {
 			// Named at the moment it happens, because this is the only point at which the
@@ -763,7 +763,7 @@ func (s *Service) attemptTransaction(ctx context.Context, transport *federation.
 			// operator looking at a room that is missing messages needs the attempt, the
 			// destination and the wait, not a count that says nothing was sent.
 			log.Printf("federation: %s is not answering, transaction %s (%d PDU(s), %d EDU(s)) retried in %dms: %v",
-				txn.Destination, txn.TxnID, txn.PDUs, txn.EDUs, next-s.NowMS(), err)
+				txn.Destination, txn.TxnID, txn.PDUs, txn.EDUs, delay.Milliseconds(), err)
 		}
 		return 1, err
 	}
@@ -796,13 +796,20 @@ func (s *Service) attemptTransaction(ctx context.Context, transport *federation.
 	return 1, nil
 }
 
-// retryDelay is the exponential backoff of a destination, in milliseconds since the
-// epoch.
+// OutboxRetryDelay is how long a destination that has failed `tries` attempts in a row
+// is left alone before the next one: doubling from five seconds up to a ceiling of ten
+// minutes, with up to a quarter of that taken off at random. Servers that all lose the
+// same peer come back in step without that jitter, and a fleet of homeservers retrying
+// one recovering server in the same second is an outage the recovering server causes
+// itself.
 //
-// A slice of the delay is subtracted at random. Servers that all lose the same peer come
-// back in step without it, and a fleet of homeservers retrying one recovering server in
-// the same second is an outage that the recovering server causes itself.
-func (s *Service) retryDelay(tries int) int64 {
+// The jitter is subtracted, and measured in the unit of the delay it shaves. This used
+// to draw a random number in nanoseconds and subtract it as milliseconds, which moved
+// the next attempt up to four years into the past: the backoff never engaged, a dead
+// server was due on every flush, and because a flush takes a fixed number of
+// destinations ordered by oldest work, five servers that will never answer again
+// occupied every slot - so a message for a server that was alive was never sent.
+func OutboxRetryDelay(tries int) time.Duration {
 	delay := outboxRetryFloor
 	for i := 0; i < tries && delay < outboxRetryCeiling; i++ {
 		delay *= 2
@@ -812,10 +819,10 @@ func (s *Service) retryDelay(tries int) int64 {
 	}
 	if jitter := delay / 4; jitter > 0 {
 		if n, err := rand.Int(rand.Reader, big.NewInt(int64(jitter))); err == nil {
-			delay -= time.Duration(n.Int64()) * time.Millisecond
+			delay -= time.Duration(n.Int64())
 		}
 	}
-	return s.NowMS() + delay.Milliseconds()
+	return delay
 }
 
 // StartFederationOutbox drains the outbox on a timer until the context is cancelled or
