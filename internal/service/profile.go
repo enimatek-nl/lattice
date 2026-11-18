@@ -143,40 +143,85 @@ func (s *Service) DeleteProfileKey(ctx context.Context, userID, key string) erro
 	return nil
 }
 
-// UserSummary describes a user for the user directory.
+// UserSummary describes a user by the name and picture they chose for their account.
 type UserSummary struct {
 	UserID      string `json:"user_id"`
 	DisplayName string `json:"display_name,omitempty"`
 	AvatarURL   string `json:"avatar_url,omitempty"`
 }
 
-// SearchUserDirectory returns users that share a public room with the caller,
-// filtered by a search term.
-func (s *Service) SearchUserDirectory(ctx context.Context, searcher, term string, limit int) ([]UserSummary, bool, error) {
+// DirectoryEntry is one line of a user directory answer. The rooms are the ones the directory is
+// willing to name as a way to reach this person, which is also what makes an entry a reason: a name
+// is only offered to the people who were told it somewhere.
+type DirectoryEntry struct {
+	UserID      string   `json:"user_id"`
+	DisplayName string   `json:"display_name,omitempty"`
+	AvatarURL   string   `json:"avatar_url,omitempty"`
+	Rooms       []string `json:"rooms,omitempty"`
+}
+
+const (
+	// directoryDefaultLimit is the cap a search that names none gets.
+	directoryDefaultLimit = 200
+	// directoryRoomsPerEntry caps how many rooms one entry names. The specification wants the
+	// rooms ordered by relevance, and a person's fortieth shared room is not what a client is
+	// choosing between.
+	directoryRoomsPerEntry = 3
+	// directoryRowFactor is how much wider than the limit of people the row cap is drawn, because
+	// one person of many rooms occupies one row per room.
+	directoryRowFactor = 20
+)
+
+// SearchUserDirectory answers who the caller may look up, by a search term.
+//
+// Two rooms make a person findable: a public one, which opens its members to anybody, and one the
+// caller stands in, which opens them to the caller and to nobody else. The name an entry carries is
+// the one the user chose for the account, never the one they chose for a room - a room's name for
+// somebody is that room's business, which is the whole of what the suite's room-specific-name cases
+// are guarding. Matching happens on the user id and on that account name.
+func (s *Service) SearchUserDirectory(ctx context.Context, searcher, term string, limit int) ([]DirectoryEntry, bool, error) {
 	if limit <= 0 {
-		limit = 200
+		limit = directoryDefaultLimit
 	}
-	userIDs, err := s.db.MembershipRepo.DirectoryUsers(searcher, limit*2)
+	peers, err := s.db.MembershipRepo.DirectoryPeers(searcher, limit*directoryRowFactor)
 	if err != nil {
 		return nil, false, matrix.ErrInternal(err)
 	}
-	profiles, err := s.profileSummaries(ctx, userIDs)
+	// The query answers with a person per room; the answer is a person, naming the rooms.
+	var order []string
+	byUser := make(map[string][]string, len(peers))
+	for _, peer := range peers {
+		if _, seen := byUser[peer.UserID]; !seen {
+			order = append(order, peer.UserID)
+		}
+		if len(byUser[peer.UserID]) < directoryRoomsPerEntry {
+			byUser[peer.UserID] = append(byUser[peer.UserID], peer.RoomID)
+		}
+	}
+	profiles, err := s.profileSummaries(ctx, order)
 	if err != nil {
 		return nil, false, err
 	}
-	var out []UserSummary
+	// An empty answer is an empty list: `results` is a required property and a client counts it.
+	out := []DirectoryEntry{}
 	needle := strings.ToLower(term)
-	for _, id := range userIDs {
+	matched := 0
+	for _, id := range order {
 		summary := profiles[id]
 		if needle != "" &&
 			!strings.Contains(strings.ToLower(id), needle) &&
 			!strings.Contains(strings.ToLower(summary.DisplayName), needle) {
 			continue
 		}
-		out = append(out, summary)
-		if len(out) >= limit {
-			return out, true, nil
+		matched++
+		if len(out) < limit {
+			out = append(out, DirectoryEntry{
+				UserID:      id,
+				DisplayName: summary.DisplayName,
+				AvatarURL:   summary.AvatarURL,
+				Rooms:       byUser[id],
+			})
 		}
 	}
-	return out, false, nil
+	return out, matched > limit, nil
 }

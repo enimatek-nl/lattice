@@ -40,9 +40,11 @@ type MembershipRepo interface {
 	// MutualRooms lists rooms that both users have joined.
 	MutualRooms(userID, otherUserID string) ([]string, error)
 	Forget(roomID, userID string) error
-	// DirectoryUsers lists distinct joined users of public rooms for the user
-	// directory.
-	DirectoryUsers(except string, limit int) ([]string, error)
+	// DirectoryPeers lists the people a user may look up in the user directory, each with one room
+	// the directory is allowed to name as the way to reach them: the members of a public room are
+	// findable by anybody, the members of a private room only by the people in it. A person standing
+	// in several rooms appears once per room.
+	DirectoryPeers(searcher string, limit int) ([]DirectoryPeer, error)
 }
 
 // MembershipRepoImpl is the GORM backed MembershipRepo.
@@ -142,18 +144,31 @@ func (r *MembershipRepoImpl) Forget(roomID, userID string) error {
 		Error
 }
 
-// DirectoryUsers implements [MembershipRepo].
-func (r *MembershipRepoImpl) DirectoryUsers(except string, limit int) ([]string, error) {
-	sub := r.db.Model(&RoomVisibility{}).Select("room_id").
-		Where("visibility = ?", "public")
-	q := r.db.Model(&RoomMembership{}).
-		Where("membership = ? AND room_id IN (?)", "join", sub)
-	if except != "" {
-		q = q.Where("user_id <> ?", except)
+// DirectoryPeer is one line of what the user directory is built from: a person, and a room of
+// theirs this server is willing to name to the person asking.
+type DirectoryPeer struct {
+	RoomID string `gorm:"column:room_id"`
+	UserID string `gorm:"column:user_id"`
+}
+
+// DirectoryPeers implements [MembershipRepo].
+//
+// The rows are pairs rather than distinct users because the answer has to name rooms, so a limit on
+// rows is not a limit on people: someone standing in many rooms occupies many rows. The caller caps
+// the rows, groups them back per person, and stops at its own limit of people.
+func (r *MembershipRepoImpl) DirectoryPeers(searcher string, limit int) ([]DirectoryPeer, error) {
+	public := r.db.Model(&RoomVisibility{}).Select("room_id").Where("visibility = ?", "public")
+	shared := r.db.Model(&RoomMembership{}).Select("room_id").
+		Where("user_id = ? AND membership = ?", searcher, "join")
+	q := r.db.Model(&RoomMembership{}).Select("user_id, room_id").
+		Where("membership = ?", "join").
+		Where("room_id IN (?) OR room_id IN (?)", public, shared)
+	if searcher != "" {
+		q = q.Where("user_id <> ?", searcher)
 	}
-	var ids []string
-	err := q.Distinct().Order("user_id asc").Limit(limit).Pluck("user_id", &ids).Error
-	return ids, err
+	var rows []DirectoryPeer
+	err := q.Order("user_id asc, room_id asc").Limit(limit).Scan(&rows).Error
+	return rows, err
 }
 
 // NewMembershipRepo returns the MembershipRepo implementation for db.
