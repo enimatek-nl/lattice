@@ -93,11 +93,15 @@ func NewTypingRepo(db *gorm.DB) TypingRepo {
 // Txn records the event created for a client transaction id so that retries of
 // PUT /send and PUT /state are idempotent.
 type Txn struct {
-	UserID    string `json:"user_id" gorm:"uniqueIndex:uq_txn_scope;size:255"`
-	Kind      string `json:"kind" gorm:"uniqueIndex:uq_txn_scope;size:32"`
-	RoomID    string `json:"room_id" gorm:"uniqueIndex:uq_txn_scope;size:255"`
-	TxnID     string `json:"txn_id" gorm:"uniqueIndex:uq_txn_scope;size:255"`
-	EventID   string `json:"event_id" gorm:"size:255"`
+	UserID  string `json:"user_id" gorm:"uniqueIndex:uq_txn_scope;size:255"`
+	Kind    string `json:"kind" gorm:"uniqueIndex:uq_txn_scope;size:32"`
+	RoomID  string `json:"room_id" gorm:"uniqueIndex:uq_txn_scope;size:255"`
+	TxnID   string `json:"txn_id" gorm:"uniqueIndex:uq_txn_scope;size:255"`
+	EventID string `json:"event_id" gorm:"index:idx_txn_reader,priority:2;size:255"`
+	// DeviceID is which device of the sender wrote the event. A transaction id is the sender's
+	// own note about one of its sends, and devices do not share notes - so it is kept, to be
+	// handed back to exactly the device that wrote it and to nobody else.
+	DeviceID  string `json:"device_id" gorm:"index:idx_txn_reader,priority:1;size:255"`
 	StreamPos uint64 `json:"stream_pos" gorm:"index"`
 	// SentTS is the origin_server_ts of the event the transaction produced; the
 	// retention window of the table is measured against it.
@@ -110,6 +114,12 @@ type Txn struct {
 type TxnRepo interface {
 	Set(txn *Txn) error
 	Get(userID, kind, roomID, txnID string) (*Txn, error)
+	// ForSender answers "which of these events did this device send, and what did it call
+	// them?". It is the read side of a transaction id: the note a device attached to its own
+	// send, keyed by the event it produced. Another device - of the same user or of another -
+	// is not answered, so a device that never sent the event learns nothing about what the
+	// sender's send was called.
+	ForSender(userID, deviceID string, eventIDs []string) (map[string]string, error)
 	// Expire deletes transaction records of events sent before the given
 	// timestamp, so replay protection covers a rolling window instead of
 	// growing forever.
@@ -137,6 +147,30 @@ func (r *TxnRepoImpl) Get(userID, kind, roomID, txnID string) (*Txn, error) {
 	err := r.db.Where("user_id = ? AND kind = ? AND room_id = ? AND txn_id = ?",
 		userID, kind, roomID, txnID).First(&txn).Error
 	return &txn, err
+}
+
+// ForSender implements [TxnRepo].
+//
+// The device is part of the question rather than a filter applied afterwards: a row written by
+// another device is not an answer, and an empty device - a send that came from inside the
+// server, or from a session that has since been deleted - answers nothing.
+func (r *TxnRepoImpl) ForSender(userID, deviceID string, eventIDs []string) (map[string]string, error) {
+	if userID == "" || deviceID == "" || len(eventIDs) == 0 {
+		return nil, nil
+	}
+	var rows []*Txn
+	if err := r.db.Where("user_id = ? AND device_id = ? AND event_id IN ?", userID, deviceID, eventIDs).
+		Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]string, len(rows))
+	for _, row := range rows {
+		out[row.EventID] = row.TxnID
+	}
+	return out, nil
 }
 
 // Expire implements [TxnRepo].

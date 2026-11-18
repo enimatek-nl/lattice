@@ -58,7 +58,7 @@ func (a *App) handleSendEvent(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, r, err)
 		return
 	}
-	event, err := a.svc.SendRoomEvent(r.Context(), r.PathValue("roomId"), auth.GetUserID(r), eventType, content, r.PathValue("txnId"))
+	event, err := a.svc.SendRoomEvent(r.Context(), r.PathValue("roomId"), auth.GetUserID(r), auth.GetDeviceID(r), eventType, content, r.PathValue("txnId"))
 	if err != nil {
 		a.writeError(w, r, err)
 		return
@@ -81,7 +81,7 @@ func (a *App) handleSetRoomState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	txnID := queryValue(r, "txnId", "")
-	event, err := a.svc.SetRoomState(r.Context(), r.PathValue("roomId"), auth.GetUserID(r),
+	event, err := a.svc.SetRoomState(r.Context(), r.PathValue("roomId"), auth.GetUserID(r), auth.GetDeviceID(r),
 		r.PathValue("eventType"), r.PathValue("stateKey"), content, txnID)
 	if err != nil {
 		a.writeError(w, r, err)
@@ -142,7 +142,7 @@ func (a *App) handleRoomStateKey(w http.ResponseWriter, r *http.Request) {
 
 // handleGetEvent implements GET /_matrix/client/v3/rooms/{roomId}/event/{eventId}.
 func (a *App) handleGetEvent(w http.ResponseWriter, r *http.Request) {
-	event, err := a.svc.RoomEvent(r.Context(), r.PathValue("roomId"), r.PathValue("eventId"), auth.GetUserID(r))
+	event, err := a.svc.RoomEvent(r.Context(), r.PathValue("roomId"), r.PathValue("eventId"), auth.GetUserID(r), auth.GetDeviceID(r))
 	if err != nil {
 		a.writeError(w, r, err)
 		return
@@ -168,6 +168,7 @@ func (a *App) handleMessages(w http.ResponseWriter, r *http.Request) {
 	result, err := a.svc.History(r.Context(), service.HistoryParams{
 		RoomID:    r.PathValue("roomId"),
 		UserID:    auth.GetUserID(r),
+		DeviceID:  auth.GetDeviceID(r),
 		From:      queryValue(r, "from", ""),
 		Dir:       queryValue(r, "dir", "b"),
 		Limit:     limit,

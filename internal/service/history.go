@@ -23,6 +23,9 @@ type HistoryParams struct {
 	// asking for a piece of the room's history, and answering with everything from `from` forward
 	// hands it the rest of the room as well.
 	To string
+	// DeviceID is the device asking. It decides nothing about what may be read; it decides which
+	// of the events carry the reader's own `unsigned.transaction_id`.
+	DeviceID string
 }
 
 // HistoryResult is a page of room history.
@@ -137,6 +140,9 @@ func (s *Service) History(ctx context.Context, params HistoryParams) (*HistoryRe
 		readable = until
 	}
 	result := &HistoryResult{Chunk: toWire(readable)}
+	if err := s.transactionsFor(params.UserID, params.DeviceID, result.Chunk); err != nil {
+		return nil, err
+	}
 	if err := s.annotateThreads(params.RoomID, params.UserID, result.Chunk); err != nil {
 		return nil, err
 	}
@@ -217,7 +223,7 @@ func parseDirection(dir, fallback string) (string, error) {
 // caller what the room holds, which is the very thing history visibility exists to hide.
 // The reads that name a *room* - /messages, /context, /state - keep the 403 that says the
 // room itself is closed.
-func (s *Service) RoomEvent(ctx context.Context, roomID, eventID, userID string) (*matrix.Event, error) {
+func (s *Service) RoomEvent(ctx context.Context, roomID, eventID, userID, deviceID string) (*matrix.Event, error) {
 	if err := s.RequireReadable(ctx, roomID, userID); err != nil {
 		return nil, matrix.ErrNotFound("no event %s in room %s", eventID, roomID)
 	}
@@ -248,6 +254,9 @@ func (s *Service) RoomEvent(ctx context.Context, roomID, eventID, userID string)
 	// bundle a thread's summary, so a client opening one event sees the same
 	// unsigned.m.thread block it gets from /messages or /sync.
 	annotated := []matrix.Event{wire}
+	if err := s.transactionsFor(userID, deviceID, annotated); err != nil {
+		return nil, err
+	}
 	if err := s.annotateThreads(roomID, userID, annotated); err != nil {
 		return nil, err
 	}

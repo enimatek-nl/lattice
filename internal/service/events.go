@@ -22,6 +22,9 @@ type EventDraft struct {
 	// TxnID makes the append idempotent for a client transaction. It is only
 	// consulted for non-state events sent through SendRoomEvent.
 	TxnID string
+	// DeviceID is the device TxnID belongs to. It travels with the transaction so the reads
+	// can hand the note back to the device that wrote it - and only to that device.
+	DeviceID string
 	// Kind distinguishes the transaction namespaces of the txn log.
 	Kind string
 	// prebuilt carries an event that was built, hashed, signed and named outside this
@@ -167,6 +170,7 @@ func (s *Service) AppendEvent(ctx context.Context, draft *EventDraft) (*persist.
 				Kind:      txnKind(draft.Kind),
 				RoomID:    draft.RoomID,
 				TxnID:     draft.TxnID,
+				DeviceID:  draft.DeviceID,
 				EventID:   event.EventID,
 				StreamPos: pos,
 				SentTS:    event.OriginServerTS,
@@ -361,8 +365,10 @@ func relationOf(content matrix.RawMessage) (eventID, relType string) {
 }
 
 // SendRoomEvent appends a message-like event, honouring the client
-// transaction id so retries return the original event.
-func (s *Service) SendRoomEvent(ctx context.Context, roomID, sender, typ string, content matrix.RawMessage, txnID string) (*persist.Event, error) {
+// transaction id so retries return the original event. The device that asked
+// is recorded with it, because the transaction id is that device's note and
+// the reads give it back to nobody else.
+func (s *Service) SendRoomEvent(ctx context.Context, roomID, sender, deviceID, typ string, content matrix.RawMessage, txnID string) (*persist.Event, error) {
 	if event, replayed, err := s.replayTxn(sender, "room_event", roomID, txnID); err != nil {
 		return nil, err
 	} else if replayed {
@@ -372,18 +378,19 @@ func (s *Service) SendRoomEvent(ctx context.Context, roomID, sender, typ string,
 		return nil, err
 	}
 	return s.AppendEvent(ctx, &EventDraft{
-		RoomID:  roomID,
-		Type:    typ,
-		Sender:  sender,
-		Content: content,
-		TxnID:   txnID,
-		Kind:    "room_event",
+		RoomID:   roomID,
+		Type:     typ,
+		Sender:   sender,
+		DeviceID: deviceID,
+		Content:  content,
+		TxnID:    txnID,
+		Kind:     "room_event",
 	})
 }
 
 // SetRoomState appends a state event, honouring the optional transaction id
 // used for idempotent PUT /state requests.
-func (s *Service) SetRoomState(ctx context.Context, roomID, sender, typ, stateKey string, content matrix.RawMessage, txnID string) (*persist.Event, error) {
+func (s *Service) SetRoomState(ctx context.Context, roomID, sender, deviceID, typ, stateKey string, content matrix.RawMessage, txnID string) (*persist.Event, error) {
 	if event, replayed, err := s.replayTxn(sender, "state", roomID, txnID); err != nil {
 		return nil, err
 	} else if replayed {
@@ -411,10 +418,50 @@ func (s *Service) SetRoomState(ctx context.Context, roomID, sender, typ, stateKe
 		Type:     typ,
 		StateKey: StateKeyOf(stateKey),
 		Sender:   sender,
+		DeviceID: deviceID,
 		Content:  content,
 		TxnID:    txnID,
 		Kind:     "state",
 	})
+}
+
+// transactionsFor hands a device back the transaction ids it wrote itself.
+//
+// `unsigned.transaction_id` is not information about the room; it is the reader's own note
+// about a send it made, which is how a client that lost the answer to PUT /send recognises the
+// event it is now looking at. So it is looked up per reader - by user *and* device, in one
+// query for the whole page - and it is written on nothing else. A reader whose device is empty
+// (a server-internal read, a session that has been logged out) is simply not handed notes, and
+// events the device did not send keep the unsigned block they already had.
+func (s *Service) transactionsFor(userID, deviceID string, events []matrix.Event) error {
+	if deviceID == "" || len(events) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(events))
+	for _, event := range events {
+		// A note can only be about a send this user made, so events written by anybody else are
+		// not so much refused as never asked about - which is also what keeps the query small in
+		// a room where the reader mostly listens.
+		if event.Sender != userID {
+			continue
+		}
+		ids = append(ids, event.ID)
+	}
+	written, err := s.db.TxnRepo.ForSender(userID, deviceID, ids)
+	if err != nil {
+		return matrix.ErrInternal(err)
+	}
+	for i, event := range events {
+		txnID, ok := written[event.ID]
+		if !ok || txnID == "" {
+			continue
+		}
+		if events[i].Unsigned == nil {
+			events[i].Unsigned = matrix.Object{}
+		}
+		events[i].Unsigned["transaction_id"] = txnID
+	}
+	return nil
 }
 
 // unchangedState reports whether the state a client is about to write is the state the

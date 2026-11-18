@@ -120,7 +120,7 @@ func (s *Service) buildSync(ctx context.Context, params SyncParams, filter *Sync
 	ignored := s.ignoredUsers(ctx, userID)
 
 	for _, roomID := range joined {
-		room, roomChanged, err := s.joinedRoomSync(ctx, userID, roomID, since, params.Limit, filter, ignored)
+		room, roomChanged, err := s.joinedRoomSync(ctx, userID, params.DeviceID, roomID, since, params.Limit, filter, ignored)
 		if err != nil {
 			return nil, false, err
 		}
@@ -254,7 +254,7 @@ func (s *Service) buildSync(ctx context.Context, params SyncParams, filter *Sync
 }
 
 // joinedRoomSync renders the join section of one room.
-func (s *Service) joinedRoomSync(ctx context.Context, userID, roomID string, since uint64, limit int, filter *SyncFilter, ignored map[string]bool) (*matrix.JoinedRoom, bool, error) {
+func (s *Service) joinedRoomSync(ctx context.Context, userID, deviceID, roomID string, since uint64, limit int, filter *SyncFilter, ignored map[string]bool) (*matrix.JoinedRoom, bool, error) {
 	want := filter.timelineLimit(limit)
 	var events []*persist.Event
 	if want > 0 {
@@ -296,6 +296,11 @@ func (s *Service) joinedRoomSync(ctx context.Context, userID, roomID string, sin
 	}
 	if room.Timeline.Events == nil {
 		room.Timeline.Events = []matrix.Event{}
+	}
+	// The device that sent an event of this room gets its own transaction ids back: this is the
+	// local echo a client uses to match an event it is waiting for against the one it asked for.
+	if err := s.transactionsFor(userID, deviceID, room.Timeline.Events); err != nil {
+		return nil, false, err
 	}
 	if err := s.annotateThreads(roomID, userID, room.Timeline.Events); err != nil {
 		return nil, false, err
