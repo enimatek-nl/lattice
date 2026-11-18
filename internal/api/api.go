@@ -77,6 +77,12 @@ type Config struct {
 	// FederationRootCAs replaces the certificate authorities outbound federation
 	// requests trust. Empty means the system trust store.
 	FederationRootCAs *x509.CertPool
+	// FederationKeyPerspectives names the servers asked for the signing keys of a peer
+	// that cannot publish its own - a homeserver that was renamed, or deleted, leaves
+	// signed events behind in every room it spoke in, and without someone who saw its
+	// keys while it lived those rooms can never be verified again. Empty means the peer
+	// alone: faithful to the direct model, and unable to open such a room.
+	FederationKeyPerspectives []string
 }
 
 // App owns the HTTP handlers and their dependencies.
@@ -116,9 +122,10 @@ func New(svc *service.Service, store *auth.Store, cfg Config) *App {
 	}
 	if cfg.Federation {
 		app.federation = federation.NewTransport(svc, federation.Config{
-			PeerBaseURLs: cfg.FederationPeers,
-			UserAgent:    "Lattice/" + cfg.Version,
-			RootCAs:      cfg.FederationRootCAs,
+			PeerBaseURLs:    cfg.FederationPeers,
+			UserAgent:       "Lattice/" + cfg.Version,
+			RootCAs:         cfg.FederationRootCAs,
+			KeyPerspectives: cfg.FederationKeyPerspectives,
 		})
 		// The service sends federation traffic too - the outbox has to run with or
 		// without an inbound request - so it holds the same client the routes use.

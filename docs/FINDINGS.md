@@ -667,3 +667,58 @@ What is next at the front of the queue, in the order it reads cheapest-first: `G
 `TestGetRoomMembersAtPoint` waits on — then backfill for a late joiner, the gap
 `TestMessagesOverFederation` now names, which needs a federation read this server has never made.
 The six names that fail inside `MustSyncUntil` are still untriaged and belong before either.
+
+## Findings of 2026-11-18, evening — a room that cannot be verified, and what waiting for it costs
+
+Joining `#iaa:cluephone.org` from a real deployment produced a log full of lines like these and a
+client that sat on "Joining…" for minutes:
+
+```
+federation: the state of !hezP…:cluephone.org carries $abW…, which this server cannot verify:
+  the signing key ed25519:a_SkHH of rixo.nl could not be used:
+  requesting /_matrix/key/v2/server?origin=lattice.cybertim.net from rixo.nl:
+  dial tcp: lookup rixo.nl on 169.254.1.1:53: no such host
+```
+
+- **A room keeps the signatures of servers that stop existing, and one of them was enough to shut
+  the room.** `rixo.nl` and `tessera.oele.net` no longer resolve; `home.enimatek.nl` times out; the
+  state of one room carried events signed by each. Lattice asked only the server that signed an
+  event, which is the specification's *first* step, and stopped there. What that costs is worse than
+  a refused join: an unverifiable state event is left out of an applied join (`fedjoin.go`, "what
+  this server cannot verify, it leaves out of the state it keeps"), so the room is joined with
+  holes — and every later gap-fill then reports a disagreement with the peer about exactly those
+  state keys (`cluephone.org and this server disagree about m.room.member/@…: this server keeps $…
+  and will not take $… from a snapshot`), while the peer refuses what this server forwards for them.
+  A room in that state does not heal: it has to be left, forgotten, and joined again once its events
+  can be verified, because `ForgetRoom` refuses while joined and stored state is not re-verified.
+- **Keys of a peer that cannot publish them now come from a key server, and the peer is still asked
+  first.** `-key-perspectives` (default `matrix.org`) names the servers asked `POST
+  /_matrix/key/v2/query` after the peer's own answer failed or could not be believed. The answer is
+  held to the same discipline as the peer's: the document must name the server asked about and be
+  signed by the keys it publishes, or it is refused. A key server is a source the operator named — it
+  can relay keys and cannot invent a signature, since an event is only ever believed when the key it
+  names verifies it. What is *not* done yet: verifying the key server's own signature over the query
+  response, which is what would stop a tampering middlebox between this server and the key server it
+  trusts over TLS.
+- **An expired document is believed for the moments it covered, and for nothing newer.** The naive
+  rule — refuse any document past `valid_until_ts` — is what makes a dead server unverifiable, and
+  believing it without a bound would let a key retired in 2021 sign today's traffic. So the clock is
+  compared against the event: `VerifyKeyOfAsOf(server, keyID, origin_server_ts)` accepts a stale
+  document up to its own expiry, and a live request (a signature over *now*) still refuses it. An
+  event that names no timestamp is judged as of now, because an expired key is not a generous reading
+  of a missing field.
+- **The waiting was the other half of the bug, and the uglier one.** Every one of those fetches used
+  the transport's transaction timeout — thirty seconds each — no memory of a failure existed, and
+  verifying a room means verifying a hundred events at once, each fetching on its own. Five
+  unreachable names turned one join into minutes of timeouts, per event. A key document is now
+  fetched under its own ten-second budget, one fetch per server is in flight at a time, and a failed
+  attempt is remembered with a doubling hold-back (thirty seconds to five minutes) so the next caller
+  is answered from memory. That turns "one dead server" from a per-event tax into one short wait.
+- **`dial tcp 45.137.205.246:443: connect: connection refused` for a peer whose name is this box is
+  a deployment fact, not a peer's fault.** Container networks often cannot reach the host's own
+  public address, and a server that cannot reach `matrix.enimatek.nl` from inside a podman network
+  falls back to port 8448, gets nothing, and writes a log line that reads like the peer is broken —
+  or, when it lands on its own listener, like the peer's certificate is wrong. `--network=host`, or
+  `--add-host=<name>:host-gateway` per name, is the fix; the log now says which address it settled on
+  being unable to delegate, which is where an operator looks.
+

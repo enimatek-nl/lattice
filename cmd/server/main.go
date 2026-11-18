@@ -91,6 +91,8 @@ func main() {
 			"comma separated server=URL pairs that pin where a peer is reached, bypassing well-known delegation; for tunnels and tests")
 		federationAdvertise = flag.String("federation-advertise", "",
 			"host:port published under /.well-known/matrix/server as where peers reach this server, including for its signing key; empty means the server name, which means port 8448")
+		keyPerspectives = flag.String("key-perspectives", "matrix.org",
+			"comma separated key servers asked for the signing keys of a peer that cannot publish its own, which is how a room holding events from a homeserver that has since been renamed or deleted can still be verified; empty refuses such rooms")
 		tlsCert = flag.String("tls-cert", "",
 			"serve TLS with this certificate; with -tls-addr it is a second listener for federation traffic only")
 		tlsKey  = flag.String("tls-key", "", "the private key of -tls-cert")
@@ -175,6 +177,10 @@ func main() {
 		federationCAs = pool
 	}
 
+	// The servers asked for the keys of a peer that cannot publish its own. Named at
+	// startup too, because whether one was named decides whether a room holding the
+	// events of a dead homeserver can ever be verified.
+	keyServers := splitList(*keyPerspectives)
 	app := api.New(svc, auth.NewStore(tokens, db), api.Config{
 		ServerName:           *serverName,
 		Version:              service.LatticeVersion,
@@ -197,6 +203,8 @@ func main() {
 		FederationPeers:     peerOverrides(*federationPeers),
 		FederationAdvertise: *federationAdvertise,
 		FederationRootCAs:   federationCAs,
+
+		FederationKeyPerspectives: splitList(*keyPerspectives),
 	})
 
 	if *federationOn {
@@ -219,6 +227,16 @@ func main() {
 		} else {
 			log.Printf("federation: /.well-known/matrix/server advertises %s, so peers will knock on port 8448; "+
 				"a deployment reached through a reverse proxy should pass -federation-advertise host:port", *serverName)
+		}
+		// The other half of the key story. A peer that cannot publish its own signing
+		// keys - renamed, deleted, or simply broken - is only as verifiable as whoever
+		// remembered them, and a room holding one such event cannot be opened without it.
+		// An operator wondering why one such room will not join needs to see whether any
+		// key server was named at all.
+		if len(keyServers) == 0 {
+			log.Printf("federation: no key servers named, so a peer that cannot publish its own signing keys can never be verified, and every room holding one of its events stays shut")
+		} else {
+			log.Printf("federation: keys of peers that cannot publish their own are asked for at %s", strings.Join(keyServers, ", "))
 		}
 	}
 

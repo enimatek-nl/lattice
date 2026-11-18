@@ -931,11 +931,15 @@ func payloadObjects(value any) []matrix.Object {
 	return out
 }
 
-// payloadOriginTS reads the timestamp of a stored transaction.
+// payloadOriginTS reads the timestamp of a stored transaction, or of an event decoded
+// from a peer: JSON numbers arrive as float64 unless the decoder was told otherwise,
+// and a timestamp read as nothing at all is worse than a late one.
 func payloadOriginTS(payload matrix.Object) int64 {
 	switch typed := payload["origin_server_ts"].(type) {
 	case int64:
 		return typed
+	case float64:
+		return int64(typed)
 	case json.Number:
 		value, err := typed.Int64()
 		if err == nil {

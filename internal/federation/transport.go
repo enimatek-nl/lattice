@@ -61,7 +61,39 @@ const (
 	// server's keys. Without it, a flood of requests signed with an unknown key
 	// becomes a flood of outbound fetches.
 	keyRefetchGap = 30 * time.Second
+	// keyFetchTimeout bounds one attempt at a key document, which is a small document
+	// whose answer decides whether a peer can be spoken to at all. The transport's
+	// general timeout is for transactions carrying a room's worth of events; applying
+	// that to a key fetch means half a minute waiting for a server that is simply
+	// gone, and a room whose state names a handful of those servers multiplies it into
+	// minutes of a client staring at "Joining…".
+	keyFetchTimeout = 10 * time.Second
+	// keyFailureStart and keyFailureCap bound how long a failed key attempt is held
+	// back before another is made. A server removed from the DNS does not become
+	// reachable because an event of some room asks about it again, and without a
+	// memory of the failure every event of that room pays for the fetch again.
+	keyFailureStart = 30 * time.Second
+	keyFailureCap   = 5 * time.Minute
+	// staleKeyCache is how long a key document taken from a key server after its own
+	// expiry is kept. What was signed cannot change, so re-asking for it is expense
+	// without information.
+	staleKeyCache = 24 * time.Hour
 )
+
+// keyFailureWindow is how long a failed attempt at a server is held back: doubling
+// from [keyFailureStart] up to [keyFailureCap]. Enough distance that a dead peer
+// stops costing a room's worth of timeouts, short enough that a peer renewing its
+// certificate is not shut out for the rest of the day.
+func keyFailureWindow(attempts int) time.Duration {
+	window := keyFailureStart
+	for i := 1; i < attempts && window < keyFailureCap; i++ {
+		window *= 2
+	}
+	if window > keyFailureCap {
+		return keyFailureCap
+	}
+	return window
+}
 
 // Config configures a [Transport].
 type Config struct {
@@ -84,6 +116,22 @@ type Config struct {
 	// disabling verification, which would trade the one check that matters for
 	// convenience.
 	RootCAs *x509.CertPool
+	// KeyPerspectives names the servers asked for a peer's keys when the peer cannot
+	// hand them over itself - the second half of the specification's key exchange,
+	// which corroborates a peer's keys with a third party.
+	//
+	// It exists for the state a room carries about servers that no longer answer: a
+	// renamed or deleted homeserver leaves events behind in every room it spoke in,
+	// and its signing keys can then only come from someone who saw them while they
+	// were current. A key server is asked only after the peer's own answer failed or
+	// turned out unusable, so a healthy peer is still trusted the direct way the whole
+	// transport is built on.
+	KeyPerspectives []string
+	// KeyFetchTimeout bounds one attempt at a key document - at the peer itself, and
+	// at each key server asked after it. A small document whose answer decides whether
+	// a peer can be spoken to at all should not borrow the timeout of a transaction
+	// carrying a room's worth of events.
+	KeyFetchTimeout time.Duration
 }
 
 // Transport talks to other homeservers: it resolves their names, signs every
@@ -107,7 +155,14 @@ type Transport struct {
 	mu    sync.Mutex
 	keys  map[string]*keyEntry
 	peers map[string]*peerEntry
+	// flights holds the key fetch one server is currently busy with, so that the
+	// twenty events waiting for the same document do not each start one.
+	flights map[string]keyFlight
 }
+
+// keyFlight is the key fetch a server is busy with: waiting on its channel is waiting
+// for the answer to have reached the cache.
+type keyFlight chan struct{}
 
 // keyEntry is a peer's verified key set together with the moment it stops being
 // usable, which is the earlier of the document's own expiry and the seven day cap.
@@ -118,6 +173,16 @@ type keyEntry struct {
 	document  matrix.Object
 	expiresMS int64
 	fetchedMS int64
+	// stale says the set came from a document that had already passed its own
+	// valid_until_ts. Such a key verifies the events written while it was current and
+	// nothing newer, which is the difference between believing an old server and
+	// believing whoever answers for it today.
+	stale bool
+	// failures, failedMS and lastErr remember a failed attempt, so the next caller is
+	// answered from memory instead of by waiting all over again.
+	failures int
+	failedMS int64
+	lastErr  string
 }
 
 // peerEntry is a resolved base URL and how long it may be reused.
@@ -137,6 +202,9 @@ func NewTransport(identity Identity, cfg Config) *Transport {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
+	if cfg.KeyFetchTimeout <= 0 {
+		cfg.KeyFetchTimeout = keyFetchTimeout
+	}
 	transport := &http.Transport{}
 	if cfg.RootCAs != nil {
 		transport.TLSClientConfig = &tls.Config{RootCAs: cfg.RootCAs, MinVersion: tls.VersionTLS12}
@@ -148,6 +216,7 @@ func NewTransport(identity Identity, cfg Config) *Transport {
 		now:      cfg.Now,
 		keys:     map[string]*keyEntry{},
 		peers:    map[string]*peerEntry{},
+		flights:  map[string]keyFlight{},
 	}
 }
 
@@ -363,46 +432,210 @@ func (t *Transport) Keys(ctx context.Context, serverName string) (*KeySet, error
 	return t.keySet(ctx, serverName, false)
 }
 
-// keySet reads the cache and, if that is not enough, asks the peer.
+// keySet reads the cache and, when that cannot answer, fetches: first from the peer
+// itself, then from the key servers this transport was given.
+//
+// Three things decide how long a caller waits here, and all three exist because a
+// room's state is verified event by event. What the cache holds answers the question
+// whenever it is still in force. A failed attempt is remembered with growing
+// distance, so a server that no longer answers is waited for once rather than once
+// per event of every room that still names it. And one attempt per server is in
+// flight at a time, because verifying a room means asking the same handful of
+// questions at the same moment.
 func (t *Transport) keySet(ctx context.Context, serverName string, force bool) (*KeySet, error) {
-	nowMS := t.now().UnixMilli()
-	t.mu.Lock()
-	entry := t.keys[serverName]
-	fresh := entry != nil && entry.expiresMS > nowMS
-	// A forced fetch is still throttled. Both reasons for forcing one - an unknown
-	// key id and a validity window the cache cannot cover - can be provoked by a
-	// peer, and a homeserver that answers every provocation with an outbound
-	// request is a reflection amplifier.
-	if force && entry != nil && nowMS-entry.fetchedMS < keyRefetchGap.Milliseconds() {
-		force = false
-	}
-	t.mu.Unlock()
-	if fresh && !force {
-		return entry.set, nil
-	}
-	document, err := t.Get(ctx, serverName, "/_matrix/key/v2/server", nil)
-	if err != nil {
-		// A peer that is briefly unreachable must not invalidate the keys that
-		// are still inside their validity window: signatures of older events have
-		// to stay checkable, and the specification asks the same of notaries.
-		if entry != nil && entry.expiresMS > nowMS {
-			return entry.set, nil
+	for {
+		nowMS := t.now().UnixMilli()
+		t.mu.Lock()
+		entry := t.keys[serverName]
+		// A forced refresh is still throttled. Both reasons for forcing one - an unknown
+		// key id and a validity window the cache cannot cover - can be provoked by a
+		// peer, and a homeserver that answers every provocation with an outbound request
+		// is a reflection amplifier.
+		if entry != nil && entry.expiresMS > nowMS &&
+			(!force || nowMS-entry.fetchedMS < keyRefetchGap.Milliseconds()) {
+			set := entry.set
+			t.mu.Unlock()
+			return set, nil
 		}
-		return nil, err
+		if entry != nil && entry.failures > 0 &&
+			nowMS-entry.failedMS < keyFailureWindow(entry.failures).Milliseconds() {
+			window := keyFailureWindow(entry.failures)
+			message := entry.lastErr
+			t.mu.Unlock()
+			return nil, fmt.Errorf("no key could be had for %s: %s (nothing is asked of that server again for %s)",
+				serverName, message, window)
+		}
+		// Whoever is already fetching this server's document wants the same answer, so
+		// wait for them and read what they left behind.
+		if waiting := t.flights[serverName]; waiting != nil {
+			t.mu.Unlock()
+			select {
+			case <-waiting:
+				continue
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		t.flights[serverName] = make(keyFlight)
+		t.mu.Unlock()
+
+		fetched, err := t.fetchKeys(ctx, serverName, nowMS)
+
+		t.mu.Lock()
+		close(t.flights[serverName])
+		delete(t.flights, serverName)
+		if entry == nil {
+			entry = &keyEntry{}
+			t.keys[serverName] = entry
+		}
+		failedMS := t.now().UnixMilli()
+		switch {
+		case err != nil && entry.set != nil && entry.expiresMS > failedMS:
+			// A peer that is briefly unreachable must not invalidate the keys that are
+			// still inside their validity window: signatures of older events have to stay
+			// checkable, and the specification asks the same of key servers.
+			err = nil
+		case err != nil:
+			entry.failures++
+			entry.failedMS = failedMS
+			entry.lastErr = err.Error()
+		default:
+			entry.set = fetched.set
+			entry.document = fetched.document
+			entry.stale = fetched.stale
+			if fetched.stale {
+				// What was signed cannot change, so the document is kept for a while; it is
+				// only ever believed about events written before its own moment.
+				entry.expiresMS = failedMS + staleKeyCache.Milliseconds()
+			} else {
+				entry.expiresMS = fetched.set.Expires(failedMS)
+			}
+			entry.fetchedMS = failedMS
+			entry.failures = 0
+			entry.lastErr = ""
+		}
+		set := entry.set
+		t.mu.Unlock()
+		if err != nil {
+			return nil, err
+		}
+		if set == nil {
+			return nil, fmt.Errorf("no keys are known for %s", serverName)
+		}
+		return set, nil
 	}
-	set, err := VerifyKeyDocument(document, serverName, nowMS)
+}
+
+// keyFetch is what one attempt at a peer's signing keys produced.
+type keyFetch struct {
+	set      *KeySet
+	document matrix.Object
+	// stale says the document had already passed its own valid_until_ts when it
+	// arrived, which is normal for a server that has been dead for years and is
+	// answered by someone who saw the document while it lived.
+	stale bool
+}
+
+// fetchKeys asks the peer for its own key document and, when that cannot be had or
+// cannot be believed, asks each named key server in turn.
+//
+// The peer is always asked first: trusting a peer's own keys over a TLS connection is
+// the model this transport is built on, and a key server only corroborates it. What is
+// asked of a key server's answer is that the document names the server asked about and
+// is signed by the keys it publishes - the same discipline the peer's own answer is
+// held to, and the boundary past which a key server stops corroborating and starts
+// choosing. A key server is otherwise a source the operator named, which is the trust
+// the whole scheme rests on: whoever is named can relay keys, and cannot invent a
+// signature - an event is only ever believed when the key it names verifies it.
+//
+// A key server's answer is then judged as a document rather than as a fresh one - the
+// clock is left out on purpose, because the reason a dead server's keys are wanted is
+// to verify events it signed while it was alive. [Transport.VerifyKeyOfAsOf] is what
+// keeps that belief bounded: such a key verifies the events written up to its own
+// expiry and nothing newer.
+func (t *Transport) fetchKeys(ctx context.Context, serverName string, nowMS int64) (keyFetch, error) {
+	document, err := t.getKeyDocument(ctx, serverName)
+	if err == nil {
+		set, verr := VerifyKeyDocument(document, serverName, nowMS)
+		if verr == nil {
+			return keyFetch{set: set, document: document}, nil
+		}
+		err = verr
+	}
+	if len(t.cfg.KeyPerspectives) == 0 {
+		return keyFetch{}, err
+	}
+	problem := fmt.Errorf("no key server answered (the server itself said: %v)", err)
+	for _, notary := range t.cfg.KeyPerspectives {
+		if notary == "" || notary == serverName {
+			continue
+		}
+		handed, qerr := t.queryKeyServer(ctx, notary, serverName)
+		if qerr != nil {
+			// Both halves belong in the error. "Why can this room not be opened" is asked
+			// of an operator who has to fix one of two things: a peer that is not answering,
+			// or a key server that was never told about it.
+			problem = fmt.Errorf("%s: %v (the server itself said: %v)", notary, qerr, err)
+			continue
+		}
+		set, verr := verifyKeyDocument(handed, serverName)
+		if verr != nil {
+			// A document that does not name the asked server, or is not signed by the keys
+			// it publishes, is refused rather than forgiven: that is the one check standing
+			// between this server and a key server vouching for anything it likes.
+			problem = fmt.Errorf("%s answered for %s, and the answer does not hold: %v", notary, serverName, verr)
+			continue
+		}
+		return keyFetch{set: set, document: handed, stale: set.ValidUntilMS <= nowMS}, nil
+	}
+	return keyFetch{}, problem
+}
+
+// getKeyDocument asks a peer for its own published keys, under the short bound a small
+// document deserves.
+func (t *Transport) getKeyDocument(ctx context.Context, serverName string) (matrix.Object, error) {
+	fetchCtx, cancel := context.WithTimeout(ctx, t.cfg.KeyFetchTimeout)
+	defer cancel()
+	return t.Get(fetchCtx, serverName, "/_matrix/key/v2/server", nil)
+}
+
+// queryKeyServer asks one key server for another server's keys. The specification's
+// answer is a list of documents plus a map naming the servers it could not answer for;
+// the document naming the server asked about is the one that counts, and a missing one
+// is reported with whatever reason the key server gave.
+func (t *Transport) queryKeyServer(ctx context.Context, notary, serverName string) (matrix.Object, error) {
+	fetchCtx, cancel := context.WithTimeout(ctx, t.cfg.KeyFetchTimeout)
+	defer cancel()
+	answer, err := t.Post(fetchCtx, notary, "/_matrix/key/v2/query", matrix.Object{
+		"server_keys": matrix.Object{serverName: matrix.Object{}},
+	})
 	if err != nil {
 		return nil, err
 	}
-	t.mu.Lock()
-	t.keys[serverName] = &keyEntry{
-		set:       set,
-		document:  document,
-		expiresMS: set.Expires(nowMS),
-		fetchedMS: nowMS,
+	if reason := failureReason(answer, serverName); reason != "" {
+		return nil, fmt.Errorf("it says: %s", reason)
 	}
-	t.mu.Unlock()
-	return set, nil
+	documents, err := objectList(answer["server_keys"], "server_keys", false)
+	if err != nil {
+		return nil, err
+	}
+	for _, document := range documents {
+		if named, _ := document["server_name"].(string); named == serverName {
+			return document, nil
+		}
+	}
+	return nil, fmt.Errorf("it holds no keys for %s", serverName)
+}
+
+// failureReason reads what a key server said about the one server it could not answer
+// for.
+func failureReason(answer matrix.Object, serverName string) string {
+	failures, _ := answer["failures"].(map[string]any)
+	if failures == nil {
+		return ""
+	}
+	reason, _ := failures[serverName].(string)
+	return reason
 }
 
 // PeerKeys returns a peer's verified keys together with the published document.
@@ -433,17 +666,33 @@ func (t *Transport) PeerKeys(ctx context.Context, serverName string, minValidUnt
 	return set, document, nil
 }
 
-// VerifyKeyOf resolves the key a peer signed with. An unknown key id triggers one
-// refresh of that peer's document - keys are rotated, and the classic symptom of
-// a cache that never refreshes is a peer whose every request is refused after it
-// reboots - but never more than once per [keyRefetchGap], so an attacker cannot
-// turn bad requests into outbound traffic.
+// VerifyKeyOf resolves the key a peer signed with, for something happening now: a
+// request arriving over the wire, or a key server's answer about a live server. A key
+// known only from a document that has since expired is refused here, whatever it once
+// signed.
 func (t *Transport) VerifyKeyOf(ctx context.Context, serverName, keyID string) (ed25519.PublicKey, error) {
+	return t.VerifyKeyOfAsOf(ctx, serverName, keyID, t.now().UnixMilli())
+}
+
+// VerifyKeyOfAsOf resolves the key that signed something written at asOfMS. The moment
+// matters because a room keeps verifying events whose servers have been gone for years:
+// a key learned from a key server after that document expired is believed for those
+// events and for nothing written after the document's own expiry, which is the
+// difference between believing an old server and believing whoever answers for it today.
+//
+// An unknown key id triggers one refresh of that peer's document - keys are rotated,
+// and the classic symptom of a cache that never refreshes is a peer whose every request
+// is refused after it reboots - but never more than once per [keyRefetchGap], so an
+// attacker cannot turn bad requests into outbound traffic.
+func (t *Transport) VerifyKeyOfAsOf(ctx context.Context, serverName, keyID string, asOfMS int64) (ed25519.PublicKey, error) {
 	set, err := t.keySet(ctx, serverName, false)
 	if err != nil {
 		return nil, err
 	}
 	if publicKey, found := set.Key(keyID); found {
+		if err := t.believes(set, keyID, asOfMS); err != nil {
+			return nil, err
+		}
 		return publicKey, nil
 	}
 	nowMS := t.now().UnixMilli()
@@ -462,7 +711,31 @@ func (t *Transport) VerifyKeyOf(ctx context.Context, serverName, keyID string) (
 	if !found {
 		return nil, fmt.Errorf("%s signed with %s, which it does not publish", serverName, keyID)
 	}
+	if err := t.believes(set, keyID, asOfMS); err != nil {
+		return nil, err
+	}
 	return publicKey, nil
+}
+
+// believes is the bound that comes with a stale document: its keys are the peer's, but
+// only up to the moment the peer stopped vouching for them.
+func (t *Transport) believes(set *KeySet, keyID string, asOfMS int64) error {
+	if asOfMS <= set.ValidUntilMS {
+		return nil
+	}
+	t.mu.Lock()
+	stale := false
+	if entry := t.keys[set.ServerName]; entry != nil {
+		stale = entry.stale
+	}
+	t.mu.Unlock()
+	if !stale {
+		// A document fetched from the peer itself carries its own expiry and is in force
+		// until then; anything reaching here with a stale document has a cache to read.
+		return nil
+	}
+	return fmt.Errorf("the key %s is known only from %s's expired document, which vouches for nothing written after %d",
+		keyID, set.ServerName, set.ValidUntilMS)
 }
 
 // baseURL resolves where a server name is reachable: an injected URL, then the

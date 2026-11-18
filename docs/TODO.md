@@ -33,13 +33,13 @@ because it said nothing these steps do not.
 | Measure | Now |
 |---|---|
 | `make build vet` | clean; `make lint` reports **7 issues** (6 staticcheck, 1 unused) from golangci-lint 2.15 — pre-existing quickfix-style findings, none from the 2026-11-18 work |
-| this repository's own tests | **332** — 173 client-API compatibility, 89 two-server federation, 70 offline unit (`go test ./...`, green) |
+| this repository's own tests | **340** — 173 client-API compatibility, 89 two-server federation, 78 offline unit (`go test ./...`, green) |
 | Complement `tests/csapi` | **82 green of 106**, 2 skipped, and the package **finishes** (~6 min) — it did not finish before 2026-11-18, see [COMPLEMENT.md](COMPLEMENT.md) |
 | Complement server-server (`tests`, not `tests/federation`) | **78 green of 91** (measured 2026-11-04 evening, after the state-handshake change; not re-run since) |
 | endpoints | **180 of 234** indexed routes implemented, 44 routes the index does not name (`make endpoints`, measured 2026-11-18) |
 | spec | target v1.19 (the endpoint index it is built from), room versions 1-12 understood, new rooms default to v11; `/versions` advertises v1.0-v1.11 — see queue A |
 | release | **v0.2.0** tagged 2026-11-18 at `3323056` — the first tag of this history; `ghcr.io/enimatek-nl/lattice` publishes `0.2.0`, `0.2` and `latest` (index `sha256:737101900ffb…`) for `linux/amd64` and `linux/arm64`, and the image answers `lattice 0.2.0` and `/versions` when it is started |
-| federation | live behind `-federation` (default off); one rulebook judges what this server signs and what a peer sends (step 20) |
+| federation | live behind `-federation` (default off); one rulebook judges what this server signs and what a peer sends (step 20); keys of a peer that cannot publish its own are asked for at the key servers named by `-key-perspectives` (`matrix.org` by default) |
 
 The 2026-11-04 tally of "95 green of 106" was not produced by one completing run — the package
 never completed, because `/messages` kept handing back an `end` at the start of a room and
@@ -134,12 +134,27 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
 
 ### C. Federation and interop
 
+- [ ] A join has no budget of its own. A key document is fetched under ten seconds and a server that
+      answered nothing is asked again only after a hold-back, but the first pass over a room whose
+      state names five gone-away servers still waits for each of them one after another. The complete
+      answer is one deadline for the whole verification, shared by every key it needs — what a client
+      deserves is "this room cannot be verified, here is which server", not a longer wait.
+- [ ] Verify the key server's own signature over a `keys/query` answer. What is checked today is that
+      each document names the server asked about and is signed by the keys it publishes; the signature
+      over the aggregate response is what tells this server that the answer came from the key server
+      it named rather than from something between them (TLS covers the wire today, so this is closing
+      the trust boundary rather than opening a hole).
+- [ ] Answering a key query about *this* server's own name should read the local keyring. Asked by a
+      peer acting as a notary, the lookup goes out over the federation port and lands on this server's
+      own listener — which needs `-key-perspectives` to name a server that is not this one, and costs
+      a round trip through the network for an answer held in the database.
 - [ ] Rejected-event bookkeeping (`/missing_events` and the rejected-event routes) — four Complement cases.
 - [ ] Federation `POST /v1/publicRooms` at v1 (both public-room routes were registered at `/v3`).
 - [ ] Verify the authorising server's signature on a restricted join, rather than trusting the claim.
 - [ ] Refresh the server-server red list and re-rank what the 30 remaining cases are waiting on.
 - [x] `PUT /v1|v2/invite/{roomId}/{eventId}` — served, with invite rejection and rescinding (verified 2026-11-04; the gap lists that claimed otherwise were stale).
 - [x] Gap filling both ways, and closing a hole a chunked answer left by fetching the missing parents by id (steps 11, 24).
+- [x] **Keys of servers that can no longer publish them** — `-key-perspectives` (default `matrix.org`) asks a key server after the peer's own answer failed, holds its answer to the same discipline (names the asked server, signed by the keys it publishes), and believes an expired document only for events written before its own expiry. A key fetch now has its own ten-second budget, one flight per server, and a remembered hold-back after a failure: what a dead name costs is one short wait, not a timeout per event (2026-11-18, and the reason a room holding `rixo.nl` or `tessera.oele.net` events could not be joined at all).
 - [x] Knocking, restricted rooms and the space summary that authorises them, both directions (steps 17-19).
 
 ### D. Client surface a user feels

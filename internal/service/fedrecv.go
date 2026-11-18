@@ -8,6 +8,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/enimatek-nl/lattice/internal/eventcrypto"
 
@@ -353,8 +354,18 @@ func (s *Service) verifyPDUSignature(ctx context.Context, pdu matrix.Object, ver
 			return fmt.Sprintf("the event carries no signature by %s, which made it", serverName)
 		}
 		var problem = "the signature of the event does not verify"
+		// The event's own moment decides which key may verify it. A key known only from a
+		// document that has since expired is good for the events written while that
+		// document lived - which is how a room still accepts what a long-dead server
+		// signed - and useless for anything newer.
+		asOfMS := payloadOriginTS(pdu)
+		if asOfMS <= 0 {
+			// An event naming no moment of its own is judged as if it were being written
+			// now: an expired key is not offered as a generous reading of a missing field.
+			asOfMS = time.Now().UnixMilli()
+		}
 		for keyID := range byKey {
-			publicKey, err := transport.VerifyKeyOf(ctx, serverName, keyID)
+			publicKey, err := transport.VerifyKeyOfAsOf(ctx, serverName, keyID, asOfMS)
 			if err != nil {
 				problem = fmt.Sprintf("the signing key %s of %s could not be used: %v", keyID, serverName, err)
 				continue

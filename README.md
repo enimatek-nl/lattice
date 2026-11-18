@@ -156,6 +156,18 @@ the whole of opting in; a room that belongs to one server alone is created with
 - **Identity.** An ed25519 signing key is generated once and kept in the database,
   published at `/_matrix/key/v2/server`. Every request Lattice sends is signed, and
   every request it receives must be.
+- **Keys of servers that can no longer publish them.** A homeserver that is renamed or
+  deleted leaves its signatures behind in every room it spoke in, and a room whose state
+  carries one event whose signature cannot be verified cannot be joined at all. So after
+  asking a peer for its own keys and getting nothing usable, Lattice asks the key servers
+  named by `-key-perspectives` (`matrix.org` by default) for what they saw. What comes
+  back is held to the same discipline as the peer's own answer — the document has to name
+  the server asked about and be signed by the keys it publishes — and a document past its
+  own `valid_until_ts` is believed for events written before that moment and for nothing
+  newer, which is what keeps a dead name's old key from signing today's traffic. One
+  attempt at a key document is waited for ten seconds, only one is in flight per server,
+  and a server that answered nothing is asked again only after a backoff: a room holding
+  events from several gone-away servers costs a join seconds, not minutes.
 - **The membership handshakes.** `make_join` / `send_join`, `make_leave` / `send_leave`,
   and `invite` with the stripped state that authorises it — so a user on Lattice can
   join a room on another server, leave it, be invited into one they have never seen,
@@ -313,6 +325,7 @@ whichever account somebody adds next.
 | `-federation` | `LATTICE_FEDERATION` | `false` | serve the server-server API and publish this server's signing key |
 | `-federation-advertise` | `LATTICE_FEDERATION_ADVERTISE` | _(empty)_ | `host:port` to publish under `/.well-known/matrix/server` |
 | `-federation-peer` | `LATTICE_FEDERATION_PEER` | _(empty)_ | `server=URL` pairs pinning where a peer is reached (tunnels, tests) |
+| `-key-perspectives` | `LATTICE_KEY_PERSPECTIVES` | `matrix.org` | key servers asked for the signing keys of a peer that cannot publish its own; empty refuses every room holding such a server |
 | `-federation-flush` | `LATTICE_FEDERATION_FLUSH` | `1s` | how often queued federation traffic is retried |
 | `-version` | — | `false` | print the version and exit |
 

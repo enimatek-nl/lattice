@@ -227,6 +227,24 @@ func (s *KeySet) KeyIDs() []string {
 // is the rule the specification imposes so a long-dated key cannot outlive a
 // compromise.
 func VerifyKeyDocument(document matrix.Object, serverName string, nowMS int64) (*KeySet, error) {
+	set, err := verifyKeyDocument(document, serverName)
+	if err != nil {
+		return nil, err
+	}
+	if set.ValidUntilMS <= nowMS {
+		return nil, fmt.Errorf("the key document of %s expired at %d", serverName, set.ValidUntilMS)
+	}
+	return set, nil
+}
+
+// verifyKeyDocument judges a published key document without consulting the clock:
+// that it names the server it was asked for, that its keys decode, and that one of
+// those keys signed the document itself. Those three are what make a document proof
+// rather than a claim, and they hold whatever its `valid_until_ts` says - which is
+// why a key server may hand over a document that expired long ago and still be
+// believed about events written while it was current. [VerifyKeyDocument] adds the
+// clock to that, because a live request has to be signed by a key still in force.
+func verifyKeyDocument(document matrix.Object, serverName string) (*KeySet, error) {
 	claimed, _ := document["server_name"].(string)
 	if claimed == "" {
 		return nil, fmt.Errorf("the key document names no server")
@@ -237,9 +255,6 @@ func VerifyKeyDocument(document matrix.Object, serverName string, nowMS int64) (
 	validUntil, err := documentInt64(document, "valid_until_ts")
 	if err != nil {
 		return nil, err
-	}
-	if validUntil <= nowMS {
-		return nil, fmt.Errorf("the key document of %s expired at %d", serverName, validUntil)
 	}
 	keys, err := decodeVerifyKeys(document, "verify_keys", true)
 	if err != nil {
