@@ -27,8 +27,14 @@ type HistoryParams struct {
 
 // HistoryResult is a page of room history.
 type HistoryResult struct {
-	Start string         `json:"start"`
-	End   string         `json:"end"`
+	Start string `json:"start"`
+	// End is where to page on from. It is *absent* when there is nothing further to read - the
+	// walk reached the beginning of the room, or the far bound the client named - because
+	// "this property is omitted from the response" is the only way the specification lets a
+	// server say the walk is over. An `end` that is always present, including the empty page
+	// that repeats `from`, leaves a conforming client - Complement's TestMessagesOverFederation
+	// among them - asking for the same page for as long as the process lives.
+	End   string         `json:"end,omitempty"`
 	Chunk []matrix.Event `json:"chunk"`
 	State []matrix.Event `json:"state,omitempty"`
 }
@@ -62,9 +68,16 @@ func (s *Service) History(ctx context.Context, params HistoryParams) (*HistoryRe
 	if err != nil {
 		return nil, err
 	}
-	events, err := s.db.EventRepo.History(params.RoomID, from, dir, limit, notBefore)
+	// The walk asks for one event more than the page can carry. That extra row is never shown;
+	// it is how the answer knows whether anything lies beyond the page, which is the difference
+	// between a token to page on with and a page that has run out of room.
+	events, err := s.db.EventRepo.History(params.RoomID, from, dir, limit+1, notBefore)
 	if err != nil {
 		return nil, matrix.ErrInternal(err)
+	}
+	hasMore := len(events) > limit
+	if hasMore {
+		events = events[:limit]
 	}
 	// MSC2675: which events of the window the user may see depends on when they were in the
 	// room. The page's cursors stay those of the window that was walked, filtered or not, so
@@ -94,6 +107,17 @@ func (s *Service) History(ctx context.Context, params HistoryParams) (*HistoryRe
 			}
 		}
 		events = bounded
+		// A bounded walk is over once it has touched its bound, however much room lies beyond it:
+		// the client named the far end of the window, and an `end` past that bound would only be a
+		// way to walk on past what it asked for. Which end of the page touches the bound depends
+		// on which way the page was walked - "b" ends at its oldest, "f" at its newest.
+		if len(events) == 0 {
+			hasMore = false
+		} else if dir == "b" {
+			hasMore = hasMore && events[len(events)-1].StreamPos > to
+		} else {
+			hasMore = hasMore && events[0].StreamPos < to
+		}
 	}
 	readable, _ := gate.keepReadable(events)
 	// A former member of a room whose history opened at the join reads it as of their leave:
@@ -118,15 +142,24 @@ func (s *Service) History(ctx context.Context, params HistoryParams) (*HistoryRe
 	}
 	if len(events) == 0 {
 		result.Start = s.Token(from)
-		result.End = s.Token(from)
+		// Nothing for this page. If the walk found something beyond it anyway - a run of events
+		// the reader may not see, a filter that matched none of them - there is another page to
+		// try; if it found nothing, the room is finished and says so by not answering.
+		if hasMore {
+			result.End = s.Token(from)
+		}
 		return result, nil
 	}
 	if dir == "b" {
 		result.Start = s.Token(events[0].StreamPos)
-		result.End = s.Token(events[len(events)-1].StreamPos)
+		if hasMore {
+			result.End = s.Token(events[len(events)-1].StreamPos)
+		}
 	} else {
 		result.Start = s.Token(events[0].StreamPos)
-		result.End = s.Token(events[len(events)-1].StreamPos + 1)
+		if hasMore {
+			result.End = s.Token(events[len(events)-1].StreamPos + 1)
+		}
 	}
 
 	// A filter that asks for lazy loaded members gets a state block of one thing: the membership

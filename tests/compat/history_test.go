@@ -1183,3 +1183,96 @@ func TestHistoryVisibilityOpensTheRoomWhenTheUserArrived(t *testing.T) {
 		}
 	}
 }
+
+// TestPaginatingBackwardsStopsAtTheStartOfTheRoom is the part of `/messages` a client cannot
+// work around: how the server says it is out of history.
+//
+// The specification answers by saying nothing - "`end`: If no further events are available
+// (either because we have reached the start of the timeline, or because the user does not have
+// permission to see any more events), this property is omitted from the response" - and
+// Complement takes that literally: it paginates until `end` is absent. A server that always
+// answers with an `end`, including the token of its own oldest event and including an empty
+// page that repeats `from`, leaves a conforming client asking for the same page forever.
+// Because each of those pages re-walks the room, the loop is not merely wrong but expensive:
+// TestMessagesOverFederation burns a core for the rest of the suite's timeout.
+func TestPaginatingBackwardsStopsAtTheStartOfTheRoom(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	roomID := server.CreateRoom(alice, map[string]any{"preset": "public_chat"})
+
+	const sent = 25
+	var ids []string
+	for i := 0; i < sent; i++ {
+		ids = append(ids, server.Send(alice, roomID, fmt.Sprintf("walk-%02d", i), fmt.Sprintf("walked message %02d", i)))
+	}
+	at := func(id string) int {
+		for i, want := range ids {
+			if want == id {
+				return i
+			}
+		}
+		return -1
+	}
+
+	// Paginate until the room stops answering with `end`. The bound is a fuse, not a
+	// expectation: 25 messages over pages of 10 cannot need more than three pages, so a walk
+	// that is still going at ten has not stopped at all.
+	const pages = 10
+	var seen []string
+	from := ""
+	stopped := false
+	for page := 0; page < pages; page++ {
+		path := "/_matrix/client/v3/rooms/" + roomID + "/messages?dir=b&limit=10"
+		if from != "" {
+			path += "&from=" + url.QueryEscape(from)
+		}
+		resp := server.MustDo(http.MethodGet, path, alice.Token, nil, http.StatusOK)
+		chunk, _ := resp.Body["chunk"].([]any)
+		for _, raw := range chunk {
+			event, _ := raw.(map[string]any)
+			if id, _ := event["event_id"].(string); id != "" {
+				seen = append(seen, id)
+			}
+		}
+		end, more := resp.Body["end"]
+		if !more {
+			stopped = true
+			break
+		}
+		next, _ := end.(string)
+		if page > 0 && next == from {
+			t.Fatalf("page %d of a backward walk answered `end`=%q, the token it was asked to page from: %s", page+1, next, resp.Raw)
+		}
+		from = next
+	}
+	if !stopped {
+		t.Fatalf("%d pages of /messages still answered an `end` token; the room is 25 messages deep and a walk that never ends leaves the client spinning", pages)
+	}
+
+	// Every message of the room exactly once, newest first: stopping is only worth anything if
+	// the walk that stopped had covered the room without repeating or dropping events.
+	var walked []int
+	seenIDs := map[string]bool{}
+	for _, id := range seen {
+		i := at(id)
+		if i < 0 {
+			continue // state and membership events share a chunk with the messages
+		}
+		if seenIDs[id] {
+			t.Fatalf("the walk served %s twice: %v", id, seen)
+		}
+		seenIDs[id] = true
+		walked = append(walked, i)
+	}
+	if len(walked) != sent {
+		t.Fatalf("the walk carried %d of the %d messages: %v", len(walked), sent, walked)
+	}
+	for i := 1; i < len(walked); i++ {
+		if walked[i] != walked[i-1]-1 {
+			t.Fatalf("the walk went %d -> %d; a backward page serves the messages in the order the room wrote them backwards: %v", walked[i-1], walked[i], walked)
+		}
+	}
+	if walked[0] != sent-1 {
+		t.Fatalf("the walk started at message %d instead of the newest (%d): %v", walked[0], sent-1, walked)
+	}
+}
