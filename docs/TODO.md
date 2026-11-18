@@ -33,12 +33,12 @@ because it said nothing these steps do not.
 | Measure | Now |
 |---|---|
 | `make build vet` | clean; `make lint` reports **7 issues** (6 staticcheck, 1 unused) from golangci-lint 2.15 — pre-existing quickfix-style findings, none from the 2026-11-18 work |
-| this repository's own tests | **340** — 173 client-API compatibility, 89 two-server federation, 78 offline unit (`go test ./...`, green) |
+| this repository's own tests | **342** — 173 client-API compatibility, 89 two-server federation, 80 offline unit (`go test ./...`, green) |
 | Complement `tests/csapi` | **82 green of 106**, 2 skipped, and the package **finishes** (~6 min) — it did not finish before 2026-11-18, see [COMPLEMENT.md](COMPLEMENT.md) |
 | Complement server-server (`tests`, not `tests/federation`) | **78 green of 91** (measured 2026-11-04 evening, after the state-handshake change; not re-run since) |
 | endpoints | **180 of 234** indexed routes implemented, 44 routes the index does not name (`make endpoints`, measured 2026-11-18) |
 | spec | target v1.19 (the endpoint index it is built from), room versions 1-12 understood, new rooms default to v11; `/versions` advertises v1.0-v1.11 — see queue A |
-| release | **v0.2.1** tagged 2026-11-18 at `4dde184` — `ghcr.io/enimatek-nl/lattice` publishes `0.2.1`, `0.2` and `latest` (index `sha256:6497ab9426ab…`, `linux/amd64` `sha256:17becddbb6fb…`, `linux/arm64` `sha256:b73833e3b670…`); the image workflow refuses a tag that is not `LatticeVersion` in `internal/service/capabilities.go`, so the version constant and the test version in `tests/federation/harness.go` move with every tag (`v0.2.0` was the first tag of this history, at `3323056`) |
+| release | **v0.2.2** tagged 2026-11-18 at `5e6ae21` — `ghcr.io/enimatek-nl/lattice` publishes `0.2.2`, `0.2` and `latest` (index `sha256:164c10946365…`, `linux/amd64` `sha256:83e7f0daee2c…`, `linux/arm64` `sha256:62876c3f2815…`); the image workflow refuses a tag that is not `LatticeVersion` in `internal/service/capabilities.go`, so the version constant and the test version in `tests/federation/harness.go` move with every tag (`v0.2.0` was the first tag of this history, at `3323056`) |
 | federation | live behind `-federation` (default off); one rulebook judges what this server signs and what a peer sends (step 20); keys of a peer that cannot publish its own are asked for at the key servers named by `-key-perspectives` (`matrix.org` by default) |
 
 The 2026-11-04 tally of "95 green of 106" was not produced by one completing run — the package
