@@ -33,7 +33,7 @@ because it said nothing these steps do not.
 | Measure | Now |
 |---|---|
 | `make build vet` | clean; `make lint` reports **7 issues** (6 staticcheck, 1 unused) from golangci-lint 2.15 — pre-existing quickfix-style findings, none from the 2026-11-18 work |
-| this repository's own tests | **329** — 170 client-API compatibility, 89 two-server federation, 70 offline unit (`go test ./...`, green) |
+| this repository's own tests | **332** — 173 client-API compatibility, 89 two-server federation, 70 offline unit (`go test ./...`, green) |
 | Complement `tests/csapi` | **82 green of 106**, 2 skipped, and the package **finishes** (~6 min) — it did not finish before 2026-11-18, see [COMPLEMENT.md](COMPLEMENT.md) |
 | Complement server-server (`tests`, not `tests/federation`) | **78 green of 91** (measured 2026-11-04 evening, after the state-handshake change; not re-run since) |
 | endpoints | **180 of 234** indexed routes implemented, 44 routes the index does not name (`make endpoints`, measured 2026-11-18) |
