@@ -37,7 +37,7 @@ because it said nothing these steps do not.
 | Complement `tests/csapi` | **82 green of 106**, 2 skipped, and the package **finishes** (~6 min) — it did not finish before 2026-11-18, see [COMPLEMENT.md](COMPLEMENT.md) |
 | Complement server-server (`tests`, not `tests/federation`) | **78 green of 91** (measured 2026-11-04 evening, after the state-handshake change; not re-run since) |
 | endpoints | **180 of 234** indexed routes implemented, 44 routes the index does not name (`make endpoints`, measured 2026-11-18) |
-| spec | v1.19, room versions 1-12 understood, new rooms default to v11 |
+| spec | target v1.19 (the endpoint index it is built from), room versions 1-12 understood, new rooms default to v11; `/versions` advertises v1.0-v1.11 — see queue A |
 | federation | live behind `-federation` (default off); one rulebook judges what this server signs and what a peer sends (step 20) |
 
 The 2026-11-04 tally of "95 green of 106" was not produced by one completing run — the package
@@ -98,6 +98,12 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
 
 ### A. Things left half-open by the last steps (cheapest real wins)
 
+- [ ] Decide what `/versions` may claim: the list stops at **v1.11** while the endpoint index this
+      server is written against is **v1.19**. Naming a revision claims every stable addition it
+      introduces, so raising it means going through v1.12 to v1.19 one revision at a time and
+      marking the ones that are genuinely covered — a claim, not a number. Neither suite changes
+      either way (this Complement gates nothing on `/versions`), which is exactly why nobody has
+      been forced to check (2026-11-18).
 - [ ] The `/messages` chunk of a departed `joined` room — `TestLeftRoomFixture` is one check from green (step 24).
 - [ ] `TestMessagesOverFederation`: **backfill what a late joiner never had.** The pagination walk
       finishes since 2026-11-18 and finds the room's early history missing, which is a peer read

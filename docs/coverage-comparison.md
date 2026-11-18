@@ -2,10 +2,11 @@
 
 Two documents, one yardstick. [spec-coverage.md](spec-coverage.md) is the coverage document of a
 Rust homeserver (spec v1.19, default room version 12, Complement as its conformance gate:
-88/90 federation and 105/107 client-server). [coverage.md](coverage.md) is ours (spec v1.19,
-default room version 11, Complement **61 green of 91** server-server as of 2026-11-04 and
-**95 green of 106** client-API as of 2026-11-04, plus this repository's own 323 tests: 166
-client-API, 88 two-server, 69 unit). Their claims are theirs - this comparison reads what each
+88/90 federation and 105/107 client-server). [coverage.md](coverage.md) is ours (spec v1.19 target,
+default room version 11, Complement **82 green of 106** client-API and 2 skipped on 2026-11-18 — the
+first date this package finishes a run — and two server-server figures for 2026-11-04 that a re-run
+has still not settled, plus this repository's own 332 tests: 173
+client-API, 89 two-server, 70 unit). Their claims are theirs - this comparison reads what each
 document says and what our own runs measure, not their code. Both halves of our tally were
 measured on 2026-11-04 (the run attempted that morning, which did not finish inside its budget,
 finished that afternoon), the client-API half having

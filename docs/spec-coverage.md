@@ -1,5 +1,13 @@
 # Spec coverage
 
+> **This is not this homeserver's document.** It is the coverage document of the Rust homeserver
+> this project is measured against, kept here so the two can be read side by side - that comparison
+> is [coverage-comparison.md](coverage-comparison.md). What *Lattice* implements is in
+> [coverage.md](coverage.md), and several things this file marks done are not implemented here at
+> all: application services, OAuth/MAS delegation, MatrixRTC, a full-text search index, message
+> retention, and MSC3391, MSC3874, MSC3930, MSC4140, MSC4155 and MSC4306. Nothing below has been
+> verified by this repository's tests.
+
 Target: Matrix spec v1.19, default room version 12 (all versions 1–12 supported for joining).
 The conformance gate is Complement (`scripts/complement.sh`). Last full run (2026-10-26):
 federation suite 88 of 90 top-level tests passing, client-server suite 105 of 107 (one of the two,
