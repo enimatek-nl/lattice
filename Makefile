@@ -21,7 +21,7 @@ JWT_SECRET  ?= dev
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build image test race vet fmt lint endpoints run swagger clean complement-image complement
+.PHONY: help build image test race vet fmt lint endpoints run swagger clean complement-image complement complement-both complement-fast
 
 help: ## List the available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -92,6 +92,7 @@ COMPLEMENT       ?= $(HOME)/complement
 COMPLEMENT_IMAGE ?= localhost/lattice-complement:latest
 COMPLEMENT_PKG   ?= ./tests/csapi
 COMPLEMENT_RUN   ?=
+COMPLEMENT_TIMEOUT ?= 45m
 
 complement-image: ## Build the Complement container image for this binary
 	CGO_ENABLED=0 $(GO) build -trimpath -o $(BIN_DIR)/$(BINARY) ./cmd/server
@@ -109,3 +110,29 @@ complement-image: ## Build the Complement container image for this binary
 complement: complement-image ## Run the Complement client-API suite against the image
 	cd $(COMPLEMENT) && COMPLEMENT_BASE_IMAGE=$(COMPLEMENT_IMAGE) $(GO) test -timeout=40m $(COMPLEMENT_PKG) \
 		$(if $(COMPLEMENT_RUN),-run '$(COMPLEMENT_RUN)',)
+
+# Two ways to stop paying for the serial 409 seconds, both measured 2026-11-20 on a
+# 28-core machine. `complement-both` runs the client-API package and the server-server
+# package as two processes: safe, because each package owns a Complement namespace and
+# therefore its own containers, and it costs the slower suite rather than the sum. It is
+# also the run that keeps both recorded tallies honest at once, which is what the
+# two-day-old server-server number was waiting for.
+#
+# `complement-fast` leaves out the names docs/TODO.md records as blocked on a decision
+# or a feature: 82 green in about 160 seconds instead of 106 tests in 409, which is the
+# difference between a regression check you run and one you skip. Nothing is weakened —
+# `complement` stays the compliance run, and the skip list is a copy of the red table
+# (deploy/complement/blocked-csapi.txt says so in its header).
+#
+# And one thing not to try: splitting a single package across processes. Complement names
+# blueprint containers by package namespace and every process cleans up by that label at
+# startup, so lanes of one package delete each other's homeservers — measured, 63 red
+# instead of 22, with a summary line that looks fine. deploy/complement/run-suites.sh
+# carries the details.
+complement-both: complement-image ## Run the client-API and server-server suites side by side
+	COMPLEMENT=$(COMPLEMENT) COMPLEMENT_BASE_IMAGE=$(COMPLEMENT_IMAGE) COMPLEMENT_SUITES='csapi fed' \
+		COMPLEMENT_TIMEOUT=$(COMPLEMENT_TIMEOUT) sh deploy/complement/run-suites.sh
+
+complement-fast: complement-image ## Run the client-API suite without the names docs/TODO.md lists as blocked
+	COMPLEMENT=$(COMPLEMENT) COMPLEMENT_BASE_IMAGE=$(COMPLEMENT_IMAGE) COMPLEMENT_SUITES='csapi' \
+		COMPLEMENT_SKIP_BLOCKED=1 COMPLEMENT_TIMEOUT=$(COMPLEMENT_TIMEOUT) sh deploy/complement/run-suites.sh

@@ -109,11 +109,33 @@ response shapes below were wrong here while every in-repo test stayed green.
 
 ```sh
 make complement-image                     # bin/lattice with CGO off, then the image
-make complement COMPLEMENT=~/complement   # the whole csapi suite, ~5 min
+make complement COMPLEMENT=~/complement   # the whole csapi suite, ~7 min
 make complement COMPLEMENT_RUN='TestRoomAlias|TestRoomCreate'
 make complement COMPLEMENT_PKG=./tests    # the server-server suite (91 tests)
 make complement COMPLEMENT_PKG=./tests COMPLEMENT_RUN='TestJoinViaRoomIDAndServerName'
+make complement-fast                      # csapi without the blocked names: 82 green in 159s
+make complement-both                      # csapi and server-server at once, one process per package
 ```
+
+Two of those targets exist because of a measurement. A complete `tests/csapi` run took
+409 s while its 106 tests summed to 407 s of own time: the package is entirely serial —
+no top-level test calls `t.Parallel()` — and 52% of that wall clock sat in the 22 names
+that are red on purpose (`docs/TODO.md`). Splitting *one package* over several processes
+is the move that looks obvious and is wrong, and it does not look wrong: Complement fixes
+a namespace per package (`TestMain(m, "csapi")`), names blueprint containers
+`complement_csapi.<blueprint>.hsN`, and every process calls `Cleanup()` when it starts,
+which deletes everything labelled `complement_pkg=csapi` — including the live homeservers
+of the other lanes. Six lanes measured **63 red instead of 22**, over a summary line that
+reads perfectly.
+
+Different *packages* own different namespaces, which is what the two new targets use.
+`make complement-both` measured **373 s for both suites together** — 106 client-API tests
+and 91 server-server tests, 82 green and 78 green, name for name the two recorded tallies
+— where running them one after the other costs the 409 s plus the 338 s of own time the
+server-server suite adds up to. `make complement-fast` leaves the blocked names out and
+came back with the same 82 green in **159 s**. The scripts are in `deploy/complement/`,
+with the mechanism written out at the top of `run-suites.sh` so nobody has to rediscover
+it.
 
 `COMPLEMENT` points at a Complement checkout; it is not a module dependency,
 because Complement's own `go.mod` owns the test binaries. The image is

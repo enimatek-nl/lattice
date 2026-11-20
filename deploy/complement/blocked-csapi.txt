@@ -1,0 +1,32 @@
+# The tests/csapi names that are red and blocked, one per line (a -test.skip
+# alternation is built from this). It is a convenience copy of the red table in
+# docs/TODO.md — if the two disagree, docs/TODO.md wins and this file is stale.
+#
+# Skipping them is not weakening a check: they are excluded from a regression run
+# because they are waiting on a decision or a feature, not on the change under
+# hand. The compliance run (`make complement`) still runs all 106.
+#
+# Regenerate from the red table with:
+#   sed -n '/^## What is red/,/^$/p' docs/TODO.md | grep -oE 'Test[A-Za-z0-9_]+' | sort -u
+TestDeviceListUpdates
+TestLeftRoomFixture
+TestMembersLocal
+TestMessagesOverFederation
+TestPowerLevels
+TestPresence
+TestPresenceSyncDifferentRooms
+TestPushRuleRoomUpgrade
+TestPushSync
+TestRegistration
+TestRoomDeleteAlias
+TestRoomForget
+TestRoomImageRoundtrip
+TestRoomSummary
+TestSearch
+TestSync
+TestSyncTimelineGap
+TestThreadedReceipts
+TestThreadReceiptsInSyncMSC4102
+TestThreadsEndpoint
+TestUploadKey
+TestUrlPreview

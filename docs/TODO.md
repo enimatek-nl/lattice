@@ -15,8 +15,6 @@ this stays readable.
 
 ## The idea, and the way of working
 
-## The idea, and the way of working
-
 The goal has not changed since the first commit: a drop-in implementation of
 https://spec.matrix.org/latest/ in Go on SQLite, small enough that one binary and one
 file are a homeserver. The method is what makes it checkable: **implement an endpoint,
@@ -35,14 +33,14 @@ because it said nothing these steps do not.
 | `make build vet` | clean (4 s, 2026-11-20); `make lint` reports the same **7 issues** (6 staticcheck: `QF1001`×3, `QF1006`×2, `S1011`; 1 `unused`: `internal/api/federation.go:1045 eventInBody`) — pre-existing quickfix-style findings, none from the 2026-11-18 work. Note for a session started from a service unit: `golangci-lint` lives in `~/go/bin`, which is not on that PATH |
 | this repository's own tests | **342** counted here — 173 client-API compatibility, 89 two-server federation, 80 offline unit (`go test ./...`, green in 1 m 25 s on 2026-11-20). `internal/matrix` adds 8 test functions that this tally has never counted, so `grep -c '^func Test'` reads **350** |
 | Complement `tests/csapi` | **82 green of 106**, 2 skipped, in 409 s — and the same 22 names, first from a package that could actually finish (2026-11-18) and now reproduced name for name (2026-11-20), so the red list is stable rather than lucky. It could not be run to completion before 2026-11-18, see [COMPLEMENT.md](COMPLEMENT.md) |
-| Complement server-server (`tests`, not `tests/federation`) | **78 green of 91** (measured 2026-11-04 evening, after the state-handshake change; not re-run since) |
+| Complement server-server (`tests`, not `tests/federation`) | **78 green of 91**, 13 red — re-measured 2026-11-20 for the first time since 2026-11-04, and the 13 are name for name the names recorded then, so the number was stale but honest. 338 s of own time; run beside the client-API suite it costs nothing extra, see `make complement-both` |
 | endpoints | **180 of 234** indexed routes implemented, 44 routes the index does not name (`make endpoints`, unchanged on 2026-11-20) |
 | spec | target v1.19 (the endpoint index it is built from), room versions 1-12 understood, new rooms default to v11; `/versions` advertises v1.0-v1.11 — see queue A |
 | release | **v0.2.2** tagged 2026-11-18 at `5e6ae21` — `ghcr.io/enimatek-nl/lattice` publishes `0.2.2`, `0.2` and `latest` (index `sha256:164c10946365…`, `linux/amd64` `sha256:83e7f0daee2c…`, `linux/arm64` `sha256:62876c3f2815…`); the image workflow refuses a tag that is not `LatticeVersion` in `internal/service/capabilities.go`, so the version constant and the test version in `tests/federation/harness.go` move with every tag (`v0.2.0` was the first tag of this history, at `3323056`) |
 | federation | live behind `-federation` (default off); one rulebook judges what this server signs and what a peer sends (step 20); keys of a peer that cannot publish its own are asked for at the key servers named by `-key-perspectives` (`matrix.org` by default) |
 
 The 2026-11-04 tally of "95 green of 106" was not produced by one completing run — the package
-never completed, because `/messages` kept handing back an `end` at the start of a room and
+never before completed, because `/messages` kept handing back an `end` at the start of a room and
 `TestMessagesOverFederation` paged until the 40-minute ceiling. Two changes closed that (the
 pagination answer saying when it is finished, and the Complement image no longer rate-limiting the
 suite) and events now carry `unsigned.transaction_id` for the device that sent them; the number
@@ -97,6 +95,14 @@ Server-server, the `tests` package (**13 red of 91**; this package also holds
 
 The state-handshake change (step 27) is federation-only and did not move this tally: the package
 measured 78 green with it in.
+
+While the csapi names above stay red they set the price of a regression check, which is why
+`make complement-fast` exists: the same 82 green without the 22 waiting names, in 159 s
+instead of 409. It skips by `deploy/complement/blocked-csapi.txt`, a copy of the first table
+that says so in its own header — when a row closes, that file has to lose the name too.
+`make complement-both` runs this package and the client-API one at once, which is safe (one
+Complement namespace per package) and costs 373 s for both where running them in turn costs
+their sum.
 
 ## The queue — what is wanted, grouped
 
