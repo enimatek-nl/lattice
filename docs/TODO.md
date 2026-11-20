@@ -77,7 +77,7 @@ were labelled "not triaged" were each run **alone** and read on 2026-11-20 (the 
 | `TestPushRuleRoomUpgrade` | no global `account_data` section in `/sync` either, so the case never gets past reading the rules before the upgrade — the carry-over it is about is unexercised (triaged 2026-11-20) |
 | `TestSyncTimelineGap` | **its subtests pass**; the `limited` flag this name stood for is closed. The parent is red because the mock federation server (`UnexpectedRequestsAreErrors=true`) is asked `GET /federation/v2/state/{roomId}/{eventId}`, then `v1/state/…`, then the `v3/state/{roomId}?event_id=` form (`internal/service/fedgap.go:415`) — after a join that already carried the state (triaged 2026-11-20) |
 | `TestThreadsEndpoint` | `/threads` answers the roots in the right order but bundles nothing: no `unsigned."m.relations"."m.thread".latest_event` (MSC3856). The comparison is on that pair, so ordering is not the problem (triaged 2026-11-20) |
-| `TestThreadedReceipts`, `TestThreadReceiptsInSyncMSC4102` | MSC4306's `postcontent` push rule kind: their setup `PUT /pushrules/global/postcontent/…` is refused with `M_INVALID_PARAM: unknown push rule kind`, and because an unknown **kind** answers 400 where an unknown rule answers 404, even the suite's tolerant "do you have this rule?" probe dies before the thread receipts begin (triaged 2026-11-20) |
+| `TestThreadedReceipts`, `TestThreadReceiptsInSyncMSC4102` | no longer the push rule probe (closed 2026-11-20, see the queue): each now fails on its own subject. `TestThreadedReceipts` wants **MSC3771 thread unread counts** — its own unthreaded numbers already arrive exactly as asked (`{"notification_count":6,"highlight_count":2}`, measured on the response it checks), what never arrives is `unread_thread_notifications` per thread. `TestThreadReceiptsInSyncMSC4102` wants an unthreaded and a threaded read receipt **side by side** for one event; our `/sync` carries only the threaded one, because a receipt is stored per (user, event) and the threaded write replaced the unthreaded one — the suite's own comment calls out this exact failure mode ("Non-compliant servers will typically send the last one only") |
 
 Server-server, the `tests` package (**13 red of 91**; this package also holds
 `TestJumpToDateEndpoint`, which is why it never showed up in the 106):
@@ -136,9 +136,19 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
 - [ ] Lazy loading is recomputed per response instead of remembered per device (step 25).
 - [ ] As-of state reads cost one lookup per key; the complete answer is resolution over the event's ancestry, or per-event snapshots (step 26).
 - [x] `TestSync`'s "times out inside a full parallel run while passing on its own" — run alone on 2026-11-20 it fails in 22 s on `presence.events is empty`, and the full package run the same day fails it too. Nothing to do with the long-poll wake-up: it is the presence decision, and it is shared with `TestMembersLocal` and `TestPresenceSyncDifferentRooms`.
-- [ ] An unknown push rule **kind** answers `400 M_INVALID_PARAM` where an unknown rule answers `404 M_NOT_FOUND` (both measured 2026-11-20). A kind is a namespace: asking for a rule in a namespace this server does not have is the same question as asking for a rule that is absent, and a client probing "does this rule exist?" can only tolerate the second answer.
+- [x] An unknown push rule **kind** answered `400 M_INVALID_PARAM` where an unknown rule answers `404 M_NOT_FOUND` (closed the same day it was measured, 2026-11-20). A kind is a namespace: asking for a rule in a namespace this server does not have is the same question as asking for a rule that is absent, and a client probing "does this rule exist?" can only tolerate the second answer. Reading it also exposed two neighbours: the three mutations of a rule (`DELETE`, `…/enabled`, `…/actions`) answered **`200 {}` for a rule that is not there at all** — a gorm update matching no row reports nothing — and creating a rule *inside* an unknown kind is a bad request rather than a missing resource, so that one keeps `400`. `tests/compat/push_test.go: TestPushRuleNotFoundSaysSo`.
 - [ ] `/keys/upload` validates nothing about the device key object: a `device_keys` without `algorithms`/`keys`/`signatures`, and one whose `user_id` names another user, are both stored with 200 (measured 2026-11-20). Two checks, and an unverifiable key document stops reaching the peers that query it.
 - [ ] `/threads` carries no MSC3856 bundle: the roots come back in the right order without `unsigned."m.relations"."m.thread".latest_event` (and so without the per-thread `count` that comes with it).
+- [ ] A read receipt is stored per (user, event), so a threaded `m.read` **replaces** the unthreaded
+      one instead of joining it: `/sync` then reports one where the spec keeps both (MSC2456 receipts
+      are keyed by `thread_id`, `"main"` naming the unthreaded one). Measured 2026-11-20 on
+      `TestThreadReceiptsInSyncMSC4102`, whose ephemeral `m.receipt` carries only the entry with a
+      `thread_id`. Fixing the key is what that name and MSC3771 below both wait on.
+- [ ] MSC3771 thread unread counts: `/sync`'s `unread_thread_notifications` (a map from thread id to
+      the same two counts, present only when the filter asks) is not computed. The unthreaded side is
+      — with MSC3771's filter on, the numbers `TestThreadedReceipts` asks for arrive correctly, which is
+      how the missing half was pinned down (2026-11-20). The wire type is right now (a map, so an empty
+      one is genuinely absent); the counting is what is left.
 
 ### B. Structural gaps — what other software needs in order to attach
 
@@ -200,10 +210,12 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
 
 ### E. The MSC surface (where client features arrive first)
 
-- [ ] Delayed events (MSC4140), thread subscriptions (MSC4306/4308) — where the first thing to do is the
-      `postcontent` push rule kind, because `TestThreadedReceipts` and `TestThreadReceiptsInSyncMSC4102`
-      die in their setup on that kind alone — invite filtering (MSC4155), relation filters in `/messages`
-      (MSC3874), poll push rules (MSC3930).
+- [ ] Delayed events (MSC4140), thread subscriptions (MSC4306/4308) — the `postcontent` push rule kind is
+      still wanted (it is what those rules live under), but it is no longer what stops
+      `TestThreadedReceipts` and `TestThreadReceiptsInSyncMSC4102`: since 2026-11-20 their setup
+      probe is satisfied and they fail further along, on thread unread counts in `/sync` — see
+      `TestThreadsEndpoint`'s row above. Invite filtering (MSC4155), relation filters in
+      `/messages` (MSC3874), poll push rules (MSC3930).
 - [x] Simplified sliding sync (MSC4186) at `/v4/sync` and the `org.matrix.msc3575` path, with the five extensions (step 22).
 - [x] Room version 12 understood in both directions — hashed room ids, `additional_creators`, creators-privileged rules, state resolution v2.1, stripped state as full events (step 21). Choosing v12 as the *default* is a decision, not a piece of work.
 

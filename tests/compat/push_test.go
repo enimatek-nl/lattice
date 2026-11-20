@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"net/url"
 	"testing"
+
+	"github.com/enimatek-nl/lattice/internal/matrix"
 )
 
 // ruleOrder returns the rule ids of one kind in the order the server lists them.
@@ -125,6 +127,84 @@ func TestPushRulePlacement(t *testing.T) {
 		if resp := server.Do(http.MethodGet, "/_matrix/client/v3/pushrules/override/"+id, alice.Token, nil); resp.Status != http.StatusNotFound {
 			t.Errorf("%s was created despite the bad placement: %d %s", id, resp.Status, resp.Raw)
 		}
+	}
+}
+
+// TestPushRuleNotFoundSaysSo pins what the push rule endpoints answer when the
+// kind or the rule is not there.
+//
+// The difference is not cosmetic: 404 M_NOT_FOUND reads as "this rule does not
+// exist", 400 M_INVALID_PARAM reads as "what you sent was malformed", and
+// Complement's MSC4306 probe acts on exactly that — it asks for its thread rules
+// under the kind `postcontent`, continues when the answer is 404, and treats
+// anything else as a server error (client.GetPushRule followed by
+// MustDisablePushRule). This server answered 400, so two thread-receipt tests
+// died on a probe about a feature they explicitly opt out of.
+//
+// The one place where a 400 stays right is *creating* a rule inside a kind that
+// does not exist: nothing is missing there, the request is.
+func TestPushRuleNotFoundSaysSo(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+
+	const absent = "dev.lattice.absent"
+
+	// An unknown kind reads as not found — including the MSC4306 shape, with and
+	// without the deprecated scope segment.
+	for _, path := range []string{
+		"/_matrix/client/v3/pushrules/postcontent",
+		"/_matrix/client/v3/pushrules/global/postcontent",
+		"/_matrix/client/v3/pushrules/global/postcontent/.io.element.msc4306.rule.subscribed_thread",
+		"/_matrix/client/v3/pushrules/override/" + absent,
+	} {
+		if resp := server.Do(http.MethodGet, path, alice.Token, nil); resp.Status != http.StatusNotFound ||
+			resp.ErrCode() != string(matrix.ErrCodeNotFound) {
+			t.Errorf("GET %s: got %d %s, want 404 M_NOT_FOUND", path, resp.Status, resp.Raw)
+		}
+	}
+
+	// The three mutations of a rule say the same when that rule is not there —
+	// they are about it, so "not found" is the honest answer. An unknown kind
+	// takes the same exit: a rule of a kind that does not exist cannot be there.
+	type mutation struct {
+		method, path, what string
+		body               map[string]any
+	}
+	for _, move := range []mutation{
+		{http.MethodPut, "/_matrix/client/v3/pushrules/override/" + absent + "/enabled", "enabling", map[string]any{"enabled": true}},
+		{http.MethodPut, "/_matrix/client/v3/pushrules/override/" + absent + "/actions", "replacing the actions of", map[string]any{"actions": []any{"notify"}}},
+		{http.MethodDelete, "/_matrix/client/v3/pushrules/override/" + absent, "deleting", nil},
+		{http.MethodPut, "/_matrix/client/v3/pushrules/global/postcontent/" + absent + "/enabled", "enabling under an unknown kind", map[string]any{"enabled": true}},
+	} {
+		if resp := server.Do(move.method, move.path, alice.Token, move.body); resp.Status != http.StatusNotFound ||
+			resp.ErrCode() != string(matrix.ErrCodeNotFound) {
+			t.Errorf("%s an absent rule: got %d %s, want 404 M_NOT_FOUND", move.what, resp.Status, resp.Raw)
+		}
+	}
+
+	// Creating a rule inside a kind that does not exist is a bad request, not a
+	// missing resource — the two answers stay apart.
+	if resp := server.Do(http.MethodPut, "/_matrix/client/v3/pushrules/postcontent/"+absent, alice.Token,
+		map[string]any{"conditions": []any{}, "actions": []any{"notify"}}); resp.Status != http.StatusBadRequest ||
+		resp.ErrCode() != string(matrix.ErrCodeInvalidParam) {
+		t.Errorf("creating in an unknown kind: got %d %s, want 400 M_INVALID_PARAM", resp.Status, resp.Raw)
+	}
+
+	// The control: those very same three mutations on a rule that exists are
+	// still 200, so the answers above are about absence and not a broken path.
+	present := "/_matrix/client/v3/pushrules/override/dev.lattice.present"
+	server.MustDo(http.MethodPut, present, alice.Token, map[string]any{
+		"conditions": []any{map[string]any{"kind": "event_match", "key": "content.body", "pattern": "here"}},
+		"actions":    []any{"notify"},
+	}, http.StatusOK)
+	server.MustDo(http.MethodPut, present+"/enabled", alice.Token, map[string]any{"enabled": false}, http.StatusOK)
+	server.MustDo(http.MethodPut, present+"/actions", alice.Token, map[string]any{"actions": []any{"dont_notify"}}, http.StatusOK)
+	if resp := server.Do(http.MethodDelete, present, alice.Token, nil); resp.Status != http.StatusOK {
+		t.Errorf("deleting a rule that exists: got %d %s, want 200", resp.Status, resp.Raw)
+	}
+	// And a second time it is absence again.
+	if resp := server.Do(http.MethodDelete, present, alice.Token, nil); resp.Status != http.StatusNotFound {
+		t.Errorf("deleting the same rule twice: got %d %s, want 404", resp.Status, resp.Raw)
 	}
 }
 

@@ -737,8 +737,15 @@ func TestPushRuleCRUD(t *testing.T) {
 	if resp := server.Do(http.MethodGet, "/_matrix/client/v3/pushrules/global/override/dev.lattice.nothing", alice.Token, nil); resp.Status != http.StatusNotFound {
 		t.Errorf("reading an unknown rule: %d %s, want 404", resp.Status, resp.Raw)
 	}
-	if resp := server.Do(http.MethodGet, "/_matrix/client/v3/pushrules/global/nonsense", alice.Token, nil); resp.Status != http.StatusBadRequest {
-		t.Errorf("reading an unknown kind: %d %s, want 400", resp.Status, resp.Raw)
+	// Unknown rules and kinds are 404 — the kind is not a malformed request, it is
+	// simply a rule that cannot exist (TestPushRuleNotFoundSaysSo pins why the
+	// difference matters; only *creating* inside an unknown kind stays 400).
+	if resp := server.Do(http.MethodGet, "/_matrix/client/v3/pushrules/global/override/dev.lattice.nothing", alice.Token, nil); resp.Status != http.StatusNotFound {
+		t.Errorf("reading an unknown rule: %d %s, want 404", resp.Status, resp.Raw)
+	}
+	if resp := server.Do(http.MethodGet, "/_matrix/client/v3/pushrules/global/nonsense", alice.Token, nil); resp.Status != http.StatusNotFound ||
+		resp.ErrCode() != string(matrix.ErrCodeNotFound) {
+		t.Errorf("reading an unknown kind: %d %s, want 404 M_NOT_FOUND", resp.Status, resp.Raw)
 	}
 	if resp := server.Do(http.MethodGet, "/_matrix/client/v3/pushrules/global/override/dev.lattice.urgent/nonsense", alice.Token, nil); resp.Status != http.StatusNotFound {
 		t.Errorf("reading an unknown rule sub path: %d %s, want 404", resp.Status, resp.Raw)

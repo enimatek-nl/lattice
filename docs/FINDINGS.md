@@ -502,6 +502,30 @@ maintenance`. First registered account = administrator.
   what reached the database); that keeps errcheck quiet without `_ =` noise at each site.
   Error paths print one sentence, not the whole usage block — the sentence is the
   interface, and `-h` prints the block.
+- **`omitempty` cannot omit a struct** (found 2026-11-20 via Complement). MSC3771's
+  `unread_thread_notifications` is optional in `GET /sync` — a client asks for it with a
+  filter — so `JoinedRoom` carried it as a value with `omitempty`, and encoding/json never
+  omits a struct: every joined room of every sync this server ever served announced the
+  section as `{}`, which is both a claim this server cannot honour and enough to fail
+  `TestThreadedReceipts`, whose check asserts the absence (`!t.Exists()`). Optional wire
+  fields are pointers, maps or slices here — and the section is a **map from thread id to
+  counts**, so getting the type right was also getting the shape right
+  (`tests/compat/sync_test.go: TestSyncWithoutThreadCounts`).
+- **404 and 400 are protocol, not style** (2026-11-20). An unknown push rule **kind** was a
+  `400 M_INVALID_PARAM` while an unknown rule is `404 M_NOT_FOUND`, and Complement's
+  MSC4306 setup reads the difference literally: `client.GetPushRule(t, "global",
+  "postcontent", rule)` continues on 404 ("no rule to disable") and everything else is a
+  server error, so two thread-receipt tests died before sending a single event. The spec
+  says `404 "The push rule was not found."` for every read and every mutation of an
+  existing rule; only PUT — *creating* inside a kind this server does not have — is
+  honestly `400 M_INVALID_PARAM`, and that split is what
+  `tests/compat/push_test.go: TestPushRuleNotFoundSaysSo` pins.
+- **A repository update that matches no row says so by silence** (2026-11-20). gorm's
+  `Updates` with a `WHERE` that hits nothing returns no error, so `PUT …/enabled`,
+  `PUT …/actions` and `DELETE` on an absent push rule all answered `200 {}`. Measured before
+  touching anything, because "the endpoint validates" is not a fact anyone should infer:
+  the service now asks `pushRuleThere` first, which is also where the unknown-kind answer
+  for those three lives.
 
 ## Commands
 

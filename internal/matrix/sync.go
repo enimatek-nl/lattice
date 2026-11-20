@@ -57,12 +57,17 @@ type JoinedRoom struct {
 	State               State               `json:"state"`
 	InviteCount         int64               `json:"invite_count,omitempty"`
 	UnreadNotifications UnreadNotifications `json:"unread_notifications"`
-	UnreadThreadUnread  UnreadNotifications `json:"unread_thread_notifications,omitempty"`
-	AccountData         *Ephemeral          `json:"account_data,omitempty"`
-	Ephemeral           *Ephemeral          `json:"ephemeral,omitempty"`
-	OrgMatrixE2E        *Ephemeral          `json:"org.matrix.msc3814.e2ee,omitempty"`
-	PrevBatch           string              `json:"prev_batch,omitempty"`
-	Unread              *int64              `json:"unread_notifications_count,omitempty"`
+	// MSC3771's per-thread counts, keyed by thread id. A map on purpose: it is
+	// absent unless the filter asks for it, and `omitempty` on the struct this
+	// used to be would have emitted `{}` in every room of every sync — a struct
+	// is never empty to encoding/json. Nothing counts per thread yet, so nothing
+	// is ever put here.
+	UnreadThreadUnread map[string]UnreadNotifications `json:"unread_thread_notifications,omitempty"`
+	AccountData        *Ephemeral                     `json:"account_data,omitempty"`
+	Ephemeral          *Ephemeral                     `json:"ephemeral,omitempty"`
+	OrgMatrixE2E       *Ephemeral                     `json:"org.matrix.msc3814.e2ee,omitempty"`
+	PrevBatch          string                         `json:"prev_batch,omitempty"`
+	Unread             *int64                         `json:"unread_notifications_count,omitempty"`
 
 	// The room summary of spec revision v1.3 lives directly on the joined room.
 	Heroes             []string `json:"m.heroes,omitempty"`

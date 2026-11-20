@@ -101,7 +101,7 @@ func (s *Service) PushRules(ctx context.Context, userID string) (matrix.Object, 
 // PushRuleKind returns the rules of a single kind.
 func (s *Service) PushRuleKind(ctx context.Context, userID, kind string) (matrix.Object, error) {
 	if !validKind(kind) {
-		return nil, matrix.ErrInvalidParam("unknown push rule kind %q", kind)
+		return nil, unknownPushKind(kind)
 	}
 	rules, err := s.db.PushRuleRepo.List(userID, kind)
 	if err != nil {
@@ -117,7 +117,7 @@ func (s *Service) PushRuleKind(ctx context.Context, userID, kind string) (matrix
 // PushRuleOne returns a single rule.
 func (s *Service) PushRuleOne(ctx context.Context, userID, kind, ruleID string) (*PushRuleWire, error) {
 	if !validKind(kind) {
-		return nil, matrix.ErrInvalidParam("unknown push rule kind %q", kind)
+		return nil, unknownPushKind(kind)
 	}
 	rule, err := s.db.PushRuleRepo.Get(userID, kind, ruleID)
 	if err != nil {
@@ -308,8 +308,8 @@ func (s *Service) repositionPushRule(userID, kind, ruleID string, placement Push
 
 // DeletePushRule removes a rule.
 func (s *Service) DeletePushRule(ctx context.Context, userID, kind, ruleID string) error {
-	if !validKind(kind) {
-		return matrix.ErrInvalidParam("unknown push rule kind %q", kind)
+	if err := s.pushRuleThere(userID, kind, ruleID); err != nil {
+		return err
 	}
 	if err := s.db.PushRuleRepo.Delete(userID, kind, ruleID); err != nil {
 		return matrix.ErrInternal(err)
@@ -319,8 +319,8 @@ func (s *Service) DeletePushRule(ctx context.Context, userID, kind, ruleID strin
 
 // SetPushRuleEnabled enables or disables a rule.
 func (s *Service) SetPushRuleEnabled(ctx context.Context, userID, kind, ruleID string, enabled bool) error {
-	if !validKind(kind) {
-		return matrix.ErrInvalidParam("unknown push rule kind %q", kind)
+	if err := s.pushRuleThere(userID, kind, ruleID); err != nil {
+		return err
 	}
 	if err := s.db.PushRuleRepo.SetEnabled(userID, kind, ruleID, enabled); err != nil {
 		return matrix.ErrInternal(err)
@@ -330,8 +330,8 @@ func (s *Service) SetPushRuleEnabled(ctx context.Context, userID, kind, ruleID s
 
 // SetPushRuleActions replaces the actions of a rule.
 func (s *Service) SetPushRuleActions(ctx context.Context, userID, kind, ruleID string, actions matrix.Array) error {
-	if !validKind(kind) {
-		return matrix.ErrInvalidParam("unknown push rule kind %q", kind)
+	if err := s.pushRuleThere(userID, kind, ruleID); err != nil {
+		return err
 	}
 	if err := s.db.PushRuleRepo.SetActions(userID, kind, ruleID, string(matrix.Encode(actions))); err != nil {
 		return matrix.ErrInternal(err)
@@ -347,6 +347,35 @@ func validKind(kind string) bool {
 		}
 	}
 	return false
+}
+
+// unknownPushKind is what a kind outside PushRuleKinds answers: 404 M_NOT_FOUND,
+// because the rule named behind it cannot exist. The spec says so for every
+// read and every mutation of an existing rule ("The push rule was not found."),
+// and Complement depends on the difference: its MSC4306 probe reads a 404 on the
+// kind `postcontent` as "no such rule to disable" and carries on, while a 400 is
+// a server error to it. Only PUT — *creating* a rule — keeps 400 M_INVALID_PARAM,
+// since there nothing is missing and the request itself is the problem.
+func unknownPushKind(kind string) error {
+	return matrix.ErrNotFound("no push rule kind %q", kind)
+}
+
+// pushRuleThere is the check the three mutation endpoints (delete, enabled,
+// actions) make before writing: the repository updates by key and reports
+// nothing when no row matched, so without this a rule that does not exist is
+// “successfully” mutated with a 200. Default rules are rows like any other, so
+// a built-in rule answers here too.
+func (s *Service) pushRuleThere(userID, kind, ruleID string) error {
+	if !validKind(kind) {
+		return unknownPushKind(kind)
+	}
+	if _, err := s.db.PushRuleRepo.Get(userID, kind, ruleID); err != nil {
+		if persist.IsNotFound(err) {
+			return matrix.ErrNotFound("no push rule %s of kind %s", ruleID, kind)
+		}
+		return matrix.ErrInternal(err)
+	}
+	return nil
 }
 
 // SetPusher creates, updates or deletes a pusher. A nil or empty body deletes

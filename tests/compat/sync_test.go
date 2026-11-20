@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -497,5 +498,44 @@ func TestSyncIdleWaitsForTheTimeout(t *testing.T) {
 	if idle.NextBatch != started.NextBatch {
 		t.Errorf("an idle sync advanced the token from %s to %s with nothing to report",
 			started.NextBatch, idle.NextBatch)
+	}
+}
+
+// TestSyncWithoutThreadCounts keeps MSC3771's optional section off the wire until
+// there are thread counts worth putting in it.
+//
+// `unread_thread_notifications` is something a client asks for with a filter, so
+// a sync that never asked must not carry it — and it is a map from thread id to
+// counts, not one pair of counts. Both halves were wrong here through one Go
+// mistake: the field was a struct carrying `omitempty`, and encoding/json never
+// omits a struct, so every joined room of every sync this server ever served
+// announced an empty thread section. Complement's thread-receipt tests assert the
+// absence (`!t.Exists()`), which is where it surfaced (2026-11-20).
+func TestSyncWithoutThreadCounts(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	bob := server.Register("bob", "rubberduck")
+
+	roomID := server.CreateRoom(alice, map[string]any{"preset": "public_chat"})
+	server.MustDo(http.MethodPost, "/_matrix/client/v3/join/"+roomID, bob.Token, nil, http.StatusOK)
+	start := server.MustDo(http.MethodGet, "/_matrix/client/v3/sync?timeout=0", bob.Token, nil, http.StatusOK).String("next_batch")
+	server.Send(alice, roomID, "txn-thread-count-1", "a message to count")
+
+	_, resp := server.Sync(bob, "?since="+start+"&timeout=0")
+	if strings.Contains(string(resp.Raw), "unread_thread_notifications") {
+		t.Errorf("a sync that never asked for thread counts carries them: %s", resp.Raw)
+	}
+
+	// Asking for them changes nothing yet either: this server counts nothing per
+	// thread, and the honest answer to a question it cannot answer is silence.
+	// The counts it does compute stay where they always were.
+	asked := server.MustDo(http.MethodGet,
+		"/_matrix/client/v3/sync?since="+start+"&timeout=0&filter="+url.QueryEscape(`{"room":{"timeline":{"unread_thread_notifications":true}}}`),
+		bob.Token, nil, http.StatusOK)
+	if strings.Contains(string(asked.Raw), "unread_thread_notifications") {
+		t.Errorf("thread counts were promised without being implemented: %s", asked.Raw)
+	}
+	if !strings.Contains(string(asked.Raw), "unread_notifications") {
+		t.Errorf("the unthreaded counts disappeared with them: %s", asked.Raw)
 	}
 }
