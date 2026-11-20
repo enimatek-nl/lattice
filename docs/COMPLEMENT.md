@@ -8,6 +8,39 @@ server-server names in it should be refreshed against a fresh run.
 
 ---
 
+## Triage run of 2026-11-20 — the ten "not triaged" names, each run alone
+
+`docs/TODO.md` had entered ten names as "not triaged". Each got its own `go test -run '^TestX$'` with a
+170 s timeout, on Complement `7b38a63` against an image built from `main` @ `8c98333`. **All ten are red
+alone**, which retires the standing suspicion that `TestSync` was a casualty of running in parallel. The
+cause per name; the measurements behind them are in [FINDINGS.md](FINDINGS.md), "Findings of 2026-11-20".
+
+| Name | Where it dies | What it is waiting for |
+|---|---|---|
+| `TestSync` | `presence.events is empty` | presence streamed in `/sync` — a decision, not a gap |
+| `TestMembersLocal` | `presence.events does not exist` | the same decision |
+| `TestPresenceSyncDifferentRooms` | `presence.events is empty` | the same decision |
+| `TestRoomSummary` | `expected one invited and one joined user, got 0 and 0` | a `summary` (`m.joined_member_count`, `m.invited_member_count`) on a joined room in `/sync` |
+| `TestPushRuleRoomUpgrade` | `Key account_data.events does not exist` | a global `account_data` section in `/sync`; the upgrade carry-over itself is never reached |
+| `TestSyncTimelineGap` | its subtests **pass**; the mock federation server rejects our state probes | stop asking for state the join already handed over (the chain at `internal/service/fedgap.go:415`) — three wasted round trips per join on real peers as well |
+| `TestThreadsEndpoint` | `HaveInOrder: index 0 got $root want $root\|$reply` | MSC3856's bundling of `unsigned."m.relations"."m.thread".latest_event`; the ordering is already right |
+| `TestThreadedReceipts`, `TestThreadReceiptsInSyncMSC4102` | `PUT /pushrules/global/postcontent/… → 400 M_INVALID_PARAM` | MSC4306's `postcontent` rule kind — and, one step before it, an unknown kind answering `404` so the suite's own "do you have this rule?" probe survives |
+| `TestUploadKey` | three sub-cases of one name | `/keys/upload` answering 200 to a `device_keys` object without `algorithms`/`keys`/`signatures` (want 400 `M_BAD_JSON`) and 200 to one naming a **different user** (want 400); `/keys/query` answering `{}` where the case wants the queried user present as an empty object — there the suite is stricter than v1.19, see FINDINGS |
+
+Ten names, six pieces of work: presence streaming (three names, one decision), `/sync` response shape (two
+sections, two names — one of them hiding a third case behind itself), the `postcontent` rule kind (two
+names), `/threads` bundling (one), `/keys/upload` validation (two sub-cases of one), and the redundant
+state probe after a join (one, where the assertions already pass). The whole package was run from the same
+tree the same day: **82 green, 22 red, 2 skipped in 409 s** — the identical tally and the identical 22
+names as 2026-11-18, which is what makes a red list worth working down (`csapi-tally.txt`,
+`csapi-names.txt`).
+
+Logs and scripts: `.agent-work/complement-triage-20261120/` (`summary.txt`, one log per name,
+`run-one-by-one.sh`, `run-package.sh`). Running it from a session inside the pi-courier bridge needs a
+transient scope; that and the reason are written up in FINDINGS.
+
+---
+
 ## Run of 2026-11-18 — the package finishes now, and its number is lower
 
 Against Complement `7b38a63`, both fixes on `main` (`/messages` omitting `end`, and the image

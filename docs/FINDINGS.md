@@ -756,3 +756,62 @@ federation: rixo.nl is not answering, transaction l-…-nv4L6HNGMXO2 (0 PDU(s), 
   the repo already offers, run on maintenance.
 
 
+
+## Findings of 2026-11-20 — the ten names nobody had read yet
+
+`docs/TODO.md` carried ten Complement names labelled "not triaged". Each was run **alone**, with its own
+170 s timeout, against Complement `7b38a63` and the image built from `main` @ `8c98333`. All ten are red
+alone, so not one of them was a parallel-run artefact. What each is waiting for is now a sentence, not a
+question mark; the durable part:
+
+- **Three names, one cause, and the cause is a decision.** `TestSync`, `TestMembersLocal` and
+  `TestPresenceSyncDifferentRooms` all die inside `MustSyncUntil` on `presence.events` — empty or absent.
+  Presence is stored and answered per user and never streamed, so a checker that waits to *see* someone
+  come online can never fire. And the 2026-11-04 note that kept this looking like flakiness ("`TestSync`
+  times out in a parallel run while passing alone") is simply no longer true: it fails alone, in 22 s, on
+  presence. The long-poll wake-up is not what keeps it red.
+- **An unknown push rule kind is a rule that is not there, not a bad request.** Measured on a live server
+  in the same session: `GET /pushrules/global/postcontent/<rule>` answers
+  `400 M_INVALID_PARAM: unknown push rule kind "postcontent"`, while `GET /pushrules/global/content/<nosuchrule>`
+  answers `404 M_NOT_FOUND: no such rule`. Complement's thread cases ask exactly that question to
+  *discover* whether MSC4306's rules exist — they tolerate the 404 and move on — and so they die in their
+  own setup on the 400, before a single threaded receipt is sent. A kind is a namespace; asking for a rule
+  in a namespace this server does not have is the same question as asking for a rule that is absent.
+  `postcontent` itself is still unimplemented, and that remains the real work behind
+  `TestThreadedReceipts` and `TestThreadReceiptsInSyncMSC4102`.
+- **`POST /keys/upload` validates nothing and says 200 while doing it.** Measured on a live server: a
+  `device_keys` object carrying only `user_id` and `device_id` — the required `algorithms`, `keys` and
+  `signatures` absent — is accepted with `200 {"one_time_key_counts":{}}`, and so is one whose `user_id`
+  names a **different user** than the caller. The suite wants `400 M_BAD_JSON` and `400`. That is not
+  test-sensitivity: an unverifiable key document now sits in the database and will be handed to every peer
+  that queries it.
+- **`/keys/query` is the one place where the suite is stricter than the specification.** Asked about a
+  user with no devices this server answers `{"device_keys":{}}`; the sub-case "query for user with no keys
+  returns empty key dict" asserts `device_keys.<user>` exists and is an object. v1.19's wording (under
+  `failures`) says that a user reached but unknown records no failure and is instead *"missing from the
+  `device_keys` result"* — which reads as a defence of the answer we give. The case carries a `// sytest:`
+  comment, so it is an inherited expectation, not a protocol requirement: match it in one line, or record
+  the refusal. Calling it a protocol gap would be the wrong kind of honest.
+- **`/sync` carries neither a room `summary` nor a global `account_data`, and each costs a name.**
+  `TestRoomSummary` reads `rooms.join.<room>.summary` for `m.joined_member_count` / `m.invited_member_count`
+  and gets nothing; `TestPushRuleRoomUpgrade` waits for top-level `account_data.events` and never sees it,
+  so the push-rule carry-over across a room upgrade — what that case is actually about — is never reached.
+  Both are response-shape work in the sync builder, and each one *un-masks* its case rather than fixing it.
+- **`/threads` answers in the right order without the bundle.** `TestThreadsEndpoint` compares
+  `event_id` against `unsigned."m.relations"."m.thread".latest_event.event_id`; the root arrives at the
+  right index with no `unsigned` relation at all. The ordering is done; MSC3856's bundling of the latest
+  reply (and with it the per-thread `count`) is what is missing.
+- **`TestSyncTimelineGap` is green where it argues and red where it asks.** Its `incremental` and `full`
+  subtests pass — the `limited` flag this name used to stand for is closed. The parent fails because the
+  mock federation server runs with `UnexpectedRequestsAreErrors=true`, and Lattice probes
+  `GET /federation/v2/state/{roomId}/{eventId}`, then `v1/state/…`, then the `v3/state/{roomId}?event_id=`
+  query form (`internal/service/fedgap.go:415`), none of which the manifest lists. It should not have to
+  ask: `MustJoinRoom` delivered the state in the join response. Real peers pay those three round trips per
+  join today, so this is an efficiency finding that happens to show up as a red name.
+- **Running Complement from inside the pi-courier bridge needs a transient scope.** Rootless podman refuses
+  under the bridge's unit (`cannot re-exec process to join the existing user namespace`) — `NoNewPrivileges=true`
+  blocks the setuid id-map helpers — and the identical command works from a plain shell. `systemd-run --user`
+  starts the run outside that cgroup and everything behaves:
+  `systemd-run --user --collect --unit=lattice-csapi --setenv=DOCKER_HOST=unix:///run/user/1000/podman/podman.sock --property=TimeoutStartSec=45min /bin/sh <script>`.
+  Keep the default `Type=simple`: with `Type=oneshot` the `systemd-run` call itself blocks until the suite
+  finishes, which is not what a run you mean to watch wants.
