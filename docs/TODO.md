@@ -182,6 +182,18 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
       — three round trips per join on a live peer, and Complement's mock counts each of them as a protocol
       error, which is the only reason `TestSyncTimelineGap` is red now that its assertions pass
       (triaged 2026-11-20).
+- [ ] An outbound **address policy**: what a name may resolve to before this server dials it.
+      `internal/federation/transport.go:208` is a bare `transport := &http.Transport{}` — default
+      resolver, default dialer, nothing refusing loopback, link-local or RFC1918, and nothing pinning
+      the address between looking a name up and connecting to it, which is the half that matters: a
+      name answering differently the second time is the classic way past a check made the first. A
+      peer's `.well-known`, a key perspective's answer and every federation destination go through it.
+      Found auditing the abandoned `retry` branch's open tasks against this tree
+      (`.agent-work/retired-retry-line-20261109/TASK-AUDIT-20261120.md`, 2026-11-20) — the one gap in
+      there this line neither has nor had written down. It belongs with the first fetch of a URL this
+      server did not choose, and that is URL previews: `internal/api/media.go:188-192` refuses them
+      today with "URL previews need an outbound fetcher, which Lattice does not have", so the policy
+      and that endpoint should arrive together (queue D).
 - [ ] Verify the key server's own signature over a `keys/query` answer. What is checked today is that
       each document names the server asked about and is signed by the keys it publishes; the signature
       over the aggregate response is what tells this server that the answer came from the key server
@@ -207,7 +219,15 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
 - [ ] `state_after` on `/sync`; the top-level `presence` and `org.matrix.msc3814.e2ee` sections filled or removed.
 - [ ] `DELETE` on account data (MSC3391), `m.fully_marked` where it is still missing, `/relations` recursion.
 - [ ] A real search index (full text) instead of substring matching.
-- [ ] `POST /_matrix/media/v1/report`, and URL previews.
+- [ ] `POST /_matrix/media/v1/report`, and URL previews — and previews come second to the outbound
+      address policy in queue C, because a preview is this server fetching a URL a client typed.
+- [ ] Decide what an upgraded room may do afterwards. Nothing on the path that accepts an event reads a
+      tombstone: `Predecessor` appears in this tree only where a room is created
+      (`internal/service/directory.go:397`), so a room whose own state says "use the other room" keeps
+      accepting events. Refusing them changes behaviour for clients that have not seen the tombstone, so
+      it is a decision first and a patch second — and the federated half rides with it: a tombstone
+      arriving over federation, and whether a user's push rules move to the new room with them. From the
+      `retry` branch's open list, audited 2026-11-20.
 - [x] Lazy loading that is lazy on `/sync` and `/messages`, MSC3023's ignore list applied server-side, `/members?at=`, departed rooms read as of the leave, sync filters honoured, the `leave` section rebuilt, MSC2675 per-event visibility (steps 23-25).
 
 ### E. The MSC surface (where client features arrive first)

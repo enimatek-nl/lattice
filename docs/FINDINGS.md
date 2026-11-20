@@ -526,6 +526,22 @@ maintenance`. First registered account = administrator.
   touching anything, because "the endpoint validates" is not a fact anyone should infer:
   the service now asks `pushRuleThere` first, which is also where the unknown-kind answer
   for those three lives.
+- **`.agent-work/` is untracked and has served two unrelated histories — it is not this tree's
+  record** (2026-11-20). Branch `retry` (tip `100668f`, 2026-11-09, on `origin/retry`, 189 commits,
+  root `ef634b5 chore: empty branch (fresh start)`) shares **no ancestor** with `main`:
+  `git merge-base main retry` exits 1, and the trees differ by 537 files. Its working notes sat in
+  the gitignored `.agent-work/` beside this line's own and read as current: they claim a CI gate in
+  `.github/workflows`, a `make verify` target, and `make lint` falling back to `go vet`. This tree
+  has one tag-triggered image workflow, no `verify` target (`git log -S'verify' -- Makefile` empty),
+  and a `make lint` that exits 1 without golangci-lint. The notes are archived under
+  `.agent-work/retired-retry-line-20261109/` with a README of how that was established and an audit
+  of all 53 tasks they left open; two survived as real gaps here and are in the queue, the rest were
+  finished independently or are that branch's own tooling.
+  The sharper lesson is about method, and the audit tripped over it immediately: `grep m.typing
+  internal/federation` finds nothing, which reads as "typing never crosses servers", while
+  `internal/service/fedsend.go:365` sends it, `fedrecv.go:407` receives it, and `TestRemoteTyping`
+  passes. Code here lives in `internal/service`; a grep over the package a foreign note happens to
+  name is not a measurement. Read a claim, then run the thing.
 
 ## Commands
 
