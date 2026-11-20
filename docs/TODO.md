@@ -79,8 +79,9 @@ were labelled "not triaged" were each run **alone** and read on 2026-11-20 (the 
 | `TestThreadsEndpoint` | `/threads` answers the roots in the right order but bundles nothing: no `unsigned."m.relations"."m.thread".latest_event` (MSC3856). The comparison is on that pair, so ordering is not the problem (triaged 2026-11-20) |
 | `TestThreadedReceipts`, `TestThreadReceiptsInSyncMSC4102` | no longer the push rule probe (closed 2026-11-20, see the queue): each now fails on its own subject. `TestThreadedReceipts` wants **MSC3771 thread unread counts** — its own unthreaded numbers already arrive exactly as asked (`{"notification_count":6,"highlight_count":2}`, measured on the response it checks), what never arrives is `unread_thread_notifications` per thread. `TestThreadReceiptsInSyncMSC4102` wants an unthreaded and a threaded read receipt **side by side** for one event; our `/sync` carries only the threaded one, because a receipt is stored per (user, event) and the threaded write replaced the unthreaded one — the suite's own comment calls out this exact failure mode ("Non-compliant servers will typically send the last one only") |
 
-Server-server, the `tests` package (**13 red of 91**; this package also holds
-`TestJumpToDateEndpoint`, which is why it never showed up in the 106):
+Server-server, the `tests` package (**13 red of 91** measured alone, 14 when it runs beside
+the client-API suite — `docs/COMPLEMENT.md` has the two names that move with the load; this
+package also holds `TestJumpToDateEndpoint`, which is why it never showed up in the 106):
 
 | Test | Waiting on |
 |---|---|
@@ -92,6 +93,7 @@ Server-server, the `tests` package (**13 red of 91**; this package also holds
 | `TestIsDirectFlagFederation` | the `is_direct` flag surviving a cross-server invite |
 | `TestJoinFederatedRoomFromApplicationServiceBridgeUser` | application services (queue B) |
 | `TestJumpToDateEndpoint` | `timestamp_to_event` walking stream positions instead of the graph |
+| `TestRestrictedRoomsRemoteJoinFailOverInMSC3787Room` | a restricted join redirected to another server, in a room of the MSC3787 version — the name measured green and red in two runs of the same commit an hour apart under the parallel preset (2026-11-20), so confirm it with `make complement-fed` alone |
 
 The state-handshake change (step 27) is federation-only and did not move this tally: the package
 measured 78 green with it in.

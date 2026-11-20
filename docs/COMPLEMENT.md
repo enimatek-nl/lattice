@@ -115,6 +115,7 @@ make complement COMPLEMENT_PKG=./tests    # the server-server suite (91 tests)
 make complement COMPLEMENT_PKG=./tests COMPLEMENT_RUN='TestJoinViaRoomIDAndServerName'
 make complement-fast                      # csapi without the blocked names: 82 green in 159s
 make complement-both                      # csapi and server-server at once, one process per package
+make complement-fed                       # server-server alone — the way to count federation
 ```
 
 Two of those targets exist because of a measurement. A complete `tests/csapi` run took
@@ -130,12 +131,21 @@ reads perfectly.
 
 Different *packages* own different namespaces, which is what the two new targets use.
 `make complement-both` measured **373 s for both suites together** — 106 client-API tests
-and 91 server-server tests, 82 green and 78 green, name for name the two recorded tallies
-— where running them one after the other costs the 409 s plus the 338 s of own time the
-server-server suite adds up to. `make complement-fast` leaves the blocked names out and
-came back with the same 82 green in **159 s**. The scripts are in `deploy/complement/`,
-with the mechanism written out at the top of `run-suites.sh` so nobody has to rediscover
-it.
+and 91 server-server tests, 82 green and 78 green — where running them one after the other
+costs the 409 s plus the 338 s of own time the server-server suite adds up to.
+`make complement-fast` leaves the blocked names out and came back with the same 82 green in
+**159 s**. The scripts are in `deploy/complement/`, with the mechanism written out at the top
+of `run-suites.sh` so nobody has to rediscover it.
+
+The client-API tally reproduced **name for name** across three runs that day. The
+server-server tally did not: run twice against the same commit, `fed` came back 78 green and
+then 77, with `TestJumpToDateEndpoint` and `TestRestrictedRoomsRemoteJoinFailOverInMSC3787Room`
+trading places between the two runs (2026-11-20, both with the parallel preset). Run alone
+with `make complement-fed` the same commit returned to **78 green, 13 red in 300 s** — the
+recorded tally, at its own pace. That is the rule this file already states, shown in the
+numbers rather than argued: a federation test waiting on a five second window moves when
+another suite owns the CPU, so a federation number is only a number once it has been counted
+alone.
 
 `COMPLEMENT` points at a Complement checkout; it is not a module dependency,
 because Complement's own `go.mod` owns the test binaries. The image is

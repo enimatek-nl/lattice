@@ -21,7 +21,7 @@ JWT_SECRET  ?= dev
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build image test race vet fmt lint endpoints run swagger clean complement-image complement complement-both complement-fast
+.PHONY: help build image test race vet fmt lint endpoints run swagger clean complement-image complement complement-both complement-fast complement-fed
 
 help: ## List the available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -136,3 +136,10 @@ complement-both: complement-image ## Run the client-API and server-server suites
 complement-fast: complement-image ## Run the client-API suite without the names docs/TODO.md lists as blocked
 	COMPLEMENT=$(COMPLEMENT) COMPLEMENT_BASE_IMAGE=$(COMPLEMENT_IMAGE) COMPLEMENT_SUITES='csapi' \
 		COMPLEMENT_SKIP_BLOCKED=1 COMPLEMENT_TIMEOUT=$(COMPLEMENT_TIMEOUT) sh deploy/complement/run-suites.sh
+
+# The server-server suite alone, which is how a federation number becomes a fact: the
+# parallel run shares the host with 106 client-API tests, and names there have been
+# measured moving between green and red with nothing but the load (docs/COMPLEMENT.md).
+complement-fed: complement-image ## Run only the server-server suite, alone, at its own pace
+	COMPLEMENT=$(COMPLEMENT) COMPLEMENT_BASE_IMAGE=$(COMPLEMENT_IMAGE) COMPLEMENT_SUITES='fed' \
+		COMPLEMENT_TIMEOUT=$(COMPLEMENT_TIMEOUT) sh deploy/complement/run-suites.sh
