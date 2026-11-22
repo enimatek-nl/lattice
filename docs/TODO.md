@@ -267,10 +267,12 @@ the copy that survives).
       instead is the store path: `internal/service/fedapply.go:328` and `:546` write the event's `JSON`
       column with `matrix.Encode` — `json.Marshal`, HTML-escaping `&`, `<` and `>` — where the create path
       uses `matrix.CanonicalJSON`. Measured: canonical reproduces the bytes it is given, `Encode` does not.
-- [ ] **The fix for T-4014, and the test that makes it stick.** `matrix.CanonicalJSON(pdu)` at those two
-      call sites, then a test that accepts a PDU whose content carries `&`, `<` and `>` and checks that the
-      bytes this server serves hash to the `sha256` the peer sent. Rows already stored cannot be repaired —
-      the original bytes were never kept.
+- [x] **The fix for T-4014, and the test that makes it stick.** Landed 2026-11-22: `signedForm()` in
+      `internal/service/fedapply.go` writes both call sites with `matrix.CanonicalJSON`, and
+      `TestAnArrivingEventIsKeptInTheFormItWasSignedIn` (`tests/federation/intake_test.go`) delivers an event
+      reading `Tom & Jerry <3> a<b` across the two-server cluster and compares what each server kept. Reverted
+      to `matrix.Encode` it fails on both of its byte checks, so it is the test and not a certificate. Rows
+      stored before this cannot be repaired — the original bytes were never kept.
 - [ ] **T-4068 — does `/members` stream?** MSC4222 wants membership as a stream with `from`/`to`;
       `internal/api/routes.go:87` serves a roster. One request against a live server with a `from`/`to`
       pair settles whether it streams at all. Feeds the MSC4222 entry in queue B.

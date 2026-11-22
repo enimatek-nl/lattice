@@ -881,6 +881,17 @@ question mark; the durable part:
   PDU whose content carries `&`, `<` and `>`, then check that the bytes this server serves hash to the
   `sha256` the peer sent. Rows already stored keep the escaped copy; the bytes are gone and cannot be
   recovered, so this is a fix for what arrives from here on.
+- Fixed the same day. `signedForm()` (`internal/service/fedapply.go`) is now the one place that decides what
+  bytes a received PDU is kept as, and both call sites use it. `TestAnArrivingEventIsKeptInTheFormItWasSignedIn`
+  delivers an event reading `Tom & Jerry <3> a<b` across the two-server cluster and asserts three things: the
+  copy holds the characters it was sent, the copy re-encodes to itself, and it matches what the origin server
+  kept. Reverting the encoder fails it on the first two, which is what makes it a test. `go test ./...` is
+  green, and the server-server suite re-measured against the built image is **78 green, 13 red** in 319 s —
+  the same thirteen names as the recorded baseline, so the intake path changed nothing a peer could see.
+- A related comparison, learned from the test failing for the wrong reason. The copy the **origin** server
+  keeps carries `event_id`; the copy a **receiving** server keeps does not. That is allowed: a room version 3
+  and later event does not carry its own id, so a server writes one into its own copy for its own clients, and
+  anyone comparing two servers' copies has to drop the id before comparing.
 - Method, the cheap kind. A commit id read out of another clone of this project named a commit `main`
   does not have, and it took a re-check to notice. `git cat-file -e <id>^{commit}` costs nothing; run it
   against **this** repository before citing a commit. Nothing wrong reached these docs.

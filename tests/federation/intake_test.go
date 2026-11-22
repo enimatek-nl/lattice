@@ -2,6 +2,7 @@ package federation
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/enimatek-nl/lattice/internal/matrix"
@@ -336,4 +337,76 @@ func (s *server) stateContent(t *testing.T, roomID, typ, stateKey string) string
 		t.Fatalf("reading the state of %s (%s, %s) on %s: %v", roomID, typ, stateKey, s.name, err)
 	}
 	return row.Content
+}
+
+// TestAnArrivingEventIsKeptInTheFormItWasSignedIn is about the copy this server hands on.
+// A signature covers one particular string of bytes, and a peer that checks an event
+// recomputes the hash over the bytes it is handed now. So the copy kept here has to be the
+// form the sender wrote: an event rebuilt with Go's marshalling reads identically to a
+// client and hashes differently, because Go escapes an ampersand, a less-than and a
+// greater-than that the sender left plain, and an escape is a different event.
+func TestAnArrivingEventIsKeptInTheFormItWasSignedIn(t *testing.T) {
+	c := newCluster(t)
+	one, two := c.one(), c.two()
+	alice := one.register("alice", "wonderland")
+	roomID := one.createRoom(alice, map[string]any{"name": "Ampersands"})
+	handTheRoomTo(t, two, one, alice, roomID, alice.UserID, "@bob:"+two.name)
+
+	const body = "Tom & Jerry <3> a<b"
+	sent := one.send(alice, roomID, body)
+	flush(t, one)
+
+	stored, err := two.db.EventRepo.Get(sent)
+	if err != nil {
+		t.Fatalf("%s did not store the event: %v", two.name, err)
+	}
+	if !strings.Contains(stored.JSON, `"`+body+`"`) {
+		t.Errorf("%s holds the event as\n %s\n which is not the copy it was sent: the escapes alone make a peer hash a different event", two.name, stored.JSON)
+	}
+	// The property, stated without a character list: what this server keeps re-encodes to
+	// itself. A copy that came from a Go marshalling of the parsed event does not.
+	decoded, err := matrix.DecodeCanonical([]byte(stored.JSON))
+	if err != nil {
+		t.Fatalf("the stored copy does not decode as JSON: %v", err)
+	}
+	signed, err := matrix.CanonicalJSON(decoded)
+	if err != nil {
+		t.Fatalf("re-encoding the stored copy: %v", err)
+	}
+	if string(signed) != stored.JSON {
+		t.Errorf("%s stores an event that is not in the form it was signed in:\n stored %s\n signed %s", two.name, stored.JSON, signed)
+	}
+	// And the copy agrees with the one the origin server kept, field for field and escape for
+	// escape. The one difference is allowed by the room version: an event of this version does
+	// not carry its own id, so the sender writes it in for its own clients and the receiver has
+	// no need of it.
+	original, err := one.db.EventRepo.Get(sent)
+	if err != nil {
+		t.Fatalf("%s lost sight of the event it sent: %v", one.name, err)
+	}
+	ours, theirs := withoutEventID(t, stored.JSON), withoutEventID(t, original.JSON)
+	if ours != theirs {
+		t.Errorf("%s and %s keep different bytes for %s; one of them is not what was signed\n ours   %s\n theirs %s",
+			two.name, one.name, sent, ours, theirs)
+	}
+}
+
+// withoutEventID returns the canonical form of a stored event with its id removed, so two
+// copies of one event can be compared without the id the sender writes for its own clients.
+func withoutEventID(t *testing.T, stored string) string {
+	t.Helper()
+	object, err := matrix.DecodeCanonical([]byte(stored))
+	if err != nil {
+		t.Fatalf("a stored event does not decode as JSON: %v", err)
+	}
+	shown, ok := object.(matrix.Object)
+	if !ok {
+		t.Fatalf("a stored event is not a JSON object: %s", stored)
+	}
+	delete(shown, "event_id")
+	raw, err := matrix.CanonicalJSON(shown)
+	if err != nil {
+		t.Fatalf("re-encoding a stored event: %v", err)
+	}
+	return string(raw)
 }

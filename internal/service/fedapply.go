@@ -296,6 +296,23 @@ func (s *Service) keepCitedState(pdu matrix.Object, eventID, version, inRoom str
 	return s.storeCitedState(pdu, eventID, version, roomID)
 }
 
+// signedForm returns the copy of a received PDU this server keeps and serves: the event in
+// the form its hash was computed over, which is canonical JSON.
+//
+// The bytes matter more than the fields. A signature covers one particular string of bytes,
+// and a copy rebuilt with Go's marshalling differs from the sender's wherever the content
+// holds an ampersand, a less-than or a greater-than: the escape is equivalent JSON and a
+// different event, one whose recorded sha256 no longer matches. Senders are required by the
+// hashing spec to write canonical JSON, so re-encoding the parsed event reproduces their
+// bytes exactly — which is also what the create path and the received-PDU row already do.
+func signedForm(pdu matrix.Object) (string, error) {
+	raw, err := matrix.CanonicalJSON(pdu)
+	if err != nil {
+		return "", matrix.ErrInternal(fmt.Errorf("the received event cannot be written in the form it was signed in: %w", err))
+	}
+	return string(raw), nil
+}
+
 // storeCitedState writes an event and the piece of state it is, with the side effects that
 // go with them, whether or not the room already holds another event for that piece of state.
 // A gap filled by resolution ends here: the room has two claims about one key and the
@@ -304,6 +321,10 @@ func (s *Service) storeCitedState(pdu matrix.Object, eventID, version, roomID st
 	key, isState := pdu["state_key"].(string)
 	if !isState {
 		return false, nil
+	}
+	stored, err := signedForm(pdu)
+	if err != nil {
+		return false, err
 	}
 	typ := federation.EventField(pdu, "type")
 	pos := s.nextStreamPos()
@@ -325,7 +346,7 @@ func (s *Service) storeCitedState(pdu matrix.Object, eventID, version, roomID st
 		OriginServerTS: numberField(pdu, "origin_server_ts"),
 		Content:        string(encoded),
 		Depth:          numberField(pdu, "depth"),
-		JSON:           string(matrix.Encode(pdu)),
+		JSON:           stored,
 		PrevEvents:     encodedIDs(idsOfPDUList(pdu, "prev_events")),
 		AuthEvents:     encodedIDs(idsOfPDUList(pdu, "auth_events")),
 		StateKey:       key,
@@ -333,7 +354,7 @@ func (s *Service) storeCitedState(pdu matrix.Object, eventID, version, roomID st
 		NotInTimeline:  true,
 	}
 	event.RelatesTo, event.RelType = relationOf(encoded)
-	err := s.db.Tx(func(tx *gorm.DB) error {
+	err = s.db.Tx(func(tx *gorm.DB) error {
 		// The room row comes before its state, because what a state event means is
 		// written onto the room: the join rule, the creator, who is in it. A server that
 		// first hears of a room from an event somebody cites has no room row at all.
@@ -525,6 +546,10 @@ func roomOfPDU(pdu matrix.Object, version, inRoom string) string {
 // arrives with a join from another server does not: see [persist.Event.NotInTimeline].
 func (s *Service) storeIncomingPDU(ctx context.Context, pdu matrix.Object, eventID, forRoom, softFailure string, notInTimeline bool) error {
 	roomID := roomOfPDU(pdu, "", forRoom)
+	stored, err := signedForm(pdu)
+	if err != nil {
+		return err
+	}
 	encoded := matrix.Encode(objectOf(pdu, "content"))
 	pos := s.nextStreamPos()
 	draft := &EventDraft{
@@ -543,7 +568,7 @@ func (s *Service) storeIncomingPDU(ctx context.Context, pdu matrix.Object, event
 		OriginServerTS: numberField(pdu, "origin_server_ts"),
 		Content:        string(encoded),
 		Depth:          numberField(pdu, "depth"),
-		JSON:           string(matrix.Encode(pdu)),
+		JSON:           stored,
 		PrevEvents:     encodedIDs(idsOfPDUList(pdu, "prev_events")),
 		AuthEvents:     encodedIDs(idsOfPDUList(pdu, "auth_events")),
 		SoftFailed:     softFailure != "",
@@ -557,7 +582,7 @@ func (s *Service) storeIncomingPDU(ctx context.Context, pdu matrix.Object, event
 	event.RelatesTo, event.RelType = relationOf(encoded)
 
 	joined := ""
-	err := s.db.Tx(func(tx *gorm.DB) error {
+	err = s.db.Tx(func(tx *gorm.DB) error {
 		events := persist.NewEventRepo(tx)
 		if err := events.Create(event); err != nil {
 			if persist.IsDuplicate(err) {
