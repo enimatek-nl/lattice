@@ -243,6 +243,14 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
       `TestThreadsEndpoint`'s row above. Invite filtering (MSC4155), relation filters in
       `/messages` (MSC3874), poll push rules (MSC3930).
 - [x] Simplified sliding sync (MSC4186) at `/v4/sync` and the `org.matrix.msc3575` path, with the five extensions (step 22).
+      Since 2026-11-22 `pos`, `timeout` and `set_presence` are also read from the query string where the body leaves
+      them out, which is what a matrix-rust-sdk client sends — see the finding of that afternoon.
+- [ ] Sliding sync for a client that sends the pre-MSC4186 **shapes**: `required_state` as `[type, state_key]` pairs,
+      `ranges` beside `range`, the `is_invite` filter name, and `invite_state` in the answer. Read from ruma 0.25.2
+      and asked for by smaltino's author; not built, because those are shapes rather than placements and answering in
+      two shapes writes a superseded field to every client of the endpoint. The fix belongs in ruma. Decide again if
+      ruma does not move and a real user needs it — then: unstable path only, behind a config name, dialect logged once
+      per connection.
 - [x] Room version 12 understood in both directions — hashed room ids, `additional_creators`, creators-privileged rules, state resolution v2.1, stripped state as full events (step 21). Choosing v12 as the *default* is a decision, not a piece of work.
 
 ### F. Operations and quality

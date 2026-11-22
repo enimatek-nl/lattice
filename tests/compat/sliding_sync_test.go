@@ -1,6 +1,7 @@
 package compat
 
 import (
+	"encoding/json"
 	"net/url"
 	"sort"
 	"strings"
@@ -1201,5 +1202,142 @@ func TestSlidingSyncReadsTheProxyTokens(t *testing.T) {
 	}))
 	if !plain[alice.UserID] || !plain[bob.UserID] || !plain[carol.UserID] || plain["$LAZY"] {
 		t.Errorf("a config asking for memberships was answered with %v, want all three", plain)
+	}
+}
+
+// slidingSyncURL performs a sliding sync whose parameters are written in the query string, the
+// way a client that learned this endpoint before MSC4186 closed sends them.
+func (s *Server) slidingSyncURL(t *testing.T, session *Session, query url.Values,
+	body map[string]any) Response {
+	t.Helper()
+	path := "/_matrix/client/v4/sync"
+	if encoded := query.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("encoding the request: %v", err)
+	}
+	return s.DoRaw("POST", path, session.Token, "application/json", payload)
+}
+
+// slidingSyncListConfig is the smallest list config a client sends: a window and a timeline.
+func slidingSyncListConfig() map[string]any {
+	return map[string]any{
+		"all": slidingList{"range": []int{0, 9}, "timeline_limit": 2},
+	}
+}
+
+// TestSlidingSyncReadsItsParametersFromTheURL asks the endpoint to place pos, timeout and
+// set_presence where the URL put them before MSC4186 moved them into the body.
+//
+// The pos is the one a client feels: a server that reads only the body never learns where the
+// connection was, so every poll restarts it, every room arrives marked initial again, and a
+// room list a client only ever sees re-sent from scratch stops looking like it is keeping up.
+func TestSlidingSyncReadsItsParametersFromTheURL(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	roomID := server.CreateRoom(alice, map[string]any{"preset": "public_chat", "name": "Down"})
+
+	first := server.slidingSyncURL(t, alice, nil, map[string]any{
+		"conn_id": "url",
+		"lists":   slidingSyncListConfig(),
+	})
+	if first.Status != 200 {
+		t.Fatalf("a first request with an empty query was refused: %d %v", first.Status, first.Body)
+	}
+	pos, _ := first.Body["pos"].(string)
+	if pos == "" {
+		t.Fatalf("the answer carries no position to continue from: %v", first.Body)
+	}
+	if rooms := slidingRooms(t, first.Body); rooms[roomID]["initial"] != true {
+		t.Fatalf("a first sight of a room is not marked initial: %v", rooms[roomID])
+	}
+
+	server.Send(alice, roomID, "second", "the room moved once")
+	waited := time.Now()
+	second := server.slidingSyncURL(t, alice, url.Values{
+		"pos":          []string{pos},
+		"timeout":      []string{"0"},
+		"set_presence": []string{"offline"},
+	}, map[string]any{"conn_id": "url", "lists": slidingSyncListConfig()})
+	if second.Status != 200 {
+		t.Fatalf("a request naming its parameters in the query was refused: %d %v",
+			second.Status, second.Body)
+	}
+	// Nothing had to be waited for, so the timeout of 0 that arrived in the query is what
+	// answered here: a connection that was told to wait would have held the request.
+	if elapsed := time.Since(waited); elapsed > 2*time.Second {
+		t.Errorf("a poll with timeout=0 in the query held the request for %v", elapsed)
+	}
+	// The room that moved is sent, and sent as a delta: the connection went on where the
+	// position in the query left it instead of starting over.
+	moved := slidingRooms(t, second.Body)[roomID]
+	if moved == nil {
+		t.Fatalf("the room that moved is missing from the answer: %v", second.Body)
+	}
+	if moved["initial"] == true {
+		t.Errorf("a room already sent on this connection arrives marked initial again, so the "+
+			"connection started over instead of continuing from the position in the query: %v", moved)
+	}
+	timeline, _ := moved["timeline"].([]any)
+	if len(timeline) != 1 {
+		t.Errorf("the room carries %d timeline events, want only the one that is new", len(timeline))
+	}
+	if next, _ := second.Body["pos"].(string); next == pos {
+		t.Errorf("the answer repeats the position %q instead of moving the connection on", pos)
+	}
+}
+
+// TestSlidingSyncPrefersTheBodyOverTheQuery checks that reading the query adds a placement
+// rather than a second authority: MSC4186 asks for these parameters in the body, so a request
+// that names one in both places is answered as the body says.
+func TestSlidingSyncPrefersTheBodyOverTheQuery(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	roomID := server.CreateRoom(alice, map[string]any{"preset": "public_chat", "name": "Down"})
+
+	first := server.slidingSync(t, alice, map[string]any{
+		"conn_id": "both",
+		"lists":   slidingSyncListConfig(),
+	})
+	pos, _ := first["pos"].(string)
+	server.Send(alice, roomID, "second", "the room moved once")
+
+	// The body names the position the connection stands on; the query names one that was
+	// never issued. Were the query the authority, this request would be refused.
+	continued := server.slidingSyncURL(t, alice, url.Values{"pos": []string{"9_9_never_issued"}},
+		map[string]any{"conn_id": "both", "pos": pos, "lists": slidingSyncListConfig()})
+	if continued.Status != 200 {
+		t.Fatalf("a request whose body names a known position was refused (%s): %v",
+			continued.ErrCode(), continued.Body)
+	}
+	if rooms := slidingRooms(t, continued.Body); rooms[roomID]["initial"] == true {
+		t.Errorf("the body's position was overridden by the query's: %v", rooms[roomID])
+	}
+}
+
+// TestSlidingSyncRejectsBadQueryParameters asks what happens when a parameter in the query is
+// written the wrong way: it is a parameter like any other, so the answer is the error the
+// endpoint already gives for a bad one.
+func TestSlidingSyncRejectsBadQueryParameters(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	server.CreateRoom(alice, map[string]any{"preset": "public_chat", "name": "Down"})
+
+	for _, tc := range []struct {
+		name  string
+		query url.Values
+	}{
+		{"a timeout that is not a number", url.Values{"timeout": []string{"soon"}}},
+		{"a presence nobody takes", url.Values{"set_presence": []string{"sideways"}}},
+	} {
+		answer := server.slidingSyncURL(t, alice, tc.query, map[string]any{
+			"conn_id": "bad",
+			"lists":   slidingSyncListConfig(),
+		})
+		if answer.Status != 400 || answer.ErrCode() != "M_INVALID_PARAM" {
+			t.Errorf("%s: got %d %s, want 400 M_INVALID_PARAM", tc.name, answer.Status, answer.ErrCode())
+		}
 	}
 }

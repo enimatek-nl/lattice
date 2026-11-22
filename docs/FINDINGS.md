@@ -895,3 +895,42 @@ question mark; the durable part:
 - Method, the cheap kind. A commit id read out of another clone of this project named a commit `main`
   does not have, and it took a re-check to notice. `git cat-file -e <id>^{commit}` costs nothing; run it
   against **this** repository before citing a commit. Nothing wrong reached these docs.
+
+## Findings of 2026-11-22, afternoon — a client speaking the dialect from before the MSC closed
+
+- Reported by the author of smaltino, and it arrived as a symptom rather than as a bug report: the
+  room list's preview stops updating against lattice, while the same build against their own two
+  test servers is fine. The client is matrix-rust-sdk 0.19.1 on ruma-client-api 0.25.2, so the
+  question was which of the two is holding a superseded wire shape.
+- Read from ruma's own `sync_events/v5.rs`, which is what shipped in 0.25.2: the endpoint metadata
+  points at `/_matrix/client/unstable/org.matrix.simplified_msc3575/sync` and is documented as
+  MSC4186, but `pos`, `timeout` and `set_presence` carry `#[ruma_api(query)]`, `required_state` is
+  `Vec<(StateEventType, String)>`, the window is `ranges: Vec<(UInt, UInt)>`, the filter is
+  `is_invite`, and the room answer is read as `invite_state` plus flat `notification_count` and
+  `highlight_count`. Every one of those is the shape from before the MSC closed: MSC4186's
+  appendix lists them as its changes from Synapse v1.151.0 — point 8 moves the URL parameters into
+  the body, 7 changes `required_state`, 9 turns `ranges` into one `range`, 11 renames `is_invite`,
+  2 renames `invite_state` to `stripped_state`, 15 deletes the two counters.
+- The symptom is point 8. The body carried no `pos`, lattice looked in the body, found nothing, and
+  opened a fresh connection on every poll. Measured with the query token ignored: a room already
+  sent on the connection comes back `initial: true` with 2 timeline events where only 1 is new —
+  that is the failure text `TestSlidingSyncReadsItsParametersFromTheURL` now carries, so the claim
+  stays checked. A client whose every response is initial has to redraw the whole list each round,
+  which is what "the preview stops keeping up" looks like from the outside.
+- What was changed is the placement of three parameters and nothing else: `readSlidingQuery`
+  (`internal/api/sliding.go`) fills `pos`, `timeout` and `set_presence` from the query **only where
+  the body left them out**, so a request that names a parameter in both places is read as the spec
+  describes it. A bad value in the query is a bad value like any other, `M_INVALID_PARAM`, because
+  `set_presence` was already checked that way in `checkSlidingRequest`.
+- Why this one and not the other five. The MSC is not consistent about `set_presence` itself —
+  changelog point 1 adds it as a URL parameter and point 8 moves the parameters to the body — so a
+  server that reads it from either place is not inventing a dialect. And the endpoint already reads
+  the sliding-sync proxy's `$ME` and `$LAZY` state-key tokens on the same grounds: reading an extra
+  placement costs nothing, requires nothing of a client that sends the spec form.
+- What was deliberately not done: accepting `required_state` as pairs, or `ranges`, or `is_invite`,
+  and above all answering `invite_state` beside `stripped_state`. Those are not placements but
+  shapes, and answering in two shapes at once puts a superseded field on the wire for every client
+  of the endpoint. The clean fix is upstream in ruma, whose v5 module claims MSC4186 and sends the
+  prototype; the client's author was offered that route and the maintainers of the client decide
+  whether to carry a patched ruma. If lattice grows the shim later, it belongs on the unstable path
+  only, behind a name, with the dialect a connection arrived in logged once.
