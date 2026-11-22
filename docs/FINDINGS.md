@@ -934,3 +934,16 @@ question mark; the durable part:
   prototype; the client's author was offered that route and the maintainers of the client decide
   whether to carry a patched ruma. If lattice grows the shim later, it belongs on the unstable path
   only, behind a name, with the dialect a connection arrived in logged once.
+- The same afternoon measured the rest of the dialect, and it was worse than a stale preview: a request
+  carrying `required_state` as pairs was refused outright, `400 M_BAD_JSON`, in a list and in a subscription
+  alike. So a client that sends the proxy shapes is not silently mis-syncing, it cannot sync at all — which
+  is the good case, because it complains. Two others do not: `ranges` and `is_invite` were answered `200` and
+  then ignored, `ranges` read as "no window" so the whole filtered list came along, `is_invite` as "no filter"
+  so a list that wanted only invitations got everything. A field accepted and dropped is the failure mode to
+  design against; a `400` at least says so.
+- What was built, all of it on the request side: `required_state` in either of its shapes, `ranges` read as the
+  window its pairs cover, `is_invite` answered as `is_invited`. `SlidingRequiredState.UnmarshalJSON`
+  (`internal/matrix/sliding.go`) is the whole of the shape work, `SlidingSyncList.Window` and
+  `SlidingRoomFilter.WantsInvite` the whole of the other two. What is still not done is on the answer side —
+  `invite_state` beside `stripped_state`, and the two counters MSC4186 deleted — because that writes a
+  superseded field into every response of the endpoint rather than tolerating one more request.

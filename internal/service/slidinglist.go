@@ -412,7 +412,8 @@ func slidingRoomMatches(entry slidingRoomEntry, filter *matrix.SlidingRoomFilter
 	if filter.IsDM != nil && facts.direct[entry.roomID] != *filter.IsDM {
 		return false
 	}
-	if filter.IsInvited != nil && (entry.membership == matrix.MembershipInvite) != *filter.IsInvited {
+	if wants := filter.WantsInvite(); wants != nil &&
+		(entry.membership == matrix.MembershipInvite) != *wants {
 		return false
 	}
 	if filter.IsEncrypted != nil && facts.encrypted[entry.roomID] != *filter.IsEncrypted {

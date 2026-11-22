@@ -105,13 +105,26 @@ func checkSlidingRequest(req *matrix.SlidingSyncRequest) error {
 		if list.TimelineLimit < 0 {
 			return matrix.ErrInvalidParam("the list %q asks for a negative timeline limit", name)
 		}
-		if err := checkSlidingRange(list.Range, name); err != nil {
+		if err := checkSlidingWindow(list, name); err != nil {
 			return err
 		}
 	}
 	for roomID, sub := range req.RoomSubscriptions {
 		if sub.TimelineLimit < 0 {
 			return matrix.ErrInvalidParam("the subscription to %s asks for a negative timeline limit", roomID)
+		}
+	}
+	return nil
+}
+
+// checkSlidingWindow checks the window a list asks for, in whichever spelling it was written.
+func checkSlidingWindow(list matrix.SlidingSyncList, name string) error {
+	if err := checkSlidingRange(list.Range, name); err != nil {
+		return err
+	}
+	for _, pair := range list.Ranges {
+		if err := checkSlidingRange(pair, name); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -264,7 +277,7 @@ func (s *Service) buildSlidingSync(ctx context.Context, userID, deviceID string,
 		}
 		matched[name] = rooms
 		config := configOf(list.TimelineLimit, list.RequiredState, userID)
-		from, to := slidingRangeBounds(list.Range, len(rooms))
+		from, to := slidingRangeBounds(list.Window(), len(rooms))
 		for i := from; i <= to; i++ {
 			addSlidingPlan(plans, rooms[i], name, config, conn.known[rooms[i].roomID])
 		}

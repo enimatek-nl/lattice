@@ -1341,3 +1341,122 @@ func TestSlidingSyncRejectsBadQueryParameters(t *testing.T) {
 		}
 	}
 }
+
+// TestSlidingSyncReadsTheProxyShapes asks the endpoint to read a request that writes two of its
+// fields the way the sliding sync proxy wrote them, and ruma's sliding sync after it: the window
+// as "ranges", the state to return as a list of pairs or of "type|state_key" strings, and the
+// invitation filter under the name it had before MSC4186 renamed it.
+//
+// These are placements and shapes of the same questions, so the answers are the answers a client
+// that writes the MSC forms gets: the state that was asked for, a window that is a window, and an
+// invitation filter that filters. A client is never told it has to choose a dialect, and nothing
+// about an answer changes for a client that writes the MSC forms.
+func TestSlidingSyncReadsTheProxyShapes(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	bob := server.Register("bob", "builders")
+	roomID := server.CreateRoom(alice, map[string]any{"preset": "public_chat", "name": "Down"})
+	server.Send(alice, roomID, "first", "a message in Down")
+	waiting := server.CreateRoom(alice, map[string]any{"preset": "private_chat", "name": "Waiting"})
+	server.MustDo("POST", "/_matrix/client/v3/rooms/"+waiting+"/invite", alice.Token,
+		map[string]any{"user_id": bob.UserID}, 200)
+
+	// The pairs. A list of [type, state_key] pairs names the state to return, which is what
+	// the object's include list does.
+	pairs := server.slidingSync(t, alice, map[string]any{
+		"conn_id": "pairs",
+		"lists": map[string]any{
+			"all": slidingList{
+				"ranges":         [][]int{{0, 9}},
+				"timeline_limit": 1,
+				"required_state": [][]string{{"m.room.name", ""}, {"m.room.create", ""}},
+			},
+		},
+	})
+	room, found := slidingRooms(t, pairs)[roomID]
+	if !found {
+		t.Fatalf("the room is missing from an answer to a request written in pairs: %v", pairs)
+	}
+	if got := slidingStateTypes(t, room); len(got) != 2 || !got["m.room.name"] || !got["m.room.create"] {
+		t.Errorf("the pairs named two state events and the answer carries %v", sortedKeys(got))
+	}
+
+	// The same question written as strings, the form a client that learned this endpoint from
+	// the proxy's documentation writes.
+	strings3 := server.slidingSync(t, alice, map[string]any{
+		"conn_id": "strings",
+		"lists": map[string]any{
+			"all": slidingList{
+				"ranges":         [][]int{{0, 9}},
+				"timeline_limit": 1,
+				"required_state": []string{"m.room.name|"},
+			},
+		},
+	})
+	room, found = slidingRooms(t, strings3)[roomID]
+	if !found {
+		t.Fatalf("the room is missing from an answer to a request written in strings: %v", strings3)
+	}
+	if got := slidingStateTypes(t, room); len(got) != 1 || !got["m.room.name"] {
+		t.Errorf(`the "m.room.name|" string named one state event and the answer carries %v`,
+			sortedKeys(got))
+	}
+
+	// The window. Two rooms asked for is two rooms, whatever the field was called, and the
+	// count still reports the whole filtered list.
+	narrow := server.slidingSync(t, alice, map[string]any{
+		"conn_id": "window",
+		"lists": map[string]any{
+			"all": slidingList{"ranges": [][]int{{0, 1}}, "timeline_limit": 1},
+		},
+	})
+	if count := slidingListCount(t, narrow, "all"); count != 2 {
+		t.Errorf("the list counts %d rooms, want the 2 the account has", count)
+	}
+	if got := len(slidingRooms(t, narrow)); got != 2 {
+		t.Errorf("a window of [0,1] written as ranges sent %d rooms, want 2", got)
+	}
+
+	// The filter under its older name answers the question it always asked, and it is still
+	// asked of the person looking.
+	invited := server.slidingSync(t, bob, map[string]any{
+		"conn_id": "invites",
+		"lists": map[string]any{
+			"invites": slidingList{"timeline_limit": 0, "filters": map[string]any{"is_invite": true}},
+		},
+	})
+	rooms := slidingRooms(t, invited)
+	if len(rooms) != 1 || rooms[waiting] == nil {
+		t.Fatalf("the invited list written in the older name holds %v, want only %s", rooms, waiting)
+	}
+	if rooms[waiting]["membership"] != "invite" {
+		t.Errorf("the invited list reports membership %v", rooms[waiting]["membership"])
+	}
+}
+
+// slidingStateTypes collects the event types a room answer carries in its required state.
+func slidingStateTypes(t *testing.T, room map[string]any) map[string]bool {
+	t.Helper()
+	state, _ := room["required_state"].([]any)
+	types := map[string]bool{}
+	for _, raw := range state {
+		entry, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("a required state entry is not an object: %v", raw)
+			continue
+		}
+		typ, _ := entry["type"].(string)
+		types[typ] = true
+	}
+	return types
+}
+
+// sortedKeys lists the keys of a set in order, so a failure reads as a sentence.
+func sortedKeys(set map[string]bool) []string {
+	keys := make([]string, 0, len(set))
+	for key := range set {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}

@@ -1,6 +1,10 @@
 package matrix
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"reflect"
+	"strings"
+)
 
 // This file holds the wire shapes of simplified sliding sync (MSC4186): a sync in which the
 // client names the rooms it wants and how much of each it wants, and the server answers with
@@ -48,8 +52,35 @@ type SlidingSyncList struct {
 	// Range indexes into the filtered list, inclusive and from 0. Its absence means the
 	// whole list.
 	Range []int `json:"range,omitempty"`
+	// Ranges is where the sliding sync proxy and ruma's sliding sync write the window: a
+	// list of pairs where MSC4186 defines one pair. It is read, and it is read as the one
+	// window those pairs cover, because the MSC asks a server for exactly one - see Window.
+	Ranges [][]int `json:"ranges,omitempty"`
 	// Filters narrows the list before the range is applied.
 	Filters *SlidingRoomFilter `json:"filters,omitempty"`
+}
+
+// Window is the window a list asks for, in whichever spelling it was written. An explicit
+// range is what the MSC defines and wins; a request that only wrote "ranges" gets the window
+// those pairs cover together, which is what a client paging one window at a time means by it.
+// The pairs are checked before this is asked, so a malformed one cannot reach here.
+func (l SlidingSyncList) Window() []int {
+	if len(l.Range) > 0 {
+		return l.Range
+	}
+	var window []int
+	for _, pair := range l.Ranges {
+		if len(pair) != 2 {
+			continue
+		}
+		if window == nil {
+			window = []int{pair[0], pair[1]}
+			continue
+		}
+		window[0] = min(window[0], pair[0])
+		window[1] = max(window[1], pair[1])
+	}
+	return window
 }
 
 // SlidingSyncSubscription is the config a room the client named is reported under.
@@ -80,6 +111,82 @@ const (
 	SlidingStateKeyLazy = "$LAZY"
 )
 
+// UnmarshalJSON reads a required_state config in either of the two shapes a client writes it.
+//
+// MSC4186 defines the object: what to include, what to filter out, and lazy loading by a flag.
+// The sliding sync proxy, and ruma's sliding sync after it, write a list of pairs instead -
+// `["m.room.name", ""]` - and some clients write one string, `"m.room.name|"`. A list is a
+// different shape rather than a different meaning: it names the state to include and nothing
+// else, so it fills Include and leaves Exclude and LazyMembers alone. The proxy's own way of
+// asking for lazy loading is the `$LAZY` state key token, and that keeps working here because
+// the token belongs to an element and not to a shape.
+//
+// Reading both asks nothing of a client that sends the object, and it turns a refused request
+// into an answered one for a client that does not.
+func (r *SlidingRequiredState) UnmarshalJSON(data []byte) error {
+	var object struct {
+		Include     []SlidingStateElement `json:"include,omitempty"`
+		Exclude     []SlidingStateElement `json:"exclude,omitempty"`
+		LazyMembers bool                  `json:"lazy_members,omitempty"`
+	}
+	if err := json.Unmarshal(data, &object); err == nil {
+		r.Include, r.Exclude, r.LazyMembers = object.Include, object.Exclude, object.LazyMembers
+		return nil
+	}
+	var entries []json.RawMessage
+	if err := json.Unmarshal(data, &entries); err != nil {
+		return &json.UnmarshalTypeError{
+			Value: "a required_state that is neither an object nor a list of type and state key pairs",
+			Type:  reflect.TypeOf(SlidingRequiredState{}),
+		}
+	}
+	r.Include = make([]SlidingStateElement, 0, len(entries))
+	for _, entry := range entries {
+		element, err := slidingStateElement(entry)
+		if err != nil {
+			return err
+		}
+		r.Include = append(r.Include, element)
+	}
+	return nil
+}
+
+// slidingStateElement reads one entry of a required_state list: a pair of type and state key,
+// or the one string form where a "|" separates them. A half that is not written matches
+// everything on that axis, the same rule the object's elements follow.
+func slidingStateElement(entry json.RawMessage) (SlidingStateElement, error) {
+	bad := func(value string) error {
+		return &json.UnmarshalTypeError{
+			Value: value,
+			Type:  reflect.TypeOf(SlidingStateElement{}),
+		}
+	}
+	var pair []string
+	if err := json.Unmarshal(entry, &pair); err == nil {
+		switch len(pair) {
+		case 0:
+			return SlidingStateElement{}, nil
+		case 1:
+			return SlidingStateElement{Type: &pair[0]}, nil
+		default:
+			return SlidingStateElement{Type: &pair[0], StateKey: &pair[1]}, nil
+		}
+	}
+	var written string
+	if err := json.Unmarshal(entry, &written); err != nil {
+		return SlidingStateElement{}, bad("a required_state entry that is not a pair or a string")
+	}
+	stateType, stateKey, separated := strings.Cut(written, "|")
+	element := SlidingStateElement{}
+	if stateType != "" {
+		element.Type = &stateType
+	}
+	if separated {
+		element.StateKey = &stateKey
+	}
+	return element, nil
+}
+
 // SlidingStateElement is one type/state key pair. An omitted half matches everything on that
 // axis, which is why both are pointers.
 type SlidingStateElement struct {
@@ -99,6 +206,9 @@ type SlidingRoomFilter struct {
 	IsEncrypted *bool `json:"is_encrypted,omitempty"`
 	// IsInvited asks whether the user is currently invited.
 	IsInvited *bool `json:"is_invited,omitempty"`
+	// IsInvite is the name the proxy-era clients write for that same question; MSC4186
+	// renamed the filter. Asking once answers both - see WantsInvite.
+	IsInvite *bool `json:"is_invite,omitempty"`
 	// RoomTypes keeps rooms whose m.room.create names one of these types; a null entry
 	// means "a room with no type".
 	RoomTypes []*string `json:"room_types,omitempty"`
@@ -108,6 +218,18 @@ type SlidingRoomFilter struct {
 	Tags []string `json:"tags,omitempty"`
 	// NotTags excludes rooms carrying one, and wins over Tags.
 	NotTags []string `json:"not_tags,omitempty"`
+}
+
+// WantsInvite answers the invited-rooms question however it was written. The name the request
+// used says nothing about what it asked, so the filter is applied once.
+func (f *SlidingRoomFilter) WantsInvite() *bool {
+	if f == nil {
+		return nil
+	}
+	if f.IsInvited != nil {
+		return f.IsInvited
+	}
+	return f.IsInvite
 }
 
 // SlidingSyncResponse is the answer to a sliding sync request.
