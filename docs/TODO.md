@@ -161,6 +161,10 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
 
 ### C. Federation and interop
 
+- [x] **Audit the federation responses for the re-marshal bug class (T-4014).** Answered 2026-11-22, and
+      it found something — in the **store** path, not the response path: an inbound PDU is stored with
+      `matrix.Encode` (plain `json.Marshal`, which escapes `&`, `<` and `>`), so the bytes served later are
+      not the bytes the origin signed. The response side is safe by construction. Fix and test in queue H.
 - [ ] Wire `OutboxRepo.Prune` to maintenance. The queue keeps what a peer never received, which is
       right for an hour and permanent for a month: a room holding members of servers that disappeared
       re-queues device list updates for them forever, and each of those is an attempt some live peer
@@ -249,6 +253,42 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
 ### G. Video calls
 
 - [ ] The LiveKit / MatrixRTC plan and its L-steps: [RTC-PLAN.md](RTC-PLAN.md).
+
+### H. Questions the `retry` audit left open
+
+Eight of its 53 open items were neither closed here nor queued, because they are questions rather
+than tasks. Each is listed with the probe that settles it. Full reasoning:
+`.agent-work/retired-retry-line-20261109/TASK-AUDIT-20261120.md` (scratch, not in git — this list is
+the copy that survives).
+
+- [x] **T-4014 — the re-marshal bug class.** Audited 2026-11-22. `retry`'s version cannot happen here:
+      `matrix.Event.MarshalJSON` serves the stored bytes whenever `Stored` is set, and exactly one loader
+      fills it. The named endpoints answer through that loader, so they are fine. What the audit found
+      instead is the store path: `internal/service/fedapply.go:328` and `:546` write the event's `JSON`
+      column with `matrix.Encode` — `json.Marshal`, HTML-escaping `&`, `<` and `>` — where the create path
+      uses `matrix.CanonicalJSON`. Measured: canonical reproduces the bytes it is given, `Encode` does not.
+- [ ] **The fix for T-4014, and the test that makes it stick.** `matrix.CanonicalJSON(pdu)` at those two
+      call sites, then a test that accepts a PDU whose content carries `&`, `<` and `>` and checks that the
+      bytes this server serves hash to the `sha256` the peer sent. Rows already stored cannot be repaired —
+      the original bytes were never kept.
+- [ ] **T-4068 — does `/members` stream?** MSC4222 wants membership as a stream with `from`/`to`;
+      `internal/api/routes.go:87` serves a roster. One request against a live server with a `from`/`to`
+      pair settles whether it streams at all. Feeds the MSC4222 entry in queue B.
+- [ ] **T-4105 — can a room be upgraded *into* version 12?** `POST /upgrade` with
+      `room_version=12` on a room carrying `additional_creators`, then check the new room's auth
+      events. We claim v12 is understood both directions; this path has never been exercised. Neighbour
+      of the upgraded-room decision above.
+- [ ] **T-2005a — is our state resolution compared to another implementation's answers?**
+      `tests/unit/stateres_test.go` holds our own cases only. A shared-fixture run against
+      `gomatrixserverlib`'s resolver is the evidence RTC-356 wants. The heaviest of the eight.
+- [ ] **T-4090 — is left-room `state` gated per room or per event?** `stateVisibleToOutsider` decides
+      per room. Overlaps `TestLeftRoomFixture`, called "one check away", and history visibility.
+- [ ] **T-4102 — can the single-event accept path authorise against a room's create event when v12
+      forbids citing it?** A v12 room whose creator's first event arrives over `/send` answers it.
+- [ ] **T-4026 — why did a peer refuse to re-verify our `invite_room_state`?** Needs a second real
+      homeserver rather than the Complement mock, and the peer's refusal reason.
+- [ ] **T-4040, T-4096b — what do the read paths and the user directory cost?** The performance queue
+      already opens with "measure before optimising"; these are two named benchmarks for that baseline.
 
 ## How this got here — the 26 steps, one line each
 

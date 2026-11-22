@@ -855,3 +855,32 @@ question mark; the durable part:
   `systemd-run --user --collect --unit=lattice-csapi --setenv=DOCKER_HOST=unix:///run/user/1000/podman/podman.sock --property=TimeoutStartSec=45min /bin/sh <script>`.
   Keep the default `Type=simple`: with `Type=oneshot` the `systemd-run` call itself blocks until the suite
   finishes, which is not what a run you mean to watch wants.
+
+## Findings of 2026-11-22 — the re-marshal class, found in the store path
+
+- The pass-through is centralised here, so retry's per-endpoint version of the bug cannot recur
+  endpoint by endpoint. `persist.Event.Matrix()` (`internal/persist/event.go:118`) copies `origin`,
+  `hashes`, `signatures` and `unsigned` out of the event's `JSON` column and sets `Stored` to those
+  bytes; `matrix.Event.MarshalJSON` (`internal/matrix/event.go:119`) then serves `Stored` verbatim,
+  adding only `event_id`, `room_id` and this server's `unsigned`. `Stored` is deliberately unset for a
+  redacted event: the stored copy still contains the content the redaction destroyed.
+- What it does not centralise is **which bytes land in that column**, and there the bug class is live.
+  An event this server creates stores `matrix.CanonicalJSON(signed)` (`internal/service/dag.go:198`). An
+  event **received over federation** stores `matrix.Encode(pdu)`
+  (`internal/service/fedapply.go:328` and `:546`) — and `matrix.Encode` is plain `json.Marshal`
+  (`internal/matrix/event.go:384`), which escapes `&`, `<` and `>` as `\u0026`, `\u003c`, `\u003e`.
+- Measured with the two encoders on one PDU whose body was `Tom & Jerry <3> a<b`: the canonical encoder
+  reproduced the bytes it was given, `Encode` did not — same keys, same numbers, three escapes per
+  special character. So an inbound event carrying any of those characters is stored, and later served,
+  as bytes its origin server never signed: `sha256` in `hashes` will not match for anyone who checks,
+  and the signature covers those same bytes.
+- Why it stayed invisible. Verification at accept time works on the parsed PDU rather than on the stored
+  column, so nothing fails on the way in. The client-API suite is single-server. No test we run has ever
+  handed a `&` to a second server and asked it to verify what came back.
+- The fix is one encoder at two call sites. What makes it a step rather than a grep is the test: accept a
+  PDU whose content carries `&`, `<` and `>`, then check that the bytes this server serves hash to the
+  `sha256` the peer sent. Rows already stored keep the escaped copy; the bytes are gone and cannot be
+  recovered, so this is a fix for what arrives from here on.
+- Method, the cheap kind. A commit id read out of another clone of this project named a commit `main`
+  does not have, and it took a re-check to notice. `git cat-file -e <id>^{commit}` costs nothing; run it
+  against **this** repository before citing a commit. Nothing wrong reached these docs.
