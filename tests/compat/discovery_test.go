@@ -169,6 +169,16 @@ func TestVersions(t *testing.T) {
 			t.Errorf("unstable_features does not advertise %s: %v", flag, features)
 		}
 	}
+	// MSC4508 asks a server to name every sliding sync extension it answers as specified, and
+	// the clients that read keys per extension wait for exactly these names. A flag that is not
+	// earned is the worse half of this: to_device earns its name only because the stable path
+	// answers `messages` with a `next_batch`, which the Synapse shape on the unstable path is
+	// not.
+	for _, flag := range []string{"org.matrix.msc4543.stable", "org.matrix.msc4538.stable"} {
+		if features[flag] != true {
+			t.Errorf("unstable_features does not advertise %s: %v", flag, features)
+		}
+	}
 }
 
 // TestCapabilities covers GET /v1/capabilities (and its v3 alias), which is how

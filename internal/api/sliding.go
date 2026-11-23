@@ -19,6 +19,11 @@ import (
 //	@Param		body	body	matrix.SlidingSyncRequest	false	"Sliding sync request"
 //	@Success	200		{object}	matrix.SlidingSyncResponse
 //	@Router		/_matrix/client/v4/sync [post]
+//
+// slidingSyncStablePath is MSC4186's own path. The unstable one is registered beside it and
+// served by the same handler.
+const slidingSyncStablePath = "/_matrix/client/v4/sync"
+
 func (a *App) handleSlidingSync(w http.ResponseWriter, r *http.Request) {
 	var req matrix.SlidingSyncRequest
 	if err := decodeBody(r, &req); err != nil {
@@ -34,7 +39,12 @@ func (a *App) handleSlidingSync(w http.ResponseWriter, r *http.Request) {
 	// token of another device cannot speak for it.
 	userID := auth.GetUserID(r)
 	deviceID := auth.GetDeviceID(r)
-	response, err := a.svc.SlidingSync(r.Context(), userID, deviceID, &req)
+	// Which URL a request came in on is part of the answer, not of the data. The extension MSCs
+	// say so themselves: their unstable-prefix sections keep the answer shape of the
+	// pre-MSC implementations on the unstable URL and ask for the accepted shape on the stable
+	// one. The rooms themselves are identical either way.
+	legacyEndpoint := r.URL.Path != slidingSyncStablePath
+	response, err := a.svc.SlidingSync(r.Context(), userID, deviceID, &req, legacyEndpoint)
 	if err != nil {
 		a.writeError(w, r, err)
 		return

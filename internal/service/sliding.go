@@ -21,8 +21,13 @@ import (
 // What a connection has been shown is never a permission. Whether the user may see a room is
 // asked of the room, on every request, because a stolen or replayed position token must not be
 // able to open a door.
+//
+// legacyEndpoint says whether the request arrived on the unstable org.matrix.simplified_msc3575
+// path. The rooms are the same on both URLs; the extension sections differ, because the MSCs
+// that define them keep the pre-MSC answer shape for the URL those clients still use and ask
+// for the accepted shape on /v4/sync.
 func (s *Service) SlidingSync(ctx context.Context, userID, deviceID string,
-	req *matrix.SlidingSyncRequest) (*matrix.SlidingSyncResponse, error) {
+	req *matrix.SlidingSyncRequest, legacyEndpoint bool) (*matrix.SlidingSyncResponse, error) {
 	if req == nil {
 		req = &matrix.SlidingSyncRequest{}
 	}
@@ -53,7 +58,7 @@ func (s *Service) SlidingSync(ctx context.Context, userID, deviceID string,
 	defer ticker.Stop()
 
 	for {
-		response, changed, written, err := s.buildSlidingSync(ctx, userID, deviceID, conn, req, initial)
+		response, changed, written, err := s.buildSlidingSync(ctx, userID, deviceID, conn, req, initial, legacyEndpoint)
 		if err != nil {
 			return nil, err
 		}
@@ -249,7 +254,8 @@ type slidingRoomPlan struct {
 // asked again - because the client cancelled it, or because the long poll has another round -
 // must not have already spent the state it is about to report.
 func (s *Service) buildSlidingSync(ctx context.Context, userID, deviceID string,
-	conn *slidingConn, req *matrix.SlidingSyncRequest, initial bool) (*matrix.SlidingSyncResponse, bool, []*persist.SlidingSyncRoom, error) {
+	conn *slidingConn, req *matrix.SlidingSyncRequest, initial, legacyEndpoint bool,
+) (*matrix.SlidingSyncResponse, bool, []*persist.SlidingSyncRoom, error) {
 	toPos := s.StreamPos()
 	fromPos := conn.row.LastPos
 	conn.pendingPos = toPos
@@ -334,7 +340,7 @@ func (s *Service) buildSlidingSync(ctx context.Context, userID, deviceID string,
 		response.Rooms = nil
 	}
 
-	extensions, moved, err := s.slidingExtensions(ctx, userID, deviceID, conn, req, response, initial)
+	extensions, moved, err := s.slidingExtensions(ctx, userID, deviceID, conn, req, response, initial, legacyEndpoint)
 	if err != nil {
 		return nil, false, nil, err
 	}

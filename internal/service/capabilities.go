@@ -28,6 +28,17 @@ var UnstableFeatures = map[string]bool{
 	// /v4/sync, which is where this server answers MSC4186 as merged. Both are true here,
 	// because both paths serve the same implementation.
 	"org.matrix.simplified_msc3575.stable": true,
+	// MSC4508 asks a server to advertise each sliding sync extension it answers as specified,
+	// under the ".stable" flag, without waiting for the spec revision that carries it. Both
+	// flags below name an extension served at the stable path under its unprefixed key.
+	//
+	// e2ee (MSC4543) is answered as accepted: the two Required key fields are always there,
+	// with an empty list where there is nothing to list.
+	"org.matrix.msc4543.stable": true,
+	// to_device (MSC4538): messages under `messages`, next_batch alongside them, and a limit
+	// that is not a positive integer refused with M_BAD_JSON. The unstable path keeps the
+	// Synapse shape under `events`, which that MSC leaves to it.
+	"org.matrix.msc4538.stable": true,
 }
 
 // unstableFeaturesCopy returns a copy suitable for serialisation.

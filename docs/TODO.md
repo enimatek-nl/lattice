@@ -265,6 +265,16 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
 
 ### F. Operations and quality
 
+- [ ] Sliding sync answers `typing` and `receipts` per room as a full `m.typing` / `m.receipt` event on both paths.
+      MSC4508 changelog point 2 counts that as the experimental shape and asks for a bare `{"user_ids": […]}` on the
+      stable path (its own flags: `org.matrix.msc4508`, `org.matrix.msc4508.stable`), and MSC4537 does the same for user
+      data. Do not switch on the reading alone: `to_device` shows the same shape is load-bearing for the clients that
+      chose the unstable URL, so measure which key a real client reads on `/v4/sync` first, then answer per endpoint the
+      way `to_device` does now.
+- [ ] Audit the answers for the nil-collection class once more, by construction rather than by report: `grep -n "omitempty"
+      internal/matrix/*.go` next to the spec tables, plus every `map[string]any` an extension builds. Two of the three
+      found so far (`state_key`, `device_unused_fallback_key_types`) came from clients, not from a reading of the code.
+      A helper that fails a `Required` list/map field that arrived nil would catch the third in the existing tests.
 - [ ] `GET /versions` does not answer which Lattice it is: the response is `versions`, `unstable_features` and
       `default_room_version`, `service.ServerVersion()` ("Lattice/0.2.5") has no caller, and the startup banner names no
       version either — measured 2026-11-23, the day a release had to be confirmed live by its image id and a flag. Synapse

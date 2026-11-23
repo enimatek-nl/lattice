@@ -796,7 +796,9 @@ func TestSlidingSyncExtensions(t *testing.T) {
 	if !ok {
 		t.Fatalf("no to_device section")
 	}
-	events, _ := toDevice["events"].([]any)
+	// The stable path answers MSC4538, which names the list of messages `messages`; `events` is
+	// the Synapse shape and belongs to the unstable URL.
+	events, _ := toDevice["messages"].([]any)
 	if len(events) != 1 {
 		t.Errorf("to_device carries %d messages, want the one queued for this device", len(events))
 	}
@@ -1535,5 +1537,181 @@ func TestSlidingSyncStrippedStateCarriesAStateKey(t *testing.T) {
 			t.Fatalf("%s: the invitation carries no stripped state: %v", path, room)
 		}
 		check(path+" stripped_state", stripped)
+	}
+}
+
+// rawExtensionField reads one field of one extension section as it stands on the wire. Decoded
+// into a Go map an empty list, a null and an absent field all read back as nil, and telling
+// those three apart is exactly what these checks are about.
+func rawExtensionField(t *testing.T, raw []byte, extension, field string) (json.RawMessage, bool) {
+	t.Helper()
+	var probe struct {
+		Extensions map[string]map[string]json.RawMessage `json:"extensions"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		t.Fatalf("the answer is not JSON: %v (%s)", err, raw)
+	}
+	section, ok := probe.Extensions[extension]
+	if !ok {
+		return nil, false
+	}
+	value, ok := section[field]
+	return value, ok
+}
+
+// slidingEncryptionRequest is the request the fault was reported with: an encryption connection
+// that wants its keys and its to-device messages, and nothing else.
+func slidingEncryptionRequest(connID string) map[string]any {
+	return map[string]any{
+		"conn_id": connID,
+		"extensions": map[string]any{
+			"to_device": map[string]any{"enabled": true},
+			"e2ee":      map[string]any{"enabled": true},
+		},
+	}
+}
+
+// TestSlidingSyncEncryptionFieldsAreNeverNull reads MSC4543 literally. Its table marks
+// device_unused_fallback_key_types Required, type [string], and writes that "an empty list means
+// the device has no unused fallback key" — so the answer is [] when there is none, never null
+// and never absent. The Go pattern behind it is the one that erased state_key: a nil slice
+// marshals as null.
+//
+// A strict client does not shrug this off. matrix-rust-sdk parses the whole e2ee section as one
+// structure, so the null takes the key counts and the to-device messages down with it, and the
+// device stops receiving keys.
+func TestSlidingSyncEncryptionFieldsAreNeverNull(t *testing.T) {
+	server := NewServer(t)
+	bob := server.Register("bob", "builders")
+
+	// A device that never uploaded a fallback key is the reported case: the list has nothing
+	// to carry, which is exactly when the encoder is tempted to write null.
+	for _, path := range []string{
+		"/_matrix/client/v4/sync",
+		"/_matrix/client/unstable/org.matrix.simplified_msc3575/sync",
+	} {
+		answer := server.MustDo("POST", path, bob.Token, slidingEncryptionRequest("encryption"), 200)
+		fallback, ok := rawExtensionField(t, answer.Raw, "e2ee", "device_unused_fallback_key_types")
+		if !ok {
+			t.Errorf("%s: the e2ee section carries no device_unused_fallback_key_types: %s", path, answer.Raw)
+		} else if got := strings.TrimSpace(string(fallback)); got != "[]" {
+			t.Errorf("%s: device_unused_fallback_key_types is %s, want an empty list", path, got)
+		}
+		counts, ok := rawExtensionField(t, answer.Raw, "e2ee", "device_one_time_keys_count")
+		if !ok {
+			t.Errorf("%s: the e2ee section carries no device_one_time_keys_count: %s", path, answer.Raw)
+		} else if got := strings.TrimSpace(string(counts)); !strings.HasPrefix(got, "{") {
+			t.Errorf("%s: device_one_time_keys_count is %s, want an object", path, got)
+		}
+	}
+
+	// The classic /sync carries the same field, and MSC2732 asks for it there always — Synapse
+	// reverted a release that stripped the empty one over exactly this argument. Same encoder,
+	// same trap: omitempty erases an empty list.
+	classic := server.Do("GET", "/_matrix/client/v3/sync?timeout=0", bob.Token, nil)
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(classic.Raw, &top); err != nil {
+		t.Fatalf("the classic sync is not JSON: %v (%s)", err, classic.Raw)
+	}
+	value, ok := top["device_unused_fallback_key_types"]
+	if !ok {
+		t.Errorf("the classic sync leaves device_unused_fallback_key_types out altogether: %s", classic.Raw)
+	} else if got := string(value); !strings.HasPrefix(got, "[") {
+		t.Errorf("the classic sync answers device_unused_fallback_key_types as %s, want an empty list", got)
+	}
+
+	// The list is not a hard-wired empty array either: name the algorithm of a key that exists.
+	server.MustDo("POST", "/_matrix/client/v3/keys/upload", bob.Token, map[string]any{
+		"fallback_keys": map[string]any{"fallback_curve25519:AAAAAA": map[string]any{"key": "AAA"}},
+	}, 200)
+	answer := server.MustDo("POST", "/_matrix/client/v4/sync", bob.Token,
+		slidingEncryptionRequest("encryption-two"), 200)
+	fallback, ok := rawExtensionField(t, answer.Raw, "e2ee", "device_unused_fallback_key_types")
+	if !ok {
+		t.Fatalf("the answer after the upload carries no device_unused_fallback_key_types: %s", answer.Raw)
+	}
+	if !strings.Contains(string(fallback), "fallback_curve25519") {
+		t.Errorf("a device with a fallback key should name it, the answer says %s", fallback)
+	}
+}
+
+// TestSlidingSyncToDeviceFollowsItsEndpoint reads MSC4538. Its table names the messages of the
+// to_device section `messages`, Required, and its changelog counts returning them under `events`
+// as the Synapse v1.151 shape — which the unstable prefix section leaves in place on the
+// unstable endpoint only. A ToDeviceMessage carries type, sender and content: no event id, no
+// origin_server_ts.
+func TestSlidingSyncToDeviceFollowsItsEndpoint(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	bob := server.Register("bob", "builders")
+	server.MustDo("PUT", accountDataPath(bob.UserID, "test.queue.marker"), bob.Token,
+		map[string]any{"who": "bob"}, 200)
+	server.MustDo("PUT", "/_matrix/client/v3/sendToDevice/test.secret/queued", alice.Token,
+		map[string]any{"messages": map[string]any{bob.UserID: map[string]any{"*": map[string]any{"hello": "bob"}}}}, 200)
+
+	// The stable endpoint follows the MSC: a required `messages` list naming no event ids.
+	stable := server.MustDo("POST", "/_matrix/client/v4/sync", bob.Token,
+		slidingEncryptionRequest("queue"), 200)
+	messages, ok := rawExtensionField(t, stable.Raw, "to_device", "messages")
+	if !ok {
+		t.Fatalf("%s: the to_device section carries no messages: %s", "/_matrix/client/v4/sync", stable.Raw)
+	}
+	var list []map[string]json.RawMessage
+	if err := json.Unmarshal(messages, &list); err != nil {
+		t.Fatalf("%s: messages is %s, want a list: %v", "/_matrix/client/v4/sync", messages, err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("%s: messages carries %d entries, want the one queued for this device: %s",
+			"/_matrix/client/v4/sync", len(list), stable.Raw)
+	}
+	for _, field := range []string{"event_id", "origin_server_ts"} {
+		if _, ok := list[0][field]; ok {
+			t.Errorf("%s: a ToDeviceMessage names %s, MSC4538 lists type, sender and content: %s",
+				"/_matrix/client/v4/sync", field, messages)
+		}
+	}
+	if _, ok := list[0]["type"]; !ok {
+		t.Errorf("the message carries no type: %s", messages)
+	}
+	if _, ok := list[0]["sender"]; !ok {
+		t.Errorf("the message carries no sender: %s", messages)
+	}
+	if next, ok := rawExtensionField(t, stable.Raw, "to_device", "next_batch"); !ok || string(next) == "null" {
+		t.Errorf("%s: no next_batch to acknowledge with: %s", "/_matrix/client/v4/sync", stable.Raw)
+	}
+
+	// MSC4538 changelog point 1: a limit that is not a positive integer is refused with
+	// M_BAD_JSON. Synapse accepted a zero and answered an empty section whose next_batch
+	// acknowledged everything queued, so the messages disappeared unread.
+	bad := server.Do("POST", "/_matrix/client/v4/sync", bob.Token, map[string]any{
+		"conn_id": "queue-limit",
+		"extensions": map[string]any{
+			"to_device": map[string]any{"enabled": true, "limit": 0},
+		},
+	})
+	if bad.Status != 400 {
+		t.Errorf("a limit of zero was answered %d (%s), want 400", bad.Status, bad.Raw)
+	}
+	if code, _ := bad.Body["errcode"].(string); code != "M_BAD_JSON" {
+		t.Errorf("a limit of zero answered errcode %v, want M_BAD_JSON", bad.Body["errcode"])
+	}
+
+	// The unstable endpoint keeps the shape its own clients were written against.
+	legacy := server.MustDo("PUT", "/_matrix/client/v3/sendToDevice/test.secret/queued2", alice.Token,
+		map[string]any{"messages": map[string]any{bob.UserID: map[string]any{"*": map[string]any{"again": "bob"}}}}, 200)
+	if legacy.Status != 200 {
+		t.Fatalf("queueing the second message failed: %s", legacy.Raw)
+	}
+	unstable := server.MustDo("POST", "/_matrix/client/unstable/org.matrix.simplified_msc3575/sync",
+		bob.Token, slidingEncryptionRequest("queue-legacy"), 200)
+	events, ok := rawExtensionField(t, unstable.Raw, "to_device", "events")
+	if !ok {
+		t.Fatalf("%s: the to_device section carries no events: %s",
+			"/_matrix/client/unstable/org.matrix.simplified_msc3575/sync", unstable.Raw)
+	}
+	var legacyList []map[string]json.RawMessage
+	if err := json.Unmarshal(events, &legacyList); err != nil || len(legacyList) == 0 {
+		t.Errorf("%s: events is %s, want the message still queued: %v",
+			"/_matrix/client/unstable/org.matrix.simplified_msc3575/sync", events, err)
 	}
 }

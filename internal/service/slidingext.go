@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"strconv"
 
 	"github.com/enimatek-nl/lattice/internal/auth"
@@ -10,10 +11,15 @@ import (
 )
 
 // The extensions of simplified sliding sync. MSC4186 names them but leaves their shapes to the
-// documents that define each one, so this server answers in the shape the implementations
-// clients actually run - to device (MSC3885), end-to-end keys (MSC3884), account data
-// (MSC3959), receipts (MSC3960) and typing (MSC3961) - and the data is the same the classic
-// /sync already assembles for those things.
+// documents that define each one. Those documents arrived after this code: MSC4538 (to device),
+// MSC4543 (end-to-end keys), MSC4537 (user data) and MSC4508 (typing, plus the semantics every
+// extension shares) supersede the MSC3885/3884/3959/3961 drafts and each carries a changelog of
+// where the experimental Synapse v1.151 answer differed.
+//
+// Both answer forms are served, and the URL decides which one: the unstable
+// org.matrix.simplified_msc3575 path keeps the shape of the implementations that chose it, the
+// stable /v4/sync path answers the accepted MSCs. That is what their own unstable-prefix
+// sections ask for. The data behind the two is one and the same.
 const (
 	slidingExtToDevice    = "to_device"
 	slidingExtE2EE        = "e2ee"
@@ -46,7 +52,7 @@ func (e slidingExtensionRequest) wants() bool {
 // connection with the key section switched on would never wait.
 func (s *Service) slidingExtensions(ctx context.Context, userID, deviceID string,
 	conn *slidingConn, req *matrix.SlidingSyncRequest, response *matrix.SlidingSyncResponse,
-	initial bool) (map[string]any, bool, error) {
+	initial, legacyEndpoint bool) (map[string]any, bool, error) {
 	if len(req.Extensions) == 0 {
 		return nil, false, nil
 	}
@@ -71,11 +77,11 @@ func (s *Service) slidingExtensions(ctx context.Context, userID, deviceID string
 		}
 		switch name {
 		case slidingExtToDevice:
-			section, err := s.slidingToDeviceExtension(userID, deviceID, conn, config, from)
+			section, err := s.slidingToDeviceExtension(userID, deviceID, conn, config, from, legacyEndpoint)
 			if err != nil {
 				return nil, false, err
 			}
-			if events, ok := section["events"].([]matrix.Event); ok && len(events) > 0 {
+			if messages, ok := section[slidingToDeviceMessagesKey(legacyEndpoint)].([]matrix.Object); ok && len(messages) > 0 {
 				moved = true
 			}
 			out[name] = section
@@ -201,10 +207,29 @@ func slidingWantsList(wanted, lists []string) bool {
 	return false
 }
 
+// slidingToDeviceMessagesKey names the field the to-device messages arrive under. MSC4538
+// requires `messages`, counts returning them under `events` as the Synapse v1.151 shape (its
+// changelog, point 3) and leaves that shape to the unstable URL, whose clients were written
+// against it (its unstable-prefix section).
+func slidingToDeviceMessagesKey(legacyEndpoint bool) string {
+	if legacyEndpoint {
+		return "events"
+	}
+	return "messages"
+}
+
 // slidingToDeviceExtension answers the to device section: the messages queued for this device
 // and a position the client gives back when it has taken them.
 func (s *Service) slidingToDeviceExtension(userID, deviceID string, conn *slidingConn,
-	config slidingExtensionRequest, from uint64) (map[string]any, error) {
+	config slidingExtensionRequest, from uint64, legacyEndpoint bool) (map[string]any, error) {
+	// MSC4538: "A limit that is not a positive integer MUST be rejected with a 400 and an error
+	// code of M_BAD_JSON". Synapse answered a zero with an empty section, and because that
+	// section carried a next_batch the client went on to acknowledge everything queued - the
+	// messages were gone without any client having read them.
+	if config.Limit != nil && *config.Limit <= 0 {
+		return nil, matrix.NewError(matrix.ErrCodeBadJSON, http.StatusBadRequest,
+			"the to_device extension limit must be a positive integer")
+	}
 	next := from
 	if config.Since != nil {
 		pos, err := auth.ParseStreamPos(*config.Since)
@@ -215,29 +240,38 @@ func (s *Service) slidingToDeviceExtension(userID, deviceID string, conn *slidin
 	}
 	if deviceID == "" {
 		// A token that belongs to no device has no queue to read.
-		return map[string]any{"next_batch": strconv.FormatUint(next, 10), "events": []matrix.Event{}}, nil
+		return map[string]any{
+			"next_batch": strconv.FormatUint(next, 10),
+			slidingToDeviceMessagesKey(legacyEndpoint): []matrix.Object{},
+		}, nil
 	}
 	limit := toDeviceLimit // the same cap the classic sync delivers with
-	if config.Limit != nil && *config.Limit > 0 && *config.Limit < limit {
+	if config.Limit != nil && *config.Limit < limit {
 		limit = *config.Limit
 	}
 	rows, err := s.db.ToDeviceRepo.Pending(userID, deviceID, next, limit)
 	if err != nil {
 		return nil, matrix.ErrInternal(err)
 	}
-	events := make([]matrix.Event, 0, len(rows))
+	// A ToDeviceMessage names type, sender and content and nothing else: MSC4538 says so in its
+	// own table, and the /v3/sync to_device events it points at agree. A message id would be a
+	// promise this endpoint cannot keep either - the MSC delivers at least once and the queue
+	// keeps no ids to deliver them by.
+	messages := make([]matrix.Object, 0, len(rows))
 	for _, row := range rows {
 		if row.StreamPos > next {
 			next = row.StreamPos
 		}
-		events = append(events, matrix.Event{
-			Type:           row.Type,
-			Sender:         row.SenderID,
-			OriginServerTS: row.TS,
-			Content:        matrix.RawMessage(row.Content),
+		messages = append(messages, matrix.Object{
+			"type":    row.Type,
+			"sender":  row.SenderID,
+			"content": matrix.RawMessage(row.Content),
 		})
 	}
-	return map[string]any{"next_batch": strconv.FormatUint(next, 10), "events": events}, nil
+	return map[string]any{
+		"next_batch": strconv.FormatUint(next, 10),
+		slidingToDeviceMessagesKey(legacyEndpoint): messages,
+	}, nil
 }
 
 // slidingE2EEExtension answers the key section: how many one-time keys the device has left,
@@ -245,16 +279,23 @@ func (s *Service) slidingToDeviceExtension(userID, deviceID string, conn *slidin
 func (s *Service) slidingE2EEExtension(ctx context.Context, userID, deviceID string,
 	conn *slidingConn, from uint64, initial bool) (map[string]any, error) {
 	section := map[string]any{}
+	// MSC4543 marks both key fields Required, so they are answered even by a token that belongs
+	// to no device: such a device holds no keys, which is an empty object and an empty list,
+	// never an absence. A strict client reads the section as one structure, so a field that is
+	// not there - or is null because the Go slice was nil - costs it the device lists too.
+	counts := matrix.DeviceOneTimeCount{}
+	fallback := []string{}
 	if deviceID != "" {
-		counts, fallback, err := s.OneTimeKeyCounts(ctx, userID, deviceID)
+		var err error
+		counts, fallback, err = s.OneTimeKeyCounts(ctx, userID, deviceID)
 		if err != nil {
 			return nil, err
 		}
-		// Always sent: a client decides whether to upload more keys from these numbers, and
-		// a missing section cannot tell it "nothing changed" from "there are none".
-		section["device_one_time_keys_count"] = counts
-		section["device_unused_fallback_key_types"] = fallback
 	}
+	// Always sent: a client decides whether to upload more keys from these numbers, and
+	// a missing section cannot tell it "nothing changed" from "there are none".
+	section["device_one_time_keys_count"] = counts
+	section["device_unused_fallback_key_types"] = fallback
 	if initial {
 		// A new connection asks for whole key sets from POST /keys/query, as it does with
 		// the classic sync; the delta is for the connections that have them already.

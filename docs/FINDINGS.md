@@ -958,6 +958,61 @@ week — presumes an answer that is not there. Synapse and Construct include a n
 `server_version`, and clients and proxies paste it into bug reports, so one more field would make
 the tag guard mean something over the wire. Queue item F.
 
+## Findings of 2026-11-23 — a null where the spec asks for a list
+
+The same Go pattern that erased `state_key` erased a whole encryption section. MSC4543's table
+marks `device_unused_fallback_key_types` Required, type `[string]`, and writes that "an empty list
+means the device has no unused fallback key" — so the answer is `[]` when there is none. Lattice
+built it from a nil `[]string`, which `encoding/json` renders as `null`, and left `omitempty` on
+the classic `/sync` field, which erases the empty list instead. Measured on v0.2.5: both sliding
+sync paths answered `"device_unused_fallback_key_types":null`.
+
+The blast radius is the reason a null is not a detail. matrix-rust-sdk decodes the `e2ee` section
+as one structure, so refusing it also discards `device_one_time_keys_count` and the device lists —
+and on the same connection, `to_device` stops being processed by the crypto layer, which is how a
+client ends up never uploading keys. The reporter's own mending ("smaltino fixes it after the
+fact") is a workaround, not a fix.
+
+**The rule this leaves behind:** a `Required` field that is a list or a map needs an empty one,
+never a nil. `omitempty` on a slice or map is only ever right for an *optional* field, and a nil
+map marshals as `null` with or without it. Where a field is genuinely optional the repo already
+uses `*string`/`*int` (`matrix/event.go`, `matrix/sliding.go`), so absent and empty stay
+distinguishable; the same applies to `*[]string` if an optional list ever has to be answered.
+
+### What MSC4538 adds, and what it does not
+
+The to-device extension was reported alongside it (fault F2) and both halves check out against the
+accepted text. Its table requires `next_batch` and `messages`; changelog point 3 counts returning
+them under `events` as the Synapse v1.151 shape; its unstable-prefix section leaves that shape to
+the unstable URL and asks for `messages` on the stable one. Lattice answered `events` on both.
+Changelog point 1 is the one that loses data quietly: a `limit` that is not a positive integer must
+be refused with `M_BAD_JSON`, while Synapse answered a zero with an empty section whose
+`next_batch` acknowledged everything queued — so the client deletes messages it never received.
+A `ToDeviceMessage` names `type`, `sender` and `content` in that table and nothing else, so the
+sliding answer names exactly those three; it used to carry `origin_server_ts` beside them.
+
+### What the report got wrong, in Lattice's favour
+
+`device_one_time_keys_count` listing `curve25519: 0` and `fallback_curve25519: 0` for algorithms
+the device never uploaded is not a fault. MSC4543: "A server MAY omit an algorithm whose count is
+`0`… An explicit `0` and an unlisted algorithm are equivalent." Sending the zero is the safer of
+the two, because that MSC's own changelog point 3 records matrix-rust-sdk treating an *unlisted*
+algorithm as "unchanged" rather than zero — a client-side bug that an explicit zero survives.
+
+### Earning the extension flags
+
+MSC4508 asks a server to advertise each extension it answers as specified, under the `.stable`
+flag, without waiting for the spec revision that carries it. `org.matrix.msc4543.stable` and
+`org.matrix.msc4538.stable` are advertised from this commit, and the second is only true because
+of it: before, the stable path answered the Synapse shape and the flag would have been a claim
+the server could not honour.
+
+Still open in this family, deliberately: `typing` and `receipts` answer the per-room value as a
+full `m.typing`/`m.receipt` event on both paths, which is what MSC4508 changelog point 2 counts as
+the experimental shape. Switching the stable path is the same decision as `to_device` was, and
+carries the same risk of pulling the ground from under a client that reads the old key — it wants
+the same measurement first, from a client that actually hits it. Queue item A.
+
 ## Findings of 2026-11-23 — an invited room that arrives without a name
 
 Reported against the live `v0.2.4` by a client author, and both halves are true.

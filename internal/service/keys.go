@@ -409,7 +409,10 @@ func (s *Service) OneTimeKeyCounts(ctx context.Context, userID, deviceID string)
 	// under, so a key sent as fallback_curve25519:... is reported under that name.
 	// Looking only for plain curve25519 - or only for the name Element uses -
 	// leaves the section empty and the client never learns it has a fallback key.
-	var fallback []string
+	// An empty list, not a nil slice: the classic /sync documents the field as always present
+	// (MSC2732, and Synapse reverted a release that stripped the empty one), and MSC4543 marks
+	// it Required outright. json renders a nil slice as null, which a strict client refuses.
+	fallback := []string{}
 	for _, algorithm := range []string{KeyAlgorithmFallbackCurve25519, KeyAlgorithmSignedCurve25519} {
 		available, err := s.db.OneTimeKeyRepo.Available(userID, deviceID, algorithm, true, 1)
 		if err != nil {

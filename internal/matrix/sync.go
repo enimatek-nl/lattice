@@ -13,8 +13,11 @@ type SyncResponse struct {
 	// whether the events in this very response are notifications, so handing them out
 	// later through /pushrules makes the first ones wrong. Later syncs leave it out
 	// and changes arrive as m.push_rules account data.
-	PushRules          *Object  `json:"pushrules,omitempty"`
-	UnusedFallbackKeys []string `json:"device_unused_fallback_key_types,omitempty"`
+	PushRules *Object `json:"pushrules,omitempty"`
+	// No omitempty: the list is empty more often than it is full, and MSC2732 asks for the
+	// field always. An absent field and a null both read as "no information" to a strict
+	// client, which is the opposite of what an empty list means here.
+	UnusedFallbackKeys []string `json:"device_unused_fallback_key_types"`
 	Since              string   `json:"since,omitempty"`
 	DeletedRooms       []string `json:"rooms_offline,omitempty"`
 }
