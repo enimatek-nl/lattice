@@ -948,6 +948,16 @@ question mark; the durable part:
   `invite_state` beside `stripped_state`, and the two counters MSC4186 deleted — because that writes a
   superseded field into every response of the endpoint rather than tolerating one more request.
 
+## Findings of 2026-11-23 — which release is running is not answerable from the server
+
+Confirming v0.2.5 live meant reading image ids. `GET /_matrix/client/versions` returns `versions`,
+`unstable_features` and `default_room_version`; `service.ServerVersion()` ("Lattice/0.2.5") has no
+caller; the startup banner names settings and a listen line but no version. The release rule in
+"Packaging, the image, and the release tag" — an image tagged `0.2.0` that answers `0.1.0` costs a
+week — presumes an answer that is not there. Synapse and Construct include a non-spec
+`server_version`, and clients and proxies paste it into bug reports, so one more field would make
+the tag guard mean something over the wire. Queue item F.
+
 ## Findings of 2026-11-23 — an invited room that arrives without a name
 
 Reported against the live `v0.2.4` by a client author, and both halves are true.
