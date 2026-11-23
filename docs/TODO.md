@@ -254,11 +254,13 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
       events, so an invitation arrived nameless on every path. `/versions` also advertises
       `org.matrix.simplified_msc3575.stable` beside the unstable flag, which is how matrix-rust-sdk chooses
       `POST /v4/sync` over the unstable URL. Both measured, `TestSlidingSyncStrippedStateCarriesAStateKey`.
-- [ ] Sliding sync answered the way a proxy-era client reads it: `invite_state` where MSC4186 writes `stripped_state`,
+- [ ] Sliding sync answered the way a stock-0.19 client reads it: `invite_state` where MSC4186 writes `stripped_state`,
       and the `notification_count`/`highlight_count` the MSC deleted. Not built, because that puts a superseded field in
       every answer of the endpoint rather than tolerating one request. The fix belongs in ruma. Revisit if ruma does not
       move and a real user needs it — then: unstable path only, behind a config name, the dialect a connection arrived
-      in logged once.
+      in logged once. Narrowed 2026-11-23: smaltino no longer needs it (own SDK copy, reads `/versions`, takes
+      `POST /v4/sync` on the stable flag); the remaining audience is Element X and anything else on unpatched
+      matrix-rust-sdk 0.19.
 - [x] Room version 12 understood in both directions — hashed room ids, `additional_creators`, creators-privileged rules, state resolution v2.1, stripped state as full events (step 21). Choosing v12 as the *default* is a decision, not a piece of work.
 
 ### F. Operations and quality

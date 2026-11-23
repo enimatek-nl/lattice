@@ -971,7 +971,13 @@ Reported against the live `v0.2.4` by a client author, and both halves are true.
   `Version::Stable` (`POST /v4/sync`), and its `Discover` builder prefers stable when both are
   advertised. Lattice serves the merged MSC on both paths, so it now advertises both flags and a
   discovering client lands on `/v4/sync`.
-- Which is not the same as fixing a client that never asks. ruma 0.25.2 / matrix-rust-sdk 0.19
-  post the unstable URL unconditionally, without reading `/versions`, and send and expect the
-  pre-MSC field names; no flag moves them. What remains for those is the open TODO item: answer
-  `invite_state` on the unstable path, behind a config name, only if ruma does not move.
+- Stock matrix-rust-sdk 0.19 still ignores `/versions` for this and posts the unstable URL with
+  the pre-MSC field names — that is what its author described on 2026-11-22, and it is what
+  Element X does today. It is no longer true of smaltino: as of 2026-11-23 it ships its own
+  copy of the SDK with MSC4186-v4 support on top, so it does read `/versions`, and with
+  `org.matrix.simplified_msc3575.stable` present it picks `POST /_matrix/client/v4/sync` and
+  converts `stripped_state` to `invite_state` itself. Corrected by that author the same day,
+  against my claim that no flag would move it: with the `state_key` fix, that flag is enough
+  for smaltino. What remains for stock 0.19 clients is the open TODO item — `invite_state` on
+  the unstable path, behind a config name — and it now has a clear trigger: a real user on
+  Element X against Lattice.
