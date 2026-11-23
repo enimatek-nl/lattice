@@ -265,12 +265,15 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
 
 ### F. Operations and quality
 
-- [ ] Sliding sync answers `typing` and `receipts` per room as a full `m.typing` / `m.receipt` event on both paths.
-      MSC4508 changelog point 2 counts that as the experimental shape and asks for a bare `{"user_ids": […]}` on the
-      stable path (its own flags: `org.matrix.msc4508`, `org.matrix.msc4508.stable`), and MSC4537 does the same for user
-      data. Do not switch on the reading alone: `to_device` shows the same shape is load-bearing for the clients that
-      chose the unstable URL, so measure which key a real client reads on `/v4/sync` first, then answer per endpoint the
-      way `to_device` does now.
+- [ ] MSC4551's "Which receipts" rules. A room entering scope owes the client its *initial* receipts — the receipts on
+      the events this response's timeline carries, plus the requesting user's own receipts of every type and thread,
+      always — and the timeline receipts again whenever the room's entry says `expanded_timeline`. Lattice answers only
+      what changed since the request's `pos`, so a client learns other members' markers but never its own read position
+      on events outside the window: unread counters and cross-device read markers are the parts that quietly stay wrong.
+      The same MSC also wants `M_UNKNOWN_POS` rather than a silent partial subset when a room has re-entered scope.
+- [ ] Check the `account_data` extension (MSC4537) the same way `to_device`, `typing` and `receipts` were checked: what
+      the section looks like per endpoint, whether its flags are earned, and whether the event shape it wants is
+      `{type, content}` as Lattice answers it. Not yet read against the accepted text.
 - [ ] Audit the answers for the nil-collection class once more, by construction rather than by report: `grep -n "omitempty"
       internal/matrix/*.go` next to the spec tables, plus every `map[string]any` an extension builds. Two of the three
       found so far (`state_key`, `device_unused_fallback_key_types`) came from clients, not from a reading of the code.

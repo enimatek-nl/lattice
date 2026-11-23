@@ -39,6 +39,11 @@ var UnstableFeatures = map[string]bool{
 	// that is not a positive integer refused with M_BAD_JSON. The unstable path keeps the
 	// Synapse shape under `events`, which that MSC leaves to it.
 	"org.matrix.msc4538.stable": true,
+	// typing (MSC4508) and receipts (MSC4551) answer a room as the bare value - {"user_ids":
+	// [...]} and the content of an m.receipt - on the stable path, and as the wrapped
+	// m.typing / m.receipt event on the unstable one where their clients expect it.
+	"org.matrix.msc4508.stable": true,
+	"org.matrix.msc4551.stable": true,
 }
 
 // unstableFeaturesCopy returns a copy suitable for serialisation.

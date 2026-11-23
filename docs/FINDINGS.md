@@ -1007,11 +1007,22 @@ flag, without waiting for the spec revision that carries it. `org.matrix.msc4543
 of it: before, the stable path answered the Synapse shape and the flag would have been a claim
 the server could not honour.
 
-Still open in this family, deliberately: `typing` and `receipts` answer the per-room value as a
-full `m.typing`/`m.receipt` event on both paths, which is what MSC4508 changelog point 2 counts as
-the experimental shape. Switching the stable path is the same decision as `to_device` was, and
-carries the same risk of pulling the ground from under a client that reads the old key — it wants
-the same measurement first, from a client that actually hits it. Queue item A.
+### The two shapes that answer to it
+
+The reporter was asked, and answered the same evening: smaltino reads `messages` on `/v4/sync`,
+and only falls back to `events` when the strict read fails — logging it as a fault of the server.
+That is the measurement the switch needed, so `typing` and `receipts` moved with it. MSC4508 wants
+a room as the bare `{"user_ids": […]}` and MSC4551 as the bare `content` of an `m.receipt`, both
+MSCs arguing that the wrapper adds nothing when the section can carry only that one thing, and both
+leaving the wrapped event to the unstable URL. `org.matrix.msc4508.stable` and
+`org.matrix.msc4551.stable` are advertised with it. A helper now makes that one decision once, for
+both sections, from the URL the request arrived on.
+
+What MSC4551 still asks for and Lattice does not do is its own item: its "Which receipts" rules
+want a room's *initial* receipts — the receipts on the events of this response's timeline, plus the
+requesting user's own receipts of every type, always — and receipts again whenever a room's entry
+carries `expanded_timeline`. Lattice sends what changed since the request's `pos`, which misses the
+own-receipts half a client needs for unread markers. Queue item A.
 
 ## Findings of 2026-11-23 — an invited room that arrives without a name
 

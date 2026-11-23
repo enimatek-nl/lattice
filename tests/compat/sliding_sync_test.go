@@ -1715,3 +1715,101 @@ func TestSlidingSyncToDeviceFollowsItsEndpoint(t *testing.T) {
 			"/_matrix/client/unstable/org.matrix.simplified_msc3575/sync", events, err)
 	}
 }
+
+// TestSlidingSyncEphemeralSectionsFollowTheirEndpoint is the same decision one more time, asked
+// of MSC4551 and MSC4508: a room inside the receipts section is the bare content of an
+// m.receipt event, and a room inside the typing section is the bare {"user_ids": […]}. Both MSCs
+// say the wrapper adds nothing, because the section can only carry that one thing, and both hand
+// the wrapped event form to the unstable URL, whose clients read it.
+//
+// That wrapping is not decoration. matrix-rust-sdk expects the bare value on the stable path, so
+// an event there reads as an empty update and read markers and typing indicators simply do not
+// arrive.
+func TestSlidingSyncEphemeralSectionsFollowTheirEndpoint(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	bob := server.Register("bob", "builders")
+	roomID := server.CreateRoom(alice, map[string]any{"preset": "private_chat"})
+	server.MustDo("POST", "/_matrix/client/v3/rooms/"+roomID+"/invite", alice.Token,
+		map[string]any{"user_id": bob.UserID}, 200)
+	server.MustDo("POST", "/_matrix/client/v3/join/"+url.PathEscape(roomID), bob.Token, nil, 200)
+	server.MustDo("POST", "/_matrix/client/v3/join/"+url.PathEscape(roomID), alice.Token, nil, 200)
+	eventID := server.Send(alice, roomID, "one", "a message to read")
+	server.MustDo("POST", "/_matrix/client/v3/rooms/"+roomID+"/receipt/m.read/"+url.PathEscape(eventID),
+		alice.Token, map[string]any{}, 200)
+	server.MustDo("PUT", "/_matrix/client/v3/rooms/"+roomID+"/typing/"+alice.UserID, alice.Token,
+		map[string]any{"typing": true, "timeout": 30000}, 200)
+
+	request := func(connID string) map[string]any {
+		return map[string]any{
+			"conn_id": connID,
+			"lists":   map[string]slidingList{"all": {"range": []int{0, 9}, "timeline_limit": 5}},
+			"extensions": map[string]any{
+				"receipts": map[string]any{"enabled": true},
+				"typing":   map[string]any{"enabled": true},
+			},
+		}
+	}
+	// sectionRoom reads one room out of one extension section of a raw answer.
+	sectionRoom := func(t *testing.T, raw []byte, extension string) map[string]json.RawMessage {
+		t.Helper()
+		var probe struct {
+			Extensions map[string]struct {
+				Rooms map[string]map[string]json.RawMessage `json:"rooms"`
+			} `json:"extensions"`
+		}
+		if err := json.Unmarshal(raw, &probe); err != nil {
+			t.Fatalf("the answer is not JSON: %v (%s)", err, raw)
+		}
+		room, ok := probe.Extensions[extension].Rooms[roomID]
+		if !ok {
+			t.Fatalf("the %s section carries nothing for %s: %s", extension, roomID, raw)
+		}
+		return room
+	}
+
+	stable := server.MustDo("POST", "/_matrix/client/v4/sync", bob.Token, request("bare"), 200)
+	typing := sectionRoom(t, stable.Raw, "typing")
+	if _, wrapped := typing["type"]; wrapped {
+		t.Errorf("the stable typing section wraps the room in an m.typing event: %v", typing)
+	}
+	if _, ok := typing["user_ids"]; !ok {
+		t.Errorf("the stable typing section names no user_ids: %v", typing)
+	}
+	receipts := sectionRoom(t, stable.Raw, "receipts")
+	if _, wrapped := receipts["type"]; wrapped {
+		t.Errorf("the stable receipts section wraps the room in an m.receipt event: %v", receipts)
+	}
+	if _, ok := receipts["content"]; ok {
+		t.Errorf("the stable receipts section answers a content wrapper: %v", receipts)
+	}
+	// The keys of the bare content are event ids, exactly as in an m.receipt event.
+	if named := eventKeys(receipts); len(named) == 0 {
+		t.Errorf("the stable receipts section names no event id for %s: %v", eventID, receipts)
+	}
+
+	// The unstable URL keeps what its clients parse: a full ephemeral event per room.
+	unstable := server.MustDo("POST", "/_matrix/client/unstable/org.matrix.simplified_msc3575/sync",
+		bob.Token, request("wrapped"), 200)
+	for name, wantType := range map[string]string{"typing": "m.typing", "receipts": "m.receipt"} {
+		room := sectionRoom(t, unstable.Raw, name)
+		if got, want := string(room["type"]), `"`+wantType+`"`; got != want {
+			t.Errorf("the unstable %s section answers type %s, want the %s event it always did",
+				name, got, wantType)
+		}
+		if _, ok := room["content"]; !ok {
+			t.Errorf("the unstable %s section carries no content wrapper: %v", name, room)
+		}
+	}
+}
+
+// eventKeys returns the keys of a bare m.receipt content, which are event ids.
+func eventKeys(content map[string]json.RawMessage) []string {
+	var out []string
+	for key := range content {
+		if strings.HasPrefix(key, "$") {
+			out = append(out, key)
+		}
+	}
+	return out
+}

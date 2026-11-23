@@ -109,7 +109,7 @@ func (s *Service) slidingExtensions(ctx context.Context, userID, deviceID string
 			}
 			out[name] = section
 		case slidingExtReceipts:
-			section, err := s.slidingReceiptsExtension(rooms, from)
+			section, err := s.slidingReceiptsExtension(rooms, from, legacyEndpoint)
 			if err != nil {
 				return nil, false, err
 			}
@@ -118,7 +118,7 @@ func (s *Service) slidingExtensions(ctx context.Context, userID, deviceID string
 			}
 			out[name] = section
 		case slidingExtTyping:
-			section, err := s.slidingTypingExtension(userID, rooms, from)
+			section, err := s.slidingTypingExtension(userID, rooms, from, legacyEndpoint)
 			if err != nil {
 				return nil, false, err
 			}
@@ -336,18 +336,33 @@ func (s *Service) slidingAccountDataExtension(userID string, rooms []string, fro
 	return section, nil
 }
 
+// slidingEphemeralRoomValue decides what one room is worth inside the typing and receipts
+// sections. MSC4551 says it plainly for receipts - the bare content of an m.receipt event,
+// because the section can only carry receipts and the wrapper adds nothing - and MSC4508 says
+// the same for typing. Both then hand the wrapped, event-shaped form to the unstable URL, where
+// the clients that read it were written against Synapse.
+//
+// That is one decision with two answers, so it is made once, here.
+func slidingEphemeralRoomValue(event matrix.Event, legacyEndpoint bool) any {
+	if legacyEndpoint {
+		return matrix.Object{"type": event.Type, "content": event.Content}
+	}
+	// The raw bytes of the event's content, which marshal back as the object they came from.
+	return event.Content
+}
+
 // slidingReceiptsExtension answers the receipts section, one merged m.receipt per room.
-func (s *Service) slidingReceiptsExtension(rooms []string, from uint64) (map[string]any, error) {
+func (s *Service) slidingReceiptsExtension(rooms []string, from uint64, legacyEndpoint bool) (map[string]any, error) {
 	events, err := s.receiptEventsForRooms(rooms, from)
 	if err != nil {
 		return nil, err
 	}
-	byRoom := map[string]matrix.Object{}
+	byRoom := map[string]any{}
 	for roomID, list := range events {
 		if len(list) == 0 {
 			continue
 		}
-		byRoom[roomID] = matrix.Object{"type": list[0].Type, "content": list[0].Content}
+		byRoom[roomID] = slidingEphemeralRoomValue(list[0], legacyEndpoint)
 	}
 	if len(byRoom) == 0 {
 		return map[string]any{}, nil
@@ -356,8 +371,8 @@ func (s *Service) slidingReceiptsExtension(rooms []string, from uint64) (map[str
 }
 
 // slidingTypingExtension answers the typing section.
-func (s *Service) slidingTypingExtension(userID string, rooms []string, from uint64) (map[string]any, error) {
-	byRoom := map[string]matrix.Object{}
+func (s *Service) slidingTypingExtension(userID string, rooms []string, from uint64, legacyEndpoint bool) (map[string]any, error) {
+	byRoom := map[string]any{}
 	for _, roomID := range rooms {
 		events, err := s.typingEvents(roomID, userID, from)
 		if err != nil {
@@ -366,7 +381,7 @@ func (s *Service) slidingTypingExtension(userID string, rooms []string, from uin
 		if len(events) == 0 {
 			continue
 		}
-		byRoom[roomID] = matrix.Object{"type": events[0].Type, "content": events[0].Content}
+		byRoom[roomID] = slidingEphemeralRoomValue(events[0], legacyEndpoint)
 	}
 	if len(byRoom) == 0 {
 		return map[string]any{}, nil
