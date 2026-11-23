@@ -31,12 +31,12 @@ because it said nothing these steps do not.
 | Measure | Now |
 |---|---|
 | `make build vet` | clean (4 s, 2026-11-20); `make lint` reports the same **7 issues** (6 staticcheck: `QF1001`×3, `QF1006`×2, `S1011`; 1 `unused`: `internal/api/federation.go:1045 eventInBody`) — pre-existing quickfix-style findings, none from the 2026-11-18 work. Note for a session started from a service unit: `golangci-lint` lives in `~/go/bin`, which is not on that PATH |
-| this repository's own tests | **342** counted here — 173 client-API compatibility, 89 two-server federation, 80 offline unit (`go test ./...`, green in 1 m 25 s on 2026-11-20). `internal/matrix` adds 8 test functions that this tally has never counted, so `grep -c '^func Test'` reads **350** |
+| this repository's own tests | **350** counted here — 180 client-API compatibility, 90 two-server federation, 80 offline unit (`go test ./tests/<pkg> -list '.*'`, all green on 2026-11-23: compat 83 s, federation 49 s). `internal/matrix` adds its own test functions, which this tally has never counted |
 | Complement `tests/csapi` | **82 green of 106**, 2 skipped, in 409 s — and the same 22 names, first from a package that could actually finish (2026-11-18) and now reproduced name for name (2026-11-20), so the red list is stable rather than lucky. It could not be run to completion before 2026-11-18, see [COMPLEMENT.md](COMPLEMENT.md) |
 | Complement server-server (`tests`, not `tests/federation`) | **78 green of 91**, 13 red — re-measured 2026-11-20 for the first time since 2026-11-04, and the 13 are name for name the names recorded then, so the number was stale but honest. 338 s of own time; run beside the client-API suite it costs nothing extra, see `make complement-both` |
 | endpoints | **180 of 234** indexed routes implemented, 44 routes the index does not name (`make endpoints`, unchanged on 2026-11-20) |
 | spec | target v1.19 (the endpoint index it is built from), room versions 1-12 understood, new rooms default to v11; `/versions` advertises v1.0-v1.11 — see queue A |
-| release | **v0.2.4** tagged 2026-11-22 at `dd201b8` — `ghcr.io/enimatek-nl/lattice` publishes `0.2.4`, `0.2` and `latest` (index `sha256:4287129e61a0…`, `linux/amd64` `sha256:a57783f0e942…`, `linux/arm64` `sha256:8ced80153803…`); the live server on genius runs that index — `:latest` pulled at `a14e7365004b…`, built 17:39 UTC, over `fa15567211f9…` of `v0.2.3`, unit restarted, both sliding sync paths answering `200`. What it carries: sliding sync reads `pos`, `timeout` and `set_presence` from the query string where the body is silent, `required_state` as `[type, state_key]` pairs or `"type|state_key"` strings beside the MSC object, the window as `ranges` beside `range`, and the invitation filter as `is_invite` beside `is_invited` — the placements and shapes a matrix-rust-sdk client sends, measured against ruma 0.25.2 |
+| release | **v0.2.5** tagged 2026-11-23 at `4e20a3d` — `ghcr.io/enimatek-nl/lattice` publishes `0.2.5`, `0.2` and `latest` (all three at index `sha256:8bc6e3fbc73b…`, `linux/amd64` manifest `sha256:f6250a43d967…`, `linux/arm64` `sha256:cdfda3233008…`); the live server on genius runs it — `:latest` pulled at `7dc3cbd2e5fe…` over `a14e7365004b…` of v0.2.4, quadlet unit restarted, `/versions` answering with both sliding sync flags. What it carries over v0.2.4 (`dd201b8`, whose own record follows in the git log): stripped state events always carry `state_key` — the spec requires it, `omitempty` erased it for the three types whose state key is `""`, and ruma dropped those events, so an invitation arrived nameless on every path — and `org.matrix.simplified_msc3575.stable` beside the unstable flag, which is how a discovering matrix-rust-sdk client picks `POST /v4/sync` |
 | federation | live behind `-federation` (default off); one rulebook judges what this server signs and what a peer sends (step 20); keys of a peer that cannot publish its own are asked for at the key servers named by `-key-perspectives` (`matrix.org` by default) |
 
 The 2026-11-04 tally of "95 green of 106" was not produced by one completing run — the package
@@ -265,6 +265,12 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
 
 ### F. Operations and quality
 
+- [ ] `GET /versions` does not answer which Lattice it is: the response is `versions`, `unstable_features` and
+      `default_room_version`, `service.ServerVersion()` ("Lattice/0.2.5") has no caller, and the startup banner names no
+      version either — measured 2026-11-23, the day a release had to be confirmed live by its image id and a flag. Synapse
+      and Construct answer a `server_version` key beside the spec, and clients and proxies paste it into bug reports, so the
+      release-job guard that compares the tag with `LatticeVersion` protects a string nothing on the wire can contradict.
+      A compat test on the key set plus the constant, additive.
 - [ ] Message retention (`m.room.retention`), fuzz targets, a load harness.
 - [ ] Room-version upgrade that carries the state across (the reference passes it, we do not).
 
