@@ -8,8 +8,9 @@ lives in [`internal/coverage/SPECS.md`](../internal/coverage/SPECS.md) and the t
 regenerated with `go run ./cmd/endpoints -out ENDPOINTS.md`:
 **180 of 234** indexed endpoints implemented, **44** routes the index does not name.
 
-Two gates. This repository's own suites - **173** client-API tests (`tests/compat`), **89**
-two-server tests (`tests/federation`), **70** offline unit tests (`tests/unit`). And Complement's
+Two gates. This repository's own suites - **180** client-API tests (`tests/compat`), **90**
+two-server tests (`tests/federation`), **80** offline unit tests (`tests/unit`), counted with
+`go test ./tests/<pkg> -list '.*'` on 2026-11-23. And Complement's
 `tests` package (91 top-level tests): the last complete run, 2026-11-04, is
 **61 green, 30 red** (it needs `-parallel 2`; see _Complement_ in
 [docs/TODO.md](TODO.md)). [TODO.md](TODO.md) carries **78 green of 91** for a later run the same

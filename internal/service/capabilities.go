@@ -16,10 +16,18 @@ var UnstableFeatures = map[string]bool{
 	"org.matrix.msc3440": true, // sync without filter
 	"org.matrix.msc3890": true, // membership endpoints accept ?user_id=
 	"org.matrix.msc4222": true, // GET /rooms/{roomId}/joined_members
-	// Simplified sliding sync is served at /v4/sync and under this unstable name. The flag
-	// is what tells a client that has to ask before using an unstable path that asking is
-	// done.
+	// Simplified sliding sync is served at /v4/sync and under this unstable name. MSC4186
+	// names this flag, and it is what a client that has to ask before using an unstable
+	// path reads.
 	"org.matrix.simplified_msc3575": true,
+	// The same MSC's answer, at the stable path, is what the flag below means to the
+	// clients that ask: matrix-rust-sdk discovers Version::Stable from
+	// "org.matrix.simplified_msc3575.stable" and Version::Unstable from the flag above,
+	// preferring the stable one when both are present. Without it a discovering client
+	// stays on the unstable path it has no reason to prefer; with it, it posts to
+	// /v4/sync, which is where this server answers MSC4186 as merged. Both are true here,
+	// because both paths serve the same implementation.
+	"org.matrix.simplified_msc3575.stable": true,
 }
 
 // unstableFeaturesCopy returns a copy suitable for serialisation.

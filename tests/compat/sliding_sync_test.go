@@ -1460,3 +1460,80 @@ func sortedKeys(set map[string]bool) []string {
 	sort.Strings(keys)
 	return keys
 }
+
+// TestSlidingSyncStrippedStateCarriesAStateKey checks a field that is easy to lose to a
+// serialiser: a stripped state event's `state_key` is required, and for the three types that
+// name a room — create, name, join_rules — its value is the empty string. Omit the field when
+// it is empty and a strict parser does not read "no state key", it reads "not an event" and
+// drops it. The room then arrives in the room list with no name, on every path.
+func TestSlidingSyncStrippedStateCarriesAStateKey(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	bob := server.Register("bob", "builders")
+	roomID := server.CreateRoom(alice, map[string]any{"preset": "public_chat", "name": "Blueprints"})
+	server.MustDo("POST", "/_matrix/client/v3/rooms/"+roomID+"/invite", alice.Token,
+		map[string]any{"user_id": bob.UserID}, 200)
+
+	// want shrinks as each type is seen, so the test cannot pass on a stripped state that
+	// carries only the events whose state key happens to be non-empty.
+	want := map[string]bool{"m.room.create": true, "m.room.name": true, "m.room.join_rules": true}
+
+	check := func(where string, events []any) {
+		t.Helper()
+		for _, raw := range events {
+			event, ok := raw.(map[string]any)
+			if !ok {
+				t.Fatalf("%s: a stripped state event is not an object: %v", where, raw)
+			}
+			key, _ := event["type"].(string)
+			value, present := event["state_key"]
+			if !present {
+				t.Errorf("%s: the %s event is written without a state_key field: %v", where, key, event)
+				continue
+			}
+			// Only the types this test came for are checked by value: an
+			// m.room.member event's state key is the member, and it is right to say so.
+			if _, tracked := want[key]; tracked {
+				if text, _ := value.(string); text != "" {
+					t.Errorf("%s: the %s event carries state key %q, want the empty string", where, key, text)
+				}
+				delete(want, key)
+			}
+		}
+		for key := range want {
+			t.Errorf("%s: no %s event to check, so this says nothing about it", where, key)
+			delete(want, key)
+		}
+	}
+
+	// The classic /sync invitation.
+	sync := server.MustDo("GET", "/_matrix/client/v3/sync", bob.Token, nil, 200)
+	rooms, _ := sync.Body["rooms"].(map[string]any)
+	invited, _ := rooms["invite"].(map[string]any)
+	ourInvite, _ := invited[roomID].(map[string]any)
+	state, _ := ourInvite["invite_state"].(map[string]any)
+	events, _ := state["events"].([]any)
+	check("/sync invite_state", events)
+
+	// Sliding sync, on both of its paths.
+	for _, path := range []string{
+		"/_matrix/client/v4/sync",
+		"/_matrix/client/unstable/org.matrix.simplified_msc3575/sync",
+	} {
+		answer := server.MustDo("POST", path, bob.Token, map[string]any{
+			"conn_id": "invite-" + path,
+			"lists": map[string]slidingList{
+				"invites": {"timeline_limit": 0, "required_state": []any{[]any{"m.room.name", ""}}},
+			},
+		}, 200)
+		room, ok := slidingRooms(t, answer.Body)[roomID]
+		if !ok {
+			t.Fatalf("%s: bob's invitation is not in the answer: %v", path, answer.Body)
+		}
+		stripped, ok := room["stripped_state"].([]any)
+		if !ok {
+			t.Fatalf("%s: the invitation carries no stripped state: %v", path, room)
+		}
+		check(path+" stripped_state", stripped)
+	}
+}

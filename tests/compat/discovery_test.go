@@ -157,8 +157,17 @@ func TestVersions(t *testing.T) {
 	if !ok || len(versions) == 0 {
 		t.Fatalf("versions is empty: %s", resp.Raw)
 	}
-	if _, ok := resp.Body["unstable_features"].(map[string]any); !ok {
-		t.Errorf("unstable_features is missing: %s", resp.Raw)
+	features, ok := resp.Body["unstable_features"].(map[string]any)
+	if !ok {
+		t.Fatalf("unstable_features is missing: %s", resp.Raw)
+	}
+	// Simplified sliding sync is served on two paths, and both are advertised: MSC4186 names
+	// the first, and a client that discovers rather than guesses reads the second as "post to
+	// /v4/sync". Advertising only the first leaves such a client on the unstable path.
+	for _, flag := range []string{"org.matrix.simplified_msc3575", "org.matrix.simplified_msc3575.stable"} {
+		if features[flag] != true {
+			t.Errorf("unstable_features does not advertise %s: %v", flag, features)
+		}
 	}
 }
 

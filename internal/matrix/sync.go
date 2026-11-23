@@ -98,9 +98,15 @@ type StrippedState struct {
 }
 
 // StrippedStateEvent is one piece of that state.
+//
+// `state_key` is required by the spec's StrippedStateEvent and is written even when it is
+// the empty string, which is what it is for m.room.create, m.room.name and m.room.join_rules.
+// An omitempty here drops the field for exactly those three, and a strict parser (ruma's)
+// throws the event away: the invitation arrives with no name and the room looks unnamed.
+// Absent is a different answer from empty, and this one is never absent.
 type StrippedStateEvent struct {
 	Type     string     `json:"type"`
-	StateKey string     `json:"state_key,omitempty"`
+	StateKey string     `json:"state_key"`
 	Sender   string     `json:"sender"`
 	Content  RawMessage `json:"content"`
 }

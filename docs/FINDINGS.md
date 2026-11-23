@@ -947,3 +947,31 @@ question mark; the durable part:
   `SlidingRoomFilter.WantsInvite` the whole of the other two. What is still not done is on the answer side —
   `invite_state` beside `stripped_state`, and the two counters MSC4186 deleted — because that writes a
   superseded field into every response of the endpoint rather than tolerating one more request.
+
+## Findings of 2026-11-23 — an invited room that arrives without a name
+
+Reported against the live `v0.2.4` by a client author, and both halves are true.
+
+- `StrippedStateEvent.StateKey` carried `omitempty`, and for `m.room.create`, `m.room.name` and
+  `m.room.join_rules` the state key **is** the empty string — so the one field the spec marks
+  **Required** disappeared for exactly the three events that name a room. Measured on all three
+  surfaces before the fix: `/sync`'s `invite_state`, and sliding sync's `stripped_state` on both
+  `/v4/sync` and the `org.matrix.simplified_msc3575` path. A lenient reader treats the event as
+  unnamed state; ruma's deserialiser rejects it and drops it, which is how "never sees an
+  invitation, and no room name even on `/v4/sync`" looked from the outside.
+- Absent is not empty, and this is a class rather than a line: `omitempty` on a `string` field
+  whose legal value is `""` is a wire bug. Where the field really is optional, the type is a
+  `*string` (`internal/matrix/event.go:85`, and the `required_state` element in
+  `internal/matrix/sliding.go:194`) — that shape says "not given" and "empty" differently, and
+  keeps the empty value. Grep for `json:"state_key,omitempty"` before trusting another struct.
+- The `/versions` half was also real, though not as the report guessed: MSC4186 names one flag,
+  `org.matrix.simplified_msc3575`, and says nothing about a stable one. But matrix-rust-sdk
+  (`crates/matrix-sdk/src/sliding_sync/client.rs`) reads two — `FeatureFlag::Msc4186` selects
+  its `Version::Unstable` (the unstable URL), `FeatureFlag::Msc4186Stable` selects
+  `Version::Stable` (`POST /v4/sync`), and its `Discover` builder prefers stable when both are
+  advertised. Lattice serves the merged MSC on both paths, so it now advertises both flags and a
+  discovering client lands on `/v4/sync`.
+- Which is not the same as fixing a client that never asks. ruma 0.25.2 / matrix-rust-sdk 0.19
+  post the unstable URL unconditionally, without reading `/versions`, and send and expect the
+  pre-MSC field names; no flag moves them. What remains for those is the open TODO item: answer
+  `invite_state` on the unstable path, behind a config name, only if ruma does not move.

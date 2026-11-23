@@ -249,6 +249,11 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
       pairs or `"type|state_key"` strings beside the MSC object, `ranges` beside `range`, the `is_invite` filter name
       beside `is_invited`, and the three parameters in the query string beside the body. Measured against ruma 0.25.2
       and asked for by smaltino's author. Read from the request only — an answer is written in one shape, the MSC's.
+- [x] Stripped state always carries `state_key` (2026-11-23): it is **Required** by the spec and `omitempty`
+      erased it for `m.room.create` / `m.room.name` / `m.room.join_rules`, whose state key is `""` — ruma dropped the
+      events, so an invitation arrived nameless on every path. `/versions` also advertises
+      `org.matrix.simplified_msc3575.stable` beside the unstable flag, which is how matrix-rust-sdk chooses
+      `POST /v4/sync` over the unstable URL. Both measured, `TestSlidingSyncStrippedStateCarriesAStateKey`.
 - [ ] Sliding sync answered the way a proxy-era client reads it: `invite_state` where MSC4186 writes `stripped_state`,
       and the `notification_count`/`highlight_count` the MSC deleted. Not built, because that puts a superseded field in
       every answer of the endpoint rather than tolerating one request. The fix belongs in ruma. Revisit if ruma does not
