@@ -3,7 +3,7 @@
 // in internal/service.
 //
 //	@title			Lattice
-//	@version		0.2.8
+//	@version		0.2.9
 //	@description	The Matrix client-server API implemented by Lattice, a minimal
 //	@description	single-server homeserver. Server-server (federation) endpoints
 //	@description	are only mounted when the server starts with -federation.
