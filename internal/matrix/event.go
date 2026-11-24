@@ -42,9 +42,13 @@ const (
 	TypeKeyVerification  = "m.key.verification.request"
 	TypeDummy            = "m.dummy"
 	TypeFullyRead        = "m.fully_read"
-	TypeTagAccountData   = "m.tag"
-	TypeIgnoredUserList  = "m.ignored_user_list"
-	TypeSpaceOrder       = "m.space_order"
+	// TypePushRules is the account data copy of the user's push rules. The rule table decides
+	// notifications; this is the document clients are told the rules are, and MSC4010 makes it
+	// one of the two types only the server may write.
+	TypePushRules       = "m.push_rules"
+	TypeTagAccountData  = "m.tag"
+	TypeIgnoredUserList = "m.ignored_user_list"
+	TypeSpaceOrder      = "m.space_order"
 )
 
 // Membership values for m.room.member events.

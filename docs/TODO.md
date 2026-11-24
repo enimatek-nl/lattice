@@ -218,7 +218,7 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
 
 ### D. Client surface a user feels
 
-- [ ] `/sync` response shape, two sections and two names: a `summary` on joined rooms (`m.joined_member_count`, `m.invited_member_count`, `m.heroes`) and the global `account_data` section. The second hides a third case behind itself — `TestPushRuleRoomUpgrade` cannot read the rules it means to compare.
+- [ ] `/sync` response shape: a `summary` on joined rooms (`m.joined_member_count`, `m.invited_member_count`, `m.heroes`). The global `account_data` section is answered and now carries the rule set as `m.push_rules` (2026-11-24); what is left of the case it hid is the upgrade transfer in queue F.
 - [ ] Decide the `/keys/query` answer for a user with no devices: the suite wants the user present as an empty object, v1.19's wording ("the corresponding user or device is missing from the `device_keys` result") reads as a defence of omitting them. Match the suite or record the refusal (measured 2026-11-20).
 - [ ] `state_after` on `/sync`; the top-level `presence` and `org.matrix.msc3814.e2ee` sections filled or removed.
 - [ ] `DELETE` on account data (MSC3391), `m.fully_marked` where it is still missing, `/relations` recursion.

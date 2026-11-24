@@ -49,7 +49,19 @@ func (a *App) handleSetRoomAccountData(w http.ResponseWriter, r *http.Request) {
 }
 
 // setAccountData stores global or room scoped account data.
+//
+// Two types are the server's to write, and MSC4010 says so because the hole was real: a client
+// that stored `m.push_rules` here shadowed the real rule set in every sync, and the server went
+// on evaluating rules the client was no longer being told about. `m.fully_read` is the same story
+// with a read marker. Both are refused for global and for room scoped writes, with the 405 the
+// spec documents and the M_BAD_JSON code it pairs with that status. Reading them stays allowed.
 func (a *App) setAccountData(w http.ResponseWriter, r *http.Request, roomID string) {
+	switch typ := r.PathValue("type"); typ {
+	case matrix.TypePushRules, matrix.TypeFullyRead:
+		a.writeError(w, r, matrix.NewError(matrix.ErrCodeBadJSON, http.StatusMethodNotAllowed,
+			"cannot set "+typ+" through this API."))
+		return
+	}
 	content, err := readRawBody(r)
 	if err != nil {
 		a.writeError(w, r, err)

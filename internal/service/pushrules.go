@@ -67,7 +67,31 @@ func (s *Service) SeedPushRules(ctx context.Context, userID string) error {
 			return matrix.ErrInternal(err)
 		}
 	}
-	return nil
+	return s.publishPushRules(ctx, userID)
+}
+
+// publishPushRules writes the whole rule set as the user's m.push_rules global account data.
+//
+// MSC4010 spells out the pairing that used to be folklore: a change made through /pushrules "is
+// sent to all clients via a m.push_rules event in the account_data section in the next /sync".
+// MSC4548 then asks the sliding sync extension for the same row, in as many words. Without it a
+// second device never learns that the first one changed a rule, and a client that reads its
+// rules out of the account data section - which is where the MSC says they are - reads nothing.
+//
+// The whole document every time is deliberate. Clients replace the content they hold for a type,
+// the set is a few kilobytes, and a partial entry would leave every client merging rule lists.
+// The rule table stays the thing that decides whether an event notifies: this is the copy clients
+// read, never the other way round, which is exactly why the write endpoint refuses it.
+func (s *Service) publishPushRules(ctx context.Context, userID string) error {
+	rules, err := s.PushRules(ctx, userID)
+	if err != nil {
+		return err
+	}
+	content, err := json.Marshal(rules)
+	if err != nil {
+		return matrix.ErrInternal(err)
+	}
+	return s.db.AccountDataRepo.Set(userID, "", matrix.TypePushRules, string(content), s.nextStreamPos())
 }
 
 // PushRuleWire is a rule as exposed to clients.
@@ -234,7 +258,10 @@ func (s *Service) SetPushRule(ctx context.Context, userID, kind, ruleID string, 
 	if err := s.db.PushRuleRepo.Set(rule); err != nil {
 		return matrix.ErrInternal(err)
 	}
-	return s.repositionPushRule(userID, kind, ruleID, placement)
+	if err := s.repositionPushRule(userID, kind, ruleID, placement); err != nil {
+		return err
+	}
+	return s.publishPushRules(ctx, userID)
 }
 
 // checkRuleAnchor verifies that a before or after parameter names a rule that
@@ -314,7 +341,7 @@ func (s *Service) DeletePushRule(ctx context.Context, userID, kind, ruleID strin
 	if err := s.db.PushRuleRepo.Delete(userID, kind, ruleID); err != nil {
 		return matrix.ErrInternal(err)
 	}
-	return nil
+	return s.publishPushRules(ctx, userID)
 }
 
 // SetPushRuleEnabled enables or disables a rule.
@@ -325,7 +352,7 @@ func (s *Service) SetPushRuleEnabled(ctx context.Context, userID, kind, ruleID s
 	if err := s.db.PushRuleRepo.SetEnabled(userID, kind, ruleID, enabled); err != nil {
 		return matrix.ErrInternal(err)
 	}
-	return nil
+	return s.publishPushRules(ctx, userID)
 }
 
 // SetPushRuleActions replaces the actions of a rule.
@@ -336,7 +363,7 @@ func (s *Service) SetPushRuleActions(ctx context.Context, userID, kind, ruleID s
 	if err := s.db.PushRuleRepo.SetActions(userID, kind, ruleID, string(matrix.Encode(actions))); err != nil {
 		return matrix.ErrInternal(err)
 	}
-	return nil
+	return s.publishPushRules(ctx, userID)
 }
 
 // validKind reports whether kind is one of the five push rule kinds.

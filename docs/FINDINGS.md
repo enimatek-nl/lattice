@@ -958,6 +958,40 @@ week — presumes an answer that is not there. Synapse and Construct include a n
 `server_version`, and clients and proxies paste it into bug reports, so one more field would make
 the tag guard mean something over the wire. Queue item F.
 
+## Findings of 2026-11-24 — push rules were never account data
+
+The `/sync` answer had a `pushrules` field of its own, filled on the first sync only, and its own
+comment promised that "changes arrive as `m.push_rules` account data". Nothing wrote such a row:
+the rules live in their own table, and the account data section carried only what a client had put
+there. A second device therefore never learned that the first had changed a rule, and a client
+that reads its rules where MSC4548 says they are read nothing at all. MSC4010 (merged 2024-03-03)
+is the authority for both halves: a change made through `/pushrules` "is sent to all clients via a
+`m.push_rules` event in the `account_data` section in the next `/sync`", and that type — like
+`m.fully_read` — is the server's to write.
+
+The write half is not a nicety. Before MSC4010 a client could `PUT` its own `m.push_rules`, and
+Synapse accepted it: the stored blob shadowed the real rule set in every sync, while the server
+went on evaluating the rules the client was no longer being told about. Lattice accepted it too,
+on the global and the room route alike. Both now answer the 405 the spec documents, with the
+`M_BAD_JSON` errcode the spec pairs with that status — an odd pairing, and it is the spec's, not an
+invention. Reading stays allowed, and the read marker keeps writing its own `m.fully_read` through
+the service, which is why the guard belongs at the HTTP edge and not in the service.
+
+The rule set is a projection, rewritten whole by every mutator: the table stays the thing that
+decides whether an event notifies, and clients replace the content they hold for a type, so a
+partial entry would leave each of them merging rule lists.
+
+**What it moved, measured.** `TestPushRuleRoomUpgrade` in Complement used to fail because the
+section it reads did not exist. It now reads the `m.push_rules` entry and gets past that, and fails
+one step further on: after an upgrade it waits for a `room` rule naming the new room id, and
+Lattice keeps only the old id. The red is now the missing push-rule transfer of MSC2313, not a
+missing sync section — a smaller claim, and a different queue item.
+
+**A number worth not trusting.** The account data extension is MSC4548. An earlier note in
+`docs/TODO.md` guessed MSC4537, which turned out to be a profile-API MSC. Every extension in this
+family has an MSC of its own now (4508 common and typing, 4538 to device, 4543 keys, 4548 account
+data, 4551 receipts), so read the number rather than remembering the family.
+
 ## Findings of 2026-11-23 — a null where the spec asks for a list
 
 The same Go pattern that erased `state_key` erased a whole encryption section. MSC4543's table

@@ -1,8 +1,10 @@
 package compat
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/enimatek-nl/lattice/internal/matrix"
@@ -290,4 +292,151 @@ func TestPusherDeletion(t *testing.T) {
 	if resp := server.Do(http.MethodDelete, path, "", nil); resp.Status != http.StatusUnauthorized {
 		t.Errorf("unauthenticated pusher delete: got %d, want 401", resp.Status)
 	}
+}
+
+// TestPushRulesTravelAsAccountData reads MSC4010, the MSC that closed the hole around this
+// document: a change made through /pushrules "is sent to all clients via a m.push_rules event in
+// the account_data section in the next /sync", and the type is the server's to write. MSC4548
+// then asks the sliding sync extension for the same row in so many words.
+//
+// Lattice kept the rules in their own table and the /sync answer in a `pushrules` field, so a
+// second device that changed a rule was never told, and a client reading its rules where the MSC
+// says they are read nothing at all.
+func TestPushRulesTravelAsAccountData(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	rule := map[string]any{
+		"conditions": []any{map[string]any{"kind": "event_match", "key": "content.body", "pattern": "travel"}},
+		"actions":    []any{"notify"},
+	}
+
+	// A fresh account has the document already: a client must not have to wait for a change
+	// before it can read the rules it is being pushed for.
+	first := server.MustDo(http.MethodGet, "/_matrix/client/v3/sync?timeout=0", alice.Token, nil, http.StatusOK)
+	section, _ := first.Body["account_data"].(map[string]any)
+	if section == nil {
+		t.Fatalf("the first sync of a fresh account carries no account_data section: %s", first.Raw)
+	}
+	events, _ := section["events"].([]any)
+	if !accountsHold(events, "m.push_rules") {
+		t.Errorf("the first sync carries no m.push_rules account data: %s", first.Raw)
+	}
+	if !matrixHasDefaultRules(first.Raw) {
+		t.Errorf("the m.push_rules account data is not the rule set a client would read from /pushrules: %s", first.Raw)
+	}
+
+	// A change through the rules API arrives as that account data on the next sync.
+	server.MustDo(http.MethodPut, "/_matrix/client/v3/pushrules/global/override/dev.lattice.travel",
+		alice.Token, rule, http.StatusOK)
+	next := server.MustDo(http.MethodGet,
+		"/_matrix/client/v3/sync?since="+url.QueryEscape(first.String("next_batch"))+"&timeout=0",
+		alice.Token, nil, http.StatusOK)
+	section, _ = next.Body["account_data"].(map[string]any)
+	if section == nil || !accountsHold(section["events"], "m.push_rules") {
+		t.Fatalf("a rule change did not arrive as m.push_rules account data: %s", next.Raw)
+	}
+	if count := countAccounts(section["events"], "m.push_rules"); count != 1 {
+		t.Errorf("the changed rule set arrives %d times, one entry per type is what both syncs ask for", count)
+	}
+	if !strings.Contains(string(next.Raw), "dev.lattice.travel") {
+		t.Errorf("the account data copy does not carry the rule that was just created: %s", next.Raw)
+	}
+
+	// The sliding sync extension answers from the same row (MSC4548).
+	sliding := server.slidingSync(t, alice, map[string]any{
+		"conn_id":    "userdata",
+		"extensions": map[string]any{"account_data": map[string]any{"enabled": true}},
+	})
+	extensions, _ := sliding["extensions"].(map[string]any)
+	accountData, _ := extensions["account_data"].(map[string]any)
+	if !accountsHold(accountData["global"], "m.push_rules") {
+		t.Errorf("the account_data extension carries no m.push_rules: %v", accountData)
+	}
+
+	// The two server-owned types cannot be written by a client, global or room scoped: a stored
+	// m.push_rules shadowed the real rules in every sync until MSC4010 closed that. Reading them
+	// stays allowed.
+	for _, path := range []string{
+		"/_matrix/client/v3/user/" + url.PathEscape(alice.UserID) + "/account_data/m.push_rules",
+		"/_matrix/client/v3/user/" + url.PathEscape(alice.UserID) + "/account_data/m.fully_read",
+	} {
+		guarded := server.Do(http.MethodPut, path, alice.Token, map[string]any{"event_id": "$one"})
+		if guarded.Status != http.StatusMethodNotAllowed {
+			t.Errorf("PUT %s: got %d (%s), want 405", path, guarded.Status, guarded.Raw)
+		}
+		if code, _ := guarded.Body["errcode"].(string); code != "M_BAD_JSON" {
+			t.Errorf("PUT %s: errcode %v, want M_BAD_JSON as the spec pairs it with the 405", path, guarded.Body["errcode"])
+		}
+	}
+	roomPath := "/_matrix/client/v3/user/" + url.PathEscape(alice.UserID) + "/rooms/!room:server/account_data/m.fully_read"
+	if resp := server.Do(http.MethodPut, roomPath, alice.Token, map[string]any{"event_id": "$one"}); resp.Status != http.StatusMethodNotAllowed {
+		t.Errorf("PUT %s: got %d (%s), want 405", roomPath, resp.Status, resp.Raw)
+	}
+	read := server.MustDo(http.MethodGet,
+		"/_matrix/client/v3/user/"+url.PathEscape(alice.UserID)+"/account_data/m.push_rules",
+		alice.Token, nil, http.StatusOK)
+	if rules, ok := read.Body["global"].(map[string]any); !ok || rules["override"] == nil {
+		t.Errorf("GET m.push_rules should answer the rule set, got %s", read.Raw)
+	}
+
+	// The read marker still writes its own account data, through the service and not the API.
+	roomID := server.CreateRoom(alice, map[string]any{"preset": "private_chat"})
+	eventID := server.Send(alice, roomID, "one", "a message")
+	server.MustDo(http.MethodPost, "/_matrix/client/v3/rooms/"+roomID+"/receipt/m.read/"+url.PathEscape(eventID),
+		alice.Token, map[string]any{}, http.StatusOK)
+	server.MustDo(http.MethodPost, "/_matrix/client/v3/rooms/"+roomID+"/read_markers", alice.Token,
+		map[string]any{"fully_read": eventID}, http.StatusOK)
+	if body := server.MustDo(http.MethodGet,
+		"/_matrix/client/v3/user/"+url.PathEscape(alice.UserID)+"/rooms/"+url.PathEscape(roomID)+"/account_data/m.fully_read",
+		alice.Token, nil, http.StatusOK); body.String("event_id") != eventID {
+		t.Errorf("the read marker no longer reaches m.fully_read: %s", body.Raw)
+	}
+}
+
+// matrixHasDefaultRules reports whether a /sync body carries a m.push_rules entry that holds the
+// kind lists of the rule set, rather than an empty object standing in for it.
+func matrixHasDefaultRules(raw []byte) bool {
+	var probe struct {
+		AccountData struct {
+			Events []struct {
+				Type    string          `json:"type"`
+				Content json.RawMessage `json:"content"`
+			} `json:"events"`
+		} `json:"account_data"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return false
+	}
+	for _, entry := range probe.AccountData.Events {
+		if entry.Type != "m.push_rules" {
+			continue
+		}
+		var content struct {
+			Global map[string]json.RawMessage `json:"global"`
+		}
+		if err := json.Unmarshal(entry.Content, &content); err != nil {
+			return false
+		}
+		for _, kind := range []string{"override", "content", "room", "underride"} {
+			if content.Global[kind] == nil {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// countAccounts counts how often one type appears in an account data list. MSC4548 forbids more
+// than one entry per type in the sliding sync list, and a duplicate would leave a client guessing
+// which one won.
+func countAccounts(events any, typ string) int {
+	list, _ := events.([]any)
+	count := 0
+	for _, raw := range list {
+		if entry, _ := raw.(map[string]any); entry["type"] == typ {
+			count++
+		}
+	}
+	return count
 }
