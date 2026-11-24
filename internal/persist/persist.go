@@ -156,6 +156,9 @@ func NewDatabase(path string) (*Database, error) {
 	if err := backfillStateFlags(gdb); err != nil {
 		return nil, fmt.Errorf("backfill state event markers: %w", err)
 	}
+	if err := RepairPusherScope(gdb); err != nil {
+		return nil, fmt.Errorf("restore the pusher scope: %w", err)
+	}
 	if err := sweepUnsignedOneTimeKeys(gdb); err != nil {
 		return nil, fmt.Errorf("drop unverifiable one-time keys: %w", err)
 	}

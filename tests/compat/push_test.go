@@ -511,3 +511,55 @@ func TestPusherCarriesEveryRequiredField(t *testing.T) {
 		t.Errorf("the pusher of a named device answers without device_id: %v", unnamed)
 	}
 }
+
+// TestPushersBelongToTheirOwner covers the two ways a pusher update went wrong. Registering the
+// same pushkey and app id from another account used to update that account's row, because the
+// storage keyed a pusher by (pushkey, kind, app id) and the update list named user_id - which is a
+// pusher changing hands. And re-registering one's own pusher under a new device name kept the old
+// name, because the update list left the name columns out: the row kept the name of whoever claimed
+// the endpoint first, which is what a client's push settings screen then shows.
+func TestPushersBelongToTheirOwner(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	bob := server.Register("bob", "rubberduck")
+
+	set := func(account *Session, name string) {
+		server.MustDo(http.MethodPost, "/_matrix/client/v3/pushers/set", account.Token, map[string]any{
+			"pushkey":             "shared-key",
+			"kind":                "http",
+			"app_id":              "dev.lattice.app",
+			"app_display_name":    "Lattice Test",
+			"device_display_name": name,
+			"lang":                "en",
+			"data":                map[string]any{"url": "https://push.example/lattice"},
+		}, http.StatusOK)
+	}
+	one := func(account *Session) map[string]any {
+		body := server.MustDo(http.MethodGet, "/_matrix/client/v3/pushers", account.Token, nil, http.StatusOK)
+		list, _ := body.Body["pushers"].([]any)
+		if len(list) != 1 {
+			t.Fatalf("%s should have one pusher, sees %s", account.UserID, body.Raw)
+		}
+		pusher, _ := list[0].(map[string]any)
+		return pusher
+	}
+
+	set(alice, "Alice phone")
+	// The same endpoint under another account: a pusher is owned, not claimed.
+	set(bob, "Bob tablet")
+	if got := one(alice)["device_display_name"]; got != "Alice phone" {
+		t.Errorf("Alice lost her pusher to Bob: her list reads %v", got)
+	}
+	if got := one(bob)["device_display_name"]; got != "Bob tablet" {
+		t.Errorf("Bob's pusher reads %v, want his own name", got)
+	}
+
+	// And a client that renames its device updates the pusher it registered.
+	set(alice, "Alice new phone")
+	if got := one(alice)["device_display_name"]; got != "Alice new phone" {
+		t.Errorf("a re-registered pusher kept %v, want the name it was given", got)
+	}
+	if got := one(bob)["device_display_name"]; got != "Bob tablet" {
+		t.Errorf("updating Alice's pusher moved something of Bob's: %v", got)
+	}
+}

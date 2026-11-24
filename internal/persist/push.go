@@ -1,6 +1,8 @@
 package persist
 
 import (
+	"strings"
+
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -122,10 +124,16 @@ func NewPushRuleRepo(db *gorm.DB) PushRuleRepo {
 }
 
 // Pusher is a push notification endpoint registered by a client.
+//
+// The scope of a pusher is its owner, its app id and its pushkey. A second account that registers
+// the same endpoint then keeps its own pusher instead of rewriting the first one's row, which is
+// what "a user can only modify their own pushers" means in storage - see RepairPusherScope for why
+// an index over (pushkey, kind, app id) alone did not give it.
 type Pusher struct {
 	PushKey string `json:"pushkey" gorm:"uniqueIndex:uq_pusher_scope;size:255"`
 	Kind    string `json:"kind" gorm:"uniqueIndex:uq_pusher_scope;size:32"`
 	AppID   string `json:"app_id" gorm:"uniqueIndex:uq_pusher_scope;size:255"`
+	UserID  string `json:"user_id" gorm:"index;uniqueIndex:uq_pusher_scope;size:255"`
 	AppName string `json:"app_display_name" gorm:"size:255"`
 	// DeviceName is the pusher's device_display_name: the name of the device that will be
 	// notified. It is a Required field of the Pusher object the spec, and it is what a gateway
@@ -137,7 +145,6 @@ type Pusher struct {
 	// tells its own endpoints apart. Optional in the spec, so it is often empty.
 	ProfileTag string `json:"profile_tag" gorm:"size:255"`
 	DeviceID   string `json:"device_id" gorm:"size:64"`
-	UserID     string `json:"user_id" gorm:"index;size:255"`
 	Lang       string `json:"lang" gorm:"size:32"`
 	Data       string `json:"data" gorm:"type:text"`
 	Active     bool   `json:"active"`
@@ -160,13 +167,43 @@ type PusherRepoImpl struct {
 }
 
 // Set implements [PusherRepo].
+//
+// Re-registering an endpoint is how a client updates it, so the update carries every field a request
+// can name - the two names included. Leaving device_name out of this list is how a pusher kept the
+// device name of whoever first claimed a pushkey and app id, however often it was registered again.
 func (r *PusherRepoImpl) Set(pusher *Pusher) error {
 	return r.db.Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "push_key"}, {Name: "kind"}, {Name: "app_id"}},
+		Columns: []clause.Column{{Name: "user_id"}, {Name: "push_key"}, {Name: "kind"}, {Name: "app_id"}},
 		DoUpdates: clause.AssignmentColumns([]string{
-			"app_name", "device_id", "user_id", "lang", "data", "active", "updated_at",
+			"app_name", "device_name", "profile_tag", "device_id", "lang", "data", "active", "updated_at",
 		}),
 	}).Create(pusher).Error
+}
+
+// RepairPusherScope restores the unique index of the pushers table when it was built without an
+// owner.
+//
+// AutoMigrate adds a missing index and never rewrites one that exists, so a database whose pushers
+// were first scoped by (pushkey, kind, app id) keeps that scope after the model asks for a fourth
+// column. With the old index in place, registering an endpoint another account already claimed was
+// an update of that account's row - which moved the pusher to the newcomer, because the update list
+// named user_id. The rows themselves need nothing: the old scope was narrower than the new one, so
+// no two rows can have shared an owner and a pushkey, and recreating the index is what
+// AutoMigrate would have done to a fresh database.
+func RepairPusherScope(gdb *gorm.DB) error {
+	var definition string
+	if err := gdb.Raw(`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?`,
+		"uq_pusher_scope").Scan(&definition).Error; err != nil {
+		return err
+	}
+	if definition == "" || strings.Contains(definition, "user_id") {
+		return nil
+	}
+	if err := gdb.Exec(`DROP INDEX IF EXISTS "uq_pusher_scope"`).Error; err != nil {
+		return err
+	}
+	return gdb.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS "uq_pusher_scope" ON "pushers" ` +
+		`("user_id", "push_key", "kind", "app_id")`).Error
 }
 
 // List implements [PusherRepo].

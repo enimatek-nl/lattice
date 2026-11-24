@@ -965,6 +965,39 @@ Go runtime moved to the startup line, which names version and runtime, because t
 the one that ends up pasted in a bug report. The compat test asserts the field against the constant,
 which ties the three places the number lives — constant, tag, wire — into a single claim.
 
+## Findings of 2026-11-24 — the field was stored and still never arrived, twice
+
+The pusher fix was half done, and the reporter caught it: `device_display_name` came back as the
+device id. Reading the write path again found two bugs, neither of which the first test could see.
+
+**An update list is a field list.** `Set` writes with `ON CONFLICT … DO UPDATE SET` over an
+explicit column list, and that list was written when the row had fewer fields: it named `app_name`,
+`device_id`, `lang`, `data`, `active` and the timestamps, and no name column. A first registration
+inserted the name; every registration afterwards - which is what a client doing its normal startup
+does, and what a probe reusing a pushkey does - updated everything except the name. So the row kept
+the name of whoever first claimed that pushkey and app id, and a row predating the column stayed
+nameless forever, which the read-side fallback then dressed up as a device id. A storage layer that
+takes a column list per call is a second place where the spec's field table has to be walked, and
+"the field is in the struct" proves nothing about it.
+
+**A pusher was not owned.** The unique scope was `(push_key, kind, app_id)` with no user, and the
+same update list named `user_id`. Registering an endpoint another account already claimed therefore
+updated that account's row and moved it - Alice's list went empty while Bob saw a pusher named after
+her phone. Anyone who could guess a pushkey could take over a stranger's notifications. Synapse keys
+a pusher by user, app id and pushkey; the scope now does too.
+
+The repair for an existing database is not free: `AutoMigrate` adds a missing index and never
+rewrites an existing one, so the model asking for a fourth column changes nothing on disk. A
+`RepairPusherScope` step drops the old index and recreates it, following the `backfillStateFlags`
+precedent. It is load-bearing rather than tidy - with the old index in place, the new
+`ON CONFLICT` target matches no constraint and every `Set` fails - so the unit test writes a
+database of the old shape and opens it as the field would.
+
+And the habit the report should have taught the first time: the test inserted two pushers and read
+them back, which exercises the insert path and nothing else. A write path with both an insert and an
+update branch needs a case that arrives twice - and a resource with an owner needs a case where
+somebody else asks for the same one.
+
 ## Findings of 2026-11-24 — a Required field the server never had
 
 `GET /v3/pushers` answered every pusher without `device_display_name`, and the Matrix Rust SDK
