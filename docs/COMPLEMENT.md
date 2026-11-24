@@ -8,6 +8,27 @@ server-server names in it should be refreshed against a fresh run.
 
 ---
 
+## How to run the suite when this shell's podman is broken
+
+A long-lived shell eventually loses its rootless podman namespace: every command ends in
+`invalid internal status, unable to create a new pause process: cannot re-exec process to join the
+existing user namespace`, and `make complement` dies in `complement-image`. `podman system migrate`
+or a fresh shell fixes the shell itself. Until then the suite runs in a transient unit, which is a
+different namespace and works — with one thing to carry along, because Complement talks to the
+container engine over the Docker API:
+
+```console
+systemd-run --user --unit=complement-run --property=WorkingDirectory=$PWD \
+  --property=Environment=DOCKER_HOST=unix:///run/user/$(id -u)/podman/podman.sock \
+  /usr/bin/bash -c 'make complement COMPLEMENT_RUN=TestName > run.log 2>&1'
+```
+
+Without `DOCKER_HOST` the image builds and every blueprint then fails with `permission denied while
+trying to connect to the docker API at unix:///var/run/docker.sock`, which reads like a broken
+engine and is only a missing variable: `/var/run/docker.sock` here is a symlink to the rootless
+podman socket, and the unit does not get the environment the interactive shell had. Note that
+`--scope` (rather than `--unit`) inherits the broken namespace and fails the same way as the shell.
+
 ## Triage run of 2026-11-20 — the ten "not triaged" names, each run alone
 
 `docs/TODO.md` had entered ten names as "not triaged". Each got its own `go test -run '^TestX$'` with a
