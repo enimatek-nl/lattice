@@ -993,6 +993,19 @@ precedent. It is load-bearing rather than tidy - with the old index in place, th
 `ON CONFLICT` target matches no constraint and every `Set` fails - so the unit test writes a
 database of the old shape and opens it as the field would.
 
+The repair runs one way, and that is worth knowing before a release is rolled back. The previous
+binary's `ON CONFLICT` target names the endpoint without an owner, which matches no constraint once
+the wide index is in place, so after this version has opened a database nobody can register a pusher
+on an old binary until the narrow index is put back by hand:
+
+```sql
+DROP INDEX IF EXISTS "uq_pusher_scope";
+CREATE UNIQUE INDEX "uq_pusher_scope" ON "pushers" ("push_key", "kind", "app_id");
+```
+
+That statement fails when two accounts have meanwhile registered the same endpoint - which is the
+point of the fix - so a rollback after that also means choosing which of the two rows survives.
+
 And the habit the report should have taught the first time: the test inserted two pushers and read
 them back, which exercises the insert path and nothing else. A write path with both an insert and an
 update branch needs a case that arrives twice - and a resource with an owner needs a case where
