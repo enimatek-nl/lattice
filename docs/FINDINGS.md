@@ -982,6 +982,12 @@ even if the room has no other updates to send". The scope is the connection's wi
 subscriptions - which the server had already computed a dozen lines earlier as `plans`, and then
 threw away for this question.
 
+The fix was checked against the whole client-API suite, not only the new test: 83 green of 106, 2
+skipped, the same 21 red names as the 2026-11-20 list — and one name that used to be on it.
+`TestPushSync` passes since the push rule set began travelling as `m.push_rules` account data (the
+v0.2.7 work); its first assertion reads exactly that, so the gain was a side effect of closing a
+different gap and only showed up because the full package was run for once.
+
 Two consequences the sections disagree about, both from the MSCs:
 
 * typing and receipts stay with the rooms the user is **joined** to, as ephemeral events have

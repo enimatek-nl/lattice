@@ -280,7 +280,6 @@ suite's own skips are not hiding any of them:
 | Device list updates: `GET /users/{id}/sync` and the `device_lists` edges they feed | TestDeviceListUpdates, TestInviteFromIgnoredUsersDoesNotAppearInSync |
 | Threads and relations: `/threads`, `/relations` pagination, threaded receipts, MSC4102 | TestThreadsEndpoint, TestRelationsPagination, TestRelationsPaginationSync, TestThreadedReceipts, TestThreadReceiptsInSyncMSC4102 |
 | `GET /rooms/{roomID}/members?at=<sync token>` — membership at a sync position | TestGetRoomMembersAtPoint |
-| Push rules in the first sync as **`m.push_rules` account data** (the `pushrules` key is served now), and a rule change waking an incremental sync | TestPushSync |
 | Room forget: `/forget` then reading the room, and the sync `leave` section that follows it | TestRoomForget |
 | `/messages` with a filter (chunk contents) | TestRoomImageRoundtrip |
 | `m.room.power_levels` writes in a privileged-creators room version (MSC4289): the creator in `users` | TestPowerLevels |

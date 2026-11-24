@@ -16,7 +16,6 @@ TestPowerLevels
 TestPresence
 TestPresenceSyncDifferentRooms
 TestPushRuleRoomUpgrade
-TestPushSync
 TestRegistration
 TestRoomDeleteAlias
 TestRoomForget
