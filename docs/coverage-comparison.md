@@ -5,7 +5,7 @@ Rust homeserver (spec v1.19, default room version 12, Complement as its conforma
 88/90 federation and 105/107 client-server). [coverage.md](coverage.md) is ours (spec v1.19 target,
 default room version 11, Complement **82 green of 106** client-API and 2 skipped on 2026-11-18 — the
 first date this package finishes a run — and two server-server figures for 2026-11-04 that a re-run
-has still not settled, plus this repository's own 357 tests: 187
+has still not settled, plus this repository's own 358 tests: 188
 client-API, 90 two-server, 80 unit (counted 2026-11-24). Their claims are theirs - this comparison reads what each
 document says and what our own runs measure, not their code. Both halves of our tally were
 measured on 2026-11-04 (the run attempted that morning, which did not finish inside its budget,
