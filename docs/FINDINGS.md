@@ -965,6 +965,30 @@ Go runtime moved to the startup line, which names version and runtime, because t
 the one that ends up pasted in a bug report. The compat test asserts the field against the constant,
 which ties the three places the number lives — constant, tag, wire — into a single claim.
 
+## Findings of 2026-11-24 — two answers that described the wrong thing
+
+Two small ones from the same lab, both about a server that answered a question it was not asked.
+
+**Presence of a user who does not exist read as somebody who was just active.** The route checked
+that the user id belongs to *this domain* and then reported the no-record answer: `offline`,
+`currently_active: false`, `last_active_ago: 0`. A name with no account behind it is not an idle
+person, and `last_active_ago: 0` is the worst possible filler for a person who never existed - it
+reads as "a moment ago". Synapse and asaroton answer `404 M_NOT_FOUND`, and a client that gets an
+answer here shows the stranger as somebody present; with the 404 it says "nothing known". The check
+is now `UserExists`, which is also what a remote user still trips, so the one behaviour nobody
+disagrees about stayed: presence of another server's user is not this server's to claim.
+
+**A room with no backed up keys was reported as missing.** `GET /room_keys/keys/{roomId}` answered
+`404 M_NOT_FOUND` when the room had no sessions, and the spec reserves that status for a backup
+*version* that does not exist. The consequence is larger than the field: a client restoring keys asks
+for every room it is invited to, before it knows whether that room has anything, so one empty room
+ended the restore. Synapse answers `200 {"sessions": {}}`, so that is the answer now, and the 404
+moved to where absence actually lives - the version - which the service already distinguished on its
+own.
+
+The shared shape is worth naming: both handlers treated "no rows" as "no such thing". For a client
+those are opposite statements, and only one of them is an error.
+
 ## Findings of 2026-11-24 — a private read receipt reached the whole room
 
 A receipt of type `m.read.private` is, per the receipts section of the spec, "only sent to the user

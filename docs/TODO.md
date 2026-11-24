@@ -264,6 +264,10 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
       stored right and delivered to the whole room in every sync shape; the viewer is now a parameter of the one
       function that builds `m.receipt` ephemeral events, and federation was measured to have been clean already.
       `TestPrivateReadReceiptReachesOnlyItsOwner`.
+- [x] Two answers fixed 2026-11-24, both from the same lab: presence of a user who does not exist is
+      `404 M_NOT_FOUND` rather than an idle-looking `200` with `last_active_ago: 0`, and `GET
+      /room_keys/keys/{roomId}` answers `200 {"sessions": {}}` for a room with nothing backed up, leaving the 404
+      for a backup version that does not exist — the request a restoring client makes for every room it is invited to.
 - [ ] Sliding sync answered the way a stock-0.19 client reads it: `invite_state` where MSC4186 writes `stripped_state`,
       and the `notification_count`/`highlight_count` the MSC deleted. Not built, because that puts a superseded field in
       every answer of the endpoint rather than tolerating one request. The fix belongs in ruma. Revisit if ruma does not

@@ -235,7 +235,10 @@ func (s *Service) SetPresence(ctx context.Context, userID, presence, statusMsg s
 
 // Presence returns the presence state of a user.
 func (s *Service) Presence(ctx context.Context, targetUserID, requester string) (matrix.Object, error) {
-	if !s.LocalUser(targetUserID) {
+	if !s.UserExists(ctx, targetUserID) {
+		// Nobody is being described here, which is a different answer from "offline": a caller
+		// cannot tell an account that never existed from one that has not moved in a week, and a
+		// client that has to guess shows a stranger as a person who was just active.
 		return nil, matrix.ErrNotFound("user %s not found", targetUserID)
 	}
 	record, err := s.db.PresenceRepo.Get(targetUserID)

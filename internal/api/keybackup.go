@@ -205,13 +205,16 @@ func (a *App) handleGetBackupRoom(w http.ResponseWriter, r *http.Request) {
 	roomID := r.PathValue("roomId")
 	keys, err := a.svc.BackupSessions(r.Context(), auth.GetUserID(r), version, roomID, "", nil)
 	if err != nil {
+		// The service answers 404 when the backup version does not exist, which is the only
+		// absence this route may report: "no keys backed up for this room yet" is a fact about
+		// the room, not about the request.
 		a.writeError(w, r, err)
 		return
 	}
-	if len(keys) == 0 {
-		a.writeError(w, r, matrix.ErrNotFound("no backed up room keys for %s", roomID))
-		return
-	}
+	// A room with nothing backed up is empty, not missing. Synapse answers 200 with an empty
+	// `sessions`, and a client that asks before it knows - which is what a client restoring keys
+	// at an invitation does, for every room it is invited to - reads a 404 as a failure of the
+	// backup and abandons the whole restore over one empty room.
 	writeJSON(w, http.StatusOK, backupRoomResponse(keys))
 }
 

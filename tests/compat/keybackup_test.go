@@ -132,11 +132,22 @@ func TestKeyBackup(t *testing.T) {
 	if len(roomSessions) != 2 {
 		t.Errorf("the room form returned %d sessions (%s)", len(roomSessions), room.Raw)
 	}
-	missing := server.Do(http.MethodGet,
+	// A room with nothing backed up is empty, not missing: this is the request a client makes for
+	// every room it is invited to while restoring keys, and a 404 over one empty room reads as a
+	// failed backup. Absence belongs to the version, which is where the 404 stays.
+	empty := server.MustDo(http.MethodGet,
 		"/_matrix/client/v3/room_keys/keys/"+url.QueryEscape("!nosuchroom:test.server")+"?version=2",
+		alice.Token, nil, http.StatusOK)
+	emptySessions, ok := empty.Body["sessions"].(map[string]any)
+	if !ok || len(emptySessions) != 0 {
+		t.Errorf("a room with no backed up keys: got %s, want 200 with an empty sessions object", empty.Raw)
+	}
+	noVersion := server.Do(http.MethodGet,
+		"/_matrix/client/v3/room_keys/keys/"+url.QueryEscape("!first:test.server")+"?version=99",
 		alice.Token, nil)
-	if missing.Status != http.StatusNotFound {
-		t.Errorf("an unknown room in a backup: got %d %s, want 404", missing.Status, missing.Raw)
+	if noVersion.Status != http.StatusNotFound {
+		t.Errorf("a room of a backup version that does not exist: got %d %s, want 404",
+			noVersion.Status, noVersion.Raw)
 	}
 
 	single := server.MustDo(http.MethodPut,

@@ -243,6 +243,15 @@ func TestPresence(t *testing.T) {
 		t.Errorf("an idle user is currently_active: %s", quiet.Raw)
 	}
 
+	// A name nobody answers is not a person who is offline.
+	unknown := server.Do(http.MethodGet, presencePath("@nobody:test.server"), alice.Token, nil)
+	if unknown.Status != http.StatusNotFound {
+		t.Errorf("presence of a user who does not exist: got %d %s, want 404", unknown.Status, unknown.Raw)
+	}
+	if unknown.ErrCode() == "M_UNRECOGNIZED" {
+		t.Errorf("an unknown user answered %s, want M_NOT_FOUND", unknown.ErrCode())
+	}
+
 	server.MustDo(http.MethodPut, presencePath(alice.UserID), alice.Token,
 		map[string]any{"presence": "online", "status_msg": "reading"}, http.StatusOK)
 	live := server.MustDo(http.MethodGet, presencePath(alice.UserID), bob.Token, nil, http.StatusOK)
