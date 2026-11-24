@@ -31,7 +31,7 @@ because it said nothing these steps do not.
 | Measure | Now |
 |---|---|
 | `make build vet` | clean (4 s, 2026-11-20); `make lint` reports the same **7 issues** (6 staticcheck: `QF1001`×3, `QF1006`×2, `S1011`; 1 `unused`: `internal/api/federation.go:1045 eventInBody`) — pre-existing quickfix-style findings, none from the 2026-11-18 work. Note for a session started from a service unit: `golangci-lint` lives in `~/go/bin`, which is not on that PATH |
-| this repository's own tests | **360** counted here — 189 client-API compatibility, 90 two-server federation, 81 offline unit (`go test ./tests/<pkg> -list '.*'`, all green on 2026-11-24: compat 86 s, federation 49 s). `internal/matrix` adds its own test functions, which this tally has never counted |
+| this repository's own tests | **361** counted here — 190 client-API compatibility, 90 two-server federation, 81 offline unit (`go test ./tests/<pkg> -list '.*'`, all green on 2026-11-24: compat 86 s, federation 49 s). `internal/matrix` adds its own test functions, which this tally has never counted |
 | Complement `tests/csapi` | **83 green of 106**, 2 skipped, in 330 s on v0.2.8 (2026-11-24). One name less red than the 2026-11-20 tally: `TestPushSync` passes since the push rule set travels as `m.push_rules` account data, which is what its first assertion reads. The other 21 names are the same list, so the red list is stable rather than lucky. It could not be run to completion before 2026-11-18, see [COMPLEMENT.md](COMPLEMENT.md) |
 | Complement server-server (`tests`, not `tests/federation`) | **78 green of 91**, 13 red — re-measured 2026-11-20 for the first time since 2026-11-04, and the 13 are name for name the names recorded then, so the number was stale but honest. 338 s of own time; run beside the client-API suite it costs nothing extra, see `make complement-both` |
 | endpoints | **180 of 234** indexed routes implemented, 44 routes the index does not name (`make endpoints`, unchanged on 2026-11-20) |
@@ -260,6 +260,10 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
       `required_state` reaches the client, with the connection's record of shown state made cumulative so sending old
       state once does not mean sending it again every round. `TestSlidingSyncEphemeralSectionsWakeTheLongPoll`,
       `TestSlidingSyncLimitedMeansMissedEvents`, `TestSlidingSyncSubscriptionSendsTheStateItJustStartedWants`.
+- [x] A private read receipt (`m.read.private`) is delivered only to the user who sent it (2026-11-24). It had been
+      stored right and delivered to the whole room in every sync shape; the viewer is now a parameter of the one
+      function that builds `m.receipt` ephemeral events, and federation was measured to have been clean already.
+      `TestPrivateReadReceiptReachesOnlyItsOwner`.
 - [ ] Sliding sync answered the way a stock-0.19 client reads it: `invite_state` where MSC4186 writes `stripped_state`,
       and the `notification_count`/`highlight_count` the MSC deleted. Not built, because that puts a superseded field in
       every answer of the endpoint rather than tolerating one request. The fix belongs in ruma. Revisit if ruma does not

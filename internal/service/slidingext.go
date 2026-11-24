@@ -110,7 +110,7 @@ func (s *Service) slidingExtensions(ctx context.Context, userID, deviceID string
 			}
 			out[name] = section
 		case slidingExtReceipts:
-			section, err := s.slidingReceiptsExtension(scope.rooms(config, true), from, legacyEndpoint)
+			section, err := s.slidingReceiptsExtension(userID, scope.rooms(config, true), from, legacyEndpoint)
 			if err != nil {
 				return nil, false, err
 			}
@@ -364,8 +364,8 @@ func slidingEphemeralRoomValue(event matrix.Event, legacyEndpoint bool) any {
 }
 
 // slidingReceiptsExtension answers the receipts section, one merged m.receipt per room.
-func (s *Service) slidingReceiptsExtension(rooms []string, from uint64, legacyEndpoint bool) (map[string]any, error) {
-	events, err := s.receiptEventsForRooms(rooms, from)
+func (s *Service) slidingReceiptsExtension(userID string, rooms []string, from uint64, legacyEndpoint bool) (map[string]any, error) {
+	events, err := s.receiptEventsForRooms(rooms, from, userID)
 	if err != nil {
 		return nil, err
 	}

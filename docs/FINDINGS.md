@@ -965,6 +965,27 @@ Go runtime moved to the startup line, which names version and runtime, because t
 the one that ends up pasted in a bug report. The compat test asserts the field against the constant,
 which ties the three places the number lives — constant, tag, wire — into a single claim.
 
+## Findings of 2026-11-24 — a private read receipt reached the whole room
+
+A receipt of type `m.read.private` is, per the receipts section of the spec, "only sent to the user
+who sent it". Lattice accepted the type, stored it correctly, and then delivered it to every other
+member of the room - measured in the classic `/v3/sync` ephemeral events, in the `/v4/sync` receipts
+extension, and on the `org.matrix.simplified_msc3575` path. A user who turned "do not share read
+receipts" on was shown as having read everything, everywhere: a privacy fault whose storage half was
+never wrong.
+
+What makes it worth writing down is where the rule already lived. `GET /v1/rooms/{roomId}/receipts`
+filtered private receipts of other users correctly - so the server had the rule, written once, in a
+handler, and the sync paths had never heard of it. A visibility rule that belongs to *who is asking*
+is not a property of the stored row, and every reader of that row is a place the rule has to be
+stated again. The fix threads the viewer into the one function that builds `m.receipt` ephemeral
+events for both sync shapes, so there is a single place left to be wrong in.
+
+Federation was already clean, and that was checked rather than assumed: the receipt EDU a peer is
+sent is built only for `m.read` (`queueReceiptForPeers` returns early for any other type), so no
+private receipt ever left this server. Worth recording because the next reader of this section will
+wonder, and because the fault was never "the room was told", only "other members' syncs were told".
+
 ## Findings of 2026-11-24 — the field was stored and still never arrived, twice
 
 The pusher fix was half done, and the reporter caught it: `device_display_name` came back as the

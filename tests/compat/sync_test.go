@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -538,4 +539,71 @@ func TestSyncWithoutThreadCounts(t *testing.T) {
 	if !strings.Contains(string(asked.Raw), "unread_notifications") {
 		t.Errorf("the unthreaded counts disappeared with them: %s", asked.Raw)
 	}
+}
+
+// TestPrivateReadReceiptReachesOnlyItsOwner is the privacy half of MSC2285, which the spec took into
+// its receipts section: a private read receipt "is only sent to the user who sent it". Lattice
+// accepted the type, stored it, and then told the whole room about it - in the classic sync, in the
+// sliding-sync receipts extension, and on the unstable path - so a user who turned
+// "don't share read receipts" off saw their reading reach everybody anyway.
+func TestPrivateReadReceiptReachesOnlyItsOwner(t *testing.T) {
+	server := NewServer(t)
+	ana := server.Register("ana", "apples")
+	bob := server.Register("bob", "builders")
+	roomID := server.CreateRoom(ana, map[string]any{"name": "receipts", "preset": "private_chat"})
+	server.MustDo("POST", "/_matrix/client/v3/rooms/"+roomID+"/invite", ana.Token,
+		map[string]any{"user_id": bob.UserID}, 200)
+	server.MustDo("POST", "/_matrix/client/v3/join/"+url.PathEscape(roomID), bob.Token, nil, 200)
+	eventID := server.Send(ana, roomID, "one", "a message to be read privately")
+
+	server.MustDo("POST", "/_matrix/client/v3/rooms/"+roomID+"/receipt/m.read.private/"+url.PathEscape(eventID),
+		bob.Token, map[string]any{}, 200)
+
+	// Ana may not see it in any of the three shapes.
+	classic := server.MustDo("GET", "/_matrix/client/v3/sync?timeout=0", ana.Token, nil, 200)
+	if body := receiptSectionOf(t, classic.Body, roomID); stringContains(body, "m.read.private") {
+		t.Errorf("the classic sync leaks Bob's private receipt to Ana: %v", body)
+	}
+	for _, path := range []string{
+		"/_matrix/client/v4/sync",
+		"/_matrix/client/unstable/org.matrix.simplified_msc3575/sync",
+	} {
+		body := server.MustDo("POST", path, ana.Token, map[string]any{
+			"conn_id":    "ana-" + path[:6],
+			"lists":      map[string]slidingList{"all": {"range": []int{0, 10}, "timeline_limit": 5}},
+			"extensions": map[string]any{"receipts": map[string]any{"enabled": true}},
+		}, 200)
+		if extensions, _ := body.Body["extensions"].(map[string]any); stringContains(extensions["receipts"], "m.read.private") {
+			t.Errorf("%s leaks Bob's private receipt to Ana: %v", path, extensions["receipts"])
+		}
+	}
+
+	// Bob sees his own, on the sync he asked for it with.
+	own := server.MustDo("GET", "/_matrix/client/v3/sync?timeout=0", bob.Token, nil, 200)
+	if body := receiptSectionOf(t, own.Body, roomID); !stringContains(body, "m.read.private") {
+		t.Errorf("Bob lost his own private receipt: %v", body)
+	}
+
+	// And an ordinary receipt still travels, or the filter would simply be broken.
+	server.MustDo("POST", "/_matrix/client/v3/rooms/"+roomID+"/receipt/m.read/"+url.PathEscape(eventID),
+		bob.Token, map[string]any{}, 200)
+	shared := server.MustDo("GET", "/_matrix/client/v3/sync?timeout=0", ana.Token, nil, 200)
+	if body := receiptSectionOf(t, shared.Body, roomID); !stringContains(body, "m.read:") {
+		t.Errorf("Ana no longer sees Bob's ordinary receipt either: %v", body)
+	}
+}
+
+// receiptSectionOf picks the ephemeral events of one room out of a classic sync response.
+func receiptSectionOf(t *testing.T, body map[string]any, roomID string) any {
+	t.Helper()
+	rooms, _ := body["rooms"].(map[string]any)
+	join, _ := rooms["join"].(map[string]any)
+	entry, _ := join[roomID].(map[string]any)
+	return entry["ephemeral"]
+}
+
+// stringContains reports whether a decoded section, rendered as a string, names something. It is
+// blunt on purpose: what matters here is whether a name reached a client that should not have seen it.
+func stringContains(section any, needle string) bool {
+	return strings.Contains(fmt.Sprint(section), needle)
 }

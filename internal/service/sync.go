@@ -216,7 +216,7 @@ func (s *Service) buildSync(ctx context.Context, params SyncParams, filter *Sync
 		response.PushRules = &rules
 	}
 
-	receipts, err := s.receiptEventsForRooms(joined, since)
+	receipts, err := s.receiptEventsForRooms(joined, since, userID)
 	if err != nil {
 		return nil, false, err
 	}
