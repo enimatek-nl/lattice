@@ -442,20 +442,42 @@ func (s *Service) SetPusher(ctx context.Context, userID, sessionDeviceID string,
 		device = sessionDeviceID
 	}
 	pusher := &persist.Pusher{
-		PushKey:  pushKey,
-		Kind:     kind,
-		AppID:    appID,
-		AppName:  stringOf(body, "app_display_name"),
-		DeviceID: device,
-		UserID:   userID,
-		Lang:     stringOf(body, "lang"),
-		Data:     string(matrix.Encode(data)),
-		Active:   active,
+		PushKey:    pushKey,
+		Kind:       kind,
+		AppID:      appID,
+		AppName:    stringOf(body, "app_display_name"),
+		DeviceName: s.pusherDeviceName(ctx, userID, device, stringOf(body, "device_display_name")),
+		ProfileTag: stringOf(body, "profile_tag"),
+		DeviceID:   device,
+		UserID:     userID,
+		Lang:       stringOf(body, "lang"),
+		Data:       string(matrix.Encode(data)),
+		Active:     active,
 	}
 	if kind != "http" && kind != "email" {
 		return matrix.ErrInvalidParam("pusher kind must be http or email")
 	}
 	return s.db.PusherRepo.Set(pusher)
+}
+
+// pusherDeviceName settles the pusher's device_display_name, which the spec marks Required on
+// every Pusher object - so a client that leaves it out of the request must not be answered with a
+// pusher that has no such field, because that answer is unreadable rather than merely thin: the
+// Matrix Rust SDK refuses the whole list over a missing required field, and with it the client's
+// push settings. A name the client did send is kept as it came. Otherwise the device says what it
+// is called, and failing that its id is the name the client itself would have to fall back to.
+func (s *Service) pusherDeviceName(ctx context.Context, userID, deviceID, asked string) string {
+	if asked != "" {
+		return asked
+	}
+	device, err := s.db.DeviceRepo.Get(userID, deviceID)
+	if err != nil || device == nil {
+		return deviceID
+	}
+	if device.DisplayName != "" {
+		return device.DisplayName
+	}
+	return deviceID
 }
 
 // DeletePusher removes the pusher with this identity, which is what
@@ -485,16 +507,33 @@ func (s *Service) Pushers(ctx context.Context, userID string) ([]matrix.Object, 
 	}
 	out := make([]matrix.Object, 0, len(pushers))
 	for _, pusher := range pushers {
-		out = append(out, matrix.Object{
-			"pushkey":          pusher.PushKey,
-			"kind":             pusher.Kind,
-			"app_id":           pusher.AppID,
-			"app_display_name": pusher.AppName,
-			"device_id":        pusher.DeviceID,
-			"lang":             pusher.Lang,
-			"data":             matrix.MustParseObject([]byte(pusher.Data)),
-			"active":           pusher.Active,
-		})
+		name := pusher.DeviceName
+		if name == "" {
+			// A row written before this field was kept has no name at all, and a required field is
+			// still required: the device it belongs to says what to answer.
+			name = s.pusherDeviceName(ctx, userID, pusher.DeviceID, "")
+		}
+		entry := matrix.Object{
+			"pushkey":             pusher.PushKey,
+			"kind":                pusher.Kind,
+			"app_id":              pusher.AppID,
+			"app_display_name":    pusher.AppName,
+			"device_display_name": name,
+			"device_id":           pusher.DeviceID,
+			"lang":                pusher.Lang,
+			"data":                matrix.MustParseObject([]byte(pusher.Data)),
+			"active":              pusher.Active,
+		}
+		// The two optional fields of a Pusher stay optional: the spec says so, and a client that
+		// reads device_id to match a pusher to its own session should not be told an empty string
+		// is a device.
+		if pusher.ProfileTag != "" {
+			entry["profile_tag"] = pusher.ProfileTag
+		}
+		if pusher.DeviceID != "" {
+			entry["device_id"] = pusher.DeviceID
+		}
+		out = append(out, entry)
 	}
 	return out, nil
 }

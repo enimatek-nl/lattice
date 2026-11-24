@@ -440,3 +440,74 @@ func countAccounts(events any, typ string) int {
 	}
 	return count
 }
+
+// TestPusherCarriesEveryRequiredField is a pusher the Matrix Rust SDK can read. The Pusher object
+// names seven Required fields, and a strict reader does not treat a missing one as unset: it
+// refuses the whole list with "missing field `device_display_name`", which takes a client's push
+// settings down with it. Lattice never stored that field, so no answer could carry it.
+func TestPusherCarriesEveryRequiredField(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+
+	server.MustDo(http.MethodPost, "/_matrix/client/v3/pushers/set", alice.Token, map[string]any{
+		"pushkey":             "probe-key",
+		"kind":                "http",
+		"app_id":              "net.oele.probe",
+		"app_display_name":    "Probe",
+		"device_display_name": "Probe device",
+		"lang":                "en",
+		"data":                map[string]any{"url": "https://push.example.org/_matrix/push/v1/notify"},
+	}, http.StatusOK)
+	server.MustDo(http.MethodPost, "/_matrix/client/v3/pushers/set", alice.Token, map[string]any{
+		"pushkey":          "unnamed-key",
+		"kind":             "http",
+		"app_id":           "net.oele.probe",
+		"app_display_name": "Probe",
+		"profile_tag":      "work",
+		"data":             map[string]any{"url": "https://push.example.org/_matrix/push/v1/notify"},
+	}, http.StatusOK)
+
+	body := server.MustDo(http.MethodGet, "/_matrix/client/v3/pushers", alice.Token, nil, http.StatusOK)
+	list, _ := body.Body["pushers"].([]any)
+	if len(list) != 2 {
+		t.Fatalf("two pushers were set, the list carries %d: %s", len(list), body.Raw)
+	}
+	byKey := map[string]map[string]any{}
+	for _, entry := range list {
+		pusher, _ := entry.(map[string]any)
+		key, _ := pusher["pushkey"].(string)
+		byKey[key] = pusher
+	}
+	// Every one of them has to be readable on its own, so the check runs over both.
+	for pushKey, pusher := range byKey {
+		for _, field := range []string{"pushkey", "kind", "app_id", "app_display_name",
+			"device_display_name", "lang", "data"} {
+			if _, ok := pusher[field]; !ok {
+				t.Errorf("the pusher %q is answered without the required field %q: %v", pushKey, field, pusher)
+			}
+		}
+	}
+	named := byKey["probe-key"]
+	if named["device_display_name"] != "Probe device" {
+		t.Errorf("device_display_name reads %v, want the name the client registered", named["device_display_name"])
+	}
+	if named["app_display_name"] != "Probe" || named["lang"] != "en" {
+		t.Errorf("the pusher lost what the client named it by: %v", named)
+	}
+	if _, ok := named["profile_tag"]; ok {
+		t.Errorf("profile_tag is optional and was not sent, yet the answer says %v", named["profile_tag"])
+	}
+	// A client that leaves the device name out still gets a required field, not a missing one: the
+	// device says what it is called.
+	unnamed := byKey["unnamed-key"]
+	if unnamed["device_display_name"] != alice.DeviceID {
+		t.Errorf("a pusher without a device name reads %v, want the device it belongs to (%s)",
+			unnamed["device_display_name"], alice.DeviceID)
+	}
+	if unnamed["profile_tag"] != "work" {
+		t.Errorf("profile_tag did not survive the round trip: %v", unnamed["profile_tag"])
+	}
+	if _, ok := unnamed["device_id"]; !ok {
+		t.Errorf("the pusher of a named device answers without device_id: %v", unnamed)
+	}
+}

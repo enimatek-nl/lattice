@@ -965,6 +965,28 @@ Go runtime moved to the startup line, which names version and runtime, because t
 the one that ends up pasted in a bug report. The compat test asserts the field against the constant,
 which ties the three places the number lives — constant, tag, wire — into a single claim.
 
+## Findings of 2026-11-24 — a Required field the server never had
+
+`GET /v3/pushers` answered every pusher without `device_display_name`, and the Matrix Rust SDK
+refuses to read the list at all: "missing field `device_display_name`". Seven of the Pusher object's
+fields are Required by the spec, and a strict reader does not degrade a missing one to unset — it
+rejects the object, which here meant the client's whole push settings screen.
+
+This is not the `omitempty` bug class and no amount of tag-reading would have caught it: the server
+never accepted the field into storage. `POST /pushers/set` picked eight keys out of the body and left
+that one on the floor, so the row had nothing to answer with. Two habits follow. Where a route
+accepts a documented object, the storage shape should be walked against the spec's field table once,
+and where a field is Required, its absence should be a test rather than a reading — the new
+compatibility test asserts the presence of all seven fields on every pusher the list returns.
+
+Because `POST /v3/pushers/set` and `GET /v3/pushers` are the same object on the way in and the way
+out, the field is stored verbatim rather than derived from the device: a device that is renamed after
+the fact should not rewrite a notification endpoint registered under the old name. The device is the
+fallback, not the source — used when a client omitted the name, and equally when a row predates the
+column, since `AutoMigrate` adds columns without filling them. The two genuinely optional fields
+(`profile_tag`, `device_id`) stay absent rather than empty, so a client matching `device_id` against
+its own session is not told that `""` is a device.
+
 ## Findings of 2026-11-24 — `limited` measured the room, and widened state was filtered out again
 
 Two sliding sync faults from the same reporter, both in the delta machinery, both invisible in the

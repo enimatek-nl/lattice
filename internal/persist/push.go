@@ -123,15 +123,24 @@ func NewPushRuleRepo(db *gorm.DB) PushRuleRepo {
 
 // Pusher is a push notification endpoint registered by a client.
 type Pusher struct {
-	PushKey  string `json:"pushkey" gorm:"uniqueIndex:uq_pusher_scope;size:255"`
-	Kind     string `json:"kind" gorm:"uniqueIndex:uq_pusher_scope;size:32"`
-	AppID    string `json:"app_id" gorm:"uniqueIndex:uq_pusher_scope;size:255"`
-	AppName  string `json:"app_display_name" gorm:"size:255"`
-	DeviceID string `json:"device_id" gorm:"size:64"`
-	UserID   string `json:"user_id" gorm:"index;size:255"`
-	Lang     string `json:"lang" gorm:"size:32"`
-	Data     string `json:"data" gorm:"type:text"`
-	Active   bool   `json:"active"`
+	PushKey string `json:"pushkey" gorm:"uniqueIndex:uq_pusher_scope;size:255"`
+	Kind    string `json:"kind" gorm:"uniqueIndex:uq_pusher_scope;size:32"`
+	AppID   string `json:"app_id" gorm:"uniqueIndex:uq_pusher_scope;size:255"`
+	AppName string `json:"app_display_name" gorm:"size:255"`
+	// DeviceName is the pusher's device_display_name: the name of the device that will be
+	// notified. It is a Required field of the Pusher object the spec, and it is what a gateway
+	// and a client's own settings screen show, so it travels with the row rather than being read
+	// back off the device each time - a device that is renamed should not rewrite a notification
+	// endpoint that was registered under the old name.
+	DeviceName string `json:"device_display_name" gorm:"size:255"`
+	// ProfileTag groups the pushers of one session, which is how a client that signed in twice
+	// tells its own endpoints apart. Optional in the spec, so it is often empty.
+	ProfileTag string `json:"profile_tag" gorm:"size:255"`
+	DeviceID   string `json:"device_id" gorm:"size:64"`
+	UserID     string `json:"user_id" gorm:"index;size:255"`
+	Lang       string `json:"lang" gorm:"size:32"`
+	Data       string `json:"data" gorm:"type:text"`
+	Active     bool   `json:"active"`
 
 	gorm.Model
 }
