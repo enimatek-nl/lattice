@@ -253,6 +253,13 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
       events, so an invitation arrived nameless on every path. `/versions` also advertises
       `org.matrix.simplified_msc3575.stable` beside the unstable flag, which is how matrix-rust-sdk chooses
       `POST /v4/sync` over the unstable URL. Both measured, `TestSlidingSyncStrippedStateCarriesAStateKey`.
+- [x] Sliding sync delivery bugs from smaltino's lab, 2026-11-24, three in a row: the ephemeral extensions now cover
+      the connection's window rather than only the rooms the response happened to report (typing, read markers and room
+      tags were unreachable and the long poll timed out); `limited` reads what the client missed since the last sync
+      instead of the room's depth (one new message no longer resets a client's timeline); and a widened
+      `required_state` reaches the client, with the connection's record of shown state made cumulative so sending old
+      state once does not mean sending it again every round. `TestSlidingSyncEphemeralSectionsWakeTheLongPoll`,
+      `TestSlidingSyncLimitedMeansMissedEvents`, `TestSlidingSyncSubscriptionSendsTheStateItJustStartedWants`.
 - [ ] Sliding sync answered the way a stock-0.19 client reads it: `invite_state` where MSC4186 writes `stripped_state`,
       and the `notification_count`/`highlight_count` the MSC deleted. Not built, because that puts a superseded field in
       every answer of the endpoint rather than tolerating one request. The fix belongs in ruma. Revisit if ruma does not

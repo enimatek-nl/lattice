@@ -149,7 +149,7 @@ func (s *Service) slidingRoomResult(ctx context.Context, userID string, fromPos,
 		from = known.TimelinePos
 		expansion = plan.config.timelineLimit > known.TimelineCount
 	}
-	window, err := s.slidingWindow(ctx, roomID, userID, plan.config.timelineLimit, from, expansion)
+	window, more, err := s.slidingWindow(ctx, roomID, userID, plan.config.timelineLimit, from, expansion)
 	if err != nil {
 		return room, nil, err
 	}
@@ -162,9 +162,20 @@ func (s *Service) slidingRoomResult(ctx context.Context, userID string, fromPos,
 	if live > 0 {
 		room.NumLive = &live
 	}
-	// "limited" says there is more of the room than this response carries - history behind
-	// the window, or a gap inside it.
-	room.Limited = total > len(window) || (!initial && total > known.TimelineCount+countAfter(window, known.TimelinePos))
+	// "limited" is a statement about what the client is missing, not about how deep the room
+	// is. MSC4186: "True if there are more events since the previous sync than were included in
+	// the `timeline` field, or that the client should paginate to fetch more events". On an
+	// update that means events which arrived and were left out; a room merely older than the
+	// window is nothing the client has to recover from, because it was shown those events
+	// already - or, on a first sight of the room, it is exactly the history the client is told
+	// to go and page for. Lattice used to fold the room's size into the update as well, so every
+	// room with more history than the window said "limited" for the rest of its life and every
+	// client reading it threw away the timeline it had.
+	if initial || expansion {
+		room.Limited = total > len(window)
+	} else {
+		room.Limited = more
+	}
 	if len(window) > 0 {
 		room.PrevBatch = s.Token(window[0].pos)
 		next.TimelinePos = window[len(window)-1].pos
@@ -227,37 +238,45 @@ type slidingEvent struct {
 // were sent before, because a client that asked for twenty events of a room it is now looking
 // at wants twenty and does not want to page for the missing ones.
 func (s *Service) slidingWindow(ctx context.Context, roomID, userID string, limit int,
-	after uint64, whole bool) ([]slidingEvent, error) {
+	after uint64, whole bool) ([]slidingEvent, bool, error) {
 	if limit <= 0 {
-		return nil, nil
+		return nil, false, nil
 	}
 	if whole {
+		// The whole window is what the client widened to, so whether it reaches back to the
+		// beginning is a question about the room, which the caller already knows the answer to.
 		rows, err := s.db.EventRepo.History(roomID, 0, "b", limit, 0)
 		if err != nil {
-			return nil, matrix.ErrInternal(err)
+			return nil, false, matrix.ErrInternal(err)
 		}
-		return s.slidingEvents(ctx, rows, roomID, userID)
+		events, err := s.slidingEvents(ctx, rows, roomID, userID)
+		return events, false, err
 	}
 	// Read the newest events before the horizon and keep the ones that came after it: the
 	// window has to be capped, and capping it from the wrong end would send the oldest news
 	// of a busy room and drop the newest.
 	rows, err := s.db.EventRepo.History(roomID, 0, "b", limit+slidingReadAhead, 0)
 	if err != nil {
-		return nil, matrix.ErrInternal(err)
+		return nil, false, matrix.ErrInternal(err)
 	}
 	kept := make([]*persist.Event, 0, limit)
+	// more says the room held more events after the horizon than the window could carry, which is
+	// the only thing an update's "limited" turns on.
+	more := false
 	// History hands the newest first, and the cap has to fall on that end: walking from the
 	// other end would keep the oldest news of a busy room and drop the newest.
 	for _, row := range rows {
 		if row.StreamPos <= after {
 			break
 		}
-		kept = append(kept, row)
 		if len(kept) == limit {
+			more = true
 			break
 		}
+		kept = append(kept, row)
 	}
-	return s.slidingEvents(ctx, kept, roomID, userID)
+	events, err := s.slidingEvents(ctx, kept, roomID, userID)
+	return events, more, err
 }
 
 // slidingReadAhead is how far past the limit the window reads so that a gap of already-seen
@@ -347,6 +366,7 @@ func (s *Service) slidingState(ctx context.Context, roomID string, config slidin
 
 	out := make([]any, 0, len(rows))
 	sent := make([]string, 0, len(rows))
+	seen := make(map[string]bool, len(rows))
 	for _, row := range rows {
 		keep := false
 		if row.Type == matrix.TypeMember {
@@ -365,7 +385,12 @@ func (s *Service) slidingState(ctx context.Context, roomID string, config slidin
 			}
 			continue
 		}
-		if !initial && row.StreamPos <= from {
+		if !initial && row.StreamPos <= from && slidingWasSent(known, key) {
+			// State the connection has already been shown and that has not moved stays out of the
+			// response. State it has never been shown goes in even when it is old: MSC4186 fills a
+			// widened `required_state` with whatever the client "has not previously seen", so a
+			// subscription that newly asks for `m.room.topic` owes it the topic that has been in the
+			// room since the room began - which is the whole of what a first look at a room needs.
 			continue
 		}
 		event, err := s.slidingStateEvent(row)
@@ -374,6 +399,21 @@ func (s *Service) slidingState(ctx context.Context, roomID string, config slidin
 		}
 		out = append(out, event)
 		sent = append(sent, key)
+		seen[key] = true
+	}
+
+	// What the connection holds is cumulative while the room still says it. A key shown in an
+	// earlier round is not repeated, and forgetting it here would make the next round ask the same
+	// question and send it a second time.
+	if !initial && known != nil {
+		for _, key := range strings.Split(known.State, "\n") {
+			if key == "" || seen[key] {
+				continue
+			}
+			if _, still := byKey[key]; still {
+				sent = append(sent, key)
+			}
+		}
 	}
 
 	// State that has gone away is named by a stub. Only state the connection was actually
@@ -470,8 +510,9 @@ func (s *Service) slidingRedactions(roomID string, from uint64) (map[string]bool
 	return out, nil
 }
 
-// slidingWasSent reports whether a connection was previously shown a piece of state, which is
-// what decides whether naming its disappearance tells the client anything.
+// slidingWasSent reports whether a connection has been shown a piece of state and still holds it,
+// which is what decides both whether to send it again and whether naming its disappearance tells
+// the client anything.
 func slidingWasSent(known *persist.SlidingSyncRoom, key string) bool {
 	if known == nil || known.State == "" {
 		return false

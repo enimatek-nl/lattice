@@ -8,7 +8,7 @@ lives in [`internal/coverage/SPECS.md`](../internal/coverage/SPECS.md) and the t
 regenerated with `go run ./cmd/endpoints -out ENDPOINTS.md`:
 **180 of 234** indexed endpoints implemented, **44** routes the index does not name.
 
-Two gates. This repository's own suites - **185** client-API tests (`tests/compat`), **90**
+Two gates. This repository's own suites - **187** client-API tests (`tests/compat`), **90**
 two-server tests (`tests/federation`), **80** offline unit tests (`tests/unit`), counted with
 `go test ./tests/<pkg> -list '.*'` on 2026-11-24. And Complement's
 `tests` package (91 top-level tests): the last complete run, 2026-11-04, is

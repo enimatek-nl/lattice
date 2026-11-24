@@ -965,6 +965,41 @@ Go runtime moved to the startup line, which names version and runtime, because t
 the one that ends up pasted in a bug report. The compat test asserts the field against the constant,
 which ties the three places the number lives — constant, tag, wire — into a single claim.
 
+## Findings of 2026-11-24 — `limited` measured the room, and widened state was filtered out again
+
+Two sliding sync faults from the same reporter, both in the delta machinery, both invisible in the
+tests written before them because each needed a room with history in it.
+
+**`limited` said true for every room deeper than its window.** The field was
+`total > len(window) || (!initial && total > known.TimelineCount+countAfter(...))`, so the room's
+size entered the judgement on every later response: one new message in a room with six events came
+back `limited: true`, and a client that believes the field drops its timeline and goes paging - on
+every message, forever. MSC4186 words it as "more events **since the previous sync** than were
+included in the `timeline` field, or that the client should paginate to fetch more events", so: on
+an update only the events that arrived and did not fit count (`slidingWindow` reports that beside
+the window now), and on a first sight of a room the history behind the window is exactly what the
+client is being told to go and fetch, so `total > len(window)` stays there. Measured: initial
+`limited: true` in a room deeper than the window (unchanged, and right), `limited` absent after one
+new message (it was `true`), `limited: true` again for five messages into a window of three.
+
+**A subscription asking for state the connection had never seen got none.** The state delta skipped
+every row older than the connection's position, which is correct for state the client holds and
+wrong for state it only asked for this round: a room's `m.room.name`, `m.room.create` and
+`m.room.topic` are older than almost any connection, so widening `required_state` - the normal way
+a client opens a room it has been showing in a list - answered with nothing. MSC4186 lets the server
+skip state the client "has previously seen", and this client had seen none of it.
+
+The fix exposed a second bug on the way. The connection's record of shown state was **replaced** by
+each response's sent set, so `slidingWasSent` really meant "shown in the last response". Sending old
+state on that record would then repeat it every round, since the next round forgets the round before.
+The record is cumulative now: what was sent, plus what was sent earlier and the room still stands
+behind; keys whose state disappeared are dropped, which is what the stub half reads.
+
+Worth keeping beside each other, because the two halves of `limited` pull opposite ways and only the
+MSC settles them: it is deliberately `true` on a first sight of a deep room (the client must page),
+while on an update it is deliberately `false` unless something was left out (the client must not). A
+server that gets either half wrong is wrong in a way that costs a client a round trip per message.
+
 ## Findings of 2026-11-24 — an extension scoped to the rooms already reported reports nothing
 
 Typing, receipts and room account data were unreachable in sliding sync, and the long poll waited

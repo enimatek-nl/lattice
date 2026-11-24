@@ -2,6 +2,7 @@ package compat
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"sort"
 	"strings"
@@ -1919,4 +1920,134 @@ func TestSlidingSyncEphemeralSectionsWakeTheLongPoll(t *testing.T) {
 	if tagged := accountData["rooms"]; !accountsHold(tagged.(map[string]any)[roomID], "m.tag") {
 		t.Errorf("the room tag did not arrive as room account data: %v", tagged)
 	}
+}
+
+// TestSlidingSyncLimitedMeansMissedEvents keeps "limited" a statement about what the client is
+// missing. It used to be computed from the room's size as well, so any room with more history than
+// the window said "limited" forever - and a client that believes the field throws its timeline away
+// and goes paging every time it is told there is news. MSC4186 asks about the events "since the
+// previous sync" that did not fit, plus the first sight of a room, where history behind the window
+// is exactly what the client is being told to page for.
+func TestSlidingSyncLimitedMeansMissedEvents(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	roomID := server.CreateRoom(alice, map[string]any{"preset": "private_chat", "name": "deep room"})
+	for i := 0; i < 4; i++ {
+		server.Send(alice, roomID, fmt.Sprintf("h%d", i), "history")
+	}
+	lists := map[string]any{"all": map[string]slidingList{"all": {"range": []int{0, 9}, "timeline_limit": 3}}}
+	request := func(pos string, extra map[string]any) map[string]any {
+		body := map[string]any{"conn_id": "deep", "lists": lists["all"]}
+		if pos != "" {
+			body["pos"] = pos
+		}
+		for k, v := range extra {
+			body[k] = v
+		}
+		return body
+	}
+
+	first := server.MustDo("POST", "/_matrix/client/v4/sync", alice.Token, request("", nil), 200)
+	room := slidingRoomOf(t, first.Body, roomID)
+	if room["limited"] != true {
+		t.Errorf("a room deeper than its window should be offered as limited, got %v", room["limited"])
+	}
+	if events, _ := room["timeline"].([]any); len(events) != 3 {
+		t.Fatalf("the window is %d events, want the newest 3", len(events))
+	}
+	pos, _ := first.Body["pos"].(string)
+
+	// One message, delivered. Nothing was left out, so nothing is limited.
+	server.Send(alice, roomID, "new", "the one new message")
+	update := server.MustDo("POST", "/_matrix/client/v4/sync", alice.Token,
+		request(pos, map[string]any{"timeout": 0}), 200)
+	room = slidingRoomOf(t, update.Body, roomID)
+	if _, ok := room["limited"]; ok {
+		t.Errorf("one new message, sent in full, still says limited: %v", room["limited"])
+	}
+	if events, _ := room["timeline"].([]any); len(events) != 1 {
+		t.Errorf("the update carries %d events, want the one new message", len(events))
+	}
+	pos, _ = update.Body["pos"].(string)
+
+	// More news than the window carries is the case the field exists for.
+	for i := 0; i < 5; i++ {
+		server.Send(alice, roomID, fmt.Sprintf("f%d", i), "flood")
+	}
+	flood := server.MustDo("POST", "/_matrix/client/v4/sync", alice.Token,
+		request(pos, map[string]any{"timeout": 0}), 200)
+	room = slidingRoomOf(t, flood.Body, roomID)
+	if room["limited"] != true {
+		t.Errorf("five messages into a window of three must be called limited, got %v", room["limited"])
+	}
+	if events, _ := room["timeline"].([]any); len(events) != 3 {
+		t.Errorf("the flooded window carries %d events, want three", len(events))
+	}
+}
+
+// TestSlidingSyncSubscriptionSendsTheStateItJustStartedWants is the other half of a first look at a
+// room: a subscription that asks for state the connection has never been shown must actually get it.
+// The state delta skipped everything older than the connection's position, which is right for state
+// the client holds and wrong for state it was only this round asked for - the room's name, topic and
+// create event are typically older than the connection itself. MSC4186 sends the widened
+// `required_state` "if the client has previously seen that state" it may leave it out, and this
+// client has seen none of it.
+func TestSlidingSyncSubscriptionSendsTheStateItJustStartedWants(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	roomID := server.CreateRoom(alice, map[string]any{"preset": "private_chat", "name": "named room"})
+	server.MustDo("PUT", "/_matrix/client/v3/rooms/"+roomID+"/state/m.room.topic", alice.Token,
+		map[string]any{"topic": "what the room is about"}, 200)
+
+	narrow := map[string]any{
+		"conn_id": "widening",
+		"lists": map[string]slidingList{
+			"all": {"range": []int{0, 9}, "timeline_limit": 1,
+				"required_state": map[string]any{"include": []any{
+					map[string]string{"type": "m.room.name", "state_key": ""}}}},
+		},
+	}
+	first := server.MustDo("POST", "/_matrix/client/v4/sync", alice.Token, narrow, 200)
+	room := slidingRoomOf(t, first.Body, roomID)
+	if got := sortedKeys(slidingStateTypes(t, room)); len(got) != 1 || got[0] != "m.room.name" {
+		t.Fatalf("the list asked for the name alone, got %v", got)
+	}
+	pos, _ := first.Body["pos"].(string)
+
+	// The same room, now also subscribed to under a wider config. Name is known, topic and create
+	// are not, and both predate the connection.
+	narrow["pos"] = pos
+	narrow["room_subscriptions"] = map[string]any{
+		roomID: map[string]any{"timeline_limit": 1, "required_state": map[string]any{
+			"include": []any{map[string]string{"type": "m.room.name", "state_key": ""},
+				map[string]string{"type": "m.room.topic", "state_key": ""},
+				map[string]string{"type": "m.room.create", "state_key": ""}}}},
+	}
+	widened := server.MustDo("POST", "/_matrix/client/v4/sync", alice.Token, narrow, 200)
+	room = slidingRoomOf(t, widened.Body, roomID)
+	got := sortedKeys(slidingStateTypes(t, room))
+	if strings.Join(got, ",") != "m.room.create,m.room.topic" {
+		t.Errorf("the widened config sent %v, want the two types the connection has never seen", got)
+	}
+	pos, _ = widened.Body["pos"].(string)
+
+	// Nothing moved, so nothing is repeated: the record of what the connection holds has to survive
+	// the round that added nothing to it, or the next round sends the same state again.
+	narrow["pos"] = pos
+	quiet := server.MustDo("POST", "/_matrix/client/v4/sync", alice.Token, narrow, 200)
+	rooms, _ := quiet.Body["rooms"].(map[string]any)
+	if room, _ := rooms[roomID].(map[string]any); room != nil {
+		t.Errorf("a room with nothing new is still reported: %v", room["required_state"])
+	}
+}
+
+// slidingRoomOf picks one room out of a sliding sync response, failing the test when it is absent.
+func slidingRoomOf(t *testing.T, body map[string]any, roomID string) map[string]any {
+	t.Helper()
+	rooms, _ := body["rooms"].(map[string]any)
+	room, _ := rooms[roomID].(map[string]any)
+	if room == nil {
+		t.Fatalf("the response carries nothing for %s: %v", roomID, body)
+	}
+	return room
 }
