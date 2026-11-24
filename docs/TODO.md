@@ -271,19 +271,20 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
       what changed since the request's `pos`, so a client learns other members' markers but never its own read position
       on events outside the window: unread counters and cross-device read markers are the parts that quietly stay wrong.
       The same MSC also wants `M_UNKNOWN_POS` rather than a silent partial subset when a room has re-entered scope.
-- [ ] Check the `account_data` extension (MSC4537) the same way `to_device`, `typing` and `receipts` were checked: what
-      the section looks like per endpoint, whether its flags are earned, and whether the event shape it wants is
-      `{type, content}` as Lattice answers it. Not yet read against the accepted text.
+- [ ] MSC4548's two remaining rules, then its flag. Enabling the extension for the first time on a connection must
+      return **all** global account data (its changelog point 2 counts Synapse's "changed since `pos`" as the deviation),
+      and a room that enters scope for the first time owes all of *its* account data rather than the changes since
+      `pos`. Lattice does neither, so `org.matrix.msc4548.stable` is deliberately not advertised while the other four
+      extension flags are. The shape itself is right: `{type, content}` per entry, one entry per type, and
+      `m.push_rules` in the list since 2026-11-24.
+- [ ] Transfer push rules across a room upgrade (MSC2313). Upgrading a room must carry the `room`-kind rule of the old
+      room id over to the new one; `TestPushRuleRoomUpgrade` now reads the `m.push_rules` account data and fails on
+      exactly this, waiting for a rule naming the new room id. Measured 2026-11-24, log kept in
+      `.agent-work/pushacct/run2.log`.
 - [ ] Audit the answers for the nil-collection class once more, by construction rather than by report: `grep -n "omitempty"
       internal/matrix/*.go` next to the spec tables, plus every `map[string]any` an extension builds. Two of the three
       found so far (`state_key`, `device_unused_fallback_key_types`) came from clients, not from a reading of the code.
       A helper that fails a `Required` list/map field that arrived nil would catch the third in the existing tests.
-- [ ] `GET /versions` does not answer which Lattice it is: the response is `versions`, `unstable_features` and
-      `default_room_version`, `service.ServerVersion()` ("Lattice/0.2.5") has no caller, and the startup banner names no
-      version either — measured 2026-11-23, the day a release had to be confirmed live by its image id and a flag. Synapse
-      and Construct answer a `server_version` key beside the spec, and clients and proxies paste it into bug reports, so the
-      release-job guard that compares the tag with `LatticeVersion` protects a string nothing on the wire can contradict.
-      A compat test on the key set plus the constant, additive.
 - [ ] Message retention (`m.room.retention`), fuzz targets, a load harness.
 - [ ] Room-version upgrade that carries the state across (the reference passes it, we do not).
 

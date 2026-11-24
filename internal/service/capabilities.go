@@ -55,9 +55,20 @@ func (s *Service) unstableFeaturesCopy() map[string]bool {
 	return features
 }
 
-// ServerVersion identifies this implementation, as reported by /versions.
+// ServerVersion names this implementation the way clients and proxies quote it:
+// "Lattice/0.2.6", the shape Synapse has always answered with ("Synapse/1.123.0").
+//
+// It deliberately says nothing about the Go runtime. This string ends up in bug reports and in
+// the lines operators paste into a chat, and the runtime is a property of the build that the
+// startup log already carries - the two change on different days.
 func (s *Service) ServerVersion() string {
-	return "Lattice/" + LatticeVersion + " (" + runtime.Version() + ")"
+	return "Lattice/" + LatticeVersion
+}
+
+// BuildRuntime names the Go runtime and the platform the binary was built for, which is what a
+// startup line is for.
+func BuildRuntime() string {
+	return runtime.Version() + " " + runtime.GOOS + "/" + runtime.GOARCH
 }
 
 // SpecVersions lists the client-server specification revisions this server
@@ -70,7 +81,14 @@ var SpecVersions = []string{
 // Versions implements GET /_matrix/client/versions.
 func (s *Service) Versions() map[string]any {
 	return map[string]any{
-		"versions":          SpecVersions,
+		"versions": SpecVersions,
+		// Not in the schema, and every implementation answers it: Synapse, Construct,
+		// Dendrite. A client bug report and a proxy log line both start with this string, so
+		// leaving it out meant proving which release a container ran by its image id - twice,
+		// while releasing 0.2.5 and 0.2.6. It is also what makes the release job's rule real:
+		// that job refuses a tag whose number differs from LatticeVersion, a comparison the
+		// wire could never contradict without this field.
+		"server_version":    s.ServerVersion(),
 		"unstable_features": s.unstableFeaturesCopy(),
 		// A client creating a room without naming a version needs to know which one
 		// it is getting: room versions change event ids, and a client that guesses

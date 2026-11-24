@@ -161,6 +161,13 @@ func TestVersions(t *testing.T) {
 	if !ok {
 		t.Fatalf("unstable_features is missing: %s", resp.Raw)
 	}
+	// Which Lattice this is, answered by the server rather than guessed from an image id. No
+	// implementation leaves it out (Synapse, Construct and Dendrite all answer it) and every
+	// bug report and proxy log line quotes it, so the release job's rule - a tag whose number
+	// differs from LatticeVersion is refused - is a comparison the wire can now contradict.
+	if got := resp.String("server_version"); got != "Lattice/"+service.LatticeVersion {
+		t.Errorf("server_version is %q, want Lattice/%s", got, service.LatticeVersion)
+	}
 	// Simplified sliding sync is served on two paths, and both are advertised: MSC4186 names
 	// the first, and a client that discovers rather than guesses reads the second as "post to
 	// /v4/sync". Advertising only the first leaves such a client on the unstable path.

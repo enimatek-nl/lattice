@@ -131,6 +131,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("configuration: %v", err)
 	}
+	// One line, and it is the answer to the question every debugging session starts with.
+	// /versions carries the same number for anybody who can reach the port; this is for the
+	// machine that has the log and no client.
+	log.Printf("lattice %s, built with %s", service.LatticeVersion, service.BuildRuntime())
 	if len(takenFromEnv) > 0 {
 		// Worth one line: the difference between "my token stopped working on restart"
 		// and an answer is knowing whether LATTICE_JWT_SECRET ever arrived.

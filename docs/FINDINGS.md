@@ -958,6 +958,13 @@ week — presumes an answer that is not there. Synapse and Construct include a n
 `server_version`, and clients and proxies paste it into bug reports, so one more field would make
 the tag guard mean something over the wire. Queue item F.
 
+**Closed 2026-11-24.** `/versions` answers `server_version: "Lattice/<version>"` — the shape Synapse
+has always answered with, and the same string the release job compares against `LatticeVersion`, so
+that guard can now be contradicted over the wire instead of being a check nobody can complete. The
+Go runtime moved to the startup line, which names version and runtime, because the wire value is
+the one that ends up pasted in a bug report. The compat test asserts the field against the constant,
+which ties the three places the number lives — constant, tag, wire — into a single claim.
+
 ## Findings of 2026-11-24 — push rules were never account data
 
 The `/sync` answer had a `pushrules` field of its own, filled on the first sync only, and its own
