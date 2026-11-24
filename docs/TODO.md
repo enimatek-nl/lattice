@@ -265,6 +265,11 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
 
 ### F. Operations and quality
 
+- [ ] MSC4508 remembers scope, Lattice does not. A room that (re-)enters a list's range owes the client its **current**
+      typing state, and a room that drops out owes nothing further - which needs the connection to remember what it has
+      put in scope. Lattice answers changes since `pos` for whatever is in the window now, so a typing state that was
+      already true when a room slid into range can go unsent until the next change. Same hole for re-enabled extensions.
+      The scope itself is right since 2026-11-24; this is the bookkeeping on top of it.
 - [ ] MSC4551's "Which receipts" rules. A room entering scope owes the client its *initial* receipts — the receipts on
       the events this response's timeline carries, plus the requesting user's own receipts of every type and thread,
       always — and the timeline receipts again whenever the room's entry says `expanded_timeline`. Lattice answers only

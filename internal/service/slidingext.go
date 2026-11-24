@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"sort"
 	"strconv"
 
 	"github.com/enimatek-nl/lattice/internal/auth"
@@ -51,7 +52,7 @@ func (e slidingExtensionRequest) wants() bool {
 // whether to upload more keys from them - must not be read as "something happened", or a
 // connection with the key section switched on would never wait.
 func (s *Service) slidingExtensions(ctx context.Context, userID, deviceID string,
-	conn *slidingConn, req *matrix.SlidingSyncRequest, response *matrix.SlidingSyncResponse,
+	conn *slidingConn, req *matrix.SlidingSyncRequest, plans map[string]*slidingRoomPlan,
 	initial, legacyEndpoint bool) (map[string]any, bool, error) {
 	if len(req.Extensions) == 0 {
 		return nil, false, nil
@@ -62,7 +63,7 @@ func (s *Service) slidingExtensions(ctx context.Context, userID, deviceID string
 		// report changes since a point report everything.
 		from = 0
 	}
-	rooms := slidingExtensionRooms(req, response)
+	scope := slidingExtensionScope(plans)
 	out := map[string]any{}
 	var moved bool
 	for name, raw := range req.Extensions {
@@ -95,7 +96,7 @@ func (s *Service) slidingExtensions(ctx context.Context, userID, deviceID string
 			}
 			out[name] = section
 		case slidingExtAccountData:
-			section, err := s.slidingAccountDataExtension(userID, rooms, from)
+			section, err := s.slidingAccountDataExtension(userID, scope.rooms(config, false), from)
 			if err != nil {
 				return nil, false, err
 			}
@@ -109,7 +110,7 @@ func (s *Service) slidingExtensions(ctx context.Context, userID, deviceID string
 			}
 			out[name] = section
 		case slidingExtReceipts:
-			section, err := s.slidingReceiptsExtension(rooms, from, legacyEndpoint)
+			section, err := s.slidingReceiptsExtension(scope.rooms(config, true), from, legacyEndpoint)
 			if err != nil {
 				return nil, false, err
 			}
@@ -118,7 +119,7 @@ func (s *Service) slidingExtensions(ctx context.Context, userID, deviceID string
 			}
 			out[name] = section
 		case slidingExtTyping:
-			section, err := s.slidingTypingExtension(userID, rooms, from, legacyEndpoint)
+			section, err := s.slidingTypingExtension(userID, scope.rooms(config, true), from, legacyEndpoint)
 			if err != nil {
 				return nil, false, err
 			}
@@ -138,36 +139,47 @@ func (s *Service) slidingExtensions(ctx context.Context, userID, deviceID string
 	return out, moved, nil
 }
 
-// slidingExtensionRooms decides which rooms the ephemeral sections cover. They follow the
-// rooms in this response: a section does not report a room the client has not been given, and
-// the reserved lists and rooms keys narrow that further.
-func slidingExtensionRooms(req *matrix.SlidingSyncRequest, response *matrix.SlidingSyncResponse) []string {
-	if response == nil || len(response.Rooms) == 0 {
-		return nil
+// slidingScope is the set of rooms the ephemeral sections are allowed to report: the rooms in
+// the connection's window, plus its subscriptions. MSC4508 says so in as many words - "a room
+// being in scope does _not_ require the room to have an entry in the `rooms` section of the
+// _response_" - which is the difference between a typing indicator that arrives and one that
+// never can: a room that has nothing else to say has no entry in the response, and a section that
+// only covers reported rooms then has nothing to report either, forever.
+type slidingScope struct {
+	lists  map[string][]string // room id -> the lists whose range carries it
+	joined map[string]bool
+	order  []string // sorted, so two responses list rooms alike
+}
+
+func slidingExtensionScope(plans map[string]*slidingRoomPlan) slidingScope {
+	scope := slidingScope{lists: map[string][]string{}, joined: map[string]bool{}}
+	for roomID, plan := range plans {
+		scope.lists[roomID] = append([]string{}, plan.lists...)
+		scope.joined[roomID] = plan.entry.membership == "join"
+		scope.order = append(scope.order, roomID)
 	}
-	var restricted *slidingExtensionRequest
-	for name, raw := range req.Extensions {
-		if name != slidingExtAccountData && name != slidingExtReceipts && name != slidingExtTyping {
+	sort.Strings(scope.order)
+	return scope
+}
+
+// rooms narrows the scope with one extension's own `lists` and `rooms` keys. Neither key present
+// means every room in scope, and a key naming nothing means none (MSC4508, which also retired the
+// "*" every pre-MSC implementation accepted - that star is kept, because it is what the clients
+// written against them still send).
+//
+// wantJoined keeps the rooms the user is currently in. Typing notifications and receipts are
+// ephemeral events of a joined room, as in /v3/sync, and MSC4186 deliberately keeps rooms the user
+// left or was kicked from in the lists - reporting those would leak read activity from a room the
+// client can no longer read. Room account data is the exception on purpose: MSC4548 asks for it
+// whatever the membership, because a user can set it for an invite or a knock.
+func (scope slidingScope) rooms(config slidingExtensionRequest, wantJoined bool) []string {
+	restricted := len(config.Lists) > 0 || len(config.Rooms) > 0
+	var out []string
+	for _, roomID := range scope.order {
+		if wantJoined && !scope.joined[roomID] {
 			continue
 		}
-		var config slidingExtensionRequest
-		if len(raw) > 0 {
-			if err := json.Unmarshal(raw, &config); err != nil {
-				continue
-			}
-		}
-		if len(config.Lists) > 0 || len(config.Rooms) > 0 {
-			restricted = &config
-			break
-		}
-	}
-	out := make([]string, 0, len(response.Rooms))
-	for roomID, room := range response.Rooms {
-		if restricted == nil {
-			out = append(out, roomID)
-			continue
-		}
-		if slidingWantsRoom(restricted.Rooms, roomID) || slidingWantsList(restricted.Lists, room.Lists) {
+		if !restricted || slidingWantsRoom(config.Rooms, roomID) || slidingWantsList(config.Lists, scope.lists[roomID]) {
 			out = append(out, roomID)
 		}
 	}

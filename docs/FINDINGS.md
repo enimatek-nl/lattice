@@ -965,6 +965,42 @@ Go runtime moved to the startup line, which names version and runtime, because t
 the one that ends up pasted in a bug report. The compat test asserts the field against the constant,
 which ties the three places the number lives — constant, tag, wire — into a single claim.
 
+## Findings of 2026-11-24 — an extension scoped to the rooms already reported reports nothing
+
+Typing, receipts and room account data were unreachable in sliding sync, and the long poll waited
+out its timeout while agreeing that nothing had happened. The scope of those three sections was
+derived from the response: `slidingExtensionRooms` walked `response.Rooms`, and a room that has
+nothing else to say has no entry in a response. So the sections were asked about an empty set,
+answered empty, reported "no movement", and the poll slept. Measured: 5.003 s of waiting for a
+typing notification that had been posted 5 ms earlier, and the same empty
+`{"typing":{},"receipts":{}}` on a request that did not wait at all.
+
+MSC4508 says the scope in so many words, and it is worth the sentence because it is the whole
+difference between a feature and a dead branch: "a room being in scope does _not_ require the room
+to have an entry in the `rooms` section of the _response_: a room within a list's range is in scope
+even if the room has no other updates to send". The scope is the connection's window and its
+subscriptions - which the server had already computed a dozen lines earlier as `plans`, and then
+threw away for this question.
+
+Two consequences the sections disagree about, both from the MSCs:
+
+* typing and receipts stay with the rooms the user is **joined** to, as ephemeral events have
+  always been, while MSC4186 deliberately keeps rooms the user left or was kicked from in the
+  lists - reporting them would leak read activity from a room the client can no longer read;
+* room account data answers whatever the membership is, because MSC4548 says a user can set it for
+  an invite or a knock.
+
+The `lists` and `rooms` keys are now read per extension as well. They used to be read once: the
+first extension that carried a restriction quietly narrowed the other two.
+
+**The shapes the report asked for are the old ones.** It cites MSC3961, MSC3960 and MSC3959, which
+the accepted extension MSCs superseded, and lists the Synapse shapes (`m.typing` wrapped, an
+`m.receipt` event per room). On `/v4/sync` the accepted text wants the bare values, which is what
+this server answers and what that same reporter asked for two days earlier; the unstable path still
+answers the wrapped form. One extra key survives on purpose: the typing value carries
+`typing: true` beside `user_ids`, because that is the content of the `m.typing` event the section
+is derived from, and the MSC's table lists `user_ids` without forbidding a neighbour.
+
 ## Findings of 2026-11-24 — push rules were never account data
 
 The `/sync` answer had a `pushrules` field of its own, filled on the first sync only, and its own

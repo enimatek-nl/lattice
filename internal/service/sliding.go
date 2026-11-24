@@ -340,7 +340,7 @@ func (s *Service) buildSlidingSync(ctx context.Context, userID, deviceID string,
 		response.Rooms = nil
 	}
 
-	extensions, moved, err := s.slidingExtensions(ctx, userID, deviceID, conn, req, response, initial, legacyEndpoint)
+	extensions, moved, err := s.slidingExtensions(ctx, userID, deviceID, conn, req, plans, initial, legacyEndpoint)
 	if err != nil {
 		return nil, false, nil, err
 	}

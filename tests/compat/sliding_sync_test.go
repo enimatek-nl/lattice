@@ -1813,3 +1813,110 @@ func eventKeys(content map[string]json.RawMessage) []string {
 	}
 	return out
 }
+
+// TestSlidingSyncEphemeralSectionsWakeTheLongPoll is the fault that made typing, read markers and
+// room tags unreachable: the ephemeral sections covered only the rooms this response happened to
+// carry, and a room with nothing else to say has no entry in a response. Nothing to report, so
+// nothing ever could be - and the long poll, told there was nothing, waited out its timeout.
+//
+// MSC4508 says the scope differently in so many words: "a room being in scope does _not_ require
+// the room to have an entry in the `rooms` section of the _response_". The scope is the
+// connection's window and its subscriptions, and a change in it is an update to wake for.
+func TestSlidingSyncEphemeralSectionsWakeTheLongPoll(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	bob := server.Register("bob", "builders")
+	roomID := server.CreateRoom(alice, map[string]any{"preset": "private_chat"})
+	server.MustDo("POST", "/_matrix/client/v3/rooms/"+roomID+"/invite", alice.Token,
+		map[string]any{"user_id": bob.UserID}, 200)
+	server.MustDo("POST", "/_matrix/client/v3/join/"+url.PathEscape(roomID), bob.Token, nil, 200)
+	eventID := server.Send(alice, roomID, "one", "a message to read")
+
+	// The shape the reporter's client sends: a list, the three ephemeral extensions, and the
+	// star that every pre-MSC implementation accepted for "every room".
+	request := func(connID string, pos string, timeout int) map[string]any {
+		body := map[string]any{
+			"conn_id": connID,
+			"lists": map[string]slidingList{
+				"all_rooms": {"range": []int{0, 9}, "timeline_limit": 1},
+			},
+			"extensions": map[string]any{
+				"typing":       map[string]any{"enabled": true, "lists": []string{"all_rooms"}, "rooms": []string{"*"}},
+				"receipts":     map[string]any{"enabled": true, "lists": []string{"all_rooms"}, "rooms": []string{"*"}},
+				"account_data": map[string]any{"enabled": true, "lists": []string{"all_rooms"}, "rooms": []string{"*"}},
+			},
+		}
+		if pos != "" {
+			body["pos"] = pos
+		}
+		if timeout > 0 {
+			body["timeout"] = timeout
+		}
+		return body
+	}
+
+	initial := server.MustDo("POST", "/_matrix/client/v4/sync", bob.Token, request("room-list", "", 0), 200)
+	pos, _ := initial.Body["pos"].(string)
+	if pos == "" {
+		t.Fatalf("the connection began without a position: %s", initial.Raw)
+	}
+
+	// Two changes in a room the next response has no reason to mention.
+	server.MustDo("PUT", "/_matrix/client/v3/rooms/"+roomID+"/typing/"+alice.UserID, alice.Token,
+		map[string]any{"typing": true, "timeout": 30000}, 200)
+	server.MustDo("POST", "/_matrix/client/v3/rooms/"+roomID+"/receipt/m.read/"+url.PathEscape(eventID),
+		alice.Token, map[string]any{}, 200)
+
+	began := time.Now()
+	woken := server.MustDo("POST", "/_matrix/client/v4/sync", bob.Token, request("room-list", pos, 5000), 200)
+	elapsed := time.Since(began)
+	if elapsed > 2*time.Second {
+		t.Errorf("the long poll waited %s for a typing notification and a receipt, MSC4508 wants it back at once",
+			elapsed.Round(time.Millisecond))
+	}
+	extensions, _ := woken.Body["extensions"].(map[string]any)
+	typing, _ := extensions["typing"].(map[string]any)
+	rooms, _ := typing["rooms"].(map[string]any)
+	entry, _ := rooms[roomID].(map[string]any)
+	if entry == nil {
+		t.Fatalf("the typing section carries nothing for %s: %s", roomID, woken.Raw)
+	}
+	if users, _ := entry["user_ids"].([]any); len(users) != 1 || users[0] != alice.UserID {
+		t.Errorf("the typing section says %v, want %s typing", entry["user_ids"], alice.UserID)
+	}
+	receipts, _ := extensions["receipts"].(map[string]any)
+	byRoom, _ := receipts["rooms"].(map[string]any)
+	room, _ := byRoom[roomID].(map[string]any)
+	if room == nil {
+		t.Fatalf("the receipts section carries nothing for %s: %s", roomID, woken.Raw)
+	}
+	if _, ok := room[eventID]; !ok {
+		t.Errorf("the receipts section misses the receipt on %s: %v", eventID, room)
+	}
+
+	// Room account data is per user, so the one who set the tag has to be the one asking.
+	own := map[string]any{
+		"conn_id":    "alice-list",
+		"lists":      map[string]slidingList{"all_rooms": {"range": []int{0, 9}, "timeline_limit": 1}},
+		"extensions": map[string]any{"account_data": map[string]any{"enabled": true}},
+	}
+	firstAlice := server.MustDo("POST", "/_matrix/client/v4/sync", alice.Token, own, 200)
+	alicePos, _ := firstAlice.Body["pos"].(string)
+	server.MustDo("PUT", "/_matrix/client/v3/user/"+url.PathEscape(alice.UserID)+"/rooms/"+roomID+"/tags/m.favourite",
+		alice.Token, map[string]any{"order": 0.5}, 200)
+	own["pos"] = alicePos
+	own["timeout"] = 5000
+	began = time.Now()
+	aliceWoken := server.MustDo("POST", "/_matrix/client/v4/sync", alice.Token, own, 200)
+	if elapsed := time.Since(began); elapsed > 2*time.Second {
+		t.Errorf("a room tag waited %s for a client that was waiting for it", elapsed.Round(time.Millisecond))
+	}
+	aliceExtensions, _ := aliceWoken.Body["extensions"].(map[string]any)
+	accountData, _ := aliceExtensions["account_data"].(map[string]any)
+	if accountData == nil {
+		t.Fatalf("the account_data section disappeared: %s", aliceWoken.Raw)
+	}
+	if tagged := accountData["rooms"]; !accountsHold(tagged.(map[string]any)[roomID], "m.tag") {
+		t.Errorf("the room tag did not arrive as room account data: %v", tagged)
+	}
+}
