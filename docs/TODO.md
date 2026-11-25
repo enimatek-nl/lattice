@@ -280,6 +280,16 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
       changes and, a round later, one. `TestSyncAnswersFromAStoredPosition`; lab-confirmed the same day: the
       reporter's repro lost 0 of 36 accounts against 2 of 12 on the previous release, and their core suite went
       from 53 to 55 of 78 with the two load-dependent failures passing.
+- [ ] `POST /account/deactivate` answers with the body the specification has (ready to build, 2026-11-25).
+      It does the work and answers `{"3pids_disconnected_json": "[]", "id_server": null, "unbind_credentials":
+      {…}}` — three Synapse-legacy keys the specification does not name — and leaves out the **required**
+      `id_server_unbind_result`, so the Rust SDK cannot read the answer and a client reports a failure for an
+      account that is deleted. Value: `success`, because `account_deactivation.yaml` says it "must be `success`
+      if the homeserver has no identifiers to unbind for the user" and Lattice stores no identifiers at all
+      (`no-support` is for an identifier that failed to unbind). Same pass: drop the three legacy keys, and make
+      `POST /account/password` answer `{}` as its response schema says instead of `id_server_unbind_result`.
+      Measured by the reporter 2026-11-25 on an account without 3PIDs: Synapse answers `success`, asaroton
+      `no-support` — so asaroton deviates here too, and both parse in ruma.
 - [x] `POST /account/password` answers a request without credentials with the interactive auth
       challenge (2026-11-25). It answered `403 M_FORBIDDEN "the old password was incorrect"`, and a
       client that follows the specification sends that bare request first and only asks the person
