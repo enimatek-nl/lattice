@@ -1470,3 +1470,33 @@ uitwisseling van de cross-signing-upload, zodat beide dezelfde body geven: `401`
   veld, een fout wachtwoord, het goede wachtwoord door de `session`, inloggen met het
   nieuwe, afwijzen van het oude, en de eigen device die binnen `logout_devices: false`
   blijft werken. Zonder de fix valt hij op het kale verzoek.
+
+## An answer carries what its schema names (2026-11-25, v0.2.18)
+
+Reported by the author of smaltino: `POST /_matrix/client/v3/account/deactivate` did
+the work — the account was gone — and answered
+`{"3pids_disconnected_json": "[]", "id_server": null, "unbind_credentials": {…}}`.
+The matrix-rust-sdk deserialises that into a response type it cannot fill, so the
+client reported a failed deletion for a deletion that had succeeded.
+
+`account_deactivation.yaml` names one required field, `id_server_unbind_result`, and
+settles its value in the same breath: `no-support` means "one or more identifiers
+failed to unbind", and it "must be `success` if the homeserver has no identifiers to
+unbind for the user". Lattice stores no identifiers bound to an identity server, so
+there is never one that failed: the honest answer and the required answer are the same
+word, `success`. Measured by the reporter on an account without 3PIDs: Synapse answers
+`success`, asaroton `no-support` — asaroton deviates here as well, and ruma parses both.
+
+The rule that closes this: **an answer carries what its schema names, no more and no
+less.** Extra fields cost nothing to a strict client and nothing to a lenient one,
+which is exactly why they survive; a missing required field ends the exchange. So the
+three keys that came from copying a Synapse answer — whose identity-server plumbing this
+server does not have — are gone.
+
+- Found at the same time: `/account/password`, `/logout` and `/logout/all` answered
+  `id_server_unbind_result: "no-support"`, while all three schemas name no fields and
+  the worked example is `{}`. Those answers are empty objects now. `/logout` is where
+  that key legitimately comes from: an older Synapse answer for logout carried it.
+- `TestAccountAnswersCarryWhatTheSchemaNames` checks the three bodies, four assertions
+  in all; on the old answers all four fail. No test had looked at any of these bodies
+  before, which is how an answer can be wrong for this long.
