@@ -606,3 +606,40 @@ func assertPasswordChallenge(t *testing.T, r Response) {
 		t.Errorf("the challenge carries no session: %s", r.Raw)
 	}
 }
+
+// TestAccountAnswersCarryWhatTheSchemaNames checks the bodies of the three account
+// answers whose schema names fields clients have to read. The Rust SDK refuses an answer
+// it cannot parse into its response type, so a missing required field is a failure for a
+// request that already did its work.
+func TestAccountAnswersCarryWhatTheSchemaNames(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+
+	// Changing a password answers an object with no fields in it.
+	if resp := server.MustDo(http.MethodPost, "/_matrix/client/v3/account/password", alice.Token,
+		map[string]any{"new_password": "hatter", "old_password": "wonderland", "logout_devices": false},
+		http.StatusOK); len(resp.Body) != 0 {
+		t.Errorf("a password change answers %s, want an empty object", resp.Raw)
+	}
+
+	// Logging out is the same shape.
+	if resp := server.MustDo(http.MethodPost, "/_matrix/client/v3/logout", alice.Token, nil,
+		http.StatusOK); len(resp.Body) != 0 {
+		t.Errorf("logout answers %s, want an empty object", resp.Raw)
+	}
+
+	// Deactivation answers exactly one field, and its value is a success: this server
+	// stores no identifiers bound to an identity server, so there is never one that
+	// failed to unbind - "no-support" would claim an identifier that does not exist.
+	bob := server.Register("bob", "rubberduck")
+	resp := server.MustDo(http.MethodPost, "/_matrix/client/v3/account/deactivate", bob.Token,
+		map[string]any{"auth": map[string]any{
+			"type": "m.login.password", "user": "bob", "password": "rubberduck",
+		}}, http.StatusOK)
+	if got := resp.String("id_server_unbind_result"); got != "success" {
+		t.Errorf("deactivation answers id_server_unbind_result %q, want \"success\": %s", got, resp.Raw)
+	}
+	if len(resp.Body) != 1 {
+		t.Errorf("deactivation answers %s, want only id_server_unbind_result", resp.Raw)
+	}
+}

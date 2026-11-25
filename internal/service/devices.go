@@ -209,11 +209,12 @@ func (s *Service) DeactivateAccount(ctx context.Context, userID string, auth mat
 	if err := s.DeactivateLocalAccount(ctx, userID); err != nil {
 		return nil, err
 	}
-	return matrix.Object{
-		"id_server":               nil,
-		"3pids_disconnected_json": "[]",
-		"unbind_credentials":      matrix.Object{"id_server": nil, "id_access_token": nil},
-	}, nil
+	// One field answers this endpoint. `no-support` is for an identifier that could not be
+	// unbound, and the schema says the answer "must be `success` if the homeserver has no
+	// identifiers to unbind for the user" - Lattice stores no identifiers bound to an
+	// identity server at all, so there is never one to fail. The identity-server fields a
+	// Synapse answer carries alongside are its own history, not the specification's.
+	return matrix.Object{"id_server_unbind_result": "success"}, nil
 }
 
 // DeactivateLocalAccount is deactivation on its own, without the User-Interactive Auth

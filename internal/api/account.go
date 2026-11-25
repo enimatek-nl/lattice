@@ -262,14 +262,16 @@ func (a *App) handleRefresh(w http.ResponseWriter, r *http.Request) {
 //	@Summary	Invalidate the current session
 //	@Tags		account
 //	@Produce	json
-//	@Success	200	{object}	map[string]string
+//	@Success	200	{object}	matrix.Object
 //	@Router		/_matrix/client/v3/logout [post]
 func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if err := a.svc.Logout(r.Context(), auth.GetUserID(r), auth.GetDeviceID(r), auth.GetToken(r)); err != nil {
 		a.writeError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"id_server_unbind_result": "no-support"})
+	// The schema of this answer names no fields, so none are written: a client that
+	// reads a body sees an empty object, which is what the specification shows.
+	writeJSON(w, http.StatusOK, matrix.Object{})
 }
 
 // handleLogoutAll implements POST /_matrix/client/v3/logout/all.
@@ -277,14 +279,16 @@ func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
 //	@Summary	Invalidate every session except the current one
 //	@Tags		account
 //	@Produce	json
-//	@Success	200	{object}	map[string]string
+//	@Success	200	{object}	matrix.Object
 //	@Router		/_matrix/client/v3/logout/all [post]
 func (a *App) handleLogoutAll(w http.ResponseWriter, r *http.Request) {
 	if err := a.svc.LogoutAll(r.Context(), auth.GetUserID(r)); err != nil {
 		a.writeError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"id_server_unbind_result": "no-support"})
+	// The schema of this answer names no fields, so none are written: a client that
+	// reads a body sees an empty object, which is what the specification shows.
+	writeJSON(w, http.StatusOK, matrix.Object{})
 }
 
 // handleWhoami implements GET /_matrix/client/v3/account/whoami.
@@ -387,7 +391,7 @@ func (a *App) handleThreePIDRequestToken(w http.ResponseWriter, r *http.Request)
 //	@Tags		account
 //	@Accept		json
 //	@Produce	json
-//	@Success	200	{object}	map[string]string
+//	@Success	200	{object}	matrix.Object
 //	@Router		/_matrix/client/v3/account/password [post]
 func (a *App) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	var body struct {
@@ -405,7 +409,9 @@ func (a *App) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"id_server_unbind_result": "no-support"})
+	// The schema of this answer names no fields, so none are written: a client that
+	// reads a body sees an empty object, which is what the specification shows.
+	writeJSON(w, http.StatusOK, matrix.Object{})
 }
 
 // handleDeactivate implements POST /_matrix/client/v3/account/deactivate.
