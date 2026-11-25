@@ -31,7 +31,7 @@ because it said nothing these steps do not.
 | Measure | Now |
 |---|---|
 | `make build vet` | clean (4 s, 2026-11-20); `make lint` reports the same **7 issues** (6 staticcheck: `QF1001`×3, `QF1006`×2, `S1011`; 1 `unused`: `internal/api/federation.go:1045 eventInBody`) — pre-existing quickfix-style findings, none from the 2026-11-18 work. Note for a session started from a service unit: `golangci-lint` lives in `~/go/bin`, which is not on that PATH |
-| this repository's own tests | **368** counted here — 197 client-API compatibility, 90 two-server federation, 81 offline unit (`go test ./tests/<pkg> -list '.*'`, all green on 2026-11-25: compat 92 s, federation 49 s). `internal/matrix` adds its own test functions, which this tally has never counted |
+| this repository's own tests | **369** counted here — 198 client-API compatibility, 90 two-server federation, 81 offline unit (`go test ./tests/<pkg> -list '.*'`, all green on 2026-11-25: compat 93 s, federation 50 s). `internal/matrix` adds its own test functions, which this tally has never counted |
 | Complement `tests/csapi` | **84 green of 106**, 2 skipped, in 340 s on v0.2.16 (2026-11-25; 333 s on v0.2.14). Two names less red than the 2026-11-20 tally: `TestPushSync` passes since the push rule set travels as `m.push_rules` account data, and `TestSearch` passes since `/search` speaks the specification's body and answer. The other 20 names are the same list, so the red list is stable rather than lucky. It could not be run to completion before 2026-11-18, see [COMPLEMENT.md](COMPLEMENT.md) |
 | Complement server-server (`tests`, not `tests/federation`) | **78 green of 91**, 13 red — re-measured 2026-11-20 for the first time since 2026-11-04, and the 13 are name for name the names recorded then, so the number was stale but honest. 338 s of own time; run beside the client-API suite it costs nothing extra, see `make complement-both` |
 | endpoints | **180 of 234** indexed routes implemented, 44 routes the index does not name (`make endpoints`, unchanged on 2026-11-20) |
@@ -280,6 +280,13 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
       changes and, a round later, one. `TestSyncAnswersFromAStoredPosition`; lab-confirmed the same day: the
       reporter's repro lost 0 of 36 accounts against 2 of 12 on the previous release, and their core suite went
       from 53 to 55 of 78 with the two load-dependent failures passing.
+- [x] `POST /account/password` answers a request without credentials with the interactive auth
+      challenge (2026-11-25). It answered `403 M_FORBIDDEN "the old password was incorrect"`, and a
+      client that follows the specification sends that bare request first and only asks the person
+      for the old password after a `401` — so the change stopped there, blamed the client's own
+      password and never asked for it. Every refusal of the endpoint is a challenge now
+      (`authorizePasswordStage`, cut out of the cross-signing exchange so both bodies match),
+      including a wrong `auth` and a wrong deprecated `old_password`. `TestChangePasswordInteractiveAuth`.
 - [x] `timestamp_to_event` takes the epoch as an answer to search from, not as bad input
       (2026-11-25). `ts <= 0` was the guard on both the client side and the MSC3030 federation
       side, so `ts=0` — the epoch, before everything in the room, and what a client asks for

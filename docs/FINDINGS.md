@@ -1431,3 +1431,42 @@ oproepers is afwezig inderdaad nul.
   zonder het als een eis van de specificatie te verkopen.
 - Twee proeven zijn ladend: met `ts <= 0` terug in het bestand vallen
   `TestTimestampToEvent` en `TestAPeerCanNameAnEventByTimestamp` elk op precies één zaak — de epoch.
+
+## Het eerste antwoord van een uitwisseling is een vraag (2026-11-25, v0.2.16)
+
+Gemeld door de schrijver van smaltino: `POST /_matrix/client/v3/account/password`
+zonder `auth` gaf `403 M_FORBIDDEN "the old password was incorrect"`. De client stuurt
+dat kale verzoek eerst — het is stap één van de User-Interactive Auth — en vraagt ná
+een `401` pas aan de persoon om het oude wachtwoord. Op een `403` stopt hij, met de
+melding dat zijn eigen wachtwoord onjuist zou zijn terwijl er nog niets was ingevuld.
+
+De specificatie is hier duidelijk: "This API endpoint uses the User-Interactive
+Authentication API". Het antwoord op een verzoek zonder bewijs is daarom de
+uitdaging: `401` met `flows`, `params` en een `session`.
+
+Het oude lichaam van `ChangePassword` kende drie takken. Met `old_password` werd dat
+wachtwoord vergeleken, mét `auth` ging het naar de uitwisseling (die wél `401`
+antwoordde), en zonder allebei kwam er `403` — precies de tak waar de cliënt begint.
+
+De regel die het sluit: **op een UIA-endpoint is een ontbrekend bewijs geen oordeel,
+maar een vraag.** Alle afwijzingen van dit endpoint zijn nu uitdagingen. Daarvoor is
+`authorizePasswordStage` in `internal/service/uia.go`, losgesneden uit de
+uitwisseling van de cross-signing-upload, zodat beide dezelfde body geven: `401`,
+`flows` met `m.login.password`, een leeg `params`-object, een `session` en `completed`.
+
+- Gemeten voor de fix: `403` zonder `auth`, `200` met `auth`. Na de fix: `401` met
+  een volledige uitdaging, enook een `401` als het ingevulde wachtwoord fout is.
+- Twee builders van een uitdaging in dit huis: `adminAuthChallenge` (apparaat
+  verwijderen, account deactiveren) zet `M_FORBIDDEN` in de `401`, `authChallenge`
+  (registratie, cross-signing, sinds nu wachtwoord) zet `M_UNAUTHORIZED`. Synapse
+  vult ook een errcode in; ruma leest alleen `flows`, `params` en `session`, dus geen
+  cliënt struikelt erover. Het verschil is bekend en blijft staan tot er een pas
+  komt die het voor allebei oplost.
+- `old_password` is deprecated maar wordt nog steeds gestuurd en telt dus mee. Een
+  verkeerde `old_password` is nu ook een uitdaging in plaats van een `403`.
+- De `session` is een kaart die de cliënt teruggeeft; de bewijzing wordt uit het
+  lichaam gecontroleerd en niet uit de zitting, net als op de andere eindpunten.
+- `TestChangePasswordInteractiveAuth` speelt de hele wisseling: de uitdaging veld voor
+  veld, een fout wachtwoord, het goede wachtwoord door de `session`, inloggen met het
+  nieuwe, afwijzen van het oude, en de eigen device die binnen `logout_devices: false`
+  blijft werken. Zonder de fix valt hij op het kale verzoek.
