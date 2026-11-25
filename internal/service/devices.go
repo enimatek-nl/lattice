@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -149,16 +151,28 @@ func (s *Service) ChangePassword(ctx context.Context, userID, deviceID, oldPassw
 	if err != nil {
 		return matrix.ErrUnknownToken(false)
 	}
-	if oldPassword != "" {
-		if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(oldPassword)); err != nil {
-			return matrix.ErrForbidden("the old password was incorrect")
-		}
-	} else if len(auth) > 0 {
-		if err := s.checkAuthFlow(ctx, auth, user.Localpart); err != nil {
+	// The endpoint uses the User-Interactive Auth API. A request that carries no
+	// credentials is the first step of that exchange and is answered with the challenge —
+	// 401, the flows, a session — because that is what a client sends before it knows the
+	// old password was even asked for.
+	switch {
+	case len(auth) > 0:
+		if err := s.authorizePasswordStage(userID, auth, " to change the password"); err != nil {
 			return err
 		}
-	} else {
-		return matrix.ErrForbidden("the old password was incorrect")
+	case oldPassword != "":
+		// old_password is the deprecated spelling of the same proof and clients still send
+		// it. A wrong one is answered the way the exchange answers a wrong credential: the
+		// challenge again, so a client that reads the 401 can ask the person again.
+		if err := s.verifyPassword(user, oldPassword); err != nil {
+			var merr *matrix.Error
+			if errors.As(err, &merr) && merr.HTTPStatus() == http.StatusForbidden {
+				return s.passwordChallenge("the old password is incorrect")
+			}
+			return err
+		}
+	default:
+		return s.passwordChallenge("additional authentication is required to change the password")
 	}
 	if newPassword == "" {
 		return matrix.NewError(matrix.ErrCodeWeakPassword, 400, "password is too short")

@@ -511,3 +511,98 @@ func TestDeviceListing(t *testing.T) {
 		t.Errorf("deleted device still readable: %d %s", resp.Status, resp.Raw)
 	}
 }
+
+// TestChangePasswordInteractiveAuth covers the User-Interactive Auth in front of
+// POST /v3/account/password. A first request without credentials asks what has to be
+// done, and is answered with the challenge: 401, the flow, the parameters and a session.
+// Answering it with 403 "the old password was incorrect" tells a client its password was
+// wrong when the client never offered one, which is where a client stops.
+func TestChangePasswordInteractiveAuth(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+
+	body := func(password, session string) map[string]any {
+		auth := map[string]any{
+			"type":       "m.login.password",
+			"identifier": map[string]any{"type": "m.id.user", "user": alice.UserID},
+			"password":   password,
+		}
+		if session != "" {
+			auth["session"] = session
+		}
+		return map[string]any{"new_password": "hatter", "logout_devices": false, "auth": auth}
+	}
+
+	challenge := server.Do(http.MethodPost, "/_matrix/client/v3/account/password", alice.Token,
+		map[string]any{"new_password": "hatter", "logout_devices": false})
+	if challenge.Status != http.StatusUnauthorized {
+		t.Fatalf("a password change that names no credentials: got %d %s, want 401 with the challenge",
+			challenge.Status, challenge.Raw)
+	}
+	assertPasswordChallenge(t, challenge)
+	session := challenge.String("session")
+
+	// Wrong credentials are the same step over again, not a verdict.
+	wrong := server.Do(http.MethodPost, "/_matrix/client/v3/account/password", alice.Token,
+		body("not-it", session))
+	if wrong.Status != http.StatusUnauthorized {
+		t.Fatalf("a password change with a wrong password: got %d %s, want 401", wrong.Status, wrong.Raw)
+	}
+	assertPasswordChallenge(t, wrong)
+
+	// The right password, through the session the server handed out.
+	server.MustDo(http.MethodPost, "/_matrix/client/v3/account/password", alice.Token,
+		body("wonderland", session), http.StatusOK)
+
+	// The new password signs in, the old one does not, and the device that made the
+	// change is still signed in because logout_devices said not to.
+	server.Login("alice", "hatter")
+	if resp := server.Do(http.MethodPost, "/_matrix/client/v3/login", "", map[string]any{
+		"type": "m.login.password", "user": "alice", "password": "wonderland",
+	}); resp.Status != http.StatusForbidden {
+		t.Errorf("the replaced password still signs in: %d %s", resp.Status, resp.Raw)
+	}
+	if resp := server.Do(http.MethodGet, "/_matrix/client/v3/account/whoami", alice.Token, nil); resp.Status != http.StatusOK {
+		t.Errorf("the device that changed the password was logged out: %d %s", resp.Status, resp.Raw)
+	}
+
+	// old_password is the deprecated spelling of the same proof. Clients still send it,
+	// so it still counts — and a wrong one is answered the way the exchange answers a
+	// wrong credential.
+	if resp := server.Do(http.MethodPost, "/_matrix/client/v3/account/password", alice.Token,
+		map[string]any{"new_password": "mahatma", "old_password": "nope"}); resp.Status != http.StatusUnauthorized {
+		t.Errorf("a wrong old_password: got %d %s, want 401", resp.Status, resp.Raw)
+	} else {
+		assertPasswordChallenge(t, resp)
+	}
+	server.MustDo(http.MethodPost, "/_matrix/client/v3/account/password", alice.Token,
+		map[string]any{"new_password": "mahatma", "old_password": "hatter", "logout_devices": false},
+		http.StatusOK)
+}
+
+// assertPasswordChallenge checks the body a client reads to keep the exchange going: a
+// flow offering m.login.password, a params object and a session to answer with.
+func assertPasswordChallenge(t *testing.T, r Response) {
+	t.Helper()
+
+	flows, _ := r.Body["flows"].([]any)
+	offered := false
+	for _, entry := range flows {
+		flow, _ := entry.(map[string]any)
+		stages, _ := flow["stages"].([]any)
+		for _, stage := range stages {
+			if stage == "m.login.password" {
+				offered = true
+			}
+		}
+	}
+	if !offered {
+		t.Errorf("the challenge offers no m.login.password flow: %s", r.Raw)
+	}
+	if _, ok := r.Body["params"].(map[string]any); !ok {
+		t.Errorf("the challenge carries no params object: %s", r.Raw)
+	}
+	if r.String("session") == "" {
+		t.Errorf("the challenge carries no session: %s", r.Raw)
+	}
+}

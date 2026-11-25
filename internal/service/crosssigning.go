@@ -5,7 +5,6 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
-	"net/http"
 
 	"github.com/enimatek-nl/lattice/internal/matrix"
 	"github.com/enimatek-nl/lattice/internal/persist"
@@ -358,36 +357,7 @@ func crossSigningAuthRequired(stored map[string]*persist.CrossSigningKey, keys .
 // decide what other clients trust, so an attacker who can reach a logged-in
 // session must not be able to replace them.
 func (s *Service) authorizeCrossSigning(userID string, auth matrix.Object) error {
-	flows := []AuthFlow{{Stages: []string{StagePassword}}}
-	session := s.beginAuthSession(flows, authString(auth, "session"))
-	defer func() {
-		if session.finished() {
-			s.dropAuthSession(session)
-		}
-	}()
-
-	if len(auth) == 0 {
-		return s.authChallenge(session, "additional authentication is required to upload cross-signing keys")
-	}
-	stage := authString(auth, "type")
-	switch stage {
-	case StagePassword:
-		if err := s.checkPasswordAuth(auth, userID); err != nil {
-			logAuthStage(userID, StagePassword, err)
-			var merr *matrix.Error
-			if errors.As(err, &merr) && merr.HTTPStatus() == http.StatusForbidden {
-				return s.authChallenge(session, "the user authentication passed in the request body is incorrect")
-			}
-			return err
-		}
-	case "":
-		return s.authChallenge(session, "the authentication request did not name a stage")
-	default:
-		return s.authChallenge(session, "session does not support authentication protocol %s", stage)
-	}
-	logAuthStage(userID, stage, nil)
-	session.complete(stage)
-	return nil
+	return s.authorizePasswordStage(userID, auth, " to upload cross-signing keys")
 }
 
 // SignatureUpload is the body of POST /keys/signatures/upload.

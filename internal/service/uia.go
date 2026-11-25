@@ -232,6 +232,57 @@ func (s *Service) authChallenge(session *authSession, format string, args ...any
 	})
 }
 
+// authorizePasswordStage is the interactive auth exchange in front of an action on an
+// already signed-in session that has to be proved by the account password and by nothing
+// else. `what` names the action for the log and the challenge text, as " to change the
+// password".
+//
+// Every refusal here is the challenge, never a verdict: a request without credentials is
+// the first step of the exchange (the client is asking what it has to do), and a request
+// with wrong credentials is that same step over again. That is the shape of the User-
+// Interactive Auth API, and a 403 on either tells a client its own password was wrong
+// when the client never offered one.
+func (s *Service) authorizePasswordStage(userID string, auth matrix.Object, what string) error {
+	flows := []AuthFlow{{Stages: []string{StagePassword}}}
+	session := s.beginAuthSession(flows, authString(auth, "session"))
+	defer func() {
+		if session.finished() {
+			s.dropAuthSession(session)
+		}
+	}()
+
+	if len(auth) == 0 {
+		return s.authChallenge(session, "additional authentication is required%s", what)
+	}
+	stage := authString(auth, "type")
+	switch stage {
+	case StagePassword:
+		if err := s.checkPasswordAuth(auth, userID); err != nil {
+			logAuthStage(userID, StagePassword, err)
+			var merr *matrix.Error
+			if errors.As(err, &merr) && merr.HTTPStatus() == http.StatusForbidden {
+				return s.authChallenge(session, "the user authentication passed in the request body is incorrect")
+			}
+			return err
+		}
+	case "":
+		return s.authChallenge(session, "the authentication request did not name a stage")
+	default:
+		return s.authChallenge(session, "session does not support authentication protocol %s", stage)
+	}
+	logAuthStage(userID, stage, nil)
+	session.complete(stage)
+	return nil
+}
+
+// passwordChallenge answers a request that has to authenticate interactively but did not:
+// the 401 with the one flow this server accepts, an empty parameter set and a session id,
+// which is the body clients stop at and read.
+func (s *Service) passwordChallenge(reason string) *matrix.Error {
+	session := s.beginAuthSession([]AuthFlow{{Stages: []string{StagePassword}}}, "")
+	return s.authChallenge(session, "%s", reason)
+}
+
 // authFlowNames renders the offered flows for the log, joining the stages of one
 // flow with a plus: "m.login.password", or "m.login.password+m.login.token".
 func authFlowNames(flows []AuthFlow) []string {
