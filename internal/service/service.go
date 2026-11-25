@@ -28,6 +28,9 @@ type Service struct {
 	// stream is a process-wide monotonic counter backing event stream
 	// positions. It is seeded from the database on start-up.
 	stream atomic.Uint64
+	// committed is the highest position a sync has been allowed to answer from:
+	// the highest one the database holds rows at. See [Service.committedStreamPos].
+	committed atomic.Uint64
 	// maxUploadSize limits media uploads in bytes.
 	maxUploadSize int64
 	// reservationWindow is how long a media id minted by POST /_matrix/media/v3/create
@@ -151,6 +154,7 @@ func New(db *persist.Database, serverName string, tokens *auth.TokenService, opt
 		return nil, err
 	}
 	s.stream.Store(pos)
+	s.committed.Store(pos)
 	// The signing key is minted at start-up whether or not the server-server API is
 	// mounted, because every event this server creates is hashed and signed with it.
 	// A server that started signing later would hold events that no other homeserver
@@ -189,8 +193,39 @@ func (s *Service) nextStreamPos() uint64 {
 	return s.stream.Add(1)
 }
 
-// StreamPos returns the current highest stream position.
+// StreamPos returns the position the counter has reached. It runs ahead of the
+// store, because a position is taken before the row that carries it lands, so it
+// is only fit for ordering writes among themselves.
 func (s *Service) StreamPos() uint64 { return s.stream.Load() }
+
+// committedStreamPos returns the highest position whose change is stored. A sync
+// answers from this, never from StreamPos: a reader that took the counter between
+// a write taking its position and that write landing would answer from a position
+// it never saw the change of, and every token after it then skips that change for
+// good. A long poll is the reader that hits this most, because it reads at the
+// moment it wakes — which is a breath after the write allocated its position.
+//
+// The answer only ever grows, so a room being forgotten (which deletes rows and
+// with them the highest stored position) cannot hand a client a token behind one
+// it already holds.
+func (s *Service) committedStreamPos() uint64 {
+	pos, err := s.db.LatestStreamPos()
+	if err != nil {
+		// A database that cannot answer is not a reason to answer from the unsafe
+		// counter: the last known stored position is behind the writes either way,
+		// and being behind only means a change is read twice.
+		return s.committed.Load()
+	}
+	for {
+		previous := s.committed.Load()
+		if pos <= previous {
+			return previous
+		}
+		if s.committed.CompareAndSwap(previous, pos) {
+			return pos
+		}
+	}
+}
 
 // Token renders a stream position as a sync token.
 func (s *Service) Token(pos uint64) string { return auth.StreamPos(pos) }

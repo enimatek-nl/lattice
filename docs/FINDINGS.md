@@ -1358,3 +1358,41 @@ elke kamervermelding van `GET /room_keys/keys`. Het veld hoort bij één sessie,
 naast `forwarded_count`, `is_verified` en `session_data`; ruma's `RoomKeyBackup`
 is niets dan `sessions`. Beide kamervormen geven het veld niet meer, per sessie
 blijven beide spellingen (`first_known_index` en `first_message_index`) staan.
+
+## De teller loopt voor op de kast
+
+Een sync-beantwoordde tot v0.2.13 vanaf `StreamPos()` — de teller die posities
+uitdeelt. Die teller wordt verhoogd **voordat** de rij die de positie draagt is
+opgeslagen (`s.nextStreamPos()` staat als argument bij de write), dus er is een
+venster waarin een positie bestaat die niets beschrijft. Een lezer die in dat
+venster de teller leest en daarna de tabellen doorloopt, ziet de verandering niet
+en antwoordt toch vanaf die positie. Het volgende token begint erachter en de
+verandering is **definitief** kwijt.
+
+Gemeten met een schrijver en een lezer in dezelfde proces: `bound 8 las 0
+veranderingen, een ronde later leest dezelfde bound 1`. Niet zeldzaam, niet een
+race die toeval vraagt — het venster zit in elke write.
+
+Waarom een long poll het als eerste vangt: hij leest op het moment dat hij wakker
+wordt, dus direct na de write die hem wekte. Waarom account data het hardst
+aankomt: daar staat één rij per (gebruiker, kamer, type) met één `stream_pos` die
+elke schrijver overschrijft, dus wat gemist is, is weg; events stapelen, en een
+verlopen event duwt alleen de volgende voorbehoeglijk op.
+
+De regel die het sluit: **een antwoord komt uit de kast, nooit uit de teller.**
+`committedStreamPos()` leest de hoogste positie waar de database een rij voor heeft
+(`LatestStreamPos`, over al tien tabellen met een `stream_pos`-index) en maakt die
+antwoordpositie monotoon, zodat het vergeten van een kamer — dat rijen wist en met
+die rijen de hoogste positie — een client nooit een token achter de zijne geeft.
+De uitdelende teller blijft wat hij was: de verdeling van posities onder
+schrijvers onderling.
+
+- Fout op `LatestStreamPos` (schema in wording) geeft het laatst bekende antwoord
+  terug, niet de teller: een dubbel gelezen verandering is onschuldig, een
+  overslagen verandering is dat niet.
+- Kosten: tien index-queries per antwoord. De compat-suite ging van 90,0 s naar
+  91,6 s — 1,8% voor het behoud van elke verandering.
+- De proef die het vasthoudt (`TestSyncAnswersFromAStoredPosition`) laat een write
+  mislukken *na* de positie-anneming: de teller loopt, er is niets opgeslagen, en
+  geen enkel antwoord — klassieke `/sync`, `/v4/sync` en het unstable-pad — mag de
+  nieuwe positie noemen. Zonder de fix wijzen alle drie af.

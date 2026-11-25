@@ -183,7 +183,7 @@ func (s *Service) openSlidingConnection(ctx context.Context, userID, deviceID, c
 		} else if err := s.db.SlidingSyncRepo.ResetRooms(row.ID); err != nil {
 			return nil, false, matrix.ErrInternal(err)
 		}
-		row.LastPos = s.StreamPos()
+		row.LastPos = s.committedStreamPos()
 		if err := s.db.SlidingSyncRepo.SaveConnection(row); err != nil {
 			return nil, false, matrix.ErrInternal(err)
 		}
@@ -256,7 +256,10 @@ type slidingRoomPlan struct {
 func (s *Service) buildSlidingSync(ctx context.Context, userID, deviceID string,
 	conn *slidingConn, req *matrix.SlidingSyncRequest, initial, legacyEndpoint bool,
 ) (*matrix.SlidingSyncResponse, bool, []*persist.SlidingSyncRoom, error) {
-	toPos := s.StreamPos()
+	// The response answers from what is stored, not from the counter: see
+	// [Service.committedStreamPos] for why a position the allocator handed out is
+	// not yet a position a client may be sent.
+	toPos := s.committedStreamPos()
 	fromPos := conn.row.LastPos
 	conn.pendingPos = toPos
 

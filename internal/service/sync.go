@@ -71,7 +71,10 @@ func (s *Service) Sync(ctx context.Context, params SyncParams) (*matrix.SyncResp
 func (s *Service) buildSync(ctx context.Context, params SyncParams, filter *SyncFilter) (*matrix.SyncResponse, bool, error) {
 	userID := params.UserID
 	since := params.Since
-	pos := s.StreamPos()
+	// The batch token names what is stored, never what the allocator has reached:
+	// answering from the counter can name a change this response did not see, and
+	// every later since token would then walk past it.
+	pos := s.committedStreamPos()
 
 	joined, err := s.db.MembershipRepo.RoomsFor(userID, matrix.MembershipJoin)
 	if err != nil {

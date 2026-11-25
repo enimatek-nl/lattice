@@ -198,7 +198,7 @@ func (c *cluster) start(name string, holder *lazyHandler, httpServer *httptest.S
 	}
 	app := api.New(svc, auth.NewStore(tokens, db), api.Config{
 		ServerName:      name,
-		Version:         "0.2.14-test",
+		Version:         "0.2.15-test",
 		EnableMedia:     true,
 		AllowGuests:     true,
 		Federation:      true,

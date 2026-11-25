@@ -1,13 +1,18 @@
 package compat
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/url"
 	"sort"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/enimatek-nl/lattice/internal/matrix"
+	"github.com/enimatek-nl/lattice/internal/service"
 )
 
 // slidingList is the list config of a sliding sync request, written as the wire object rather
@@ -2050,4 +2055,110 @@ func slidingRoomOf(t *testing.T, body map[string]any, roomID string) map[string]
 		t.Fatalf("the response carries nothing for %s: %v", roomID, body)
 	}
 	return room
+}
+
+// TestSyncAnswersFromAStoredPosition covers the position a sync answers from. The
+// stream counter runs ahead of the store — a write takes its position before the
+// row that carries it lands — so a server that answers from the counter can hand
+// out a position it never saw the change of, and every token after it walks past
+// that change for good. A write that fails after taking its position makes the
+// difference visible without waiting for a race: the counter moves, nothing is
+// stored, and no answer may name the new position.
+func TestSyncAnswersFromAStoredPosition(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	roomID := server.CreateRoom(alice, map[string]any{"preset": "private_chat", "name": "Positions"})
+	server.Send(alice, roomID, "stored-1", "written before the token")
+
+	stored, err := server.db.LatestStreamPos()
+	if err != nil {
+		t.Fatalf("asking the database for its highest position: %v", err)
+	}
+	// A room this server does not have: the position is taken, the event never lands.
+	if _, err := server.svc.AppendEvent(context.Background(), &service.EventDraft{
+		Kind: "room_event", RoomID: "!absent:test.server", Type: matrix.TypeMessage,
+		Sender: alice.UserID, Content: matrix.Encode(map[string]any{"msgtype": "m.text", "body": "burned"}),
+	}); err == nil {
+		t.Fatal("appending an event to a room that does not exist was accepted")
+	}
+	if position := server.svc.StreamPos(); position <= stored {
+		t.Fatalf("the counter is at %d after a write took a position, want above the stored %d", position, stored)
+	}
+
+	sync := server.MustDo(http.MethodGet, "/_matrix/client/v3/sync?timeout=0", alice.Token, nil, http.StatusOK)
+	token, _ := sync.Body["next_batch"].(string)
+	assertPositionIsStored(t, server, alice, "classic /sync", token)
+
+	for _, path := range []string{
+		"/_matrix/client/v4/sync",
+		"/_matrix/client/unstable/org.matrix.simplified_msc3575/sync",
+	} {
+		resp := server.MustDo(http.MethodPost, path, alice.Token, map[string]any{
+			"conn_id": "positions",
+			"lists": map[string]any{
+				"all": map[string]any{"range": []int{0, 9}, "timeline_limit": 1},
+			},
+			"extensions": map[string]any{"account_data": map[string]any{"enabled": true}},
+		}, http.StatusOK)
+		pos, _ := resp.Body["pos"].(string)
+		assertPositionIsStored(t, server, alice, path, pos)
+	}
+}
+
+// assertPositionIsStored checks that a batch token names a change the database
+// holds, rather than a position the counter only reached.
+func assertPositionIsStored(t *testing.T, server *Server, session *Session, where, token string) {
+	t.Helper()
+	if token == "" {
+		t.Fatalf("%s answered without a position", where)
+	}
+	pos, err := server.svc.ParseToken(token)
+	if err != nil {
+		t.Fatalf("%s answered with the position %q: %v", where, token, err)
+	}
+	stored, err := server.db.LatestStreamPos()
+	if err != nil {
+		t.Fatalf("asking the database for its highest position: %v", err)
+	}
+	if pos > stored {
+		t.Errorf("%s answered from position %d, while the highest stored change is %d", where, pos, stored)
+	}
+}
+
+// TestSlidingSyncAccountDataWakesAWaitingPoll covers the symptom the position
+// mistake produces: a device marks a change while another device waits for it, and
+// the waiting answer has to carry it.
+func TestSlidingSyncAccountDataWakesAWaitingPoll(t *testing.T) {
+	server := NewServer(t)
+	phone := server.Register("alice", "wonderland")
+	laptop := server.Login("alice", "wonderland")
+	body := map[string]any{
+		"conn_id": "room-list",
+		"lists": map[string]any{
+			"all": map[string]any{"range": []int{0, 19}, "timeline_limit": 1},
+		},
+		"extensions": map[string]any{"account_data": map[string]any{"enabled": true}},
+	}
+	start := server.MustDo(http.MethodPost, "/_matrix/client/v4/sync?timeout=0", laptop.Token, body, http.StatusOK)
+	pos, _ := start.Body["pos"].(string)
+	if pos == "" {
+		t.Fatalf("the connection started without a position: %s", start.Raw)
+	}
+
+	answered := make(chan string, 1)
+	go func() {
+		resp := server.MustDo(http.MethodPost, "/_matrix/client/v4/sync?timeout=8000&pos="+url.QueryEscape(pos),
+			laptop.Token, body, http.StatusOK)
+		pos, _ := resp.Body["pos"].(string)
+		answered <- pos
+	}()
+	if err := server.svc.SetAccountData(context.Background(), phone.UserID, phone.UserID, "",
+		"io.element.recent_emoji", matrix.RawMessage(`{"recent_emoji":[["party",1]]}`)); err != nil {
+		t.Fatalf("writing account data: %v", err)
+	}
+	select {
+	case <-answered:
+	case <-time.After(9 * time.Second):
+		t.Fatal("the waiting poll did not answer the account data change")
+	}
 }

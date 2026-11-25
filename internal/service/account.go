@@ -282,7 +282,7 @@ func (s *Service) newSession(ctx context.Context, user *persist.User, deviceID, 
 		UserID:         user.ID,
 		DeviceID:       deviceID,
 		ValidUntilTS:   validUntil.UnixMilli(),
-		NextBatchToken: s.Token(s.StreamPos()),
+		NextBatchToken: s.Token(s.committedStreamPos()),
 	}
 	if err := s.db.SessionRepo.Create(session); err != nil {
 		return nil, matrix.ErrInternal(err)

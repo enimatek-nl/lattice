@@ -313,7 +313,7 @@ func (s *Service) slidingE2EEExtension(ctx context.Context, userID, deviceID str
 		// the classic sync; the delta is for the connections that have them already.
 		return section, nil
 	}
-	lists, err := s.DeviceListChanges(ctx, userID, from, s.StreamPos(), deviceID)
+	lists, err := s.DeviceListChanges(ctx, userID, from, s.committedStreamPos(), deviceID)
 	if err != nil {
 		return nil, err
 	}
