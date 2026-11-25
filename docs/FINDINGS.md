@@ -1396,3 +1396,38 @@ schrijvers onderling.
   mislukken *na* de positie-anneming: de teller loopt, er is niets opgeslagen, en
   geen enkel antwoord — klassieke `/sync`, `/v4/sync` en het unstable-pad — mag de
   nieuwe positie noemen. Zonder de fix wijzen alle drie af.
+
+## Het moment nul (2026-11-25, v0.2.15)
+
+Gemeld door de schrijver van smaltino: `GET
+/_matrix/client/v1/rooms/{roomId}/timestamp_to_event?ts=0&dir=f` antwoordde `400
+M_INVALID_PARAM`, terwijl `ts=1` een normaal antwoord gaf. In het menu bij een
+dagregel staat "Het begin", en dat vraagt om `ts=0&dir=f` — de client vroeg dus
+om het eerste event van de kamer en kreeg een foutmelding.
+
+De specificatie noemt `ts` een verplicht whole number, "the timestamp to search
+from, as given in milliseconds since the Unix epoch", en zet er geen ondergrens
+bij. 0 is de epoch zelf: een geldig moment dat vóór alles in een kamer ligt. De
+melder mat Synapse en asaroton: die antwoorden `200` met het oudste event op
+`dir=f` en `404 M_NOT_FOUND` op `dir=b`.
+
+Het stond op drie plekken, allemaal als `ts <= 0`: in de zoekfunctie
+(`EventByTimestamp`), in de federatie-antwoordfunctie (`ServeTimestampToEvent`)
+en nergens in de HTTP-laag, want daar wordt alleen geparseerd. De grens had
+`< 0` kunnen zijn, maar dan was het onderscheid tussen "geen getal" en "nul" er
+nog niet geweest, en dat onderscheid is de hele fout.
+
+De regel die het sluit: **een veld dat ontbreekt is niet hetzelfde als een veld
+dat nul is.** Daarom leest `numberFieldOK` het getál, en zegt het óf er één was;
+`numberField` blijft zoals het was (0 bij afwezigheid), want voor de andere
+oproepers is afwezig inderdaad nul.
+
+- De federatiekant van MSC3030 had dezelfde grens; die is op dezelfde manier
+  verruild voor "ontbreekt het veld, dan is het een slecht verzoek".
+- Aangenomen, niet gemeten: `ts < 0` mag ook, want de specificatie noemt geen
+  grens en Synapse parseert een kaal getal. ruma kan geen negatief moment
+  versturen (`MilliSecondsSinceUnixEpoch` is een unsigned type), dus geen enkele
+  cliënt raakt dat spoor. De compat-test documenteert het gedrag van deze server
+  zonder het als een eis van de specificatie te verkopen.
+- Twee proeven zijn ladend: met `ts <= 0` terug in het bestand vallen
+  `TestTimestampToEvent` en `TestAPeerCanNameAnEventByTimestamp` elk op precies één zaak — de epoch.

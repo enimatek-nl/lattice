@@ -280,6 +280,13 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
       changes and, a round later, one. `TestSyncAnswersFromAStoredPosition`; lab-confirmed the same day: the
       reporter's repro lost 0 of 36 accounts against 2 of 12 on the previous release, and their core suite went
       from 53 to 55 of 78 with the two load-dependent failures passing.
+- [x] `timestamp_to_event` takes the epoch as an answer to search from, not as bad input
+      (2026-11-25). `ts <= 0` was the guard on both the client side and the MSC3030 federation
+      side, so `ts=0` — the epoch, before everything in the room, and what a client asks for
+      when it wants the first event — came back `400 M_INVALID_PARAM` where `ts=1` answered
+      normally. Absence and zero are different questions now: `numberFieldOK` reports whether a
+      number was there, `numberField` keeps answering 0 when it was not.
+      `TestTimestampToEvent`, `TestAPeerCanNameAnEventByTimestamp`.
 - [ ] Sliding sync answered the way a stock-0.19 client reads it: `invite_state` where MSC4186 writes `stripped_state`,
       and the `notification_count`/`highlight_count` the MSC deleted. Not built, because that puts a superseded field in
       every answer of the endpoint rather than tolerating one request. The fix belongs in ruma. Revisit if ruma does not
