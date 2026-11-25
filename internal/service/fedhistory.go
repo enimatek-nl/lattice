@@ -222,10 +222,13 @@ func (s *Service) ServeTimestampToEvent(ctx context.Context, roomID, peer string
 	if _, err := s.roomForPeer(ctx, roomID, peer); err != nil {
 		return nil, err
 	}
-	ts := numberField(body, "ts")
-	if ts <= 0 {
+	ts, ok := numberFieldOK(body, "ts")
+	if !ok {
 		return nil, matrix.ErrInvalidParam(`"ts" must be a unix timestamp in milliseconds`)
 	}
+	// 0 is not "missing": it is the epoch, and a peer searching from there wants the
+	// oldest event the room holds. Only the absence of the field, or a value that is
+	// not a number, is a bad request.
 	dir := "f"
 	if named, ok := body["dir"].(string); ok && named != "" {
 		dir = named

@@ -726,16 +726,24 @@ func idsOfPDUList(pdu matrix.Object, field string) []string {
 
 // numberField reads an integer field of a PDU.
 func numberField(pdu matrix.Object, field string) int64 {
+	value, _ := numberFieldOK(pdu, field)
+	return value
+}
+
+// numberFieldOK reads a number and says whether one was there at all. It is the
+// difference between a field that is absent and a field that is answered 0, which
+// a plain default cannot tell apart - and 0 is a real timestamp.
+func numberFieldOK(pdu matrix.Object, field string) (int64, bool) {
 	switch value := pdu[field].(type) {
 	case int64:
-		return value
+		return value, true
 	case int:
-		return int64(value)
+		return int64(value), true
 	case float64:
-		return int64(value)
+		return int64(value), true
 	case json.Number:
-		n, _ := value.Int64()
-		return n
+		n, err := value.Int64()
+		return n, err == nil
 	}
-	return 0
+	return 0, false
 }

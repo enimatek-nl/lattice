@@ -258,6 +258,10 @@ func (a *App) handleThreads(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleTimestampToEvent implements GET /_matrix/client/v1/rooms/{roomId}/timestamp_to_event.
+//
+// "ts" is any integer: the spec names no lower bound, so the epoch (0) and the
+// moments before it are answers to be searched for, not bad input. Only a value
+// that is not a number is refused here.
 func (a *App) handleTimestampToEvent(w http.ResponseWriter, r *http.Request) {
 	ts, err := strconv.ParseInt(queryValue(r, "ts", ""), 10, 64)
 	if err != nil {

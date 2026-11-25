@@ -378,9 +378,11 @@ func (s *Service) EventByTimestamp(ctx context.Context, roomID, userID string, t
 	if err != nil {
 		return nil, err
 	}
-	if ts <= 0 {
-		return nil, matrix.ErrInvalidParam("ts must be a unix timestamp in milliseconds")
-	}
+	// Any moment counts, the epoch itself included: "the timestamp to search from, as
+	// given in milliseconds since the Unix epoch" sets no lower bound, and 0 sits
+	// before everything in the room, which is exactly what a client asks for when it
+	// wants the first event. What is not a number is refused one layer up, where the
+	// query string is read.
 	events, err := s.db.EventRepo.HistoryByTimestamp(roomID, ts, dir, 1)
 	if err != nil {
 		return nil, matrix.ErrInternal(err)

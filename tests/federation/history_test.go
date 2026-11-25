@@ -259,6 +259,7 @@ func TestAPeerCanNameAnEventByTimestamp(t *testing.T) {
 		body matrix.Object
 	}{
 		{name: "forwards from before the room", body: matrix.Object{"dir": "f", "ts": int64(1_000_000_000_000)}},
+		{name: "forwards from the epoch itself", body: matrix.Object{"dir": "f", "ts": int64(0)}},
 		{name: "backwards from after the room", body: matrix.Object{"dir": "b", "ts": int64(4_000_000_000_000)}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -287,6 +288,13 @@ func TestAPeerCanNameAnEventByTimestamp(t *testing.T) {
 		matrix.Object{"dir": "f", "ts": int64(1_000_000_000_000), "end": int64(1_000_000_600_000)})
 	if narrow.Status != http.StatusNotFound {
 		t.Errorf("a window of %s with nothing in it is answered %d, want 404: %s", roomID, narrow.Status, narrow.Raw)
+	}
+
+	// A question without a moment in it cannot be answered, and saying so is different
+	// from answering the moment 0: the field being absent is the only bad request here.
+	if answer := federationPOST(t, two, one, "/_matrix/federation/v1/timestamp_to_event/"+roomID,
+		matrix.Object{"dir": "f"}); answer.Status != http.StatusBadRequest {
+		t.Errorf("a peer asking %s without a ts gets %d, want 400: %s", roomID, answer.Status, answer.Raw)
 	}
 
 	// Searching backwards from far in the future lands on the newest thing the room has.

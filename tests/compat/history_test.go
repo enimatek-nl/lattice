@@ -648,6 +648,8 @@ func TestTimestampToEvent(t *testing.T) {
 		{"forward from the event itself", fmt.Sprintf("?ts=%d&dir=f", ts), middle},
 		{"backward from the event itself", fmt.Sprintf("?ts=%d&dir=b", ts), middle},
 		{"forward from before everything", "?ts=1&dir=f", oldest},
+		{"forward from the epoch itself", "?ts=0&dir=f", oldest},
+		{"forward from before the epoch", "?ts=-1&dir=f", oldest},
 		{"backward from after everything", fmt.Sprintf("?ts=%d&dir=b", time.Now().UnixMilli()+60000), last},
 		{"forward direction is the default", fmt.Sprintf("?ts=%d", ts), middle},
 	} {
@@ -671,6 +673,12 @@ func TestTimestampToEvent(t *testing.T) {
 	if resp := server.Do(http.MethodGet,
 		"/_matrix/client/v1/rooms/"+roomID+"/timestamp_to_event?ts=1&dir=b", alice.Token, nil); resp.Status != http.StatusNotFound {
 		t.Errorf("before the start of the room: got %d %s, want 404", resp.Status, resp.Raw)
+	}
+	// The epoch is before the start of every room, so it is answered the same way and
+	// not as bad input: 0 is a moment, not a missing value.
+	if resp := server.Do(http.MethodGet,
+		"/_matrix/client/v1/rooms/"+roomID+"/timestamp_to_event?ts=0&dir=b", alice.Token, nil); resp.Status != http.StatusNotFound {
+		t.Errorf("backwards from the epoch: got %d %s, want 404", resp.Status, resp.Raw)
 	}
 	// A room without messages still has its create event to jump to.
 	empty := server.CreateRoom(alice, map[string]any{"preset": "public_chat"})
