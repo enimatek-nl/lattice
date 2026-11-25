@@ -220,7 +220,7 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
 - [ ] Decide the `/keys/query` answer for a user with no devices: the suite wants the user present as an empty object, v1.19's wording ("the corresponding user or device is missing from the `device_keys` result") reads as a defence of omitting them. Match the suite or record the refusal (measured 2026-11-20).
 - [ ] `state_after` on `/sync`; the top-level `presence` and `org.matrix.msc3814.e2ee` sections filled or removed.
 - [ ] `DELETE` on account data (MSC3391), `m.fully_marked` where it is still missing, `/relations` recursion.
-- [ ] A real search index (full text) instead of substring matching: stemming (\u201ekilns\u201c for \u201ekiln\u201d) and a rank that is not a word count. The words of a term are already AND-ed, `Complement/TestSearch` is green, and paging, context and field keys work.
+- [ ] A real search index (full text) instead of substring matching: stemming („kilns” for „kiln”) and a rank that is not a word count. The words of a term are already AND-ed, `Complement/TestSearch` is green, and paging, context and field keys work.
 - [ ] `POST /_matrix/media/v1/report`, and URL previews — and previews come second to the outbound
       address policy in queue C, because a preview is this server fetching a URL a client typed.
 - [ ] Decide what an upgraded room may do afterwards. Nothing on the path that accepts an event reads a
@@ -267,6 +267,19 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
       `404 M_NOT_FOUND` rather than an idle-looking `200` with `last_active_ago: 0`, and `GET
       /room_keys/keys/{roomId}` answers `200 {"sessions": {}}` for a room with nothing backed up, leaving the 404
       for a backup version that does not exist — the request a restoring client makes for every room it is invited to.
+- [x] `POST /search` speaks the specification (2026-11-25). It had been built on a draft this repository
+      invented — terms read from `search_key`, answers shaped as `hits`/`limits`/`groupings` — so every client
+      following the published request was told no search term had arrived. Terms, the filter with its `limit`,
+      `keys` (through `json_extract`), both orderings, `next_batch` from body or query, and `event_context`
+      windows now follow it, and one result carries the event itself. A term is a list of words, MSC2675 applies
+      to search the way it does to `/messages`, and the invented body is gone. `Complement/TestSearch` green; six
+      search tests rewritten.
+- [x] Batch tokens name a stored position, never the counter that hands positions out (2026-11-25). The counter
+      advances before the row carrying the position is stored, so a sync reading in that window answered from a
+      position it had not seen the change of and every later token skipped it — measured as one bound reading no
+      changes and, a round later, one. `TestSyncAnswersFromAStoredPosition`; lab-confirmed the same day: the
+      reporter's repro lost 0 of 36 accounts against 2 of 12 on the previous release, and their core suite went
+      from 53 to 55 of 78 with the two load-dependent failures passing.
 - [ ] Sliding sync answered the way a stock-0.19 client reads it: `invite_state` where MSC4186 writes `stripped_state`,
       and the `notification_count`/`highlight_count` the MSC deleted. Not built, because that puts a superseded field in
       every answer of the endpoint rather than tolerating one request. The fix belongs in ruma. Revisit if ruma does not
