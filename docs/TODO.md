@@ -31,8 +31,8 @@ because it said nothing these steps do not.
 | Measure | Now |
 |---|---|
 | `make build vet` | clean (4 s, 2026-11-20); `make lint` reports the same **7 issues** (6 staticcheck: `QF1001`×3, `QF1006`×2, `S1011`; 1 `unused`: `internal/api/federation.go:1045 eventInBody`) — pre-existing quickfix-style findings, none from the 2026-11-18 work. Note for a session started from a service unit: `golangci-lint` lives in `~/go/bin`, which is not on that PATH |
-| this repository's own tests | **361** counted here — 190 client-API compatibility, 90 two-server federation, 81 offline unit (`go test ./tests/<pkg> -list '.*'`, all green on 2026-11-24: compat 86 s, federation 49 s). `internal/matrix` adds its own test functions, which this tally has never counted |
-| Complement `tests/csapi` | **83 green of 106**, 2 skipped, in 330 s on v0.2.8 (2026-11-24). One name less red than the 2026-11-20 tally: `TestPushSync` passes since the push rule set travels as `m.push_rules` account data, which is what its first assertion reads. The other 21 names are the same list, so the red list is stable rather than lucky. It could not be run to completion before 2026-11-18, see [COMPLEMENT.md](COMPLEMENT.md) |
+| this repository's own tests | **366** counted here — 195 client-API compatibility, 90 two-server federation, 81 offline unit (`go test ./tests/<pkg> -list '.*'`, all green on 2026-11-25: compat 90 s, federation 49 s). `internal/matrix` adds its own test functions, which this tally has never counted |
+| Complement `tests/csapi` | **84 green of 106**, 2 skipped, in 333 s on v0.2.14 (2026-11-25). Two names less red than the 2026-11-20 tally: `TestPushSync` passes since the push rule set travels as `m.push_rules` account data, and `TestSearch` passes since `/search` speaks the specification's body and answer. The other 20 names are the same list, so the red list is stable rather than lucky. It could not be run to completion before 2026-11-18, see [COMPLEMENT.md](COMPLEMENT.md) |
 | Complement server-server (`tests`, not `tests/federation`) | **78 green of 91**, 13 red — re-measured 2026-11-20 for the first time since 2026-11-04, and the 13 are name for name the names recorded then, so the number was stale but honest. 338 s of own time; run beside the client-API suite it costs nothing extra, see `make complement-both` |
 | endpoints | **180 of 234** indexed routes implemented, 44 routes the index does not name (`make endpoints`, unchanged on 2026-11-20) |
 | spec | target v1.19 (the endpoint index it is built from), room versions 1-12 understood, new rooms default to v11; `/versions` advertises v1.0-v1.11 — see queue A |
@@ -63,7 +63,6 @@ were labelled "not triaged" were each run **alone** and read on 2026-11-20 (the 
 | `TestRegistration` | registration detail the suite checks beyond password/dummy/token |
 | `TestRoomDeleteAlias` | removing a non-canonical alias is gated on the canonical-alias power level |
 | `TestRoomForget` | forgetting: what is dropped, and what a rejoin must find again |
-| `TestSearch` | a real search index — this server matches substrings |
 | `TestDeviceListUpdates` | device-list change delivery at suite speed. "Passes on its own" is the 2026-11-04 note and it is unverified today: the name was not among the ten run alone on 2026-11-20, so treat it as a candidate rather than a known flake |
 | `TestRoomImageRoundtrip` | media: URL previews / `POST /_matrix/media/v1/report` and the roundtrip the case asserts |
 | `TestPowerLevels` | power-level corner the case pushes on |
@@ -221,7 +220,7 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
 - [ ] Decide the `/keys/query` answer for a user with no devices: the suite wants the user present as an empty object, v1.19's wording ("the corresponding user or device is missing from the `device_keys` result") reads as a defence of omitting them. Match the suite or record the refusal (measured 2026-11-20).
 - [ ] `state_after` on `/sync`; the top-level `presence` and `org.matrix.msc3814.e2ee` sections filled or removed.
 - [ ] `DELETE` on account data (MSC3391), `m.fully_marked` where it is still missing, `/relations` recursion.
-- [ ] A real search index (full text) instead of substring matching.
+- [ ] A real search index (full text) instead of substring matching: stemming (\u201ekilns\u201c for \u201ekiln\u201d) and a rank that is not a word count. The words of a term are already AND-ed, `Complement/TestSearch` is green, and paging, context and field keys work.
 - [ ] `POST /_matrix/media/v1/report`, and URL previews — and previews come second to the outbound
       address policy in queue C, because a preview is this server fetching a URL a client typed.
 - [ ] Decide what an upgraded room may do afterwards. Nothing on the path that accepts an event reads a

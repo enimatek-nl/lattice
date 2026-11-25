@@ -97,8 +97,10 @@ func TestKeyBackup(t *testing.T) {
 		t.Fatalf("the backup holds %d rooms (%s), want 2", len(body), all.Raw)
 	}
 	firstRoom, _ := body["!first:test.server"].(map[string]any)
-	if index, _ := firstRoom["first_known_index"].(float64); index != 3 {
-		t.Errorf("the first room reports first_known_index %v, want 3", firstRoom["first_known_index"])
+	if _, ok := firstRoom["first_known_index"]; ok {
+		// The index belongs to a session, not to a room; a strict client reads a
+		// room as exactly its sessions.
+		t.Errorf("the room carries a first_known_index of its own: %v", firstRoom)
 	}
 	sessions, _ := firstRoom["sessions"].(map[string]any)
 	if len(sessions) != 2 {

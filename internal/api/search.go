@@ -8,9 +8,11 @@ import (
 	"github.com/enimatek-nl/lattice/internal/service"
 )
 
-// handleSearch implements POST /_matrix/client/v3/search. Two request shapes are
-// served: the historical flat body and the search_categories body that carries
-// interactive filters and grouping.
+// handleSearch implements POST /_matrix/client/v3/search. The specification body
+// carries terms and filters inside the room_events category of
+// search_categories and answers results, count, highlights and next_batch. A
+// flat body of the original revision is still read for older clients, which
+// answers the shape of that revision.
 //
 //	@Summary	Search for events
 //	@Tags		events
@@ -25,12 +27,12 @@ func (a *App) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, ok := body["search_categories"]; ok {
-		params, err := service.SearchJSONParamsFrom(auth.GetUserID(r), body)
+		params, err := service.SearchSpecParamsFrom(auth.GetUserID(r), body, r.URL.Query())
 		if err != nil {
 			a.writeError(w, r, err)
 			return
 		}
-		result, err := a.svc.SearchJSON(r.Context(), params)
+		result, err := a.svc.SearchSpec(r.Context(), params)
 		if err != nil {
 			a.writeError(w, r, err)
 			return

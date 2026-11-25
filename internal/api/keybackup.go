@@ -442,20 +442,17 @@ func backupRoomsResponse(keys []*persist.BackupRoomKey) matrix.Object {
 	}
 	rooms := matrix.Object{}
 	for roomID, rows := range byRoom {
-		rooms[roomID] = matrix.Object{
-			"first_known_index": firstKnownIndex(rows),
-			"sessions":          backupRoomSessions(rows),
-		}
+		rooms[roomID] = matrix.Object{"sessions": backupRoomSessions(rows)}
 	}
 	return matrix.Object{"rooms": rooms}
 }
 
-// backupRoomResponse renders the sessions of a single room.
+// backupRoomResponse renders the sessions of a single room. A room is a bag of
+// sessions and nothing more: first_known_index describes a session, so it stays
+// inside them. It used to sit at room level too, where the specification has no
+// such field.
 func backupRoomResponse(keys []*persist.BackupRoomKey) matrix.Object {
-	return matrix.Object{
-		"first_known_index": firstKnownIndex(keys),
-		"sessions":          backupRoomSessions(keys),
-	}
+	return matrix.Object{"sessions": backupRoomSessions(keys)}
 }
 
 // backupSessionResponse renders one session. Both spellings of the message index
@@ -475,25 +472,7 @@ func backupSessionResponse(key *persist.BackupRoomKey) matrix.Object {
 func backupRoomSessions(keys []*persist.BackupRoomKey) matrix.Object {
 	sessions := matrix.Object{}
 	for _, key := range keys {
-		sessions[key.SessionID] = matrix.Object{
-			"first_known_index":   key.FirstKnownIndex,
-			"first_message_index": key.FirstKnownIndex,
-			"is_verified":         key.IsVerified,
-			"forwarded_count":     key.ForwardedCount,
-			"session_data":        matrix.RawMessage(key.Data),
-		}
+		sessions[key.SessionID] = backupSessionResponse(key)
 	}
 	return sessions
-}
-
-// firstKnownIndex returns the lowest index of a set of sessions: the oldest
-// message they can decrypt between them.
-func firstKnownIndex(keys []*persist.BackupRoomKey) int64 {
-	var lowest int64
-	for i, key := range keys {
-		if i == 0 || key.FirstKnownIndex < lowest {
-			lowest = key.FirstKnownIndex
-		}
-	}
-	return lowest
 }

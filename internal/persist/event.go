@@ -304,7 +304,12 @@ type SearchQuery struct {
 	NotSenders []string
 	// Terms are AND-ed: every term has to appear in the serialised content.
 	Terms []string
-	Limit int
+	// Keys restrict matching to fields of the event in the dotted form of the
+	// search endpoint ("content.body", "type"). An empty list matches the whole
+	// content; a key naming nothing this server stores does not narrow it down.
+	Keys   []string
+	Limit  int
+	Offset int
 }
 
 // EventRepoImpl is the GORM backed EventRepo.
@@ -787,11 +792,25 @@ func (r *EventRepoImpl) CountBefore(roomID string, pos uint64) (int64, error) {
 
 // Search implements [EventRepo].
 func (r *EventRepoImpl) Search(query SearchQuery) ([]*Event, error) {
-	if len(query.RoomIDs) == 0 {
+	q := r.searchScope(query)
+	if q == nil {
 		return nil, nil
 	}
+	if query.Limit > 0 {
+		q = q.Limit(query.Limit)
+	}
 	var events []*Event
-	q := hiddenFromTimeline(r.db.Where("room_id IN ? AND redacted = ?", query.RoomIDs, false))
+	err := q.Order("stream_pos desc").Find(&events).Error
+	return events, err
+}
+
+// searchScope builds the rows a search looks at: readable, unredacted events in
+// the searched rooms, narrowed by the filter and every term.
+func (r *EventRepoImpl) searchScope(query SearchQuery) *gorm.DB {
+	if len(query.RoomIDs) == 0 {
+		return nil
+	}
+	q := hiddenFromTimeline(r.db.Model(&Event{}).Where("room_id IN ? AND redacted = ?", query.RoomIDs, false))
 	if len(query.NotRooms) > 0 {
 		q = q.Where("room_id NOT IN ?", query.NotRooms)
 	}
@@ -811,13 +830,67 @@ func (r *EventRepoImpl) Search(query SearchQuery) ([]*Event, error) {
 		if term == "" {
 			continue
 		}
-		q = q.Where("content LIKE ? ESCAPE '\\'", "%"+escapeLike(term)+"%")
+		clause, args := searchTermClause(term, query.Keys)
+		q = q.Where(clause, args...)
 	}
-	if query.Limit > 0 {
-		q = q.Limit(query.Limit)
+	return q
+}
+
+// searchTermClause restricts one term to the searched fields. A "content.<field>"
+// key is read with SQLite's json_extract, an event field such as "type" is a
+// column. When no key names something this server stores, the whole content is
+// searched rather than nothing.
+func searchTermClause(term string, keys []string) (string, []any) {
+	like := "%" + escapeLike(term) + "%"
+	whole := func() (string, []any) { return "content LIKE ? ESCAPE '\\'", []any{like} }
+	if len(keys) == 0 {
+		return whole()
 	}
-	err := q.Order("stream_pos desc").Find(&events).Error
-	return events, err
+	parts := make([]string, 0, len(keys))
+	args := make([]any, 0, len(keys))
+	for _, key := range keys {
+		switch {
+		case key == "type" || key == "sender" || key == "room_id":
+			parts = append(parts, key+" LIKE ? ESCAPE '\\'")
+			args = append(args, like)
+		case key == "content":
+			parts = append(parts, "content LIKE ? ESCAPE '\\'")
+			args = append(args, like)
+		case strings.HasPrefix(key, "content."):
+			field := strings.TrimPrefix(key, "content.")
+			if !searchFieldValid(field) {
+				continue
+			}
+			// A row whose content is not valid JSON cannot match a content field.
+			parts = append(parts, "CASE WHEN json_valid(content) THEN COALESCE(json_extract(content, ?), '') LIKE ? ESCAPE '\\' ELSE 0 END")
+			args = append(args, "$."+field, like)
+		}
+	}
+	if len(parts) == 0 {
+		return whole()
+	}
+	return "(" + strings.Join(parts, " OR ") + ")", args
+}
+
+// searchFieldValid reports whether a dotted field path can be used as a JSON
+// path. SQLite rejects a malformed path, and the field arrives from a client.
+func searchFieldValid(field string) bool {
+	if field == "" {
+		return false
+	}
+	for _, part := range strings.Split(field, ".") {
+		if part == "" {
+			return false
+		}
+		for _, r := range part {
+			switch {
+			case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
+			default:
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // escapeLike neutralises the wildcards of LIKE so a search term is matched

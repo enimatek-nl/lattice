@@ -21,7 +21,6 @@ TestRoomDeleteAlias
 TestRoomForget
 TestRoomImageRoundtrip
 TestRoomSummary
-TestSearch
 TestSync
 TestSyncTimelineGap
 TestThreadedReceipts

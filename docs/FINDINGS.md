@@ -1288,3 +1288,73 @@ Reported against the live `v0.2.4` by a client author, and both halves are true.
   for smaltino. What remains for stock 0.19 clients is the open TODO item — `invite_state` on
   the unstable path, behind a config name — and it now has a clear trigger: a real user on
   Element X against Lattice.
+
+## De zoekendialoog: dezelfde endpoint, twee protocollen
+
+`POST /search` was gebouwd op een ontwerp dat nergens buiten deze repository bestaat:
+de termen werden onder `search_key.term` gelezen en het antwoord droeg `hits`,
+`limits` en `groupings`. Gemeten met twee bodies op een verse server: de
+gepubliceerde vorm `{"search_categories":{"room_events":{"search_term":"kiln"}}}`
+werd `400 M_INVALID_PARAM "at least one search term is required"`, terwijl dezelfde
+vraag met `search_key` `200` gaf. Geen enkele cliënt die de specificatie volgt kon
+dus zoeken, en de tests van dit ontwerp verborgen dat. De ontwerpvorm is
+verwijderd; wat overblijft is de specificatie.
+
+Het body-lezen is nu: `search_term` (teken of lijst), `escape_regex`, `filter`
+(`rooms`, `not_rooms`, `types`, `not_types`, `senders`, `not_senders`), `keys`,
+`order_by` (`rank` of `recent`), `limit` en `next_batch`. Het antwoord is
+`search_categories.room_events` met `count`, `highlights`, `results` (`event_id`
+en `rank`) en `next_batch`. Wat er buiten valt: `include_event` en `groupings` worden aangenomen en doen
+niets, en `groups` is geen categorie die deze server dient.
+
+- **`keys` is een veldaanvraag, geen hint.** Een `content.<veld>`-sleutel wordt in
+  SQLite met `json_extract` gelezen, achter `json_valid` — een rij waarvan de
+  inhoud geen JSON is, kan niet matching. Een sleutel die nergens op slaat (of een
+  ongevalige pad) beperkt niets; iets dat niets oplevert is erger dan iets breeds.
+- **Zonder tekstindex is `rank` een tel.** Er wordt geteld hoe vaak de termen in
+  een event voorkomen, bij gelijke stand wint de nieuwste; de `rank` daalt verder
+  netjes over de pagina. Dat is geen bm25 en het doet ook niet alsof.
+- **`count` telt hooguit het scanvenster.** De zichtbaarheid van een event valt
+  pas ná de query weg (hieronder), dus een teller in SQL zou matches beloven die
+  de lezer nooit krijgt. Er worden maximaal `searchScanLimit` nieuwste matches
+  gelezen; Synapse hanteert dezelfde soort plafond.
+- **Zoeken is een lees van dezelfde geschiedenis als `/messages`.** MSC2675 geldt
+  ook hier: een kamer die zijn historie op de join opent, houdt events van vóór
+  die join voor een zoeker verborgen. De oude platte weg filterde daarmee, de
+  nieuwe categorie-weg liet ze doorlekken — de zichtbaarheidstest die dat
+  controleerde, las het verkeerde veld en zag dus niets. Nu valt de poort vóór
+  telling en pagina.
+- **Ruimtenamen en -onderwerpen worden meegezocht.** Een `m.room.name` is een
+  event; Synapse indexeert namen en onderwerpen, dus deze server doet hetzelfde.
+- **`escape_regex` verandert niets.** Deze server matcht altijd letterlijk, dus
+  `escape_regex: true` is precies wat er al gebeurt en `false` belooft een regex
+  die er niet is.
+- **Een term is een reeks woorden, geen zin.** `Message 4` zoekt het woord
+  `Message` én het woord `4`, dus „Message number 4" vindt het; als één tekenreeks
+  gematcht zou worden, niet. Complement (`TestSearch`) stuurt precies die vraag, en
+  de server die woorden apart nam, werd `next_batch` kwijt omdat er niets vond.
+- **`limit` thuishoort in `filter`.** Een platte `limit` wordt ook gelezen, want
+  daar keek een oudere lezer, maar de specificatie zet hem in de filter.
+- **`next_batch` wordt uit beide handen gegeven.** De body is de specificatie, de
+  querystring is wat Synapse accepteert en wat clients sturen; de body wint. Een
+  volle pagina belooft een volgende, ook als die leeg terugkomt — dat is wat een
+  cliënt die tot het einde blaadt verwacht.
+- **Een resultaat is het event zelf.** `results[i].result` draagt `type`, `content`,
+  `sender`, `event_id`, `origin_server_ts` en `room_id`. Een id alleen dwingt elke
+  cliënt om op te halen wat hij net verteld werd.
+- **`event_context` levert de buren.** `before_limit` en `after_limit` (niet
+  `before`/`after`) geven `context.events_before` en `context.events_after`, elk
+  beginnend naast het resultaat en weggroeiend. Wat een kamer voor deze lezer
+  verbhoudt, blijft verborgen — de vensters gaan door dezelfde poort.
+
+Complement's `TestSearch` is daarmee groen, gemeten 2026-11-25: zes subtests, van
+ Zoeken bij body tot terugbladeren en context. Wat rest is kwaliteit, geen vorm:
+stammen en echte rangschikking (zie `docs/TODO.md`).
+
+## Een sleutel-backup-veld op de verkeerde diepte
+
+`first_known_index` stond in het antwoord van `GET /room_keys/keys/{roomId}` én in
+elke kamervermelding van `GET /room_keys/keys`. Het veld hoort bij één sessie,
+naast `forwarded_count`, `is_verified` en `session_data`; ruma's `RoomKeyBackup`
+is niets dan `sessions`. Beide kamervormen geven het veld niet meer, per sessie
+blijven beide spellingen (`first_known_index` en `first_message_index`) staan.

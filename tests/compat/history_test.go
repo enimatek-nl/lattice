@@ -1168,16 +1168,11 @@ func TestHistoryVisibilityOpensTheRoomWhenTheUserArrived(t *testing.T) {
 	// entitle anybody to its text.
 	found := server.MustDo(http.MethodPost, "/_matrix/client/v3/search", bob.Token,
 		map[string]any{"search_categories": map[string]any{
-			"room_events": map[string]any{"search_key": map[string]any{"term": []string{"spoken before"}}},
+			"room_events": map[string]any{"search_term": "spoken before"},
 		}}, http.StatusOK)
 	{
-		categories, _ := found.Body["categories"].(map[string]any)
-		events, _ := categories["room_events"].(map[string]any)
-		results, _ := events["results"].([]any)
-		for _, raw := range results {
-			hit, _ := raw.(map[string]any)
-			event, _ := hit["event"].(map[string]any)
-			if id, _ := event["event_id"].(string); id == before {
+		for _, id := range searchSpecIDs(searchSpecCategory(t, found.Body)) {
+			if id == before {
 				t.Errorf("/search answered with an event hidden by the room's visibility: %s", found.Raw)
 			}
 		}
