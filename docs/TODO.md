@@ -280,6 +280,31 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
       changes and, a round later, one. `TestSyncAnswersFromAStoredPosition`; lab-confirmed the same day: the
       reporter's repro lost 0 of 36 accounts against 2 of 12 on the previous release, and their core suite went
       from 53 to 55 of 78 with the two load-dependent failures passing.
+- [ ] Default push rules as v1.17 defines them (reported 2026-11-25, verified against
+      spec.matrix.org/v1.17 the same day; not built). `GET /pushrules` publishes eight override rules;
+      v1.17 defines twelve. Missing: `.m.rule.is_user_mention` and `.m.rule.is_room_mention` (v1.7, they
+      read `m.mentions`), `.m.rule.room.server_acl` (v1.4) and `.m.rule.suppress_edits` (v1.9). Removed in
+      v1.17 and still seeded here: `.m.rule.contains_display_name`, `.m.rule.roomnotif` and
+      `.m.rule.contains_user_name` — measured: those three names do not occur anywhere on the v1.17
+      client-server page, and the page has no "Default Content Rules" section left. `.m.rule.default` and
+      `.m.rule.notice` are seeded as underrules and are not in the spec either. What a client can see today
+      is therefore wrong twice: a settings screen cannot toggle room mentions (`404` on
+      `.m.rule.is_room_mention`), and the rules that are served carry empty condition lists.
+      Four things, in this order:
+      1. Two condition kinds the matcher does not have: `event_property_is` and `event_property_contains`.
+         Unknown kinds already answer "does not match" (`internal/push/push.go`), so seeding the rules
+         first would turn a visible error into a silent no-op. Their keys escape dots
+         (`content.m\.mentions.room`), which the dotted-path resolver has to honour.
+      2. Seed the v1.17 set, with the specification's conditions **stored** rather than behaviour hidden per
+         identifier: `.m.rule.member_event`, `.m.rule.reaction` and `.m.rule.notice` are hard-coded in
+         `Matches()` today, so what the endpoint publishes has no conditions. Same for the underrules: the
+         spec's `.m.rule.room_one_to_one` and `.m.rule.message` match `type` = `m.room.message` (lattice
+         matches `content.msgtype` `m.*`, so notices match) and `.m.rule.message` has no sound tweak.
+      3. Repair existing accounts on open — defaults are seeded once per account, so without a pass like
+         `RepairPusherScope` only new accounts get the new rules. smaltino's tests always register, so this
+         is invisible to them and visible to every account on lattice.cybertim.net.
+      4. Drop the seeded-and-hard-coded mention rules with the condition kinds in place, and with them the
+         `contains_display_name` special case in the matcher.
 - [x] `POST /account/deactivate` answers with the body the specification has (2026-11-25). It did the
       work and answered three Synapse-legacy keys (`id_server`, `3pids_disconnected_json`,
       `unbind_credentials`) while leaving out the **required** `id_server_unbind_result`, so the Rust SDK
