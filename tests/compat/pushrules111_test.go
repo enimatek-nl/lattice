@@ -304,3 +304,176 @@ func TestAnAccountWrittenBeforeTheRulesIsGivenThem(t *testing.T) {
 		t.Error(".m.rule.tombstone came back on an account that was already current")
 	}
 }
+
+// pushKindOf reads the rules of one kind the way the endpoint answers them.
+func pushKindOf(t *testing.T, server *Server, session *Session, kind string) []map[string]any {
+	t.Helper()
+	answer := server.MustDo(http.MethodGet, "/_matrix/client/v3/pushrules/global/"+kind,
+		session.Token, nil, http.StatusOK).Body
+	global, _ := answer["global"].(map[string]any)
+	raw, _ := global[kind].([]any)
+	rules := make([]map[string]any, 0, len(raw))
+	for _, entry := range raw {
+		if rule, ok := entry.(map[string]any); ok {
+			rules = append(rules, rule)
+		}
+	}
+	return rules
+}
+
+// actionTweak returns the value a set_tweak of that name carries. The second answer says
+// whether the tweak is there at all, which is what the specification's highlight action
+// amounts to: it is written without a value, and no value means true.
+func actionTweak(actions any, tweak string) (any, bool) {
+	list, _ := actions.([]any)
+	for _, entry := range list {
+		tweaked, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		if name, _ := tweaked["set_tweak"].(string); name == tweak {
+			return tweaked["value"], true
+		}
+	}
+	return nil, false
+}
+
+// TestContentRulesCarryThePatternTheirKindRequires is the rule set a Rust client can read.
+//
+// `.m.rule.contains_user_name` is the only content rule this server seeds, and it was
+// seeded with no condition at all — while the wire form reads a content rule's pattern out
+// of a stored content.body condition. The answer therefore had no `pattern`, and ruma,
+// which is the Rust SDK behind smaltino and Element X, refused the whole rule set with
+// `missing field 'pattern'` and fell back to its own defaults: a second device of an
+// account stopped showing what the first one changed, even though the account data and both
+// syncs carried the change. A content rule always carries a pattern, so it is seeded with
+// the condition the pattern is: the account's own local part, which is what the
+// specification's "[the local part of the user's Matrix ID]" asks a server to substitute.
+func TestContentRulesCarryThePatternTheirKindRequires(t *testing.T) {
+	server := NewServer(t)
+	patterned := server.Register("patterned", "wonderland")
+
+	rules := pushKindOf(t, server, patterned, "content")
+	if len(rules) != 1 {
+		t.Fatalf("the content kind holds %d rules, want the one the specification defines: %v",
+			len(rules), rules)
+	}
+	rule := rules[0]
+	if rule["rule_id"] != ".m.rule.contains_user_name" {
+		t.Errorf("the content kind holds %v, want .m.rule.contains_user_name", rule["rule_id"])
+	}
+	if pattern, named := rule["pattern"].(string); !named {
+		t.Errorf("a content rule answered with no pattern at all, which costs a strict client "+
+			"the whole rule set: %v", rule)
+	} else if pattern != "patterned" {
+		t.Errorf("pattern = %q, want the local part of the account", pattern)
+	}
+	actions, _ := rule["actions"].([]any)
+	if len(actions) == 0 || actions[0] != "notify" {
+		t.Errorf("the rule's actions do not start with notify: %v", actions)
+	}
+	if value, tweaked := actionTweak(actions, "sound"); !tweaked || value != "default" {
+		t.Errorf("the specification gives this rule a sound of default: %v", actions)
+	}
+	if _, tweaked := actionTweak(actions, "highlight"); !tweaked {
+		t.Errorf("a mention of the local part has to highlight: %v", actions)
+	}
+
+	// The field belongs to content rules and to nothing else. Reading a stored
+	// content.body condition was enough to put one on an override rule too, which is what
+	// `.m.rule.roomnotif` published beside its conditions.
+	for _, override := range pushKindOf(t, server, patterned, "override") {
+		if _, named := override["pattern"]; named {
+			t.Errorf("%s is an override rule and carries a pattern of its own: %v",
+				override["rule_id"], override)
+		}
+	}
+
+	// Beside it: the deprecated display name rule is an override rule, and v1.11 gives it
+	// one condition that names no key and no pattern, plus the same sound.
+	display := pushRuleOf(t, server, patterned, "override", ".m.rule.contains_display_name")
+	if raw, _ := display["conditions"].([]any); len(raw) != 1 {
+		t.Errorf(".m.rule.contains_display_name carries %d conditions, want the one the "+
+			"specification defines: %v", len(raw), display["conditions"])
+	}
+	requireCondition(t, display, ".m.rule.contains_display_name", 0,
+		map[string]any{"kind": "contains_display_name"})
+	if value, tweaked := actionTweak(display["actions"], "sound"); !tweaked || value != "default" {
+		t.Errorf("the specification gives this rule a sound of default: %v", display["actions"])
+	}
+
+	// A rule a person writes themselves has to answer the same way, because one PUT
+	// without a pattern would otherwise cost every Rust device on the account its rules.
+	server.MustDo(http.MethodPut,
+		"/_matrix/client/v3/pushrules/global/content/"+url.PathEscape("cake*lie"),
+		patterned.Token, map[string]any{"actions": []any{"notify"}}, http.StatusOK)
+	for _, own := range pushKindOf(t, server, patterned, "content") {
+		if _, named := own["pattern"].(string); !named {
+			t.Errorf("a content rule answered with no pattern: %v", own)
+		}
+	}
+}
+
+// TestADefaultRuleKeepsTheConditionsOnlyTheServerWrites covers the two ways a default rule
+// used to lose what makes it that rule.
+//
+// One: a settings screen changing a rule's actions sends actions and nothing else, and the
+// endpoint read that silence for "no conditions" — so switching a notice rule's actions
+// turned `.m.rule.suppress_notices` into a rule matching every event. Two: rules are rows
+// written once, so an account of the previous build keeps a content rule with no condition
+// to read a pattern from, and no endpoint can put it back. The conditions of a default rule
+// are the one part of it a person cannot write, which is what lets the repair pass take the
+// server's own copy of them without undoing anything anybody asked for.
+func TestADefaultRuleKeepsTheConditionsOnlyTheServerWrites(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lattice.db")
+	server := NewServerWithDatabase(t, path, api.Config{})
+	aged := server.Register("longstanding", "wonderland")
+
+	server.MustDo(http.MethodPut,
+		"/_matrix/client/v3/pushrules/global/override/"+url.PathEscape(".m.rule.suppress_notices"),
+		aged.Token, map[string]any{"actions": []any{"dont_notify"}}, http.StatusOK)
+	stillThere := pushRuleOf(t, server, aged, "override", ".m.rule.suppress_notices")
+	requireCondition(t, stillThere, ".m.rule.suppress_notices", 0, map[string]any{
+		"kind": "event_match", "key": "content.msgtype", "pattern": "m.notice",
+	})
+	if got := fmt.Sprintf("%v", stillThere["actions"]); got != "[dont_notify]" {
+		t.Errorf("the actions a PUT brought did not arrive: %v", stillThere["actions"])
+	}
+	if stillThere["default"] != true {
+		t.Errorf("changing the actions of a default rule made it a rule of the person: %v", stillThere)
+	}
+
+	// Storage rather than HTTP, because no endpoint writes this: it is the row the previous
+	// build left behind — a rule with the right name and no condition of its own.
+	stored, err := server.db.PushRuleRepo.Get(aged.UserID, "content", ".m.rule.contains_user_name")
+	if err != nil {
+		t.Fatalf("reading the content rule of a fresh account: %v", err)
+	}
+	stored.Conditions = ""
+	if err := server.db.PushRuleRepo.Set(stored); err != nil {
+		t.Fatalf("storing the rule as an older build writes it: %v", err)
+	}
+	// What a person switched off has to stay switched off through the repair that follows.
+	server.MustDo(http.MethodPut,
+		"/_matrix/client/v3/pushrules/global/content/"+url.PathEscape(".m.rule.contains_user_name")+"/enabled",
+		aged.Token, map[string]any{"enabled": false}, http.StatusOK)
+	if err := server.db.UserRepo.SetPushRulesVersion(aged.UserID, 2); err != nil {
+		t.Fatalf("writing the rule set version an older release leaves: %v", err)
+	}
+
+	restarted := NewServerWithDatabase(t, path, api.Config{})
+	repaired := pushRuleOf(t, restarted, aged, "content", ".m.rule.contains_user_name")
+	if pattern, _ := repaired["pattern"].(string); pattern != "longstanding" {
+		t.Errorf("an account written before the pattern keeps reading no pattern at all: %v", repaired)
+	}
+	if repaired["enabled"] != false {
+		t.Errorf("the repair reset what the account had switched off: %v", repaired)
+	}
+	// Clients read the rules out of the m.push_rules account data too, and that is the copy
+	// the Rust SDK parses — which is where the reported symptom lived.
+	synced := restarted.MustDo(http.MethodGet, "/_matrix/client/v3/sync?timeout=0",
+		aged.Token, nil, http.StatusOK)
+	if !strings.Contains(string(synced.Raw), `"pattern":"longstanding"`) {
+		t.Errorf("the m.push_rules account data did not follow the repair: %s", synced.Raw)
+	}
+}

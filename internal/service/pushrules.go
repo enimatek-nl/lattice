@@ -17,9 +17,9 @@ var PushRuleKinds = push.Kinds
 //
 // It is written to the account beside the rules it describes, and
 // RepairDefaultPushRules compares an account against it. Bump it whenever
-// defaultPushRules gains or moves a rule, so accounts written by an older binary
-// are brought up once.
-const defaultRulesVersion = 2
+// defaultPushRules gains or moves a rule, or when the conditions of one change,
+// so accounts written by an older binary are brought up once.
+const defaultRulesVersion = 3
 
 // The keys the default rules of v1.7 and later name carry an escaped dot: the
 // property is called m.mentions, one name, and a plain dot would read it as a path
@@ -38,10 +38,12 @@ const (
 //
 // userID is not decoration: `.m.rule.is_user_mention` names the recipient inside a
 // stored condition, which is the only way a rule that is a row can say "my own
-// Matrix ID".
+// Matrix ID". `.m.rule.contains_user_name` needs the same of its pattern: the
+// specification writes it as "[the local part of the user's Matrix ID]" and servers
+// substitute it, and a content rule without a pattern is a rule a strict client
+// cannot read at all.
 func defaultPushRules(userID string) []persist.PushRule {
 	dontNotify := matrix.Array{"dont_notify"}
-	highlight := matrix.Array{"notify", matrix.Object{"set_tweak": "highlight", "value": true}}
 	silent := matrix.Array{}
 	count := matrix.Array{"notify", matrix.Object{"set_tweak": "count"}}
 	sound := func(name string) matrix.Array {
@@ -71,7 +73,9 @@ func defaultPushRules(userID string) []persist.PushRule {
 		{Kind: "override", RuleID: ".m.rule.is_user_mention", Enabled: true, Actions: string(matrix.Encode(mentionActions)),
 			Conditions: condition(matrix.Object{"kind": "event_property_contains",
 				"key": keyMentionsUserIDs, "value": userID})},
-		{Kind: "override", RuleID: ".m.rule.contains_display_name", Enabled: true, Actions: string(matrix.Encode(highlight))},
+		{Kind: "override", RuleID: ".m.rule.contains_display_name", Enabled: true,
+			Actions:    string(matrix.Encode(mentionActions)),
+			Conditions: condition(matrix.Object{"kind": push.ConditionContainsDisplayName})},
 		{Kind: "override", RuleID: ".m.rule.is_room_mention", Enabled: true, Actions: string(matrix.Encode(roomMentionActions)),
 			Conditions: condition(
 				matrix.Object{"kind": "event_property_is", "key": keyMentionsRoom, "value": true},
@@ -90,7 +94,12 @@ func defaultPushRules(userID string) []persist.PushRule {
 		{Kind: "override", RuleID: ".m.rule.suppress_edits", Enabled: true, Actions: string(matrix.Encode(silent)),
 			Conditions: condition(matrix.Object{"kind": "event_property_is",
 				"key": keyRelatesToRel, "value": "m.replace"})},
-		{Kind: "content", RuleID: ".m.rule.contains_user_name", Enabled: true, Actions: string(matrix.Encode(highlight))},
+		{Kind: "content", RuleID: ".m.rule.contains_user_name", Enabled: true,
+			Actions: string(matrix.Encode(mentionActions)),
+			// A content rule's one condition is a pattern on content.body, and it is stored
+			// that way: the wire form reads the pattern back out of it.
+			Conditions: condition(matrix.Object{"kind": "event_match", "key": "content.body",
+				"pattern": matrix.LocalpartOf(userID)})},
 		{Kind: "underride", RuleID: ".m.rule.call", Enabled: true, Actions: string(matrix.Encode(sound("ring"))),
 			Conditions: condition(matrix.Object{"kind": "event_match", "key": "type", "pattern": "m.call.invite"})},
 		{Kind: "underride", RuleID: ".m.rule.room_one_to_one", Enabled: true, Actions: string(matrix.Encode(sound("default"))),
@@ -185,10 +194,10 @@ func (s *Service) addMissingDefaultRules(user string) (bool, error) {
 	if err != nil {
 		return false, matrix.ErrInternal(err)
 	}
-	there := make(map[string]bool, len(rows))
+	storedRules := make(map[string]*persist.PushRule, len(rows))
 	order := map[string][]string{}
 	for _, row := range rows {
-		there[ruleKey(row.Kind, row.RuleID)] = true
+		storedRules[ruleKey(row.Kind, row.RuleID)] = row
 		order[row.Kind] = append(order[row.Kind], row.RuleID)
 	}
 	// The specification's order per kind, so a rule that arrives late can be put where it
@@ -200,14 +209,31 @@ func (s *Service) addMissingDefaultRules(user string) (bool, error) {
 	moved := map[string]bool{}
 	changed := false
 	for _, rule := range defaultPushRules(user) {
-		if there[ruleKey(rule.Kind, rule.RuleID)] {
+		stored := storedRules[ruleKey(rule.Kind, rule.RuleID)]
+		if stored != nil && !stored.Default {
+			// The id is taken by a rule this account wrote itself, so there is no default
+			// rule of that name left to repair.
+			continue
+		}
+		if stored != nil {
+			// The conditions of a default rule are the one part of it a person cannot change:
+			// no endpoint writes them. That makes them the part an older binary can have stored
+			// wrong, and the part this may correct without undoing anything anybody asked for.
+			if stored.Conditions == rule.Conditions {
+				continue
+			}
+			stored.Conditions = rule.Conditions
+			if err := s.db.PushRuleRepo.Set(stored); err != nil {
+				return changed, matrix.ErrInternal(err)
+			}
+			changed = true
 			continue
 		}
 		rule.UserID = user
 		if err := s.db.PushRuleRepo.Set(&rule); err != nil {
 			return changed, matrix.ErrInternal(err)
 		}
-		there[ruleKey(rule.Kind, rule.RuleID)] = true
+		storedRules[ruleKey(rule.Kind, rule.RuleID)] = &rule
 		order[rule.Kind] = placeAfterNeighbour(order[rule.Kind], wanted[rule.Kind], rule.RuleID)
 		moved[rule.Kind] = true
 		changed = true
@@ -281,8 +307,12 @@ type PushRuleWire struct {
 	Enabled    bool         `json:"enabled"`
 	Conditions matrix.Array `json:"conditions,omitempty"`
 	Actions    matrix.Array `json:"actions"`
-	Pattern    string       `json:"pattern,omitempty"`
-	Tuple      []string     `json:"tuple,omitempty"`
+	// Pattern is a pointer because a content rule carries the field even when there is
+	// no pattern to show: the two kinds of rule are told apart by which of the two
+	// fields they carry, and a content rule whose answer has no pattern at all is a rule
+	// a strict reader refuses - ruma stops parsing the whole rule set on it.
+	Pattern *string  `json:"pattern,omitempty"`
+	Tuple   []string `json:"tuple,omitempty"`
 }
 
 // PushRules returns the whole rule set of a user in wire format.
@@ -344,18 +374,31 @@ func pushRuleWire(rule *persist.PushRule) PushRuleWire {
 	}
 	if rule.Conditions != "" {
 		out.Conditions = toAnySlice(rule.Conditions)
-		// The spec allows a shorthand rule with a single content.body pattern.
+	}
+	if rule.Kind == "content" {
+		// The specification stores a content rule's one condition as a field: "the spec
+		// allows a shorthand rule with a single content.body pattern". Reading it back out
+		// is what puts `pattern` on the answer, so a content rule is seeded with that
+		// condition rather than with a pattern kept beside it. A content rule with no such
+		// condition publishes an empty pattern, which is what a content rule always having
+		// one comes down to.
+		pattern := ""
 		for _, condition := range out.Conditions {
 			entry, ok := condition.(matrix.Object)
 			if !ok {
 				continue
 			}
-			if key, _ := entry["key"].(string); key == "content.body" {
-				if pattern, ok := entry["pattern"].(string); ok {
-					out.Pattern = pattern
-				}
+			if kind, _ := entry["kind"].(string); kind != "event_match" {
+				continue
+			}
+			if key, _ := entry["key"].(string); key != "content.body" {
+				continue
+			}
+			if value, ok := entry["pattern"].(string); ok {
+				pattern = value
 			}
 		}
+		out.Pattern = &pattern
 	}
 	return out
 }
@@ -422,15 +465,26 @@ func (s *Service) SetPushRule(ctx context.Context, userID, kind, ruleID string, 
 		return matrix.ErrInternal(err)
 	}
 	positions := s.nextRulePosition(userID, kind)
+	// A rule that is already there keeps three things a PUT body never says: its place in
+	// the rule order, the flag saying the server wrote it, and, for a default rule, its
+	// conditions. A settings screen changing a default rule's actions sends actions and
+	// nothing else, so reading that silence for "no conditions" would turn
+	// `.m.rule.suppress_notices` into a rule matching every event, and losing the flag
+	// turns a rule of the server into a rule of the person in every client that asks.
+	isDefault := false
 	if err == nil {
-		// Replacing a rule keeps its place in the rule order.
 		positions = existing.Positions
+		isDefault = existing.Default
+		if existing.Default {
+			conditions = existing.Conditions
+		}
 	}
 	rule := &persist.PushRule{
 		UserID:     userID,
 		Kind:       kind,
 		RuleID:     ruleID,
 		Enabled:    enabled,
+		Default:    isDefault,
 		Actions:    string(actions),
 		Conditions: conditions,
 		Positions:  positions,

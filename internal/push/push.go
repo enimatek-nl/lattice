@@ -34,6 +34,11 @@ const (
 	RuleNotice              = ".m.rule.notice"
 )
 
+// ConditionContainsDisplayName is the condition kind the specification gives
+// `.m.rule.contains_display_name`. It names no key and no pattern: the name it
+// looks for is the recipient's own, which is not a property of the event.
+const ConditionContainsDisplayName = "contains_display_name"
+
 // DefaultNotificationLevel is the level a sender_notification_permission condition
 // asks for when the room's power levels name no entry for its key. The power levels
 // schema defaults the one notification key the specification defines — `room`, the
@@ -169,7 +174,7 @@ func Matches(rule *persist.PushRule, ctx *Context) bool {
 			if !CompareCount(is, ctx.MemberCount) {
 				return false
 			}
-		case "contains_display_name":
+		case ConditionContainsDisplayName:
 			if !WordContains(ctx.Body, strings.ToLower(ctx.DisplayName)) {
 				return false
 			}
