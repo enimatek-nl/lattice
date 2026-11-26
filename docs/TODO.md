@@ -399,6 +399,18 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
       of this: this server reads a rule without conditions as matching only underride rules, where
       the specification has it match everything — so this server never saw the silence it published.
       Complement and `make lint` were unavailable to this session too.
+- [ ] A rule without conditions always matches, and this server disagrees (spun off from the item
+      above on 2026-11-26; not built). `Matches()` reads an empty condition list as matching only for
+      underride rules; the specification has it match every event. The consequence is two-sided, and
+      both sides were measured on 2026-11-26: a person writing an override rule without conditions to
+      mute everything gets silence on a Rust client and a server that keeps notifying, and the rules
+      this server published without conditions silenced every event on that client while nothing here
+      noticed — which is the incident above, and why `TestRuleMatches` now pins the behaviour and
+      `TestTheRulesThatSilencedEverythingCarryConditions` enforces the invariant instead. Following the
+      specification means a rule that is switched on and names no condition matches everything, so the
+      change wants a Complement run it cannot get from a session without docker, and it wants the
+      default set read once more first: `.m.rule.master` is the specification's own condition-less
+      rule, and this server also reads it as an off switch that is never thrown.
 - [ ] The rest of what v1.17 says the default rules are (split off from the v1.11 item above
       on 2026-11-26; not built). What is left is what a newer specification *changes* rather than adds,
       and the report agrees v1.11 may keep it: `.m.rule.contains_display_name`, `.m.rule.roomnotif`
