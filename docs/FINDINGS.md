@@ -1613,3 +1613,46 @@ account written before the change still answering without a `pattern`, and its
 - Left in the queue beside it: the rules whose conditions this server still hides in
   `Matches()` instead of storing, and the `dont_notify` actions `.m.rule.roomnotif` was
   seeded with where v1.11 gives it a notify and a highlight.
+
+## Rules the server does not evaluate still have to be right, because a client evaluates them (2026-11-26, v0.2.21)
+
+The release before this one made the push rule set readable. That was right, and it turned a
+latent wrongness into an outage: the smaltino lab run came back with 52 of 85 instead of 62, and
+no notification reaching any Rust client. Ruma had been ignoring Lattice's rules and using its
+own defaults; now it read them, and three override rules were published **with no conditions** —
+`.m.rule.member_event`, `.m.rule.reaction`, and `.m.rule.invite_for_me` with a `member_count`
+condition that is not in the specification. The specification says a rule without conditions
+always matches, so the third rule of twelve, carrying an empty action list, matched every event.
+
+Evaluating the published answer with the specification's own algorithm, on the two binaries
+(`.agent-work/v111/rules-eval.py`), said it in five lines: every one of a message, an encrypted
+message, an invite for the recipient, an invite for somebody else and a reaction ended on
+`.m.rule.member_event` with `dont_notify` on v0.2.20, and on `.m.rule.message`,
+`.m.rule.encrypted`, `.m.rule.invite_for_me`, `.m.rule.member_event` and `.m.rule.reaction` —
+with the actions the specification defines — on v0.2.21.
+
+- **A published rule set is an interface, not a debug view.** Half of these rules are never
+  evaluated by this server at all, because `notifyParticipants` reads `m.room.message`,
+  `m.room.encrypted` and `m.sticker`. That is no excuse: the client that walks the rules is the
+  other half of the feature, and it judges the published JSON.
+- **Divergences between a lenient producer and a strict consumer hide until the consumer
+  catches up.** This server reads "no conditions" as matching only for underride rules; the
+  specification has it match everything. So the silence was invisible here and total there, and
+  every test of this repository passed while it shipped. The divergence stays — it is now a row in
+  `TestRuleMatches`, and the invariant that would have caught the shipping is in the compatibility
+  suite: **no enabled override rule is published without conditions.**
+- **Making a document readable is a risky change on its own.** It hands authority over to whatever
+  the document actually says. A review that only asks "can the client parse this now?" misses the
+  question "what does it now obey?" — which was the whole incident.
+- Two of the three rules were also matched by identifier in `Matches()` rather than by their
+  conditions. That was the reason they had no conditions to publish, and it is the general shape of
+  the bug: behaviour kept in code publishes a rule with an empty body, and only a client that reads
+  the body can be harmed by it. Seeded now with `type` = `m.room.member` and `type` = `m.reaction`
+  behind the specification's empty action list, the identifier branch is gone. `.m.rule.notice` is
+  the last rule left in that shape, and it is in no ruleset of the specification at all.
+- An account's own Matrix ID appears in a stored condition twice now — `m.mentions` for a user
+  mention, `state_key` for an invite — which is the only way a rule that is a row can say "me".
+- The repair promise got its second half. A default rule's conditions belong to the server and are
+  taken back whenever the set moves; its actions belong to the person and are taken back only while
+  the row still holds exactly what the server seeded for it, which is the one case in which the
+  server can tell that nobody chose them.

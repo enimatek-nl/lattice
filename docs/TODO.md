@@ -31,7 +31,7 @@ because it said nothing these steps do not.
 | Measure | Now |
 |---|---|
 | `make build vet` | clean (4 s, 2026-11-20); `make lint` reports the same **7 issues** (6 staticcheck: `QF1001`×3, `QF1006`×2, `S1011`; 1 `unused`: `internal/api/federation.go:1045 eventInBody`) — pre-existing quickfix-style findings, none from the 2026-11-18 work. Note for a session started from a service unit: `golangci-lint` lives in `~/go/bin`, which is not on that PATH — and on 2026-11-26 the chat session's environment had no `golangci-lint` installed anywhere on its PATH, so the lint tally above still belongs to 2026-11-20 |
-| this repository's own tests | **376** counted here — 204 client-API compatibility, 90 two-server federation, 82 offline unit (`go test ./tests/<pkg> -list '.*'`, all green on 2026-11-26: compat 97 s, federation 50 s). `internal/matrix` adds its own test functions, which this tally has never counted |
+| this repository's own tests | **378** counted here — 206 client-API compatibility, 90 two-server federation, 82 offline unit (`go test ./tests/<pkg> -list '.*'`, all green on 2026-11-26: compat 97 s, federation 50 s). `internal/matrix` adds its own test functions, which this tally has never counted |
 | Complement `tests/csapi` | **84 green of 106**, 2 skipped, in 345 s on v0.2.18 (2026-11-25; 338 s on v0.2.17, 340 s on v0.2.16). Two names less red than the 2026-11-20 tally: `TestPushSync` passes since the push rule set travels as `m.push_rules` account data, and `TestSearch` passes since `/search` speaks the specification's body and answer. The other 20 names are the same list, so the red list is stable rather than lucky. It could not be run to completion before 2026-11-18, see [COMPLEMENT.md](COMPLEMENT.md) |
 | Complement server-server (`tests`, not `tests/federation`) | **78 green of 91**, 13 red — re-measured 2026-11-20 for the first time since 2026-11-04, and the 13 are name for name the names recorded then, so the number was stale but honest. 338 s of own time; run beside the client-API suite it costs nothing extra, see `make complement-both` |
 | endpoints | **180 of 234** indexed routes implemented, 44 routes the index does not name (`make endpoints`, unchanged on 2026-11-20) |
@@ -352,13 +352,61 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
       `TestContentRulesCarryThePatternTheirKindRequires` and
       `TestADefaultRuleKeepsTheConditionsOnlyTheServerWrites`; `.agent-work/v111/wire.py` prints the
       answer of a fresh account. Complement and `make lint` were unavailable to this session too.
+- [x] The three override rules that silenced every notification on a Rust client (reported
+      2026-11-26 from the v0.2.20 lab run, fixed the same day; v0.2.21). This one is the cost of the
+      item above: as soon as ruma could read the rule set it began to obey it, and the rules it read
+      were three override rules published **without conditions** — `.m.rule.member_event`,
+      `.m.rule.reaction`, and `.m.rule.invite_for_me` with a `member_count` condition the
+      specification does not define. The specification is blunt: "A rule with no conditions always
+      matches". An override rule with an empty action list, third in a list of twelve, is an off
+      switch; every event a Rust client looked at landed on it.
+      Measured by evaluating the published answer the way a client does
+      (`.agent-work/v111/rules-eval.py`, the specification's algorithm: override, content, room,
+      sender, underride; first match wins, last underride wins):
+
+      | event | on v0.2.20 | on v0.2.21 |
+      |---|---|---|
+      | a plain message | `.m.rule.member_event`, `dont_notify` | `.m.rule.message`, notify + sound `default` |
+      | an encrypted message | `.m.rule.member_event`, `dont_notify` | `.m.rule.encrypted`, notify + `count` |
+      | an invite for the recipient | `.m.rule.member_event`, `dont_notify` | `.m.rule.invite_for_me`, notify + sound `default` |
+      | an invite for somebody else | `.m.rule.member_event`, `dont_notify` | `.m.rule.member_event`, `[]` |
+      | a reaction | `.m.rule.member_event`, `dont_notify` | `.m.rule.reaction`, `[]` |
+
+      What it took:
+      1. Store the conditions v1.11 defines, naming the recipient where the specification names the
+         recipient: `type` = `m.room.member` for the member rule, `type` = `m.reaction` for the
+         reaction rule, and `type` + `content.membership` = `invite` + `state_key` = the account's own
+         Matrix ID for the invite rule. The two silence rules get the specification's empty action
+         list, the invite rule `notify` + sound `default`. `member_count` as a condition of its own is
+         not in the specification and is gone.
+      2. Stop matching those two by identifier in `Matches()`. They are conditions now, and an empty
+         action list is what keeps a client asleep — which a client evaluating the published rules
+         itself has to be able to reach.
+      3. Repair the accounts again, with `defaultRulesVersion` at 4. A default rule's conditions are
+         the server's and are taken back always; its actions are the person's and are taken back only
+         while the row still holds exactly what this server seeded for it (`seededWrongActions`),
+         which is the one case in which the server can tell nobody chose them. That is what gives the
+         invite rule its sound and the silence rules their empty lists without undoing a settings
+         screen.
+      4. `.m.rule.master` publishes the empty action list of the specification instead of
+         `dont_notify`. It is the one rule the specification defines without conditions, and it is
+         switched off by default for the reason this item is about.
+      `TestTheRulesThatSilencedEverythingCarryConditions` ends on the invariant, the check that would
+      have caught this before a client did: **no enabled override rule is published without
+      conditions.** `TestAnAccountWrittenBeforeTheConditionsIsGivenThem` covers the same rules on an
+      account written by the previous release, including the rule whose actions that account had
+      changed and keeps. Six rows in `TestRuleMatches`, one of which pins the divergence that hid all
+      of this: this server reads a rule without conditions as matching only underride rules, where
+      the specification has it match everything — so this server never saw the silence it published.
+      Complement and `make lint` were unavailable to this session too.
 - [ ] The rest of what v1.17 says the default rules are (split off from the v1.11 item above
       on 2026-11-26; not built). What is left is what a newer specification *changes* rather than adds,
       and the report agrees v1.11 may keep it: `.m.rule.contains_display_name`, `.m.rule.roomnotif`
       and `.m.rule.contains_user_name` are deprecated but still defined, while `.m.rule.default` and
       `.m.rule.notice` are seeded here and are in no ruleset at all. Read off the rules as this
-      server publishes them: `.m.rule.member_event`, `.m.rule.reaction` and `.m.rule.notice` are
-      hard-coded in `Matches()`, so what the endpoint shows carries no conditions; `.m.rule.roomnotif`
+      server publishes them: `.m.rule.notice` is still hard-coded in `Matches()`, so it publishes a
+      condition it does not obey — the cleaner reason to delete it is that it is in no ruleset of the
+      specification at all; `.m.rule.roomnotif`
       is seeded as `dont_notify` on one condition where v1.11 gives it `notify` plus `highlight` and a
       `sender_notification_permission` beside the `@room` word; `.m.rule.invite_for_me` names a
       condition kind that does not exist — and membership events are never evaluated anyway, because
