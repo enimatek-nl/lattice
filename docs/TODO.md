@@ -309,8 +309,38 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
       `TestAnAccountWrittenBeforeTheRulesIsGivenThem`, and `TestPropertyValuePaths` beside the new
       condition kinds in `TestRuleMatches`. Complement was **not** run for this change: docker is not
       reachable from the session that wrote it, so the 84-of-106 tally above predates it.
-- [ ] The rest of what v1.17 says the default rules are (split off from the item above on
-      2026-11-26; not built). What is left is what a newer specification *changes* rather than adds,
+- [ ] The content rule a Rust client cannot read (reported 2026-11-26 by the author of
+      smaltino from the v0.2.19 lab run; measured the same day on 0.2.19; not built). The only
+      content rule this server seeds is `.m.rule.contains_user_name`, and it is seeded **without
+      conditions** — `pushRuleWire` rebuilds a rule's `pattern` from a stored `content.body`
+      condition, so no condition means no `pattern`, and the answer for the content kind is:
+      `{"rule_id": ".m.rule.contains_user_name", "default": true, "enabled": true, "actions":
+      ["notify", {"set_tweak": "highlight", "value": true}]}`. v1.11 defines it with
+      `"pattern": "[the local part of the user's Matrix ID]"` and actions `notify`, sound
+      `default`, `highlight`. A content rule always carries a pattern, and ruma — the Rust SDK
+      behind smaltino and Element X — therefore refuses the **whole** rule set
+      (`missing field 'pattern'`) and falls back to its own defaults, which is why a second device
+      of the same account stops showing what the first one changed even though the account data and
+      both syncs carry it. Three things to fix together, and the second is the one that bites a
+      running server:
+      1. Seed the pattern with the account's localpart and give both mention rules their sound tweak;
+         `.m.rule.contains_display_name` is seeded with no conditions where v1.11 gives it exactly one,
+         `{"kind": "contains_display_name"}`, with no `key` and no `pattern`, plus the same sound tweak.
+         That condition kind has to be *implemented* rather than only stored: an unknown kind answers
+         "does not match", so a person copying the published condition into a rule of their own would
+         get a rule that never fires. The recipient's display name is already in `push.Context`.
+      2. Repair existing accounts. No endpoint re-points the conditions of a default rule — `PUT` takes
+         actions, `PUT` on `/enabled` takes the flag — so the repair pass may take the server's own
+         conditions back for rules with `default: true`, on a higher `PushRulesVersion`.
+      3. Refuse a content rule without a pattern. `SetPushRule` derives conditions from `pattern` where a
+         client sends one and validates nothing where it does not, so one bad `PUT` makes an account's
+         rule set unreadable for every Rust client on it.
+      Measured beside it on the same answer: `.m.rule.roomnotif` publishes a `pattern` **and** its
+      conditions, because the shorthand heuristic in `pushRuleWire` does not look at the kind — the
+      field belongs to content rules only. `.agent-work/v111/wire.py` prints that answer for a fresh
+      account.
+- [ ] The rest of what v1.17 says the default rules are (split off from the v1.11 item above
+      on 2026-11-26; not built). What is left is what a newer specification *changes* rather than adds,
       and the report agrees v1.11 may keep it: `.m.rule.contains_display_name`, `.m.rule.roomnotif`
       and `.m.rule.contains_user_name` are deprecated but still defined, while `.m.rule.default` and
       `.m.rule.notice` are seeded here and are in no ruleset at all. Read off the rules as this
