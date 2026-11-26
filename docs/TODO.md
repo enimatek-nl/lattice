@@ -154,6 +154,12 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
 
 - [ ] **Application services** — registrations and namespaces, `as_token` auth with `user_id`/`device_id`, transaction delivery with ephemeral data, user/alias queries. Nothing bridging works without it, and it is how a bot holds an identity here.
 - [ ] **Push delivery** — `POST /_matrix/push/v1/notify` as a *client* of a push gateway, with `event_id_only` and rejected pushkeys. Rules, pushers and counts already exist: this is one outbound request loop away from a phone ringing.
+      Measured 2026-11-26, because an app that is not open is not a client that can read rules
+      itself: `POST /pushers/set`, `GET /pushers` and both `DELETE` routes are served and the rows are
+      kept, and `internal/service` holds no outbound request to a gateway at all — so today an
+      Android or iOS app in the background receives nothing from this server. The testing objection
+      written here before is gone: smaltino's suite brings its own fake gateway, so no Sygnal is
+      needed to prove the loop works.
 - [ ] **An admin surface** — user list/get/create/update/deactivate/reset, room list/details/delete, force-join, purge. Today: four routes and the CLI.
 - [ ] **Authentication that is not a password** — `/login/sso/redirect`, `m.login.token` from an identity provider, MSC2965 discovery, `POST /v1/login/get_token`.
 
@@ -408,7 +414,8 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
       phone whose app relies on the gateway learns of an invite only when the app next reads a sync.
       Teaching the path membership events wants a decision about who is a recipient (the invite is not
       in the room yet, so `Members(roomID, join)` is the wrong list) and about rooms this server does
-      not consider joined; it wants a pusher configured to test, which no session here has had.
+      not consider joined. A gateway to test against is not the obstacle: smaltino's suite brings its
+      own fake one.
 - [ ] A rule without conditions always matches, and this server disagrees (spun off from the item
       above on 2026-11-26; not built). `Matches()` reads an empty condition list as matching only for
       underride rules; the specification has it match every event. The consequence is two-sided, and
