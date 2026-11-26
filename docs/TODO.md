@@ -399,6 +399,16 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
       of this: this server reads a rule without conditions as matching only underride rules, where
       the specification has it match everything — so this server never saw the silence it published.
       Complement and `make lint` were unavailable to this session too.
+- [ ] An invite never reaches a push gateway, because no rule is evaluated for one (measured
+      2026-11-26; not built). `notifyParticipants` returns for every event that is not
+      `m.room.message`, `m.room.encrypted` or `m.sticker`, so a membership change is never judged
+      against the rules of the recipient — which leaves the `.m.rule.invite_for_me` the previous item
+      finally gave its conditions unread by this server. Clients that walk the published rules
+      themselves are unaffected, and are what the 2026-11-26 lab run measured; a pusher is not, so a
+      phone whose app relies on the gateway learns of an invite only when the app next reads a sync.
+      Teaching the path membership events wants a decision about who is a recipient (the invite is not
+      in the room yet, so `Members(roomID, join)` is the wrong list) and about rooms this server does
+      not consider joined; it wants a pusher configured to test, which no session here has had.
 - [ ] A rule without conditions always matches, and this server disagrees (spun off from the item
       above on 2026-11-26; not built). `Matches()` reads an empty condition list as matching only for
       underride rules; the specification has it match every event. The consequence is two-sided, and
