@@ -30,8 +30,8 @@ because it said nothing these steps do not.
 
 | Measure | Now |
 |---|---|
-| `make build vet` | clean (4 s, 2026-11-20); `make lint` reports the same **7 issues** (6 staticcheck: `QF1001`×3, `QF1006`×2, `S1011`; 1 `unused`: `internal/api/federation.go:1045 eventInBody`) — pre-existing quickfix-style findings, none from the 2026-11-18 work. Note for a session started from a service unit: `golangci-lint` lives in `~/go/bin`, which is not on that PATH |
-| this repository's own tests | **370** counted here — 199 client-API compatibility, 90 two-server federation, 81 offline unit (`go test ./tests/<pkg> -list '.*'`, all green on 2026-11-25: compat 93 s, federation 50 s). `internal/matrix` adds its own test functions, which this tally has never counted |
+| `make build vet` | clean (4 s, 2026-11-20); `make lint` reports the same **7 issues** (6 staticcheck: `QF1001`×3, `QF1006`×2, `S1011`; 1 `unused`: `internal/api/federation.go:1045 eventInBody`) — pre-existing quickfix-style findings, none from the 2026-11-18 work. Note for a session started from a service unit: `golangci-lint` lives in `~/go/bin`, which is not on that PATH — and on 2026-11-26 the chat session's environment had no `golangci-lint` installed anywhere on its PATH, so the lint tally above still belongs to 2026-11-20 |
+| this repository's own tests | **374** counted here — 202 client-API compatibility, 90 two-server federation, 82 offline unit (`go test ./tests/<pkg> -list '.*'`, all green on 2026-11-26: compat 96 s, federation 50 s). `internal/matrix` adds its own test functions, which this tally has never counted |
 | Complement `tests/csapi` | **84 green of 106**, 2 skipped, in 345 s on v0.2.18 (2026-11-25; 338 s on v0.2.17, 340 s on v0.2.16). Two names less red than the 2026-11-20 tally: `TestPushSync` passes since the push rule set travels as `m.push_rules` account data, and `TestSearch` passes since `/search` speaks the specification's body and answer. The other 20 names are the same list, so the red list is stable rather than lucky. It could not be run to completion before 2026-11-18, see [COMPLEMENT.md](COMPLEMENT.md) |
 | Complement server-server (`tests`, not `tests/federation`) | **78 green of 91**, 13 red — re-measured 2026-11-20 for the first time since 2026-11-04, and the 13 are name for name the names recorded then, so the number was stale but honest. 338 s of own time; run beside the client-API suite it costs nothing extra, see `make complement-both` |
 | endpoints | **180 of 234** indexed routes implemented, 44 routes the index does not name (`make endpoints`, unchanged on 2026-11-20) |
@@ -280,31 +280,49 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
       changes and, a round later, one. `TestSyncAnswersFromAStoredPosition`; lab-confirmed the same day: the
       reporter's repro lost 0 of 36 accounts against 2 of 12 on the previous release, and their core suite went
       from 53 to 55 of 78 with the two load-dependent failures passing.
-- [ ] Default push rules as v1.17 defines them (reported 2026-11-25, verified against
-      spec.matrix.org/v1.17 the same day; not built). `GET /pushrules` publishes eight override rules;
-      v1.17 defines twelve. Missing: `.m.rule.is_user_mention` and `.m.rule.is_room_mention` (v1.7, they
-      read `m.mentions`), `.m.rule.room.server_acl` (v1.4) and `.m.rule.suppress_edits` (v1.9). Removed in
-      v1.17 and still seeded here: `.m.rule.contains_display_name`, `.m.rule.roomnotif` and
-      `.m.rule.contains_user_name` — measured: those three names do not occur anywhere on the v1.17
-      client-server page, and the page has no "Default Content Rules" section left. `.m.rule.default` and
-      `.m.rule.notice` are seeded as underrules and are not in the spec either. What a client can see today
-      is therefore wrong twice: a settings screen cannot toggle room mentions (`404` on
-      `.m.rule.is_room_mention`), and the rules that are served carry empty condition lists.
-      Four things, in this order:
-      1. Two condition kinds the matcher does not have: `event_property_is` and `event_property_contains`.
-         Unknown kinds already answer "does not match" (`internal/push/push.go`), so seeding the rules
-         first would turn a visible error into a silent no-op. Their keys escape dots
-         (`content.m\.mentions.room`), which the dotted-path resolver has to honour.
-      2. Seed the v1.17 set, with the specification's conditions **stored** rather than behaviour hidden per
-         identifier: `.m.rule.member_event`, `.m.rule.reaction` and `.m.rule.notice` are hard-coded in
-         `Matches()` today, so what the endpoint publishes has no conditions. Same for the underrules: the
-         spec's `.m.rule.room_one_to_one` and `.m.rule.message` match `type` = `m.room.message` (lattice
-         matches `content.msgtype` `m.*`, so notices match) and `.m.rule.message` has no sound tweak.
-      3. Repair existing accounts on open — defaults are seeded once per account, so without a pass like
-         `RepairPusherScope` only new accounts get the new rules. smaltino's tests always register, so this
-         is invisible to them and visible to every account on lattice.cybertim.net.
-      4. Drop the seeded-and-hard-coded mention rules with the condition kinds in place, and with them the
-         `contains_display_name` special case in the matcher.
+- [x] The four default override rules that v1.11 defines and this server never seeded
+      (reported 2026-11-26 by the author of smaltino, fixed the same day; v0.2.19).
+      `GET /pushrules` published eight override rules where v1.11 defines twelve: `.m.rule.is_user_mention`
+      and `.m.rule.is_room_mention` (v1.7), `.m.rule.room.server_acl` (v1.4) and
+      `.m.rule.suppress_edits` (v1.9). What a person felt was the switch an Element account uses
+      for "notify me when the room is mentioned" answering `404 M_NOT_FOUND`, and their core suite
+      failing on a mention that arrived without its highlight. Four things had to move together:
+      1. `internal/push` grew `event_property_is`, `event_property_contains` and
+         `sender_notification_permission`, and a property-path reader that honours the escaped dots
+         of the appendices — these rules read `content.m\.mentions.room`, one property called
+         `m.mentions`. `Matches` takes a `push.Context` now, because a condition can name six things
+         about a room and a seventh positional parameter reads as a mistake at every call site.
+      2. The four are seeded where the specification puts them, with their conditions **stored**.
+         `.m.rule.is_user_mention` carries the recipient's own Matrix ID inside its condition: a
+         rule that is a row has no other way to say "me".
+      3. Accounts older than a rule are repaired at start, because defaults are rows written once at
+         registration and a suite that registers cannot see what that costs a running server.
+         `User.PushRulesVersion` names the set an account holds and `RepairDefaultPushRules` adds
+         what is missing, once per account per set — which is also what keeps a rule a person
+         deleted deleted. The `m.push_rules` account data is republished for the accounts it touched.
+      4. Measured over two binaries with one script (`.agent-work/v111/probe.py`, its output in
+         `before.txt` and `after.txt` beside it): eight rules and a 404 become twelve and a 200; a
+         mention of a user's Matrix ID highlights instead of merely notifying; an `@room` mention
+         from a room administrator highlights; and an edit (`m.relates_to.rel_type` of `m.replace`)
+         stops notifying at all.
+      `TestDefaultOverrideRulesAreTheOnesTheServerAdvertises`, `TestMentionsNotifyTheWayTheirRulesSay`,
+      `TestAnAccountWrittenBeforeTheRulesIsGivenThem`, and `TestPropertyValuePaths` beside the new
+      condition kinds in `TestRuleMatches`. Complement was **not** run for this change: docker is not
+      reachable from the session that wrote it, so the 84-of-106 tally above predates it.
+- [ ] The rest of what v1.17 says the default rules are (split off from the item above on
+      2026-11-26; not built). What is left is what a newer specification *changes* rather than adds,
+      and the report agrees v1.11 may keep it: `.m.rule.contains_display_name`, `.m.rule.roomnotif`
+      and `.m.rule.contains_user_name` are deprecated but still defined, while `.m.rule.default` and
+      `.m.rule.notice` are seeded here and are in no ruleset at all. Read off the rules as this
+      server publishes them: `.m.rule.member_event`, `.m.rule.reaction` and `.m.rule.notice` are
+      hard-coded in `Matches()`, so what the endpoint shows carries no conditions; `.m.rule.roomnotif`
+      is seeded as `dont_notify` on one condition where v1.11 gives it `notify` plus `highlight` and a
+      `sender_notification_permission` beside the `@room` word; `.m.rule.invite_for_me` names a
+      condition kind that does not exist — and membership events are never evaluated anyway, because
+      the notification path reads `m.room.message`, `m.room.encrypted` and `m.sticker` and nothing
+      else; and `.m.rule.master` is read as "never matches" where the specification has it match
+      every event with an empty action list, which is exactly what makes switching it on the way to
+      turn an account quiet.
 - [x] `POST /account/deactivate` answers with the body the specification has (2026-11-25). It did the
       work and answered three Synapse-legacy keys (`id_server`, `3pids_disconnected_json`,
       `unbind_credentials`) while leaving out the **required** `id_server_unbind_result`, so the Rust SDK

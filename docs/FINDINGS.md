@@ -1500,3 +1500,63 @@ server does not have — are gone.
 - `TestAccountAnswersCarryWhatTheSchemaNames` checks the three bodies, four assertions
   in all; on the old answers all four fail. No test had looked at any of these bodies
   before, which is how an answer can be wrong for this long.
+
+## A default rule is a row, so somebody has to hand it to the accounts that already exist (2026-11-26, v0.2.19)
+
+Reported by the author of smaltino: `GET /pushrules` listed eight override rules, the
+specification this server advertises (`/versions` ends at v1.11) defines twelve, and
+`PUT /pushrules/global/override/.m.rule.is_room_mention/enabled` answered
+`404 M_NOT_FOUND` — the switch for "notify me when the room is mentioned" failed with an
+error message on every account, and their core suite failed on the mention that arrived
+without its highlight.
+
+The rule that generalises is not about push rules: **a default that is stored once is a
+promise about the future only.** Synapse computes its default rules at read time and
+therefore cannot be behind; Lattice seeds rows at registration, so a rule added in 2026
+is missing on every account made before 2026 and present on every account made after —
+which is exactly the half a suite that registers cannot see. Fixed by
+`RepairDefaultPushRules`, run from `service.New` beside the signing key, and gated on
+`User.PushRulesVersion` rather than run every start: an absent row for a default rule
+cannot be told apart from a default rule a person deleted, and `DELETE` of a default rule
+is allowed in v1.11 (its responses are 200 and 404, and the old 400 for removing a default
+rule is gone). One promise per account per rule set is the honest shape; the repair also
+republishes the `m.push_rules` account data, because that copy is what MSC4010 tells
+clients to read.
+
+Four things worth not re-deriving about the rules themselves:
+
+- **A property path escapes its dots.** The keys are `content.m\.mentions.room` and
+  `content.m\.relates_to.rel_type`: a backslash escapes the dot (or backslash) after it,
+  other escape sequences stay as they came, and a plain `content.m.mentions.room` walks
+  into an object called `m`. That is the appendices, "Dot-separated property paths", and
+  `push.PropertyValue` is the one place that reads it — `event_match`,
+  `event_property_is` and `event_property_contains` share it.
+- **`event_property_is` compares JSON values, not strings.** `"true"`, `1` and `true` are
+  three answers, and only string / integer / boolean / null compare at all; a property
+  that is absent, or is an object or an array, never matches. `event_property_contains`
+  needs an array and matches its entries the same exact way, so `":example.com"` is not in
+  `["@bob:example.com"]`.
+- **`sender_notification_permission` is a power-level read.** The key names an entry of the
+  `notifications` object of the power levels event, and `notifications.room` — the level an
+  `@room` mention asks for — defaults to **50**, so an ordinary member (0) cannot wake a
+  room. `power.ActionRequired` does not know that key, so the fallback lives in
+  `push.DefaultNotificationLevel` and the service hands the pair
+  (`senderPower`) to the matcher once per event rather than once per recipient.
+- **Two of the four rules can never fire on this server, and that is fine.**
+  `.m.rule.room.server_acl` is a state event and `notifyParticipants` reads
+  `m.room.message`, `m.room.encrypted` and `m.sticker`; the rule is seeded so the client's
+  list is the specification's list. `.m.rule.suppress_edits` does fire, and it is the one
+  whose absence is heard: an edit used to notify like the message it replaced.
+
+Measured over two binaries with one script (`.agent-work/v111/probe.py`, output in
+`before.txt` and `after.txt`): 8 rules → 12, `404` → `200`, a mention of a Matrix ID that
+only notified → highlighted, an `@room` mention from a room administrator → highlighted,
+an edit → not heard at all.
+
+- Left deliberately, recorded in the queue: `.m.rule.member_event`, `.m.rule.reaction` and
+  `.m.rule.notice` are still recognised by identifier in `Matches()` rather than by stored
+  conditions, so they publish empty condition lists; `.m.rule.master` is still read as
+  "never matches", where the specification has it match everything with an empty action
+  list — which is what makes it an off switch; `.m.rule.roomnotif` keeps its `dont_notify`
+  actions. All three are v1.17 work, and seeding a rule whose condition the matcher cannot
+  read would trade a 404 for a silent no-op — the worse of the two.
