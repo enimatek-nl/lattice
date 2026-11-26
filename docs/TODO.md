@@ -468,15 +468,18 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
       way; a gateway written to Synapse's reading would pick `.m.rule.message` where ruma and here
       pick `.m.rule.room_one_to_one`. Recorded rather than changed.
 
-- [ ] A call for somebody else still rings, and the specification's rules cannot say otherwise
-      (measured 2026-11-26; not built). `woken_for_a_ring` sends an `m.call.invite` whose `party_id`
-      is another user and expects silence. Walking the published rules says why it does not happen:
-      `.m.rule.call` matches `type` = `m.call.invite` with notify and the ring sound, which is
-      exactly what v1.11 defines, and no rule asks whether the call is for the recipient — call
-      events carry `call_id` and `party_id`, not an `m.mentions` property, so there is nothing for a
-      rule to read. Either the client filters calls by `party_id` it holds, or the person switches
-      `.m.rule.call` off. Nothing to fix in the rule set; a question for the client, and worth
-      asking before a fourth release is spent on it.
+- [x] A call for somebody else rang, and the reason was not the call rule (measured 2026-11-26;
+      resolved the same day by v0.2.22; corrected the same day by the report). `woken_for_a_ring`
+      was failing, its name says a call, and I concluded from the name that it sent an
+      `m.call.invite` whose `party_id` named another user — which would have been unfixable in rule
+      data, because v1.11's `.m.rule.call` matches `type` = `m.call.invite` and nothing on that event
+      says whom the call is for. smaltino corrected it: the test sends
+      `org.matrix.msc4075.rtc.notification`, and that event **does** carry an `m.mentions` property,
+      so the mention rules read it fine. What made it fail was `.m.rule.room_one_to_one` without its
+      `type` condition — the first row of the audit above — and the test passes on v0.2.22. Nothing
+      to change on either side, and `.m.rule.call` stays exactly as the specification defines it.
+      The lesson is the one about sampling: a test's name is not its request, and a conclusion drawn
+      from the name is worth as much as the name.
 - [ ] The rest of what v1.17 says the default rules are (split off from the v1.11 item above
       on 2026-11-26; not built). What is left is what a newer specification *changes* rather than adds,
       and the report agrees v1.11 may keep it: `.m.rule.contains_display_name`, `.m.rule.roomnotif`

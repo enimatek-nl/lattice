@@ -1693,7 +1693,10 @@ definitions out of the "Predefined Rules" section and compares conditions and ac
 - Some of it lands on the server itself, and that is the tell that the data was wrong rather
   than cosmetic: a group room's messages lose their seeded sound, and an `@room` in a body from
   a moderator now highlights the way `m.mentions.room` does.
-- One thing the audit could not fix: `.m.rule.call` rings for a call addressed to somebody else,
-  because `m.call.invite` is what v1.11 says rings and call events carry `call_id` and
-  `party_id` rather than anything a rule can read. A rule set has no way to ask "is this for
-  me" here; the client has to. Recorded as a question for the client rather than a fourth fix.
+- And one thing I got wrong while writing this up, corrected the same day by the report: a failing
+  test called `woken_for_a_ring` led me to conclude it sent an `m.call.invite`, that the rule set
+  therefore could not tell whom a call was for, and that the fix belonged to the client. The test
+  sends `org.matrix.msc4075.rtc.notification`, which carries an `m.mentions` property, and it failed
+  for the same reason as its neighbours — `.m.rule.room_one_to_one` without its `type` condition —
+  so it passes on v0.2.22 and `.m.rule.call` is the specification's own. A test's name is not its
+  request: reading the event it sends costs a minute and a wrong conclusion costs a release note.
