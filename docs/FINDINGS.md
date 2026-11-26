@@ -1656,3 +1656,44 @@ with the actions the specification defines — on v0.2.21.
   taken back whenever the set moves; its actions belong to the person and are taken back only while
   the row still holds exactly what the server seeded for it, which is the one case in which the
   server can tell that nobody chose them.
+
+## Compare the whole published set with the specification once, instead of one rule per report (2026-11-26, v0.2.22)
+
+A third client report in a row about push rules — a room of two announcing name changes,
+an encrypted message for somebody else waking the phone — and the third time the answer was
+a rule whose conditions were not the specification's. So this time the published answer was
+diffed against the specification as a whole: `.agent-work/v111/spec-audit.py` reads the JSON
+definitions out of the "Predefined Rules" section and compares conditions and actions with
+`GET /pushrules`. Eight deviations came back. Two had been reported. Six had not.
+
+- `.m.rule.room_one_to_one` named no event type, so in a room of two it matched a name change,
+  a topic change and somebody else's call. `.m.rule.message` matched `content.msgtype` `m.*`
+  where v1.11 matches `type` = `m.room.message`. `.m.rule.encrypted` and `.m.rule.message`
+  carried sound and count tweaks the specification's `notify` does not. `.m.rule.roomnotif`
+  was missing its `sender_notification_permission` condition and its notify-plus-highlight
+  actions. `.m.rule.tombstone` was seeded `dont_notify` where the definition highlights.
+  `.m.rule.suppress_notices` carried `dont_notify` where the definition prints `[]`, and
+  `.m.rule.master` published no `conditions` field where the definition prints `[]`.
+- **A report is a sample, and a sample finds one defect at a time.** The unit of work was
+  wrong: not "the rule a client tripped on" but "the set a client reads". Both new tools are
+  general — the audit for the whole set, `.agent-work/v111/rules-eval.py` to walk a published
+  answer with the specification's algorithm and print the rule each event ends on — and the
+  comparison now lives in the suite as `TestPublishedDefaultRulesAreTheSpecificationsDefinitions`,
+  its table emitted from the specification's own JSON rather than retyped.
+- **Publishing an empty list and publishing nothing are different answers.** `omitempty` on a
+  slice cannot tell them apart, and the specification needs both: `[]` for `.m.rule.master`,
+  nothing at all for a content rule. `PushRuleWire` carries a pointer for `conditions` now, as
+  it already did for `pattern`, for that one reason.
+- **The specification is silent about which end of an underride list wins.** This server takes
+  the first matching rule of a kind, Synapse keeps the last, and ruma agrees with this server —
+  which is why the room's evaluation and Lattice's agree on a DM message landing on
+  `.m.rule.room_one_to_one` while a Synapse-shaped reader would land it on `.m.rule.message`.
+  Recorded, not changed: a rule set that two of three readers agree on is not the place to
+  start an argument.
+- Some of it lands on the server itself, and that is the tell that the data was wrong rather
+  than cosmetic: a group room's messages lose their seeded sound, and an `@room` in a body from
+  a moderator now highlights the way `m.mentions.room` does.
+- One thing the audit could not fix: `.m.rule.call` rings for a call addressed to somebody else,
+  because `m.call.invite` is what v1.11 says rings and call events carry `call_id` and
+  `party_id` rather than anything a rule can read. A rule set has no way to ask "is this for
+  me" here; the client has to. Recorded as a question for the client rather than a fourth fix.

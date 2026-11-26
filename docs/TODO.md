@@ -31,7 +31,7 @@ because it said nothing these steps do not.
 | Measure | Now |
 |---|---|
 | `make build vet` | clean (4 s, 2026-11-20); `make lint` reports the same **7 issues** (6 staticcheck: `QF1001`×3, `QF1006`×2, `S1011`; 1 `unused`: `internal/api/federation.go:1045 eventInBody`) — pre-existing quickfix-style findings, none from the 2026-11-18 work. Note for a session started from a service unit: `golangci-lint` lives in `~/go/bin`, which is not on that PATH — and on 2026-11-26 the chat session's environment had no `golangci-lint` installed anywhere on its PATH, so the lint tally above still belongs to 2026-11-20 |
-| this repository's own tests | **378** counted here — 206 client-API compatibility, 90 two-server federation, 82 offline unit (`go test ./tests/<pkg> -list '.*'`, all green on 2026-11-26: compat 97 s, federation 50 s). `internal/matrix` adds its own test functions, which this tally has never counted |
+| this repository's own tests | **379** counted here — 207 client-API compatibility, 90 two-server federation, 82 offline unit (`go test ./tests/<pkg> -list '.*'`, all green on 2026-11-26: compat 97 s, federation 50 s). `internal/matrix` adds its own test functions, which this tally has never counted |
 | Complement `tests/csapi` | **84 green of 106**, 2 skipped, in 345 s on v0.2.18 (2026-11-25; 338 s on v0.2.17, 340 s on v0.2.16). Two names less red than the 2026-11-20 tally: `TestPushSync` passes since the push rule set travels as `m.push_rules` account data, and `TestSearch` passes since `/search` speaks the specification's body and answer. The other 20 names are the same list, so the red list is stable rather than lucky. It could not be run to completion before 2026-11-18, see [COMPLEMENT.md](COMPLEMENT.md) |
 | Complement server-server (`tests`, not `tests/federation`) | **78 green of 91**, 13 red — re-measured 2026-11-20 for the first time since 2026-11-04, and the 13 are name for name the names recorded then, so the number was stale but honest. 338 s of own time; run beside the client-API suite it costs nothing extra, see `make complement-both` |
 | endpoints | **180 of 234** indexed routes implemented, 44 routes the index does not name (`make endpoints`, unchanged on 2026-11-20) |
@@ -421,6 +421,62 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
       change wants a Complement run it cannot get from a session without docker, and it wants the
       default set read once more first: `.m.rule.master` is the specification's own condition-less
       rule, and this server also reads it as an off switch that is never thrown.
+- [x] The whole default rule set, compared with the definitions the specification prints
+      (measured 2026-11-26, after the third client report in a row was about rule data rather than
+      about behaviour; fixed the same day; v0.2.22). Three releases had been opened one rule at a
+      time by a Rust client, so this time the published answer was compared with the specification
+      as a whole: `.agent-work/v111/spec-audit.py` reads the JSON definitions out of the
+      "Predefined Rules" section and diffs them, conditions and actions, against `GET /pushrules`.
+      Eight deviations came back, six of them never reported:
+
+      | rule | published here | v1.11 defines |
+      |---|---|---|
+      | `.m.rule.room_one_to_one` | member count 2 | member count 2 **and** `type` = `m.room.message` |
+      | `.m.rule.message` | `content.msgtype` `m.*`, notify + sound `default` | `type` = `m.room.message`, `notify` |
+      | `.m.rule.encrypted` | notify + `count` | `notify` |
+      | `.m.rule.roomnotif` | one `@room` condition, `dont_notify` | that condition **and** `sender_notification_permission`, notify + highlight |
+      | `.m.rule.tombstone` | `dont_notify` | notify + highlight |
+      | `.m.rule.suppress_notices` | `dont_notify` | `[]` |
+      | `.m.rule.master` | no `conditions` field | `"conditions": []` |
+
+      The first row is what the room reported: an underride rule that speaks of a message and names
+      no type matches a name change, a topic change and somebody else's call in a room of two —
+      seven "Room updated" announcements in one test. Measured by walking the published answer with
+      the specification's algorithm (`.agent-work/v111/rules-eval.py`), in a room of two from an
+      ordinary member: a name change and a topic change went from `.m.rule.room_one_to_one` with
+      notify and a sound to no rule at all, and an encrypted message from that same rule to
+      `.m.rule.encrypted_room_one_to_one`, which is the rule written for it.
+
+      Two of the seven change what this server itself does, and both are the specification's doing:
+      a plain message in a group room now carries no sound tweak (`.m.rule.message` is `notify`, and
+      the sound of a room is the person's choice), and an `@room` in a body from a moderator now
+      highlights the way `m.mentions.room` does.
+
+      `TestPublishedDefaultRulesAreTheSpecificationsDefinitions` is that audit inside the suite: a
+      table of all eighteen definitions, emitted from the specification's own JSON by
+      `.agent-work/v111/gen-rules-table.py`, compared field for field, with the two rules this
+      server added of its own named as the only permitted extras. It fails on a single reverted
+      tweak, which is the point: four reports and three releases went into rules that a comparison
+      of the whole set catches in one go. The repair pass runs again at `defaultRulesVersion` 5,
+      taking actions back only where a row still holds what this server seeded (`seededWrongActions`
+      grew to the nine rules touched since), so nobody's settings screen is undone.
+
+      Read beside it: `OrderRules` and `Matches` pick the **first** matching rule of a kind, where
+      Synapse keeps the **last** for underride rules. The specification only says rules of a kind
+      carry an ordering priority and the highest wins, and never says which end of the list that
+      is. ruma agrees with this server, which is how the room's own evaluation came out the same
+      way; a gateway written to Synapse's reading would pick `.m.rule.message` where ruma and here
+      pick `.m.rule.room_one_to_one`. Recorded rather than changed.
+
+- [ ] A call for somebody else still rings, and the specification's rules cannot say otherwise
+      (measured 2026-11-26; not built). `woken_for_a_ring` sends an `m.call.invite` whose `party_id`
+      is another user and expects silence. Walking the published rules says why it does not happen:
+      `.m.rule.call` matches `type` = `m.call.invite` with notify and the ring sound, which is
+      exactly what v1.11 defines, and no rule asks whether the call is for the recipient — call
+      events carry `call_id` and `party_id`, not an `m.mentions` property, so there is nothing for a
+      rule to read. Either the client filters calls by `party_id` it holds, or the person switches
+      `.m.rule.call` off. Nothing to fix in the rule set; a question for the client, and worth
+      asking before a fourth release is spent on it.
 - [ ] The rest of what v1.17 says the default rules are (split off from the v1.11 item above
       on 2026-11-26; not built). What is left is what a newer specification *changes* rather than adds,
       and the report agrees v1.11 may keep it: `.m.rule.contains_display_name`, `.m.rule.roomnotif`
@@ -428,13 +484,10 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
       `.m.rule.notice` are seeded here and are in no ruleset at all. Read off the rules as this
       server publishes them: `.m.rule.notice` is still hard-coded in `Matches()`, so it publishes a
       condition it does not obey — the cleaner reason to delete it is that it is in no ruleset of the
-      specification at all; `.m.rule.roomnotif`
-      is seeded as `dont_notify` on one condition where v1.11 gives it `notify` plus `highlight` and a
-      `sender_notification_permission` beside the `@room` word; `.m.rule.invite_for_me` names a
-      condition kind that does not exist — and membership events are never evaluated anyway, because
-      the notification path reads `m.room.message`, `m.room.encrypted` and `m.sticker` and nothing
-      else; and `.m.rule.master` is read as "never matches" where the specification has it match
-      every event with an empty action list, which is exactly what makes switching it on the way to
+      specification at all, which the audit of
+      2026-11-26 now prints on every run of the compatibility suite; `.m.rule.master` is read as
+      "never matches" where the specification has it match every event with an empty action list,
+      which is exactly what makes switching it on the way to
       turn an account quiet.
 - [x] `POST /account/deactivate` answers with the body the specification has (2026-11-25). It did the
       work and answered three Synapse-legacy keys (`id_server`, `3pids_disconnected_json`,
