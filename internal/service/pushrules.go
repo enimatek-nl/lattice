@@ -13,44 +13,101 @@ import (
 // the rule engine in internal/push, which is also what sorts rules by it.
 var PushRuleKinds = push.Kinds
 
+// defaultRulesVersion names the default rule set this build seeds.
+//
+// It is written to the account beside the rules it describes, and
+// RepairDefaultPushRules compares an account against it. Bump it whenever
+// defaultPushRules gains or moves a rule, so accounts written by an older binary
+// are brought up once.
+const defaultRulesVersion = 2
+
+// The keys the default rules of v1.7 and later name carry an escaped dot: the
+// property is called m.mentions, one name, and a plain dot would read it as a path
+// through an object called m. The appendices spell this out under "Dot-separated
+// property paths".
+const (
+	keyMentionsUserIDs = `content.m\.mentions.user_ids`
+	keyMentionsRoom    = `content.m\.mentions.room`
+	keyRelatesToRel    = `content.m\.relates_to.rel_type`
+)
+
 // defaultPushRules are the server default rules seeded for every new account.
-// They follow the "Default Ruleset" of the specification.
-func defaultPushRules() []persist.PushRule {
+// They follow the "Default Ruleset" of the specification the server advertises
+// (v1.11 in /versions), in the order that section lists them, because that order
+// is the order a client shows and the order rules are evaluated in.
+//
+// userID is not decoration: `.m.rule.is_user_mention` names the recipient inside a
+// stored condition, which is the only way a rule that is a row can say "my own
+// Matrix ID".
+func defaultPushRules(userID string) []persist.PushRule {
 	dontNotify := matrix.Array{"dont_notify"}
 	highlight := matrix.Array{"notify", matrix.Object{"set_tweak": "highlight", "value": true}}
+	silent := matrix.Array{}
 	count := matrix.Array{"notify", matrix.Object{"set_tweak": "count"}}
 	sound := func(name string) matrix.Array {
 		return matrix.Array{"notify", matrix.Object{"set_tweak": "sound", "value": name}}
 	}
+	// mentionActions and roomMentionActions are the two action lists the v1.7 mention
+	// rules carry: a user mention makes a sound and highlights, a room mention only
+	// highlights.
+	mentionActions := matrix.Array{"notify",
+		matrix.Object{"set_tweak": "sound", "value": "default"},
+		matrix.Object{"set_tweak": "highlight"}}
+	roomMentionActions := matrix.Array{"notify", matrix.Object{"set_tweak": "highlight"}}
+	condition := func(entries ...matrix.Object) string {
+		out := matrix.Array{}
+		for _, entry := range entries {
+			out = append(out, entry)
+		}
+		return string(matrix.Encode(out))
+	}
 	rules := []persist.PushRule{
 		{Kind: "override", RuleID: ".m.rule.master", Enabled: false, Actions: string(matrix.Encode(dontNotify))},
 		{Kind: "override", RuleID: ".m.rule.suppress_notices", Enabled: true, Actions: string(matrix.Encode(dontNotify)),
-			Conditions: `[{"kind":"event_match","key":"content.msgtype","pattern":"m.notice"}]`},
+			Conditions: condition(matrix.Object{"kind": "event_match", "key": "content.msgtype", "pattern": "m.notice"})},
 		{Kind: "override", RuleID: ".m.rule.invite_for_me", Enabled: true, Actions: string(matrix.Encode(count)),
-			Conditions: `[{"kind":"member_count"}]`},
+			Conditions: condition(matrix.Object{"kind": "member_count"})},
 		{Kind: "override", RuleID: ".m.rule.member_event", Enabled: true, Actions: string(matrix.Encode(dontNotify))},
+		{Kind: "override", RuleID: ".m.rule.is_user_mention", Enabled: true, Actions: string(matrix.Encode(mentionActions)),
+			Conditions: condition(matrix.Object{"kind": "event_property_contains",
+				"key": keyMentionsUserIDs, "value": userID})},
 		{Kind: "override", RuleID: ".m.rule.contains_display_name", Enabled: true, Actions: string(matrix.Encode(highlight))},
+		{Kind: "override", RuleID: ".m.rule.is_room_mention", Enabled: true, Actions: string(matrix.Encode(roomMentionActions)),
+			Conditions: condition(
+				matrix.Object{"kind": "event_property_is", "key": keyMentionsRoom, "value": true},
+				matrix.Object{"kind": "sender_notification_permission", "key": "room"})},
 		{Kind: "override", RuleID: ".m.rule.roomnotif", Enabled: true, Actions: string(matrix.Encode(dontNotify)),
-			Conditions: `[{"kind":"event_match","key":"content.body","pattern":"@room"}]`},
+			Conditions: condition(matrix.Object{"kind": "event_match", "key": "content.body", "pattern": "@room"})},
 		{Kind: "override", RuleID: ".m.rule.tombstone", Enabled: true, Actions: string(matrix.Encode(dontNotify)),
-			Conditions: `[{"kind":"event_match","key":"type","pattern":"m.room.tombstone"},{"kind":"event_match","key":"state_key","pattern":""}]`},
+			Conditions: condition(
+				matrix.Object{"kind": "event_match", "key": "type", "pattern": "m.room.tombstone"},
+				matrix.Object{"kind": "event_match", "key": "state_key", "pattern": ""})},
 		{Kind: "override", RuleID: ".m.rule.reaction", Enabled: true, Actions: string(matrix.Encode(dontNotify))},
+		{Kind: "override", RuleID: ".m.rule.room.server_acl", Enabled: true, Actions: string(matrix.Encode(silent)),
+			Conditions: condition(
+				matrix.Object{"kind": "event_match", "key": "type", "pattern": "m.room.server_acl"},
+				matrix.Object{"kind": "event_match", "key": "state_key", "pattern": ""})},
+		{Kind: "override", RuleID: ".m.rule.suppress_edits", Enabled: true, Actions: string(matrix.Encode(silent)),
+			Conditions: condition(matrix.Object{"kind": "event_property_is",
+				"key": keyRelatesToRel, "value": "m.replace"})},
 		{Kind: "content", RuleID: ".m.rule.contains_user_name", Enabled: true, Actions: string(matrix.Encode(highlight))},
 		{Kind: "underride", RuleID: ".m.rule.call", Enabled: true, Actions: string(matrix.Encode(sound("ring"))),
-			Conditions: `[{"kind":"event_match","key":"type","pattern":"m.call.invite"}]`},
+			Conditions: condition(matrix.Object{"kind": "event_match", "key": "type", "pattern": "m.call.invite"})},
 		{Kind: "underride", RuleID: ".m.rule.room_one_to_one", Enabled: true, Actions: string(matrix.Encode(sound("default"))),
-			Conditions: `[{"kind":"room_member_count","is":"2"}]`},
+			Conditions: condition(matrix.Object{"kind": "room_member_count", "is": "2"})},
 		{Kind: "underride", RuleID: ".m.rule.encrypted_room_one_to_one", Enabled: true,
-			Actions:    string(matrix.Encode(sound("default"))),
-			Conditions: `[{"kind":"room_member_count","is":"2"},{"kind":"event_match","key":"type","pattern":"m.room.encrypted"}]`},
+			Actions: string(matrix.Encode(sound("default"))),
+			Conditions: condition(
+				matrix.Object{"kind": "room_member_count", "is": "2"},
+				matrix.Object{"kind": "event_match", "key": "type", "pattern": "m.room.encrypted"})},
 		{Kind: "underride", RuleID: ".m.rule.message", Enabled: true, Actions: string(matrix.Encode(sound("default"))),
-			Conditions: `[{"kind":"event_match","key":"content.msgtype","pattern":"m.*"}]`},
+			Conditions: condition(matrix.Object{"kind": "event_match", "key": "content.msgtype", "pattern": "m.*"})},
 		{Kind: "underride", RuleID: ".m.rule.encrypted", Enabled: true, Actions: string(matrix.Encode(count)),
-			Conditions: `[{"kind":"event_match","key":"type","pattern":"m.room.encrypted"}]`},
+			Conditions: condition(matrix.Object{"kind": "event_match", "key": "type", "pattern": "m.room.encrypted"})},
 		{Kind: "underride", RuleID: ".m.rule.default", Enabled: true, Actions: string(matrix.Encode(count)),
-			Conditions: `[{"kind":"event_match","key":"content.msgtype","pattern":"m.notice"}]`},
+			Conditions: condition(matrix.Object{"kind": "event_match", "key": "content.msgtype", "pattern": "m.notice"})},
 		{Kind: "underride", RuleID: ".m.rule.notice", Enabled: true, Actions: string(matrix.Encode(dontNotify)),
-			Conditions: `[{"kind":"sender_notification_permission","key":"m.notice"}]`},
+			Conditions: condition(matrix.Object{"kind": "sender_notification_permission", "key": "m.notice"})},
 	}
 	for i := range rules {
 		rules[i].Default = true
@@ -61,13 +118,136 @@ func defaultPushRules() []persist.PushRule {
 
 // SeedPushRules installs the default rule set for a user.
 func (s *Service) SeedPushRules(ctx context.Context, userID string) error {
-	for _, rule := range defaultPushRules() {
+	for _, rule := range defaultPushRules(userID) {
 		rule.UserID = userID
 		if err := s.db.PushRuleRepo.Set(&rule); err != nil {
 			return matrix.ErrInternal(err)
 		}
 	}
+	if err := s.db.UserRepo.SetPushRulesVersion(userID, defaultRulesVersion); err != nil {
+		return matrix.ErrInternal(err)
+	}
 	return s.publishPushRules(ctx, userID)
+}
+
+// RepairDefaultPushRules gives every account the default rules it was never seeded
+// with.
+//
+// Default rules are rows like any other, written once when the account is created, so a
+// server that learns a rule of the specification keeps answering 404 for it on every
+// account that existed the day before. What a person sees is a settings screen that
+// cannot turn room mentions on, on the accounts they actually use and on no other.
+//
+// The account's User.PushRulesVersion says whether it holds the set this build seeds.
+// That marker, rather than a sweep of every start, is what keeps a rule a person deleted
+// deleted: a stored default rule that is absent cannot be told apart from one this server
+// never wrote, so the server can only promise the set once per rule set per account.
+func (s *Service) RepairDefaultPushRules(ctx context.Context) error {
+	count, err := s.db.UserRepo.Count()
+	if err != nil {
+		return matrix.ErrInternal(err)
+	}
+	if count == 0 {
+		return nil
+	}
+	users, err := s.db.UserRepo.List(int(count), 0)
+	if err != nil {
+		return matrix.ErrInternal(err)
+	}
+	for _, user := range users {
+		if user.PushRulesVersion >= defaultRulesVersion {
+			continue
+		}
+		changed, err := s.addMissingDefaultRules(user.ID)
+		if err != nil {
+			return err
+		}
+		if err := s.db.UserRepo.SetPushRulesVersion(user.ID, defaultRulesVersion); err != nil {
+			return matrix.ErrInternal(err)
+		}
+		// Clients read the rule set out of the m.push_rules account data as well as from
+		// the endpoint, so a rule that arrived by repair has to reach that copy too.
+		if changed {
+			if err := s.publishPushRules(ctx, user.ID); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// addMissingDefaultRules writes the default rules an account does not have and puts them
+// where the specification puts them. Everything already there keeps its row, its flags
+// and its place: a repair that reset the rules it came to add would also undo whatever a
+// person had switched off.
+func (s *Service) addMissingDefaultRules(user string) (bool, error) {
+	rows, err := s.db.PushRuleRepo.List(user, "")
+	if err != nil {
+		return false, matrix.ErrInternal(err)
+	}
+	there := make(map[string]bool, len(rows))
+	order := map[string][]string{}
+	for _, row := range rows {
+		there[ruleKey(row.Kind, row.RuleID)] = true
+		order[row.Kind] = append(order[row.Kind], row.RuleID)
+	}
+	// The specification's order per kind, so a rule that arrives late can be put where it
+	// would have been had the account been written today.
+	wanted := map[string][]string{}
+	for _, rule := range defaultPushRules(user) {
+		wanted[rule.Kind] = append(wanted[rule.Kind], rule.RuleID)
+	}
+	moved := map[string]bool{}
+	changed := false
+	for _, rule := range defaultPushRules(user) {
+		if there[ruleKey(rule.Kind, rule.RuleID)] {
+			continue
+		}
+		rule.UserID = user
+		if err := s.db.PushRuleRepo.Set(&rule); err != nil {
+			return changed, matrix.ErrInternal(err)
+		}
+		there[ruleKey(rule.Kind, rule.RuleID)] = true
+		order[rule.Kind] = placeAfterNeighbour(order[rule.Kind], wanted[rule.Kind], rule.RuleID)
+		moved[rule.Kind] = true
+		changed = true
+	}
+	for kind, ids := range order {
+		if !moved[kind] {
+			continue
+		}
+		if err := s.db.PushRuleRepo.Order(user, kind, ids); err != nil {
+			return changed, matrix.ErrInternal(err)
+		}
+	}
+	return changed, nil
+}
+
+// ruleKey addresses a rule the way the stored rows do: a kind and an id together, since
+// the same id may exist in two kinds.
+func ruleKey(kind, ruleID string) string { return kind + " " + ruleID }
+
+// placeAfterNeighbour inserts a rule behind the last default rule the specification puts
+// before it, which is the place it had in the list this account never got. Rules a person
+// wrote themselves are left where they are: they were placed by a before or after
+// parameter, and moving them to make a repair tidier would move them out from under the
+// client that asked for that place.
+func placeAfterNeighbour(ids, spec []string, ruleID string) []string {
+	at := 0
+	for _, id := range spec {
+		if id == ruleID {
+			break
+		}
+		for j, current := range ids {
+			if current == id && j+1 > at {
+				at = j + 1
+			}
+		}
+	}
+	out := make([]string, 0, len(ids)+1)
+	out = append(out, ids[:at]...)
+	out = append(out, ruleID)
+	return append(out, ids[at:]...)
 }
 
 // publishPushRules writes the whole rule set as the user's m.push_rules global account data.

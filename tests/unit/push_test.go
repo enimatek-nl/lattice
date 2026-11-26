@@ -1,6 +1,7 @@
 package unit
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/enimatek-nl/lattice/internal/matrix"
@@ -202,25 +203,101 @@ func TestEventFieldValue(t *testing.T) {
 	}
 }
 
+// TestPropertyValuePaths pins the raw values a condition can name, as the
+// appendices define a dot-separated property path: a backslash escapes the dot or
+// backslash that follows it, and other escape sequences are left as they came. The
+// v1.7 mention rules are why this matters — they read `content.m\.mentions.room`,
+// one property called m.mentions.
+func TestPropertyValuePaths(t *testing.T) {
+	event := &persist.Event{
+		EventID: "$event", RoomID: "!room:example.com", Type: matrix.TypeMessage,
+		Sender: "@alice:example.com", StateKey: "@alice:example.com",
+	}
+	content := matrix.Object{
+		"body": "hello",
+		"m.mentions": matrix.Object{
+			"user_ids": []any{"@bob:example.com", "@carol:example.com"},
+			"room":     true,
+		},
+		"m.relates_to": matrix.Object{"rel_type": "m.replace", "event_id": "$root"},
+		"m.federate":   true,
+		"count":        float64(3),
+		"odd.name":     "dotted",
+		`m\back`:       "backslash",
+	}
+	tests := []struct {
+		key     string
+		want    any
+		present bool
+		comment string
+	}{
+		{key: "state_key", want: "@alice:example.com", present: true,
+			comment: "the name of a state event is readable, which is how room.server_acl says state event"},
+		{key: "type", want: matrix.TypeMessage, present: true},
+		{key: `content.m\.mentions.room`, want: true, present: true,
+			comment: "an escaped dot names one property"},
+		{key: `content.m\.mentions.user_ids`, want: content["m.mentions"].(matrix.Object)["user_ids"], present: true},
+		{key: `content.m\.relates_to.rel_type`, want: "m.replace", present: true},
+		{key: "content.m.mentions.room", present: false,
+			comment: "without the escapes the path walks into an object called m, which is not there"},
+		{key: `content.odd\.name`, want: "dotted", present: true},
+		{key: `content.m\\back`, want: "backslash", present: true,
+			comment: "an escaped backslash is one backslash in a property name"},
+		{key: `content.m\xmentions`, present: false,
+			comment: `\x is not an escape: it is a backslash and an x, and no property is called that`},
+		{key: "content.count", want: float64(3), present: true,
+			comment: "numbers arrive as JSON numbers, not as strings"},
+		{key: "content.missing", present: false},
+		{key: `content.m\.mentions.nope`, present: false},
+		{key: `content.m\.mentions.room.deeper`, present: false,
+			comment: "a value that is not an object holds no property"},
+		{key: "origin_server_ts", present: false, comment: "no condition reads it"},
+		{key: "", present: false},
+	}
+	for _, tt := range tests {
+		got, ok := push.PropertyValue(event, content, tt.key)
+		if ok != tt.present {
+			t.Errorf("PropertyValue(%q) present = %v, want %v (%s)", tt.key, ok, tt.present, tt.comment)
+			continue
+		}
+		if !ok {
+			continue
+		}
+		if fmt.Sprintf("%T/%v", got, got) != fmt.Sprintf("%T/%v", tt.want, tt.want) {
+			t.Errorf("PropertyValue(%q) = %T/%v, want %T/%v (%s)", tt.key, got, got, tt.want, tt.want, tt.comment)
+		}
+	}
+}
+
 // TestRuleMatches walks the rule shapes the notification path meets. The expected
 // results come from the "Push Rule Event" section and the default ruleset: the
 // master rule is an off switch, membership events and reactions never wake a
-// client, and conditions of one rule are ANDed.
+// client, and conditions of one rule are ANDed. The v1.7 condition kinds —
+// event_property_is, event_property_contains and sender_notification_permission —
+// are what the mention rules and .m.rule.suppress_edits are built from.
 func TestRuleMatches(t *testing.T) {
 	event := &persist.Event{
 		EventID: "$event", RoomID: "!room:example.com", Type: matrix.TypeMessage, Sender: "@alice:example.com",
 	}
 	content := matrix.Object{"msgtype": "m.text", "body": "hello alice"}
 	body := "hello alice"
+	mentioned := matrix.Object{"msgtype": "m.text", "body": "hello bob", "m.mentions": matrix.Object{
+		"user_ids": []any{"@bob:example.com"},
+	}}
+	roomMentioned := matrix.Object{"msgtype": "m.text", "body": "everyone", "m.mentions": matrix.Object{"room": true}}
+	edited := matrix.Object{"msgtype": "m.text", "body": "* fixed", "m.relates_to": matrix.Object{"rel_type": "m.replace"}}
 
 	tests := []struct {
-		rule        *persist.PushRule
-		body        string
-		displayName string
-		localpart   string
-		memberCount int
-		want        bool
-		comment     string
+		rule          *persist.PushRule
+		content       matrix.Object
+		body          string
+		displayName   string
+		localpart     string
+		memberCount   int
+		senderLevel   int64
+		notifications map[string]int64
+		want          bool
+		comment       string
 	}{
 		{
 			rule:    &persist.PushRule{Kind: "override", RuleID: ".m.rule.master", Enabled: true},
@@ -345,9 +422,101 @@ func TestRuleMatches(t *testing.T) {
 		},
 		{
 			rule: &persist.PushRule{Kind: "override", RuleID: "unknown",
-				Conditions: `[{"kind":"event_property_is","key":"content.msgtype","value":"m.text"}]`},
+				Conditions: `[{"kind":"event_property_matches","key":"content.msgtype","value":"m.text"}]`},
 			want:    false,
 			comment: "an unknown condition kind makes the rule not match",
+		},
+		{
+			rule: &persist.PushRule{Kind: "override", RuleID: ".m.rule.is_user_mention",
+				Conditions: `[{"kind":"event_property_contains","key":"content.m\\.mentions.user_ids","value":"@bob:example.com"}]`},
+			content: mentioned,
+			want:    true,
+			comment: "a mention of the recipient's own Matrix ID is a mention",
+		},
+		{
+			rule: &persist.PushRule{Kind: "override", RuleID: ".m.rule.is_user_mention",
+				Conditions: `[{"kind":"event_property_contains","key":"content.m\\.mentions.user_ids","value":"@carol:example.com"}]`},
+			content: mentioned,
+			want:    false,
+			comment: "somebody else in the list is not the recipient",
+		},
+		{
+			rule: &persist.PushRule{Kind: "override", RuleID: ".m.rule.is_user_mention",
+				Conditions: `[{"kind":"event_property_contains","key":"content.m\\.mentions.user_ids","value":":example.com"}]`},
+			content: mentioned,
+			want:    false,
+			comment: "array values match exactly, so a piece of one does not",
+		},
+		{
+			rule: &persist.PushRule{Kind: "override", RuleID: ".m.rule.is_user_mention",
+				Conditions: `[{"kind":"event_property_contains","key":"content.m\\.mentions.room","value":true}]`},
+			content: mentioned,
+			want:    false,
+			comment: "a property that is not an array cannot contain anything",
+		},
+		{
+			rule: &persist.PushRule{Kind: "override", RuleID: ".m.rule.is_room_mention",
+				Conditions: `[{"kind":"event_property_is","key":"content.m\\.mentions.room","value":true},` +
+					`{"kind":"sender_notification_permission","key":"room"}]`},
+			content:     roomMentioned,
+			senderLevel: 100,
+			want:        true,
+			comment:     "an administrator may mention the room",
+		},
+		{
+			rule: &persist.PushRule{Kind: "override", RuleID: ".m.rule.is_room_mention",
+				Conditions: `[{"kind":"event_property_is","key":"content.m\\.mentions.room","value":true},` +
+					`{"kind":"sender_notification_permission","key":"room"}]`},
+			content:     roomMentioned,
+			senderLevel: 0,
+			want:        false,
+			comment:     "notifications.room defaults to 50, so an ordinary member cannot wake the room",
+		},
+		{
+			rule: &persist.PushRule{Kind: "override", RuleID: ".m.rule.is_room_mention",
+				Conditions: `[{"kind":"event_property_is","key":"content.m\\.mentions.room","value":true},` +
+					`{"kind":"sender_notification_permission","key":"room"}]`},
+			content:       roomMentioned,
+			senderLevel:   50,
+			notifications: map[string]int64{"room": 50},
+			want:          true,
+			comment:       "the room's own notification level is read when it names one",
+		},
+		{
+			rule: &persist.PushRule{Kind: "override", RuleID: ".m.rule.is_room_mention",
+				Conditions: `[{"kind":"event_property_is","key":"content.m\\.mentions.room","value":true},` +
+					`{"kind":"sender_notification_permission","key":"room"}]`},
+			content:       roomMentioned,
+			senderLevel:   50,
+			notifications: map[string]int64{"room": 100},
+			want:          false,
+			comment:       "a room that raised the level is not woken by a level 50 sender",
+		},
+		{
+			rule: &persist.PushRule{Kind: "override", RuleID: ".m.rule.suppress_edits",
+				Conditions: `[{"kind":"event_property_is","key":"content.m\\.relates_to.rel_type","value":"m.replace"}]`},
+			content: edited,
+			want:    true,
+			comment: "an edit of an earlier message is a replacement, and replacements are silenced",
+		},
+		{
+			rule: &persist.PushRule{Kind: "override", RuleID: ".m.rule.suppress_edits",
+				Conditions: `[{"kind":"event_property_is","key":"content.m\\.relates_to.rel_type","value":"m.replace"}]`},
+			content: content,
+			want:    false,
+			comment: "a message that relates to nothing is not an edit",
+		},
+		{
+			rule:    &persist.PushRule{Kind: "override", RuleID: "typed", Conditions: `[{"kind":"event_property_is","key":"content.m\\.federate","value":"true"}]`},
+			content: matrix.Object{"m.federate": true},
+			want:    false,
+			comment: "a string that spells true is not the boolean",
+		},
+		{
+			rule:    &persist.PushRule{Kind: "override", RuleID: "unnamed", Conditions: `[{"kind":"event_property_is","key":"content.body"}]`},
+			content: content,
+			want:    false,
+			comment: "a condition that names no value to compare holds for nothing",
 		},
 		{
 			rule:    &persist.PushRule{Kind: "override", RuleID: "broken", Conditions: "not json"},
@@ -356,7 +525,20 @@ func TestRuleMatches(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
-		got := push.Matches(tt.rule, event, content, tt.body, tt.displayName, tt.localpart, tt.memberCount)
+		ruleContext := &push.Context{
+			Event:         event,
+			Content:       content,
+			Body:          tt.body,
+			DisplayName:   tt.displayName,
+			Localpart:     tt.localpart,
+			MemberCount:   tt.memberCount,
+			SenderLevel:   tt.senderLevel,
+			Notifications: tt.notifications,
+		}
+		if tt.content != nil {
+			ruleContext.Content = tt.content
+		}
+		got := push.Matches(tt.rule, ruleContext)
 		if got != tt.want {
 			t.Errorf("Matches(%s/%s) = %v, want %v (%s)", tt.rule.Kind, tt.rule.RuleID, got, tt.want, tt.comment)
 		}

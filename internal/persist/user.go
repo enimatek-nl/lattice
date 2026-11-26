@@ -21,6 +21,11 @@ type User struct {
 	Suspended bool `json:"suspended"`
 	// Guest marks accounts created with kind=guest.
 	Guest bool `json:"guest"`
+	// PushRulesVersion records which default push rule set the account was given. It is
+	// server bookkeeping, not part of any answer, so it is not serialised: an account
+	// written before a rule of the specification existed is brought up to the set the
+	// running binary seeds, and this is the only place that knows it happened.
+	PushRulesVersion int `json:"-"`
 
 	gorm.Model
 }
@@ -33,6 +38,9 @@ type UserRepo interface {
 	Save(user *User) error
 	List(limit, offset int) ([]*User, error)
 	Count() (int64, error)
+	// SetPushRulesVersion writes which default push rule set an account holds; see
+	// [User.PushRulesVersion].
+	SetPushRulesVersion(id string, version int) error
 	// CountOutsideDomain counts the accounts this server cannot act for: the ones
 	// whose user ID does not end in ":"+domain. A changed -server-name is what
 	// produces them, and they keep authenticating while being unable to join rooms.
@@ -82,6 +90,14 @@ func (r *UserRepoImpl) Count() (int64, error) {
 	var n int64
 	err := r.db.Model(&User{}).Where("deactivated = ?", false).Count(&n).Error
 	return n, err
+}
+
+// SetPushRulesVersion implements [UserRepo]. The row is written by key rather than
+// saved, so that an account loaded before the repair cannot have its other fields
+// carried back over it by whoever holds it.
+func (r *UserRepoImpl) SetPushRulesVersion(id string, version int) error {
+	return r.db.Model(&User{}).Where("id = ?", id).
+		Update("push_rules_version", version).Error
 }
 
 // CountOutsideDomain implements [UserRepo]. The domain of a user ID is what follows

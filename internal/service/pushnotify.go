@@ -14,7 +14,8 @@ import (
 //
 // The matching itself is pure and lives in internal/push; this function only
 // gathers what the rules need - the rules of each recipient, the body of the
-// event, the display names of the room and its size.
+// event, the display names of the room and its size, and the power the sender
+// holds in it.
 func (s *Service) notifyParticipants(ctx context.Context, roomID string, event *persist.Event) error {
 	switch event.Type {
 	case matrix.TypeMessage, matrix.TypeEncrypted, matrix.TypeSticker:
@@ -38,6 +39,9 @@ func (s *Service) notifyParticipants(ctx context.Context, roomID string, event *
 	if err != nil {
 		return err
 	}
+	// An `@room` mention only notifies when the sender may make one, so the sender's
+	// level and the room's notification levels are read once for the whole room.
+	senderLevel, notificationLevels := s.senderPower(ctx, roomID, event.Sender)
 
 	for _, member := range members {
 		if member.UserID == event.Sender {
@@ -48,14 +52,22 @@ func (s *Service) notifyParticipants(ctx context.Context, roomID string, event *
 			return err
 		}
 		rules = push.OrderRules(rules)
-		displayName := profiles[member.UserID].DisplayName
-		localpart := matrix.LocalpartOf(member.UserID)
+		ruleContext := &push.Context{
+			Event:         event,
+			Content:       content,
+			Body:          body,
+			DisplayName:   profiles[member.UserID].DisplayName,
+			Localpart:     matrix.LocalpartOf(member.UserID),
+			MemberCount:   memberCount,
+			SenderLevel:   senderLevel,
+			Notifications: notificationLevels,
+		}
 		var matched *persist.PushRule
 		for _, rule := range rules {
 			if !rule.Enabled {
 				continue
 			}
-			if push.Matches(rule, event, content, body, displayName, localpart, memberCount) {
+			if push.Matches(rule, ruleContext) {
 				matched = rule
 				break
 			}

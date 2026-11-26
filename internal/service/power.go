@@ -49,6 +49,17 @@ func (s *Service) PowerLevel(ctx context.Context, roomID, userID string) int64 {
 	return power.LevelOf(levels, userID, creators, privileged)
 }
 
+// senderPower returns what a sender_notification_permission push rule condition
+// compares: the level an event's sender holds in a room, and the room's
+// `notifications` object. Both come from the same state read, which is the whole
+// point of asking for them together - a push rule evaluates the pair per recipient,
+// and reading the room twice per recipient is how a busy room stops notifying at all.
+func (s *Service) senderPower(ctx context.Context, roomID, sender string) (int64, map[string]int64) {
+	levels := s.powerLevels(ctx, roomID)
+	creators, privileged := s.roomCreators(ctx, roomID)
+	return power.LevelOf(levels, sender, creators, privileged), levels.Notifications
+}
+
 // roomCreators returns the people a room names as its creators, and whether naming them
 // is what gives them power.
 //

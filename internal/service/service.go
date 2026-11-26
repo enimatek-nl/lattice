@@ -163,6 +163,14 @@ func New(db *persist.Database, serverName string, tokens *auth.TokenService, opt
 	if _, err := s.SigningKey(context.Background()); err != nil {
 		return nil, err
 	}
+	// Default push rules are rows written once, when an account is created, so a rule this
+	// binary learned after those accounts were made is simply missing from them - and a
+	// client asking for it is told no such rule exists. Accounts are brought to the rule set
+	// the running binary seeds here, the way the schema is brought up when the database is
+	// opened.
+	if err := s.RepairDefaultPushRules(context.Background()); err != nil {
+		return nil, err
+	}
 	return s, nil
 }
 
