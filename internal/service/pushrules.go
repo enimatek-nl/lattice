@@ -19,7 +19,7 @@ var PushRuleKinds = push.Kinds
 // RepairDefaultPushRules compares an account against it. Bump it whenever
 // defaultPushRules gains or moves a rule, or when the conditions of one change,
 // so accounts written by an older binary are brought up once.
-const defaultRulesVersion = 4
+const defaultRulesVersion = 5
 
 // seededWrongActions are the actions this server seeded for these default rules and the
 // specification does not define.
@@ -30,12 +30,18 @@ const defaultRulesVersion = 4
 // somebody's choice and keeps it.
 var seededWrongActions = func() map[string]string {
 	dontNotify := matrix.Array{"dont_notify"}
+	defaultSound := matrix.Array{"notify", matrix.Object{"set_tweak": "sound", "value": "default"}}
 	count := matrix.Array{"notify", matrix.Object{"set_tweak": "count"}}
 	return map[string]string{
-		".m.rule.master":        string(matrix.Encode(dontNotify)),
-		".m.rule.member_event":  string(matrix.Encode(dontNotify)),
-		".m.rule.reaction":      string(matrix.Encode(dontNotify)),
-		".m.rule.invite_for_me": string(matrix.Encode(count)),
+		".m.rule.master":           string(matrix.Encode(dontNotify)),
+		".m.rule.member_event":     string(matrix.Encode(dontNotify)),
+		".m.rule.reaction":         string(matrix.Encode(dontNotify)),
+		".m.rule.invite_for_me":    string(matrix.Encode(count)),
+		".m.rule.suppress_notices": string(matrix.Encode(dontNotify)),
+		".m.rule.roomnotif":        string(matrix.Encode(dontNotify)),
+		".m.rule.tombstone":        string(matrix.Encode(dontNotify)),
+		".m.rule.message":          string(matrix.Encode(defaultSound)),
+		".m.rule.encrypted":        string(matrix.Encode(count)),
 	}
 }()
 
@@ -64,6 +70,12 @@ func defaultPushRules(userID string) []persist.PushRule {
 	dontNotify := matrix.Array{"dont_notify"}
 	silent := matrix.Array{}
 	count := matrix.Array{"notify", matrix.Object{"set_tweak": "count"}}
+	// plainNotify is what v1.11 gives the two message rules of a group room: a notification
+	// and no tweak. The sound a room makes is the person's choice, not the server's default.
+	plainNotify := matrix.Array{"notify"}
+	// mentionOnlyActions notifies with a highlight and no sound: the room mention rule and
+	// the tombstone rule.
+	mentionOnlyActions := matrix.Array{"notify", matrix.Object{"set_tweak": "highlight"}}
 	sound := func(name string) matrix.Array {
 		return matrix.Array{"notify", matrix.Object{"set_tweak": "sound", "value": name}}
 	}
@@ -82,8 +94,12 @@ func defaultPushRules(userID string) []persist.PushRule {
 		return string(matrix.Encode(out))
 	}
 	rules := []persist.PushRule{
-		{Kind: "override", RuleID: ".m.rule.master", Enabled: false, Actions: string(matrix.Encode(silent))},
-		{Kind: "override", RuleID: ".m.rule.suppress_notices", Enabled: true, Actions: string(matrix.Encode(dontNotify)),
+		// The master rule is the specification's one rule without conditions, and it prints an
+		// empty list rather than nothing beside it. This server still reads it as an off switch
+		// that is never thrown, which is what keeps it out of the way while its answer shows.
+		{Kind: "override", RuleID: ".m.rule.master", Enabled: false, Actions: string(matrix.Encode(silent)),
+			Conditions: "[]"},
+		{Kind: "override", RuleID: ".m.rule.suppress_notices", Enabled: true, Actions: string(matrix.Encode(silent)),
 			Conditions: condition(matrix.Object{"kind": "event_match", "key": "content.msgtype", "pattern": "m.notice"})},
 		// invite_for_me names the recipient in its third condition, which is the same trick
 		// is_user_mention needs: a rule that is a row cannot say "me" without being told.
@@ -111,9 +127,15 @@ func defaultPushRules(userID string) []persist.PushRule {
 			Conditions: condition(
 				matrix.Object{"kind": "event_property_is", "key": keyMentionsRoom, "value": true},
 				matrix.Object{"kind": "sender_notification_permission", "key": "room"})},
-		{Kind: "override", RuleID: ".m.rule.roomnotif", Enabled: true, Actions: string(matrix.Encode(dontNotify)),
-			Conditions: condition(matrix.Object{"kind": "event_match", "key": "content.body", "pattern": "@room"})},
-		{Kind: "override", RuleID: ".m.rule.tombstone", Enabled: true, Actions: string(matrix.Encode(dontNotify)),
+		// The deprecated room mention rule of v1.11 asks for the power to wake a room, and it
+		// notifies with a highlight: an `@room` in the body from a moderator is a mention, the
+		// same way `m.mentions` spells it.
+		{Kind: "override", RuleID: ".m.rule.roomnotif", Enabled: true, Actions: string(matrix.Encode(mentionOnlyActions)),
+			Conditions: condition(
+				matrix.Object{"kind": "event_match", "key": "content.body", "pattern": "@room"},
+				matrix.Object{"kind": "sender_notification_permission", "key": "room"})},
+		// A tombstone is the notice that a room moved on, and v1.11 wants it highlighted.
+		{Kind: "override", RuleID: ".m.rule.tombstone", Enabled: true, Actions: string(matrix.Encode(mentionOnlyActions)),
 			Conditions: condition(
 				matrix.Object{"kind": "event_match", "key": "type", "pattern": "m.room.tombstone"},
 				matrix.Object{"kind": "event_match", "key": "state_key", "pattern": ""})},
@@ -135,16 +157,22 @@ func defaultPushRules(userID string) []persist.PushRule {
 				"pattern": matrix.LocalpartOf(userID)})},
 		{Kind: "underride", RuleID: ".m.rule.call", Enabled: true, Actions: string(matrix.Encode(sound("ring"))),
 			Conditions: condition(matrix.Object{"kind": "event_match", "key": "type", "pattern": "m.call.invite"})},
-		{Kind: "underride", RuleID: ".m.rule.room_one_to_one", Enabled: true, Actions: string(matrix.Encode(sound("default"))),
-			Conditions: condition(matrix.Object{"kind": "room_member_count", "is": "2"})},
+		// Two rules that speak of "a message" say so by the event's type, not by its msgtype.
+		// An underride rule that names no type matches a name change and a topic change too,
+		// which is what made a room of two announce everything.
+		{Kind: "underride", RuleID: ".m.rule.room_one_to_one", Enabled: true,
+			Actions: string(matrix.Encode(sound("default"))),
+			Conditions: condition(
+				matrix.Object{"kind": "room_member_count", "is": "2"},
+				matrix.Object{"kind": "event_match", "key": "type", "pattern": "m.room.message"})},
 		{Kind: "underride", RuleID: ".m.rule.encrypted_room_one_to_one", Enabled: true,
 			Actions: string(matrix.Encode(sound("default"))),
 			Conditions: condition(
 				matrix.Object{"kind": "room_member_count", "is": "2"},
 				matrix.Object{"kind": "event_match", "key": "type", "pattern": "m.room.encrypted"})},
-		{Kind: "underride", RuleID: ".m.rule.message", Enabled: true, Actions: string(matrix.Encode(sound("default"))),
-			Conditions: condition(matrix.Object{"kind": "event_match", "key": "content.msgtype", "pattern": "m.*"})},
-		{Kind: "underride", RuleID: ".m.rule.encrypted", Enabled: true, Actions: string(matrix.Encode(count)),
+		{Kind: "underride", RuleID: ".m.rule.message", Enabled: true, Actions: string(matrix.Encode(plainNotify)),
+			Conditions: condition(matrix.Object{"kind": "event_match", "key": "type", "pattern": "m.room.message"})},
+		{Kind: "underride", RuleID: ".m.rule.encrypted", Enabled: true, Actions: string(matrix.Encode(plainNotify)),
 			Conditions: condition(matrix.Object{"kind": "event_match", "key": "type", "pattern": "m.room.encrypted"})},
 		{Kind: "underride", RuleID: ".m.rule.default", Enabled: true, Actions: string(matrix.Encode(count)),
 			Conditions: condition(matrix.Object{"kind": "event_match", "key": "content.msgtype", "pattern": "m.notice"})},
@@ -340,11 +368,14 @@ func (s *Service) publishPushRules(ctx context.Context, userID string) error {
 
 // PushRuleWire is a rule as exposed to clients.
 type PushRuleWire struct {
-	RuleID     string       `json:"rule_id"`
-	Default    bool         `json:"default"`
-	Enabled    bool         `json:"enabled"`
-	Conditions matrix.Array `json:"conditions,omitempty"`
-	Actions    matrix.Array `json:"actions"`
+	RuleID  string `json:"rule_id"`
+	Default bool   `json:"default"`
+	Enabled bool   `json:"enabled"`
+	// Conditions is a pointer for the same reason Pattern is: the specification prints an
+	// empty list for `.m.rule.master` and prints nothing at all for a content rule, and a
+	// slice cannot tell those two apart.
+	Conditions *matrix.Array `json:"conditions,omitempty"`
+	Actions    matrix.Array  `json:"actions"`
 	// Pattern is a pointer because a content rule carries the field even when there is
 	// no pattern to show: the two kinds of rule are told apart by which of the two
 	// fields they carry, and a content rule whose answer has no pattern at all is a rule
@@ -410,8 +441,16 @@ func pushRuleWire(rule *persist.PushRule) PushRuleWire {
 		Enabled: rule.Enabled,
 		Actions: toAnySlice(rule.Actions),
 	}
+	var conditions matrix.Array
 	if rule.Conditions != "" {
-		out.Conditions = toAnySlice(rule.Conditions)
+		// An empty list is still a list: the master rule is published with one, and a rule
+		// that cannot be read publishes what it holds rather than nothing beside it.
+		if parsed := toAnySlice(rule.Conditions); parsed != nil {
+			conditions = parsed
+		} else {
+			conditions = matrix.Array{}
+		}
+		out.Conditions = &conditions
 	}
 	if rule.Kind == "content" {
 		// The specification stores a content rule's one condition as a field: "the spec
@@ -421,7 +460,7 @@ func pushRuleWire(rule *persist.PushRule) PushRuleWire {
 		// condition publishes an empty pattern, which is what a content rule always having
 		// one comes down to.
 		pattern := ""
-		for _, condition := range out.Conditions {
+		for _, condition := range conditions {
 			entry, ok := condition.(matrix.Object)
 			if !ok {
 				continue

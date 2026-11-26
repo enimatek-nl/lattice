@@ -1,10 +1,12 @@
 package compat
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -606,5 +608,106 @@ func TestAnAccountWrittenBeforeTheConditionsIsGivenThem(t *testing.T) {
 		aged.Token, nil, http.StatusOK)
 	if !strings.Contains(string(synced.Raw), `"pattern":"m.room.member"`) {
 		t.Errorf("the m.push_rules account data did not follow the repair: %s", synced.Raw)
+	}
+}
+
+// v111RuleDefinition is one rule of the "Predefined Rules" section of the specification: its
+// kind, its id, and the two fields the section prints for it. The bracketed placeholders are
+// the specification's own words, filled in per account, because two definitions say "me".
+type v111RuleDefinition struct {
+	kind, id, conditions, actions string
+}
+
+// v111RuleDefinitions is that section, field for field, emitted from the specification's JSON
+// by .agent-work/v111/gen-rules-table.py rather than retyped by hand.
+var v111RuleDefinitions = []v111RuleDefinition{
+	{kind: "override", id: ".m.rule.master", conditions: `[]`, actions: `[]`},
+	{kind: "override", id: ".m.rule.suppress_notices", conditions: `[{"key": "content.msgtype", "kind": "event_match", "pattern": "m.notice"}]`, actions: `[]`},
+	{kind: "override", id: ".m.rule.invite_for_me", conditions: `[{"key": "type", "kind": "event_match", "pattern": "m.room.member"}, {"key": "content.membership", "kind": "event_match", "pattern": "invite"}, {"key": "state_key", "kind": "event_match", "pattern": "[the user's Matrix ID]"}]`, actions: `["notify", {"set_tweak": "sound", "value": "default"}]`},
+	{kind: "override", id: ".m.rule.member_event", conditions: `[{"key": "type", "kind": "event_match", "pattern": "m.room.member"}]`, actions: `[]`},
+	{kind: "override", id: ".m.rule.is_user_mention", conditions: `[{"key": "content.m\\.mentions.user_ids", "kind": "event_property_contains", "value": "[the user's Matrix ID]"}]`, actions: `["notify", {"set_tweak": "sound", "value": "default"}, {"set_tweak": "highlight"}]`},
+	{kind: "override", id: ".m.rule.contains_display_name", conditions: `[{"kind": "contains_display_name"}]`, actions: `["notify", {"set_tweak": "sound", "value": "default"}, {"set_tweak": "highlight"}]`},
+	{kind: "override", id: ".m.rule.is_room_mention", conditions: `[{"key": "content.m\\.mentions.room", "kind": "event_property_is", "value": true}, {"key": "room", "kind": "sender_notification_permission"}]`, actions: `["notify", {"set_tweak": "highlight"}]`},
+	{kind: "override", id: ".m.rule.roomnotif", conditions: `[{"key": "content.body", "kind": "event_match", "pattern": "@room"}, {"key": "room", "kind": "sender_notification_permission"}]`, actions: `["notify", {"set_tweak": "highlight"}]`},
+	{kind: "override", id: ".m.rule.tombstone", conditions: `[{"key": "type", "kind": "event_match", "pattern": "m.room.tombstone"}, {"key": "state_key", "kind": "event_match", "pattern": ""}]`, actions: `["notify", {"set_tweak": "highlight"}]`},
+	{kind: "override", id: ".m.rule.reaction", conditions: `[{"key": "type", "kind": "event_match", "pattern": "m.reaction"}]`, actions: `[]`},
+	{kind: "override", id: ".m.rule.room.server_acl", conditions: `[{"key": "type", "kind": "event_match", "pattern": "m.room.server_acl"}, {"key": "state_key", "kind": "event_match", "pattern": ""}]`, actions: `[]`},
+	{kind: "override", id: ".m.rule.suppress_edits", conditions: `[{"key": "content.m\\.relates_to.rel_type", "kind": "event_property_is", "value": "m.replace"}]`, actions: `[]`},
+	{kind: "content", id: ".m.rule.contains_user_name", conditions: `[{"key": "content.body", "kind": "event_match", "pattern": "[the local part of the user's Matrix ID]"}]`, actions: `["notify", {"set_tweak": "sound", "value": "default"}, {"set_tweak": "highlight"}]`},
+	{kind: "underride", id: ".m.rule.call", conditions: `[{"key": "type", "kind": "event_match", "pattern": "m.call.invite"}]`, actions: `["notify", {"set_tweak": "sound", "value": "ring"}]`},
+	{kind: "underride", id: ".m.rule.encrypted_room_one_to_one", conditions: `[{"is": "2", "kind": "room_member_count"}, {"key": "type", "kind": "event_match", "pattern": "m.room.encrypted"}]`, actions: `["notify", {"set_tweak": "sound", "value": "default"}]`},
+	{kind: "underride", id: ".m.rule.room_one_to_one", conditions: `[{"is": "2", "kind": "room_member_count"}, {"key": "type", "kind": "event_match", "pattern": "m.room.message"}]`, actions: `["notify", {"set_tweak": "sound", "value": "default"}]`},
+	{kind: "underride", id: ".m.rule.message", conditions: `[{"key": "type", "kind": "event_match", "pattern": "m.room.message"}]`, actions: `["notify"]`},
+	{kind: "underride", id: ".m.rule.encrypted", conditions: `[{"key": "type", "kind": "event_match", "pattern": "m.room.encrypted"}]`, actions: `["notify"]`},
+}
+
+// jsonOf parses a JSON document for comparison, and takes a missing field for what it is.
+func jsonOf(t *testing.T, what string, document any) any {
+	t.Helper()
+	raw, err := json.Marshal(document)
+	if err != nil {
+		t.Fatalf("reading %s: %v", what, err)
+	}
+	var out any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("reading %s: %v", what, err)
+	}
+	return out
+}
+
+// TestPublishedDefaultRulesAreTheSpecificationsDefinitions compares every default rule with the
+// definition the specification prints for it.
+//
+// Three releases in a row were opened by a client finding one more rule that was not the
+// specification's: the content rule without a pattern, three override rules without conditions,
+// and two underride rules that spoke of "a message" by its msgtype instead of by its type - the
+// last of which made a room of two announce name changes and light up for somebody else's call.
+// Each cost a release, because nothing here looked at the whole set. This compares the whole set,
+// so the next one shows up here rather than in a lab run.
+func TestPublishedDefaultRulesAreTheSpecificationsDefinitions(t *testing.T) {
+	server := NewServer(t)
+	account := server.Register("audited", "wonderland")
+	// The two placeholders of the specification's own definitions, which is the only way a
+	// rule that is a row can say "me".
+	words := strings.NewReplacer("[the user's Matrix ID]", account.UserID,
+		"[the local part of the user's Matrix ID]", matrix.LocalpartOf(account.UserID))
+	defined := map[string]bool{}
+
+	for _, want := range v111RuleDefinitions {
+		rule := pushRuleOf(t, server, account, want.kind, want.id)
+		defined[want.kind+" "+want.id] = true
+
+		var expected any
+		if err := json.Unmarshal([]byte(words.Replace(want.conditions)), &expected); err != nil {
+			t.Fatalf("the recorded conditions of %s: %v", want.id, err)
+		}
+		conditions := expected
+		if raw, has := rule["conditions"]; !has {
+			conditions = nil
+		} else {
+			conditions = jsonOf(t, want.id+" conditions", raw)
+		}
+		if !reflect.DeepEqual(conditions, expected) {
+			t.Errorf("%s %s conditions:\n  got  %v\n  want %v",
+				want.kind, want.id, jsonOf(t, "published", rule["conditions"]), expected)
+		}
+		if actions := jsonOf(t, want.id+" actions", rule["actions"]); !reflect.DeepEqual(actions,
+			jsonOf(t, "recorded", json.RawMessage(words.Replace(want.actions)))) {
+			t.Errorf("%s %s actions:\n  got  %v\n  want %s", want.kind, want.id, actions,
+				words.Replace(want.actions))
+		}
+	}
+
+	// Everything published that the section does not define has to be a rule this repository
+	// has recorded: two underride rules of its own, which are queue work rather than news.
+	for _, kind := range []string{"override", "content", "room", "sender", "underride"} {
+		for _, rule := range pushKindOf(t, server, account, kind) {
+			id, _ := rule["rule_id"].(string)
+			if defined[kind+" "+id] || id == ".m.rule.default" || id == ".m.rule.notice" {
+				continue
+			}
+			t.Errorf("%s %s is published, is not in the specification's ruleset, and is not a "+
+				"rule this repository recorded", kind, id)
+		}
 	}
 }
