@@ -105,21 +105,23 @@ func Matches(rule *persist.PushRule, ctx *Context) bool {
 		// docs/TODO.md.
 		return false
 	case RuleContainsDisplayName, RuleContainsUserName:
-		// The user name rule matches the localpart of the recipient, the
-		// display name rule matches their profile name. Both are seeded with no
-		// conditions of their own, which is why they are recognised by identifier.
+		// These two are seeded with conditions of their own, and this branch stays because
+		// the two agree with them only in behaviour, not in spelling: the display name rule
+		// is the `contains_display_name` kind, the user name rule falls back to the localpart
+		// of the recipient when they have no display name in this room, and both match at
+		// word boundaries - which a glob pattern cannot say.
 		needle := strings.ToLower(ctx.DisplayName)
 		if rule.RuleID == RuleContainsUserName || needle == "" {
 			needle = strings.ToLower(ctx.Localpart)
 		}
 		return needle != "" && WordContains(ctx.Body, needle)
-	case RuleMemberEvent, RuleReaction, RuleNotice:
-		// Membership changes and reactions are not worth waking a client for, and this
-		// server says so by never matching. The specification says it by matching them
-		// with an empty action list, which amounts to the same thing here: neither a
-		// membership change nor a reaction reaches the notification path at all, which
-		// reads m.room.message, m.room.encrypted and m.sticker. `.m.rule.notice` is not
-		// in the specification's ruleset and rides along with the same answer.
+	case RuleNotice:
+		// `.m.rule.notice` is not in the specification's ruleset and stays out of the way by
+		// never matching. Membership changes and reactions are not matched by identifier any
+		// more: they carry the conditions the specification defines for them, and the empty
+		// action list behind those conditions is what keeps a client asleep - which matters
+		// because a client that evaluates the published rules itself has to reach the same
+		// answer as this server.
 		return false
 	}
 	if rule.Kind == "room" {

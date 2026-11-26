@@ -19,7 +19,25 @@ var PushRuleKinds = push.Kinds
 // RepairDefaultPushRules compares an account against it. Bump it whenever
 // defaultPushRules gains or moves a rule, or when the conditions of one change,
 // so accounts written by an older binary are brought up once.
-const defaultRulesVersion = 3
+const defaultRulesVersion = 4
+
+// seededWrongActions are the actions this server seeded for these default rules and the
+// specification does not define.
+//
+// A repair rewrites a rule's actions only while its row still holds one of these strings
+// unchanged, because actions are the one field a settings screen writes: a row that still
+// says what the server wrote is a row nobody chose, and a row that says anything else is
+// somebody's choice and keeps it.
+var seededWrongActions = func() map[string]string {
+	dontNotify := matrix.Array{"dont_notify"}
+	count := matrix.Array{"notify", matrix.Object{"set_tweak": "count"}}
+	return map[string]string{
+		".m.rule.master":        string(matrix.Encode(dontNotify)),
+		".m.rule.member_event":  string(matrix.Encode(dontNotify)),
+		".m.rule.reaction":      string(matrix.Encode(dontNotify)),
+		".m.rule.invite_for_me": string(matrix.Encode(count)),
+	}
+}()
 
 // The keys the default rules of v1.7 and later name carry an escaped dot: the
 // property is called m.mentions, one name, and a plain dot would read it as a path
@@ -64,12 +82,25 @@ func defaultPushRules(userID string) []persist.PushRule {
 		return string(matrix.Encode(out))
 	}
 	rules := []persist.PushRule{
-		{Kind: "override", RuleID: ".m.rule.master", Enabled: false, Actions: string(matrix.Encode(dontNotify))},
+		{Kind: "override", RuleID: ".m.rule.master", Enabled: false, Actions: string(matrix.Encode(silent))},
 		{Kind: "override", RuleID: ".m.rule.suppress_notices", Enabled: true, Actions: string(matrix.Encode(dontNotify)),
 			Conditions: condition(matrix.Object{"kind": "event_match", "key": "content.msgtype", "pattern": "m.notice"})},
-		{Kind: "override", RuleID: ".m.rule.invite_for_me", Enabled: true, Actions: string(matrix.Encode(count)),
-			Conditions: condition(matrix.Object{"kind": "member_count"})},
-		{Kind: "override", RuleID: ".m.rule.member_event", Enabled: true, Actions: string(matrix.Encode(dontNotify))},
+		// invite_for_me names the recipient in its third condition, which is the same trick
+		// is_user_mention needs: a rule that is a row cannot say "me" without being told.
+		{Kind: "override", RuleID: ".m.rule.invite_for_me", Enabled: true,
+			Actions: string(matrix.Encode(sound("default"))),
+			Conditions: condition(
+				matrix.Object{"kind": "event_match", "key": "type", "pattern": matrix.TypeMember},
+				matrix.Object{"kind": "event_match", "key": "content.membership", "pattern": matrix.MembershipInvite},
+				matrix.Object{"kind": "event_match", "key": "state_key", "pattern": userID})},
+		{
+			// Three rules used to be published with no conditions at all, and the specification
+			// warns what that means: "a rule with no conditions always matches". A client that
+			// evaluates the rules itself - which is what the Rust SDK does - therefore silenced
+			// every event it read, because `.m.rule.member_event` is an override rule standing
+			// near the top of the list with an empty action list behind it.
+			Kind: "override", RuleID: ".m.rule.member_event", Enabled: true, Actions: string(matrix.Encode(silent)),
+			Conditions: condition(matrix.Object{"kind": "event_match", "key": "type", "pattern": matrix.TypeMember})},
 		{Kind: "override", RuleID: ".m.rule.is_user_mention", Enabled: true, Actions: string(matrix.Encode(mentionActions)),
 			Conditions: condition(matrix.Object{"kind": "event_property_contains",
 				"key": keyMentionsUserIDs, "value": userID})},
@@ -86,7 +117,9 @@ func defaultPushRules(userID string) []persist.PushRule {
 			Conditions: condition(
 				matrix.Object{"kind": "event_match", "key": "type", "pattern": "m.room.tombstone"},
 				matrix.Object{"kind": "event_match", "key": "state_key", "pattern": ""})},
-		{Kind: "override", RuleID: ".m.rule.reaction", Enabled: true, Actions: string(matrix.Encode(dontNotify))},
+		{
+			Kind: "override", RuleID: ".m.rule.reaction", Enabled: true, Actions: string(matrix.Encode(silent)),
+			Conditions: condition(matrix.Object{"kind": "event_match", "key": "type", "pattern": matrix.TypeReaction})},
 		{Kind: "override", RuleID: ".m.rule.room.server_acl", Enabled: true, Actions: string(matrix.Encode(silent)),
 			Conditions: condition(
 				matrix.Object{"kind": "event_match", "key": "type", "pattern": "m.room.server_acl"},
@@ -219,10 +252,15 @@ func (s *Service) addMissingDefaultRules(user string) (bool, error) {
 			// The conditions of a default rule are the one part of it a person cannot change:
 			// no endpoint writes them. That makes them the part an older binary can have stored
 			// wrong, and the part this may correct without undoing anything anybody asked for.
-			if stored.Conditions == rule.Conditions {
+			wanted := stored.Actions
+			if seeded, once := seededWrongActions[rule.RuleID]; once && stored.Actions == seeded {
+				wanted = rule.Actions
+			}
+			if stored.Conditions == rule.Conditions && stored.Actions == wanted {
 				continue
 			}
 			stored.Conditions = rule.Conditions
+			stored.Actions = wanted
 			if err := s.db.PushRuleRepo.Set(stored); err != nil {
 				return changed, matrix.ErrInternal(err)
 			}

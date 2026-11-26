@@ -286,9 +286,21 @@ func TestRuleMatches(t *testing.T) {
 	}}
 	roomMentioned := matrix.Object{"msgtype": "m.text", "body": "everyone", "m.mentions": matrix.Object{"room": true}}
 	edited := matrix.Object{"msgtype": "m.text", "body": "* fixed", "m.relates_to": matrix.Object{"rel_type": "m.replace"}}
+	// An invite of the recipient themselves, which is what `.m.rule.invite_for_me` is written
+	// for: its third condition names the recipient as the state key.
+	invited := &persist.Event{
+		EventID: "$member", RoomID: "!room:example.com", Type: matrix.TypeMember,
+		Sender: "@alice:example.com", StateKey: "@bob:example.com",
+	}
+	otherwise := &persist.Event{
+		EventID: "$other", RoomID: "!room:example.com", Type: matrix.TypeMember,
+		Sender: "@alice:example.com", StateKey: "@carol:example.com",
+	}
+	membership := matrix.Object{"membership": "invite"}
 
 	tests := []struct {
 		rule          *persist.PushRule
+		event         *persist.Event
 		content       matrix.Object
 		body          string
 		displayName   string
@@ -336,13 +348,64 @@ func TestRuleMatches(t *testing.T) {
 			comment:     "without a display name the user name rule uses the localpart",
 		},
 		{
-			rule:    &persist.PushRule{Kind: "override", RuleID: ".m.rule.member_event"},
+			rule: &persist.PushRule{Kind: "override", RuleID: ".m.rule.member_event",
+				Conditions: `[{"kind":"event_match","key":"type","pattern":"m.room.member"}]`},
 			want:    false,
-			comment: "a member joined message does not wake a client",
+			comment: "a message is not a membership change, whatever its rule's actions are",
 		},
 		{
-			rule: &persist.PushRule{Kind: "override", RuleID: ".m.rule.reaction"},
-			want: false,
+			rule: &persist.PushRule{Kind: "override", RuleID: ".m.rule.member_event",
+				Conditions: `[{"kind":"event_match","key":"type","pattern":"m.room.member"}]`},
+			event: invited,
+			want:  true,
+			comment: "the rule does match a member event and its empty action list is what keeps the " +
+				"client asleep - a rule that never matches would silence everything in a client " +
+				"that reads the published conditions",
+		},
+		{
+			rule: &persist.PushRule{Kind: "override", RuleID: ".m.rule.reaction",
+				Conditions: `[{"kind":"event_match","key":"type","pattern":"m.reaction"}]`},
+			want:    false,
+			comment: "a message is not a reaction",
+		},
+		{
+			rule: &persist.PushRule{Kind: "override", RuleID: ".m.rule.reaction",
+				Conditions: `[{"kind":"event_match","key":"type","pattern":"m.reaction"}]`},
+			event: &persist.Event{EventID: "$reaction", RoomID: "!room:example.com",
+				Type: matrix.TypeReaction, Sender: "@alice:example.com"},
+			want:    true,
+			comment: "a reaction matches it, and an empty action list is what the specification gives it",
+		},
+		{
+			rule: &persist.PushRule{Kind: "override", RuleID: ".m.rule.invite_for_me", Conditions: `[
+				{"kind":"event_match","key":"type","pattern":"m.room.member"},
+				{"kind":"event_match","key":"content.membership","pattern":"invite"},
+				{"kind":"event_match","key":"state_key","pattern":"@bob:example.com"}]`},
+			event:   invited,
+			content: membership,
+			want:    true,
+			comment: "an invite of the recipient themselves",
+		},
+		{
+			rule: &persist.PushRule{Kind: "override", RuleID: ".m.rule.invite_for_me", Conditions: `[
+				{"kind":"event_match","key":"type","pattern":"m.room.member"},
+				{"kind":"event_match","key":"content.membership","pattern":"invite"},
+				{"kind":"event_match","key":"state_key","pattern":"@bob:example.com"}]`},
+			event:   otherwise,
+			content: membership,
+			want:    false,
+			comment: "somebody else being invited is not for this account to hear",
+		},
+		{
+			rule: &persist.PushRule{Kind: "override", RuleID: ".m.rule.invite_for_me", Conditions: `[
+				{"kind":"event_match","key":"type","pattern":"m.room.member"},
+				{"kind":"event_match","key":"content.membership","pattern":"invite"},
+				{"kind":"event_match","key":"state_key","pattern":"@bob:example.com"}]`},
+			event: invited,
+			content: matrix.Object{"membership": "join",
+				"displayname": "Bob", "avatar_url": "mxc://example.com/a"},
+			want:    false,
+			comment: "joining is not an invite",
 		},
 		{
 			rule:    &persist.PushRule{Kind: "underride", RuleID: ".m.rule.notice"},
@@ -523,10 +586,22 @@ func TestRuleMatches(t *testing.T) {
 			want:    false,
 			comment: "a stored rule that cannot be read matches nothing rather than everything",
 		},
+		{
+			rule: &persist.PushRule{Kind: "override", RuleID: "bare"},
+			want: false,
+			comment: "the specification has a rule without conditions always match, and this server reads " +
+				"that only for underride rules - which is why an override rule published without " +
+				"conditions silenced every event on a client that follows the specification and " +
+				"nothing at all on this server",
+		},
 	}
 	for _, tt := range tests {
+		subject := event
+		if tt.event != nil {
+			subject = tt.event
+		}
 		ruleContext := &push.Context{
-			Event:         event,
+			Event:         subject,
 			Content:       content,
 			Body:          tt.body,
 			DisplayName:   tt.displayName,

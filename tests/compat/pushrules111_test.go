@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/enimatek-nl/lattice/internal/api"
+	"github.com/enimatek-nl/lattice/internal/matrix"
 )
 
 // v111OverrideRules is the "Default Override Rules" list of the specification as of
@@ -474,6 +475,136 @@ func TestADefaultRuleKeepsTheConditionsOnlyTheServerWrites(t *testing.T) {
 	synced := restarted.MustDo(http.MethodGet, "/_matrix/client/v3/sync?timeout=0",
 		aged.Token, nil, http.StatusOK)
 	if !strings.Contains(string(synced.Raw), `"pattern":"longstanding"`) {
+		t.Errorf("the m.push_rules account data did not follow the repair: %s", synced.Raw)
+	}
+}
+
+// requireActionsAre checks an action list against the specification's own words.
+func requireActionsAre(t *testing.T, rule map[string]any, want string) {
+	t.Helper()
+	if got := fmt.Sprintf("%v", rule["actions"]); got != want {
+		t.Errorf("%s actions = %v, want %v", rule["rule_id"], got, want)
+	}
+}
+
+// TestTheRulesThatSilencedEverythingCarryConditions is the shape a client that evaluates
+// the rules itself has to be handed.
+//
+// Three override rules were published with no conditions at all: `.m.rule.member_event`,
+// `.m.rule.reaction` and `.m.rule.invite_for_me` (whose one condition was a kind the
+// specification does not define). The specification is blunt about a rule without
+// conditions — "a rule with no conditions always matches" — so an override rule near the
+// top of the list with an empty action list behind it silences every event. This server
+// never noticed, because its own matcher reads a condition-less rule as matching only for
+// underride rules; a Rust client following the specification stopped notifying anything at
+// all, and the twelve notification tests of the smaltino suite went red on the release
+// that finally made the rule set readable enough to evaluate.
+func TestTheRulesThatSilencedEverythingCarryConditions(t *testing.T) {
+	server := NewServer(t)
+	woken := server.Register("woken", "wonderland")
+
+	member := pushRuleOf(t, server, woken, "override", ".m.rule.member_event")
+	requireCondition(t, member, ".m.rule.member_event", 0,
+		map[string]any{"kind": "event_match", "key": "type", "pattern": matrix.TypeMember})
+	if raw, _ := member["conditions"].([]any); len(raw) != 1 {
+		t.Errorf(".m.rule.member_event carries %d conditions, want one: %v", len(raw), member["conditions"])
+	}
+	requireActionsAre(t, member, "[]")
+
+	reaction := pushRuleOf(t, server, woken, "override", ".m.rule.reaction")
+	requireCondition(t, reaction, ".m.rule.reaction", 0,
+		map[string]any{"kind": "event_match", "key": "type", "pattern": matrix.TypeReaction})
+	requireActionsAre(t, reaction, "[]")
+
+	invite := pushRuleOf(t, server, woken, "override", ".m.rule.invite_for_me")
+	requireCondition(t, invite, ".m.rule.invite_for_me", 0,
+		map[string]any{"kind": "event_match", "key": "type", "pattern": matrix.TypeMember})
+	requireCondition(t, invite, ".m.rule.invite_for_me", 1,
+		map[string]any{"kind": "event_match", "key": "content.membership", "pattern": "invite"})
+	requireCondition(t, invite, ".m.rule.invite_for_me", 2,
+		map[string]any{"kind": "event_match", "key": "state_key", "pattern": woken.UserID})
+	if raw, _ := invite["conditions"].([]any); len(raw) != 3 {
+		t.Errorf(".m.rule.invite_for_me carries %d conditions, want the three the specification "+
+			"defines: %v", len(raw), invite["conditions"])
+	}
+	requireActionsAre(t, invite, "[notify map[set_tweak:sound value:default]]")
+
+	// The invariant behind all of it, and the one check that would have caught this before
+	// a client did: an override rule that is switched on and has no conditions silences the
+	// account. The specification has exactly one rule without conditions, the master rule,
+	// and it is switched off by default for that reason.
+	for _, rule := range pushKindOf(t, server, woken, "override") {
+		enabled, _ := rule["enabled"].(bool)
+		conditions, _ := rule["conditions"].([]any)
+		if enabled && len(conditions) == 0 {
+			t.Errorf("%s is an enabled override rule without conditions, which matches every event: %v",
+				rule["rule_id"], rule)
+		}
+	}
+}
+
+// TestAnAccountWrittenBeforeTheConditionsIsGivenThem is the other half, and the half that a
+// suite which only registers can never see: the rules are rows written once, so an account
+// of the previous release keeps the condition-less rows that silence it.
+//
+// The repair may take a default rule's conditions back because no endpoint writes them. Its
+// actions it takes back only while the row still holds exactly what this server seeded —
+// actions are what a settings screen writes, so a row that says anything else is a choice.
+func TestAnAccountWrittenBeforeTheConditionsIsGivenThem(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lattice.db")
+	server := NewServerWithDatabase(t, path, api.Config{})
+	aged := server.Register("longsilence", "wonderland")
+
+	// A person's own choice on another one of these rules, to be sure the repair leaves it.
+	server.MustDo(http.MethodPut,
+		"/_matrix/client/v3/pushrules/global/override/"+url.PathEscape(".m.rule.reaction"),
+		aged.Token, map[string]any{"actions": []any{"notify"}}, http.StatusOK)
+
+	for _, ruleID := range []string{".m.rule.member_event", ".m.rule.invite_for_me"} {
+		row, err := server.db.PushRuleRepo.Get(aged.UserID, "override", ruleID)
+		if err != nil {
+			t.Fatalf("reading %s of a fresh account: %v", ruleID, err)
+		}
+		// Storage rather than HTTP: this is the row the previous release left behind, a rule
+		// with the right name and conditions that are not the specification's.
+		row.Conditions = ""
+		if ruleID == ".m.rule.member_event" {
+			// The actions this server seeded for it, so the repair is allowed to take the
+			// specification's empty list back.
+			row.Actions = `["dont_notify"]`
+		}
+		if err := server.db.PushRuleRepo.Set(row); err != nil {
+			t.Fatalf("storing %s as the previous release writes it: %v", ruleID, err)
+		}
+	}
+	// The rule set version of the release before this one.
+	if err := server.db.UserRepo.SetPushRulesVersion(aged.UserID, 3); err != nil {
+		t.Fatalf("writing the rule set version an older release leaves: %v", err)
+	}
+
+	restarted := NewServerWithDatabase(t, path, api.Config{})
+
+	member := pushRuleOf(t, restarted, aged, "override", ".m.rule.member_event")
+	requireCondition(t, member, ".m.rule.member_event", 0,
+		map[string]any{"kind": "event_match", "key": "type", "pattern": matrix.TypeMember})
+	requireActionsAre(t, member, "[]")
+
+	invite := pushRuleOf(t, restarted, aged, "override", ".m.rule.invite_for_me")
+	requireCondition(t, invite, ".m.rule.invite_for_me", 2,
+		map[string]any{"kind": "event_match", "key": "state_key", "pattern": aged.UserID})
+	requireActionsAre(t, invite, "[notify map[set_tweak:sound value:default]]")
+
+	reaction := pushRuleOf(t, restarted, aged, "override", ".m.rule.reaction")
+	if got := fmt.Sprintf("%v", reaction["actions"]); got != "[notify]" {
+		t.Errorf("the repair overwrote actions a person chose: %v", reaction["actions"])
+	}
+	requireCondition(t, reaction, ".m.rule.reaction", 0,
+		map[string]any{"kind": "event_match", "key": "type", "pattern": matrix.TypeReaction})
+
+	// And the copy clients read, which is the one the Rust SDK parses.
+	synced := restarted.MustDo(http.MethodGet, "/_matrix/client/v3/sync?timeout=0",
+		aged.Token, nil, http.StatusOK)
+	if !strings.Contains(string(synced.Raw), `"pattern":"m.room.member"`) {
 		t.Errorf("the m.push_rules account data did not follow the repair: %s", synced.Raw)
 	}
 }
