@@ -1560,3 +1560,56 @@ an edit → not heard at all.
   list — which is what makes it an off switch; `.m.rule.roomnotif` keeps its `dont_notify`
   actions. All three are v1.17 work, and seeding a rule whose condition the matcher cannot
   read would trade a 404 for a silent no-op — the worse of the two.
+
+## A field your own client ignores is a field a stricter one refuses the whole document over (2026-11-26, v0.2.20)
+
+Reported from the smaltino lab run of v0.2.19: a second device of an account did not show
+the push-rule changes the first one made. The data was right everywhere the server could
+see — `m.push_rules` in the account data, and in both kinds of sync. The answer for the
+content kind was the cause:
+
+```json
+"content": [{"rule_id": ".m.rule.contains_user_name", "default": true, "enabled": true,
+             "actions": ["notify", {"set_tweak": "highlight", "value": true}]}]
+```
+
+`.m.rule.contains_user_name` was seeded with no conditions, and `pushRuleWire` reads a
+content rule's `pattern` out of a stored `content.body` condition, so nothing was published.
+Ruma — the Rust SDK under smaltino and Element X — answers that with `missing field
+'pattern'` for the **whole** ruleset and falls back to its own defaults, so every device on
+the app reads the server's rules as though the person had never touched them.
+
+- **The rule: a published shape is judged by its strictest reader, not by yours.** A field
+  the kind always has is a field to publish even when there is nothing in it. The content
+  rules now always carry `pattern` — an account's own local part where the specification
+  substitutes one, and an empty string for a rule a person wrote without one — because an
+  empty string is a value and an absent field is a parse error.
+- **The same field then turned up where it does not belong.** Any `content.body` condition
+  was enough for `pushRuleWire` to publish a `pattern`, so the *override* rule
+  `.m.rule.roomnotif` carried one beside its conditions. A field derived from a shape has to
+  be derived with the kind in hand: `pattern` for content rules, `conditions` for the rest.
+- **`PUT /pushrules/{kind}/{ruleId}` is a replace, and the body names three fields: actions,
+  conditions, pattern.** Everything else the row held was being read as empty, so a settings
+  screen changing one default rule's actions cleared its conditions — turning
+  `.m.rule.suppress_notices` into a rule matching every event — and cleared its `default`
+  flag, making a rule of the server a rule of the person. A replace has to carry over every
+  field the body cannot name: position in the rule order, `default`, and the conditions of a
+  default rule.
+- That last fact is also what makes the repair pass safe. For a default rule, the person owns
+  `enabled` and `actions`; the server owns `conditions`, `default` and the order. Only
+  server-owned fields may be rewritten by a repair, and here that list is exactly the set of
+  fields no endpoint writes, so the pass cannot undo a choice anybody made.
+- Two smaller ones, both already in the matcher rather than in the report: the condition kind
+  `contains_display_name` was implemented before it was ever seeded, so a person copying the
+  published condition into a rule of their own gets one that fires; and `WordContains`
+  lowercases its haystack and not its needle, which every caller has to remember.
+
+Measured by running one test file against both releases (a `v0.2.19` worktree beside the
+fix): twelve assertions fail there — no `pattern`, no sound tweak, a `pattern` on an
+override rule, a default rule stripped of conditions and flag by a `PUT` of actions, an
+account written before the change still answering without a `pattern`, and its
+`m.push_rules` account data missing it too.
+
+- Left in the queue beside it: the rules whose conditions this server still hides in
+  `Matches()` instead of storing, and the `dont_notify` actions `.m.rule.roomnotif` was
+  seeded with where v1.11 gives it a notify and a highlight.

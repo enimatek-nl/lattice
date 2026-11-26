@@ -31,7 +31,7 @@ because it said nothing these steps do not.
 | Measure | Now |
 |---|---|
 | `make build vet` | clean (4 s, 2026-11-20); `make lint` reports the same **7 issues** (6 staticcheck: `QF1001`×3, `QF1006`×2, `S1011`; 1 `unused`: `internal/api/federation.go:1045 eventInBody`) — pre-existing quickfix-style findings, none from the 2026-11-18 work. Note for a session started from a service unit: `golangci-lint` lives in `~/go/bin`, which is not on that PATH — and on 2026-11-26 the chat session's environment had no `golangci-lint` installed anywhere on its PATH, so the lint tally above still belongs to 2026-11-20 |
-| this repository's own tests | **374** counted here — 202 client-API compatibility, 90 two-server federation, 82 offline unit (`go test ./tests/<pkg> -list '.*'`, all green on 2026-11-26: compat 96 s, federation 50 s). `internal/matrix` adds its own test functions, which this tally has never counted |
+| this repository's own tests | **376** counted here — 204 client-API compatibility, 90 two-server federation, 82 offline unit (`go test ./tests/<pkg> -list '.*'`, all green on 2026-11-26: compat 97 s, federation 50 s). `internal/matrix` adds its own test functions, which this tally has never counted |
 | Complement `tests/csapi` | **84 green of 106**, 2 skipped, in 345 s on v0.2.18 (2026-11-25; 338 s on v0.2.17, 340 s on v0.2.16). Two names less red than the 2026-11-20 tally: `TestPushSync` passes since the push rule set travels as `m.push_rules` account data, and `TestSearch` passes since `/search` speaks the specification's body and answer. The other 20 names are the same list, so the red list is stable rather than lucky. It could not be run to completion before 2026-11-18, see [COMPLEMENT.md](COMPLEMENT.md) |
 | Complement server-server (`tests`, not `tests/federation`) | **78 green of 91**, 13 red — re-measured 2026-11-20 for the first time since 2026-11-04, and the 13 are name for name the names recorded then, so the number was stale but honest. 338 s of own time; run beside the client-API suite it costs nothing extra, see `make complement-both` |
 | endpoints | **180 of 234** indexed routes implemented, 44 routes the index does not name (`make endpoints`, unchanged on 2026-11-20) |
@@ -309,36 +309,49 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
       `TestAnAccountWrittenBeforeTheRulesIsGivenThem`, and `TestPropertyValuePaths` beside the new
       condition kinds in `TestRuleMatches`. Complement was **not** run for this change: docker is not
       reachable from the session that wrote it, so the 84-of-106 tally above predates it.
-- [ ] The content rule a Rust client cannot read (reported 2026-11-26 by the author of
-      smaltino from the v0.2.19 lab run; measured the same day on 0.2.19; not built). The only
-      content rule this server seeds is `.m.rule.contains_user_name`, and it is seeded **without
-      conditions** — `pushRuleWire` rebuilds a rule's `pattern` from a stored `content.body`
-      condition, so no condition means no `pattern`, and the answer for the content kind is:
-      `{"rule_id": ".m.rule.contains_user_name", "default": true, "enabled": true, "actions":
-      ["notify", {"set_tweak": "highlight", "value": true}]}`. v1.11 defines it with
-      `"pattern": "[the local part of the user's Matrix ID]"` and actions `notify`, sound
-      `default`, `highlight`. A content rule always carries a pattern, and ruma — the Rust SDK
-      behind smaltino and Element X — therefore refuses the **whole** rule set
-      (`missing field 'pattern'`) and falls back to its own defaults, which is why a second device
-      of the same account stops showing what the first one changed even though the account data and
-      both syncs carry it. Three things to fix together, and the second is the one that bites a
-      running server:
-      1. Seed the pattern with the account's localpart and give both mention rules their sound tweak;
-         `.m.rule.contains_display_name` is seeded with no conditions where v1.11 gives it exactly one,
-         `{"kind": "contains_display_name"}`, with no `key` and no `pattern`, plus the same sound tweak.
-         That condition kind has to be *implemented* rather than only stored: an unknown kind answers
-         "does not match", so a person copying the published condition into a rule of their own would
-         get a rule that never fires. The recipient's display name is already in `push.Context`.
-      2. Repair existing accounts. No endpoint re-points the conditions of a default rule — `PUT` takes
-         actions, `PUT` on `/enabled` takes the flag — so the repair pass may take the server's own
-         conditions back for rules with `default: true`, on a higher `PushRulesVersion`.
-      3. Refuse a content rule without a pattern. `SetPushRule` derives conditions from `pattern` where a
-         client sends one and validates nothing where it does not, so one bad `PUT` makes an account's
-         rule set unreadable for every Rust client on it.
-      Measured beside it on the same answer: `.m.rule.roomnotif` publishes a `pattern` **and** its
-      conditions, because the shorthand heuristic in `pushRuleWire` does not look at the kind — the
-      field belongs to content rules only. `.agent-work/v111/wire.py` prints that answer for a fresh
-      account.
+- [x] The content rule a Rust client cannot read (reported 2026-11-26 by the author of
+      smaltino from the v0.2.19 lab run, fixed the same day; v0.2.20). `.m.rule.contains_user_name`
+      is this server's only content rule and it was seeded **without conditions**: `pushRuleWire`
+      reads a content rule's `pattern` back out of a stored `content.body` condition, so the answer
+      for the content kind carried no `pattern` at all. Ruma — the Rust SDK behind smaltino and
+      Element X — stops parsing the **whole** rule set on `missing field 'pattern'` and falls back
+      to its own defaults, which is the entire reason a second device of an account stopped showing
+      what the first one changed: the account data and both syncs carried the change, and the reader
+      threw it away.
+      1. The rule is seeded with the condition its pattern is — `content.body` matched against the
+         account's own local part, which is what the specification's
+         `"[the local part of the user's Matrix ID]"` asks a server to substitute — and both mention
+         rules now carry the sound tweak of `default` that v1.11 defines beside the highlight.
+         `.m.rule.contains_display_name` is seeded with the one condition v1.11 gives it,
+         `{"kind": "contains_display_name"}`, with no key and no pattern. That kind was already
+         implemented in the matcher, which is what a person copying the published condition into a
+         rule of their own depends on.
+      2. `pattern` is published for content rules and for nothing else, and for every content rule:
+         one with no pattern to show publishes an empty one, because presence is what the strict
+         reader asks for. `.m.rule.roomnotif` therefore no longer publishes a `pattern` beside its
+         conditions — the old shorthand looked at the condition and never at the kind.
+      3. Existing accounts are repaired. The conditions of a default rule are the one part of it no
+         endpoint writes, so `RepairDefaultPushRules` takes the server's own copy back for rules
+         flagged `default`, with `defaultRulesVersion` at 3. Actions and the enabled flag are not
+         touched, so what a person switched off stays switched off.
+      4. A `PUT` of a rule that exists keeps the three things its body never says: the place in the
+         rule order, the `default` flag, and — for a default rule — the conditions. Writing the test
+         found two bugs the report did not: changing a default rule's actions used to wipe its
+         conditions, which turns `.m.rule.suppress_notices` into a rule matching every event, and
+         used to clear the flag, which makes a rule of the server a rule of the person in every
+         client that asks.
+      Refusing a content rule without a pattern was considered and dropped: the request schema of
+      `PUT` requires `actions` and nothing else, so a client is allowed to send a content rule with
+      conditions and no pattern, and a 400 there would be this server's own rule. What it can
+      promise is that its own answer always parses, which is what two and three do.
+      Measured against the release the report was made on — same test file, a `v0.2.19` worktree:
+      twelve assertions fail there and pass here. No pattern, no sound tweak, a pattern on an
+      override rule, a default rule with no conditions left after a `PUT` of actions, `default`
+      cleared to false, an account written before the change still reading no pattern, and the
+      `m.push_rules` account data without it either.
+      `TestContentRulesCarryThePatternTheirKindRequires` and
+      `TestADefaultRuleKeepsTheConditionsOnlyTheServerWrites`; `.agent-work/v111/wire.py` prints the
+      answer of a fresh account. Complement and `make lint` were unavailable to this session too.
 - [ ] The rest of what v1.17 says the default rules are (split off from the v1.11 item above
       on 2026-11-26; not built). What is left is what a newer specification *changes* rather than adds,
       and the report agrees v1.11 may keep it: `.m.rule.contains_display_name`, `.m.rule.roomnotif`
