@@ -1700,3 +1700,47 @@ definitions out of the "Predefined Rules" section and compares conditions and ac
   for the same reason as its neighbours — `.m.rule.room_one_to_one` without its `type` condition —
   so it passes on v0.2.22 and `.m.rule.call` is the specification's own. A test's name is not its
   request: reading the event it sends costs a minute and a wrong conclusion costs a release note.
+
+## An endpoint that stores a URL is not a server that uses it (2026-11-27, v0.2.23)
+
+The push pipeline had every part except the one that leaves the process. The pusher endpoint
+accepted an endpoint, `GET /pushers` listed it back with `active: true` and the right
+`data.url`, the rules decided that a message in a room of two is worth a wake-up, and a
+notification row was written for `/notifications`. Nothing ever made a request to the URL. The
+lab counted 0 requests at their gateway in 30 seconds, and their summary of what that means for
+a user is the whole finding: an app that is not open gets nothing, on any platform, from this
+server.
+
+- **A coverage table cannot find this.** Routes are counted as implemented the moment they answer
+  correctly, and every route in this story did. The missing half is not an endpoint — it is this
+  server being a *client*, and no endpoint index has a column for that. What found it was a peer
+  that counts arrivals, which is the honest form of "does the feature work": something outside
+  the process noticing.
+- **Asynchronous is not an optimisation here.** The request is rendered while the event is still
+  being sent and handed to a queue; a worker makes the call. A push gateway is somebody else's
+  server, and a phone's notification endpoint must not be able to make an accepted message fail
+  — the same argument the federation outbox is built on. The queue is bounded at 256 and a full
+  one drops out loud, because a notification row already exists: dropping costs a wake-up, not a
+  message, and the next sync stays complete either way.
+- **The body is grouped per recipient, not per device.** `counts`, `unread` and `prio` describe
+  the person and the room, so devices that share a gateway *and* a format ride in one request's
+  `devices[]`, each with its own `tweaks`. One request per device would repeat numbers that
+  cannot differ per device; one request per gateway across recipients would publish one person's
+  unread count to another person's phone.
+- **A gateway's answer is an instruction, and the cases differ.** A `rejected` list or a 400 says
+  the pushkey is done — forget the pusher, or every later message queues a request that is refused
+  again for a device that no longer exists. A 404 says the URL is wrong, which is the client's
+  mistake and says nothing about the pushkey, so the pushers stay. 429, 408, 5xx and unreachable
+  are retried three times with doubling backoff and jitter, and giving up writes a line to the
+  log: silence is what made "we never called it" indistinguishable from "nobody wanted us to".
+- **What is still missing, said plainly.** A membership event is still not judged against the
+  rules, so an invite reaches no gateway; that decision is about who the recipients are, since the
+  invited person is not in the room to be listed. And this loop dials a URL any account may
+  register, with no address policy in front of it — so the honest answer to the lab's question
+  "does Lattice refuse local addresses, and is there a knob to allow one?" is that it refuses
+  nothing yet. That knob belongs to the queued outbound address policy, not to a pusher-specific
+  exception.
+- The specification's own words settled the shape without interpretation: the homeserver "starts
+  sending HTTP requests to the Push Gateway using the supplied URL", and rules are processed "for
+  each of the local users in the room (excluding the sender)" — which is why there is now a test
+  in which alice's own gateway stays quiet.

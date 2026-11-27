@@ -320,6 +320,11 @@ func main() {
 		log.Printf("federation: %d queued transaction(s) from an earlier run are waiting for peers", waiting)
 	}
 	stopOutbox := svc.StartFederationOutbox(ctx, *federationFlush)
+	// Push delivery is a queue of its own for the same reason the outbox is: a push gateway
+	// belongs to somebody else, and a phone's notification endpoint must never be able to
+	// hold up a message that is already accepted. Without this loop a registered pusher is
+	// a row in a table, and an app that is not open is never woken.
+	stopPush := svc.StartPushDelivery(ctx)
 
 	errs := make(chan error, len(doors))
 	for _, entry := range doors {
@@ -352,6 +357,7 @@ func main() {
 			log.Printf("shutdown: %v", err)
 		}
 	}
+	stopPush()
 	stopOutbox()
 	stopMaintenance()
 }

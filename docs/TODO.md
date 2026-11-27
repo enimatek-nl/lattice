@@ -31,7 +31,7 @@ because it said nothing these steps do not.
 | Measure | Now |
 |---|---|
 | `make build vet` | clean (4 s, 2026-11-20); `make lint` reports the same **7 issues** (6 staticcheck: `QF1001`×3, `QF1006`×2, `S1011`; 1 `unused`: `internal/api/federation.go:1045 eventInBody`) — pre-existing quickfix-style findings, none from the 2026-11-18 work. Note for a session started from a service unit: `golangci-lint` lives in `~/go/bin`, which is not on that PATH — and on 2026-11-26 the chat session's environment had no `golangci-lint` installed anywhere on its PATH, so the lint tally above still belongs to 2026-11-20 |
-| this repository's own tests | **379** counted here — 207 client-API compatibility, 90 two-server federation, 82 offline unit (`go test ./tests/<pkg> -list '.*'`, all green on 2026-11-26: compat 97 s, federation 50 s). `internal/matrix` adds its own test functions, which this tally has never counted |
+| this repository's own tests | **386** counted here — 214 client-API compatibility, 90 two-server federation, 82 offline unit (`go test ./tests/<pkg> -list '.*'`, all green on 2026-11-27: compat 102 s, federation 50 s). `internal/matrix` adds its own test functions, which this tally has never counted |
 | Complement `tests/csapi` | **84 green of 106**, 2 skipped, in 345 s on v0.2.18 (2026-11-25; 338 s on v0.2.17, 340 s on v0.2.16). Two names less red than the 2026-11-20 tally: `TestPushSync` passes since the push rule set travels as `m.push_rules` account data, and `TestSearch` passes since `/search` speaks the specification's body and answer. The other 20 names are the same list, so the red list is stable rather than lucky. It could not be run to completion before 2026-11-18, see [COMPLEMENT.md](COMPLEMENT.md) |
 | Complement server-server (`tests`, not `tests/federation`) | **78 green of 91**, 13 red — re-measured 2026-11-20 for the first time since 2026-11-04, and the 13 are name for name the names recorded then, so the number was stale but honest. 338 s of own time; run beside the client-API suite it costs nothing extra, see `make complement-both` |
 | endpoints | **180 of 234** indexed routes implemented, 44 routes the index does not name (`make endpoints`, unchanged on 2026-11-20) |
@@ -153,13 +153,38 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
 ### B. Structural gaps — what other software needs in order to attach
 
 - [ ] **Application services** — registrations and namespaces, `as_token` auth with `user_id`/`device_id`, transaction delivery with ephemeral data, user/alias queries. Nothing bridging works without it, and it is how a bot holds an identity here.
-- [ ] **Push delivery** — `POST /_matrix/push/v1/notify` as a *client* of a push gateway, with `event_id_only` and rejected pushkeys. Rules, pushers and counts already exist: this is one outbound request loop away from a phone ringing.
-      Measured 2026-11-26, because an app that is not open is not a client that can read rules
-      itself: `POST /pushers/set`, `GET /pushers` and both `DELETE` routes are served and the rows are
-      kept, and `internal/service` holds no outbound request to a gateway at all — so today an
-      Android or iOS app in the background receives nothing from this server. The testing objection
-      written here before is gone: smaltino's suite brings its own fake gateway, so no Sygnal is
-      needed to prove the loop works.
+- [x] **Push delivery** — `POST /_matrix/push/v1/notify` as a *client* of a push gateway, with `event_id_only` and rejected pushkeys (built 2026-11-27 for v0.2.23; reported the same day by the lab as `a_pusher_has_the_homeserver_knock_at_the_gateway`, "the homeserver never knocked at the gateway for the message", and `a_browser_s_pusher_carries_its_subscription_and_the_names`).
+      It had been true since the first pusher: the endpoint accepted the registration,
+      `GET /pushers` listed it back with `active: true` and the right `data.url`, the rules decided
+      that a message in a room of two was worth a notification, a notification row was written for
+      `/notifications` — and no request was ever made to the URL the client supplied. Reported from
+      the lab's own gateway, which counted 0 requests in 30 s. What the specification says is
+      "the homeserver starts sending HTTP requests to the Push Gateway using the supplied URL", and
+      "this may result in making a request to the configured push gateway".
+      `internal/service/pushdeliver.go` is that loop: the request is rendered while the event is
+      still being sent and put on a queue of 256, and a worker makes the call — so a gateway that
+      is slow or dead cannot hold up a message that is already accepted, which is the same reason
+      the federation outbox exists. One request per recipient per gateway and format, because
+      `counts`, `unread` and `prio` describe the recipient and not the device, and devices that
+      share both ride along in `devices[]`. `event_id_only` stops at `event_id`, `room_id`,
+      `counts`, `prio` and `devices` — no `content`, no `sender`, which is what the lab's gateway
+      asserts; a full pusher gets `sender`, `type` and `content`, with the pusher's
+      `default_payload` underneath it. `data` travels whole, so the `account` label a client put in
+      its own pusher data comes back in the payload. `prio` is high when the matched rule sets a
+      sound. A gateway's answer is acted on: a `rejected` list or a 400 makes the pushers go, a 404
+      is a wrong URL and says nothing about the pushkey, 429/408/5xx and unreachable are retried
+      three times with doubling backoff and jitter, and giving up says so in the log — silence is
+      what made "we never called it" indistinguishable from "nobody wanted us to".
+      Seven tests in `tests/compat/pushdelivery_test.go`: the knock itself with every field the
+      lab's gateway checks, the sender excluded from their own message, the full format carrying
+      the event, both gateway answers that mean forget this device, the retry after a 503, rules
+      still deciding (a switched-off recipient gets nothing), and an email pusher never becoming a
+      gateway request. End to end on the lab's exact steps, including the listener on 127.0.0.2:
+      `.agent-work/v111/push-e2e.py`.
+      What it does not do yet: a membership event is still not judged, so an invite reaches no
+      gateway — see the item below, which is now unblocked rather than blocked on a gateway to test
+      against. And the URL is user input this server dials without asking anybody: see the outbound
+      address policy above.
 - [ ] **An admin surface** — user list/get/create/update/deactivate/reset, room list/details/delete, force-join, purge. Today: four routes and the CLI.
 - [ ] **Authentication that is not a password** — `/login/sso/redirect`, `m.login.token` from an identity provider, MSC2965 discovery, `POST /v1/login/get_token`.
 
@@ -191,6 +216,10 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
       error, which is the only reason `TestSyncTimelineGap` is red now that its assertions pass
       (triaged 2026-11-20).
 - [ ] An outbound **address policy**: what a name may resolve to before this server dials it.
+      Two places dial today and neither asks anybody first: the push gateway URL of a pusher
+      (`internal/service/pushdeliver.go`, 2026-11-27) is user input that is posted to as soon as a
+      message arrives, so an account can aim this server at a link-local metadata endpoint or a
+      port on its own network; and
       `internal/federation/transport.go:208` is a bare `transport := &http.Transport{}` — default
       resolver, default dialer, nothing refusing loopback, link-local or RFC1918, and nothing pinning
       the address between looking a name up and connecting to it, which is the half that matters: a
@@ -414,8 +443,8 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
       phone whose app relies on the gateway learns of an invite only when the app next reads a sync.
       Teaching the path membership events wants a decision about who is a recipient (the invite is not
       in the room yet, so `Members(roomID, join)` is the wrong list) and about rooms this server does
-      not consider joined. A gateway to test against is not the obstacle: smaltino's suite brings its
-      own fake one.
+      not consider joined. A gateway to test against is no longer the obstacle on either side:
+      delivery exists as of v0.2.23 and the lab's suite brings its own fake gateway.
 - [ ] A rule without conditions always matches, and this server disagrees (spun off from the item
       above on 2026-11-26; not built). `Matches()` reads an empty condition list as matching only for
       underride rules; the specification has it match every event. The consequence is two-sided, and

@@ -42,6 +42,10 @@ func (s *Service) notifyParticipants(ctx context.Context, roomID string, event *
 	// An `@room` mention only notifies when the sender may make one, so the sender's
 	// level and the room's notification levels are read once for the whole room.
 	senderLevel, notificationLevels := s.senderPower(ctx, roomID, event.Sender)
+	// Who this event may wake, with the actions that said so. The gateway requests are
+	// rendered at the end, once the notification rows exist - so the unread counts the
+	// body carries include what was just written.
+	var notified []pushRecipient
 
 	for _, member := range members {
 		if member.UserID == event.Sender {
@@ -95,6 +99,10 @@ func (s *Service) notifyParticipants(ctx context.Context, roomID string, event *
 		if err := s.db.NotificationRepo.Create(notification); err != nil {
 			return err
 		}
+		notified = append(notified, pushRecipient{UserID: member.UserID, Actions: actions})
 	}
+	// Registered endpoints come last and never fail the send: a push gateway that is
+	// down is not a reason for a message to go unsent.
+	s.queuePushesForEvent(ctx, roomID, event, notified)
 	return nil
 }

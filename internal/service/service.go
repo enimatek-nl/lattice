@@ -6,6 +6,7 @@ package service
 import (
 	"context"
 	"log"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -70,6 +71,9 @@ type Service struct {
 	signingKey   *federation.KeyPair
 	// now is overridable for tests.
 	now func() time.Time
+	// push is the state of the outbound push loop: its queue, its HTTP client, and
+	// whether a loop is running at all. See [Service.StartPushDelivery].
+	push *pushDelivery
 }
 
 // Option customises a [Service].
@@ -142,6 +146,10 @@ func New(db *persist.Database, serverName string, tokens *auth.TokenService, opt
 		reservationWindow: DefaultMediaReservationWindow,
 		roomVersions:      append([]string(nil), SupportedRoomVersions...),
 		uiaSessions:       map[string]*authSession{},
+		push: &pushDelivery{
+			client: &http.Client{Timeout: pushGatewayTimeout},
+			queue:  make(chan pushTask, pushQueueDepth),
+		},
 	}
 	for _, opt := range opts {
 		opt(s)

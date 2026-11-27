@@ -5,6 +5,11 @@
 /server
 /endpoints
 /lattice
+# a locally built binary used to replay a lab repro; /lattice above is the release
+# name, and a name an operator would never ship under is exactly what gets built by
+# hand next to the source
+/lattice-new
+/tmp-lattice-check/
 *.exe
 *.exe~
 *.dll
@@ -59,3 +64,7 @@ ENDPOINTS.md
 
 # Agent working notes: the trail, not the product (AGENTS.md §14).
 .agent-work/
+
+# Assistant session logs (pi): a transcript of one conversation, not part of the
+# server, and different on every machine that works on it
+/.pi-session/
