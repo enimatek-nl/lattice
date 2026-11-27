@@ -84,13 +84,43 @@ func (g *pushGateway) count() int {
 // "soon" is allowed to take.
 func (g *pushGateway) await(t *testing.T, within time.Duration) (gatewayCall, bool) {
 	t.Helper()
+	return g.awaitWhere(t, within, func(map[string]any) bool { return true })
+}
+
+// awaitEvent waits for the knock about one particular event. A test about a message cannot
+// take the first request it sees: an invitation is a knock of its own now, and it usually
+// comes first, because it is what puts the pusher's owner in the room.
+func (g *pushGateway) awaitEvent(t *testing.T, within time.Duration, eventID string) (gatewayCall, bool) {
+	t.Helper()
+	return g.awaitWhere(t, within, func(body map[string]any) bool {
+		notification, _ := body["notification"].(map[string]any)
+		return notification["event_id"] == eventID
+	})
+}
+
+// awaitType is awaitEvent for a server-side fact a test cannot know the ID of, and it only
+// works for a full pusher: `format: "event_id_only"` carries no type to look at.
+func (g *pushGateway) awaitType(t *testing.T, within time.Duration, want string) (gatewayCall, bool) {
+	t.Helper()
+	return g.awaitWhere(t, within, func(body map[string]any) bool {
+		notification, _ := body["notification"].(map[string]any)
+		return notification["type"] == want
+	})
+}
+
+func (g *pushGateway) awaitWhere(t *testing.T, within time.Duration,
+	want func(map[string]any) bool) (gatewayCall, bool) {
+	t.Helper()
 	deadline := time.Now().Add(within)
 	for time.Now().Before(deadline) {
 		g.mu.Lock()
 		var call gatewayCall
-		found := len(g.calls) > 0
-		if found {
-			call = g.calls[0]
+		found := false
+		for _, entry := range g.calls {
+			if want(entry.body) {
+				call, found = entry, true
+				break
+			}
 		}
 		g.mu.Unlock()
 		if found {
@@ -162,10 +192,9 @@ func notification(t *testing.T, call gatewayCall) map[string]any {
 func TestPushGatewayIsKnockedAt(t *testing.T) {
 	server, alice, bob, gateway := pushDeliveryTest(t)
 	roomID := twoPersonRoom(t, server, alice, bob)
+	eventID := server.Send(alice, roomID, "ring-1", "hello bob")
 
-	server.Send(alice, roomID, "ring-1", "hello bob")
-
-	call, ok := gateway.await(t, 5*time.Second)
+	call, ok := gateway.awaitEvent(t, 5*time.Second, eventID)
 	if !ok {
 		t.Fatalf("the homeserver never knocked at the gateway for the message")
 	}
@@ -174,7 +203,7 @@ func TestPushGatewayIsKnockedAt(t *testing.T) {
 	}
 	body := notification(t, call)
 
-	eventID, _ := body["event_id"].(string)
+	eventID, _ = body["event_id"].(string)
 	if !strings.HasPrefix(eventID, "$") {
 		t.Errorf("event_id is %q, which is not an event id", eventID)
 	}
@@ -220,8 +249,11 @@ func TestPushGatewayIsKnockedAt(t *testing.T) {
 	if !ok {
 		t.Fatalf("no counts, so the app has no badge to show: %s", call.raw)
 	}
-	if unread, _ := counts["unread"].(float64); unread != 1 {
-		t.Errorf("counts.unread is %v, want 1 for the message that just arrived", counts["unread"])
+	// Two: this room's invitation is a notification too, and the app has acknowledged
+	// neither. The number the gateway is sent is "the number of unacknowledged
+	// notifications", not the number of messages.
+	if unread, _ := counts["unread"].(float64); unread != 2 {
+		t.Errorf("counts.unread is %v, want 2", counts["unread"])
 	}
 }
 
@@ -255,11 +287,11 @@ func TestPushGatewaySeesTheEventForAFullPusher(t *testing.T) {
 	registerPusher(t, server, bob, gateway.url(), "")
 	roomID := twoPersonRoom(t, server, alice, bob)
 
-	server.Send(alice, roomID, "full-1", "in full")
+	eventID := server.Send(alice, roomID, "full-1", "in full")
 
-	call, ok := gateway.await(t, 5*time.Second)
+	call, ok := gateway.awaitEvent(t, 5*time.Second, eventID)
 	if !ok {
-		t.Fatalf("the homeserver never knocked at the gateway")
+		t.Fatalf("the homeserver never knocked at the gateway for %s", eventID)
 	}
 	body := notification(t, call)
 	if sender, _ := body["sender"].(string); sender != alice.UserID {
@@ -350,9 +382,16 @@ func TestPushGatewayIsRetried(t *testing.T) {
 // to be busy.
 func TestPushRulesStillDecide(t *testing.T) {
 	server, alice, bob, gateway := pushDeliveryTest(t)
-	for _, ruleID := range []string{".m.rule.room_one_to_one", ".m.rule.message"} {
+	for _, rule := range []struct{ kind, id string }{
+		{"underride", ".m.rule.room_one_to_one"},
+		{"underride", ".m.rule.message"},
+		// The invitation of the room that is about to be made is itself a knock, and this
+		// test wants a silent recipient, so the invitation's rule goes off too - which is
+		// also the proof of which rule was behind that knock.
+		{"override", ".m.rule.invite_for_me"},
+	} {
 		server.MustDo(http.MethodPut,
-			"/_matrix/client/v3/pushrules/global/underride/"+ruleID+"/enabled",
+			"/_matrix/client/v3/pushrules/global/"+rule.kind+"/"+rule.id+"/enabled",
 			bob.Token, map[string]any{"enabled": false}, http.StatusOK)
 	}
 	roomID := twoPersonRoom(t, server, alice, bob)
@@ -415,11 +454,11 @@ func TestPushGatewayNamesTheRoomAndTheSender(t *testing.T) {
 	registerPusher(t, server, bob, gateway.url(), "")
 	roomID := server.CreateRoom(alice, map[string]any{"name": "Mission Control", "invite": []string{bob.UserID}})
 	server.MustDo(http.MethodPost, "/_matrix/client/v3/join/"+roomID, bob.Token, nil, http.StatusOK)
-	server.Send(alice, roomID, "named-1", "the written word")
+	eventID := server.Send(alice, roomID, "named-1", "the written word")
 
-	call, ok := gateway.await(t, 5*time.Second)
+	call, ok := gateway.awaitEvent(t, 5*time.Second, eventID)
 	if !ok {
-		t.Fatalf("the homeserver never knocked at the gateway")
+		t.Fatalf("the homeserver never knocked at the gateway for %s", eventID)
 	}
 	body := notification(t, call)
 	if name, _ := body["room_name"].(string); name != "Mission Control" {
@@ -452,9 +491,9 @@ func TestPushGatewayNamesTheRoomAndTheSender(t *testing.T) {
 func TestPushGatewayCountsOmitZero(t *testing.T) {
 	server, alice, bob, gateway := pushDeliveryTest(t)
 	roomID := twoPersonRoom(t, server, alice, bob)
-	server.Send(alice, roomID, "count-1", "one unread")
+	eventID := server.Send(alice, roomID, "count-1", "one unread")
 
-	call, ok := gateway.await(t, 5*time.Second)
+	call, ok := gateway.awaitEvent(t, 5*time.Second, eventID)
 	if !ok {
 		t.Fatalf("the homeserver never knocked at the gateway")
 	}
@@ -465,7 +504,104 @@ func TestPushGatewayCountsOmitZero(t *testing.T) {
 	if _, present := counts["highlight"]; present {
 		t.Errorf("a highlight count of zero was sent: %v", counts)
 	}
-	if unread, _ := counts["unread"].(float64); unread != 1 {
-		t.Errorf("counts.unread is %v, want 1", counts["unread"])
+	// Two, and that is right: the invitation of this room is a notification the app has not
+	// acknowledged either. "The number of unacknowledged notifications" counts it.
+	if unread, _ := counts["unread"].(float64); unread != 2 {
+		t.Errorf("counts.unread is %v, want 2", counts["unread"])
+	}
+}
+
+// TestPushGatewayIsKnockedAtForAnInvite is the second half of the report of 2026-11-27: an
+// invitation never reached a gateway, so `a_browser_s_pusher_carries_its_subscription_and_the_names`
+// failed with "the homeserver never knocked at the gateway for m.room.member".
+//
+// The rule that asks for it, `.m.rule.invite_for_me`, "matches any invites to a new room for
+// this user" - and the person it invites is by definition not in the room yet. A server that
+// asks only "each of the local users in the room" therefore has nobody left to ask, and an
+// invitation for an app that is not open is exactly what a push is for.
+func TestPushGatewayIsKnockedAtForAnInvite(t *testing.T) {
+	server := NewServer(t)
+	stop := server.svc.StartPushDelivery(t.Context())
+	t.Cleanup(stop)
+	alice := server.Register("alice", "wonderland")
+	bob := server.Register("bob", "rubberduck")
+	server.MustDo(http.MethodPut, profilePath(alice.UserID, "displayname"), alice.Token,
+		map[string]any{"displayname": "Major Tom"}, http.StatusOK)
+
+	gateway := newPushGateway(t)
+	// No format, so the whole notification is asked for: this is the browser pusher of the
+	// lab's test, and the one that has to carry the room's name.
+	registerPusher(t, server, bob, gateway.url(), "")
+
+	// Bob is deliberately left outside the room: the invitation is what is being delivered.
+	server.CreateRoom(alice, map[string]any{"name": "Kiln", "invite": []string{bob.UserID}})
+
+	call, ok := gateway.awaitType(t, 5*time.Second, matrix.TypeMember)
+	if !ok {
+		t.Fatalf("the homeserver never knocked at the gateway for the invitation: %s", call.raw)
+	}
+	body := notification(t, call)
+	if kind, _ := body["type"].(string); kind != matrix.TypeMember {
+		t.Errorf("type is %v, want %s", body["type"], matrix.TypeMember)
+	}
+	if target, _ := body["user_is_target"].(bool); !target {
+		// "This is true if the user receiving the notification is the subject of a member
+		// event": it is how an app tells an invite for itself from a change it only watches.
+		t.Errorf("user_is_target is %v, want true: %s", body["user_is_target"], call.raw)
+	}
+	content, _ := body["content"].(map[string]any)
+	if membership, _ := content["membership"].(string); membership != "invite" {
+		t.Errorf("content.membership is %v, want invite: %v", content["membership"], content)
+	}
+	if name, _ := body["room_name"].(string); name != "Kiln" {
+		t.Errorf("room_name is %v: an invited app has no room to read a name out of", body["room_name"])
+	}
+	if sender, _ := body["sender"].(string); sender != alice.UserID {
+		t.Errorf("sender is %v, want %s", body["sender"], alice.UserID)
+	}
+	if name, _ := body["sender_display_name"].(string); name != "Major Tom" {
+		t.Errorf("sender_display_name is %v", body["sender_display_name"])
+	}
+
+	// The rule gives `notify` and a sound, and nothing else: v1.11 lists no highlight tweak
+	// for `.m.rule.invite_for_me`, so an invitation belongs to the room list rather than to
+	// the red badge, which is what /notifications?only=highlight reports.
+	answer := server.Do(http.MethodGet, "/_matrix/client/v3/notifications", bob.Token, nil)
+	if list, _ := answer.Body["notifications"].([]any); len(list) != 1 {
+		t.Fatalf("the invited user should hold one notification, got %v", answer.Body["notifications"])
+	}
+	highlighted := server.Do(http.MethodGet,
+		"/_matrix/client/v3/notifications?only=highlight", bob.Token, nil)
+	if list, _ := highlighted.Body["notifications"].([]any); len(list) != 0 {
+		t.Errorf("an invitation was stored as a highlight, though v1.11 gives the rule no "+
+			"highlight tweak: %v", highlighted.Body["notifications"])
+	}
+}
+
+// TestPushGatewayIsQuietForAMembershipAboutSomebodyElse keeps the door opened above from
+// opening too far. Membership events are evaluated now, so a room's other members see them
+// too, and the default rules answer them with `.m.rule.member_event`, whose action list is
+// empty. A join that woke every device in a room is exactly the noise the specification asks
+// silence on.
+func TestPushGatewayIsQuietForAMembershipAboutSomebodyElse(t *testing.T) {
+	server, alice, bob, gateway := pushDeliveryTest(t)
+	roomID := twoPersonRoom(t, server, alice, bob)
+
+	// One message first: it proves the gateway is reachable and gives a count to compare with.
+	eventID := server.Send(alice, roomID, "quiet-1", "one message")
+	if _, ok := gateway.awaitEvent(t, 5*time.Second, eventID); !ok {
+		t.Fatalf("a message in a room of two did not knock at the gateway")
+	}
+	before := gateway.count()
+
+	// A member event about alice, watched by bob: she leaves the room they share.
+	server.MustDo(http.MethodPost, "/_matrix/client/v3/rooms/"+roomID+"/leave", alice.Token,
+		map[string]any{}, http.StatusOK)
+	// Delivery is asynchronous, so a quiet gateway has to be given its moment before being
+	// called quiet; the message above showed that a knock that is coming arrives in seconds.
+	time.Sleep(500 * time.Millisecond)
+	if got := gateway.count(); got != before {
+		t.Errorf("a leave knocked at the gateway %d time(s): the default rules suppress a "+
+			"membership event about somebody else", got-before)
 	}
 }

@@ -156,17 +156,40 @@ func TestUserScript(t *testing.T) {
 	}
 	notifications := server.MustDo(http.MethodGet, "/_matrix/client/v3/notifications", bob.Token, nil, http.StatusOK)
 	notifList, _ := notifications.Body["notifications"].([]any)
-	if len(notifList) != 3 {
-		t.Fatalf("bob has %d notifications, want three: %s", len(notifList), notifications.Raw)
+	// Four, and not three: `.m.rule.invite_for_me` notifies Bob of the invitation itself,
+	// and the endpoint is "the list of push notifications sent to the user". An app that is
+	// not open learns about an invitation from a push and from nothing else, so the
+	// invitation has to be one of these.
+	if len(notifList) != 4 {
+		t.Fatalf("bob has %d notifications, want four: %s", len(notifList), notifications.Raw)
 	}
+	var invited bool
 	var highlighted []string
 	for _, raw := range notifList {
 		entry, _ := raw.(map[string]any)
 		event, _ := entry["event"].(map[string]any)
 		id, _ := event["event_id"].(string)
+		if event["type"] == matrix.TypeMember {
+			// The invitation, and the actions of the rule that matched it: v1.11 gives
+			// `.m.rule.invite_for_me` a notify and a sound, and no highlight.
+			content, _ := event["content"].(map[string]any)
+			if content["membership"] != "invite" {
+				t.Errorf("the member event among bob's notifications is not an invitation: %v", event)
+			}
+			if actions := actionsOf(entry["actions"]); !actions.hasTweak("sound") ||
+				actions.hasTweak("highlight") {
+				t.Errorf("the invitation was pushed with %v, want notify and a sound and no highlight",
+					entry["actions"])
+			}
+			invited = true
+		}
 		if actionsOf(entry["actions"]).hasTweak("highlight") {
 			highlighted = append(highlighted, id)
 		}
+	}
+	if !invited {
+		t.Error("the invitation is missing from bob's notifications: an app that is not open " +
+			"learns about an invitation from a push and from nothing else")
 	}
 	if len(highlighted) != 1 || highlighted[0] != mention {
 		t.Errorf("highlighted notifications = %v, want only %s", highlighted, mention)

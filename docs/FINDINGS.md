@@ -1825,3 +1825,44 @@ code at all.
   `Unscoped()`; the one other hit was a Go method named `Delete` that was not a GORM call at all.
   What is still true is that every soft-deleted row of those 37 is kept forever — invisible to
   reads, occupying its index. That is recorded as a change of shape rather than a fifth fix.
+
+## A rule whose subject is not in the room has nobody to notify (2026-11-27, v0.2.26)
+
+The invitation was the last push report open, and it was not a payload problem. Every field the
+lab's gateway checks was already sent since v0.2.24; what was missing was that no rule was ever
+read for a membership event, and the reason for that was a recipient list taken from the event's
+type instead of from the rule that has to match it.
+
+- **The sentence that hides the exception.** "When receiving a new event homeservers process push
+  rules for each of the local users in the room (excluding the sender)" reads like a definition,
+  and `Members(roomID, join)` is exactly that list. But `.m.rule.invite_for_me` "matches any
+  invites to a new room for this user", and the person it matches is not in the room — the
+  invitation is what puts them in it. A server that follows the sentence literally cannot satisfy
+  the rule two sections earlier. When a default rule's conditions name the recipient, the
+  recipient comes from the rule, not from the room.
+- **The quiet cost of adding a new sender of a thing you already send.** Four delivery tests read
+  "the first knock that arrived" and asserted what a *message* looks like. With invitations
+  knocking, an invitation became that first knock, and each test still passed while asserting a
+  field of a different event — `type` was the only one that caught it, in one of the four. Delivery
+  was already asynchronous, so "first" had never meant "the message"; it had only ever been true.
+  A payload under test is now picked by the event id it carries, and the helper says so.
+- **A number moved, and the move is the correct behaviour.** `counts.unread` on the first message
+  of a room went from 1 to 2: the field is "the number of unacknowledged notifications", and the
+  app has not acknowledged the invitation either. Same for `GET /notifications`, which lists the
+  invitation without a highlight, because v1.11 gives `.m.rule.invite_for_me` a notify and a sound
+  and no highlight tweak. Anything that counts these has to be re-read against the field table
+  before it is called a regression.
+- **The disclosure, said before it shipped.** A push body carries `room_name`, so judging an invite
+  tells that person's gateway — and through it a push provider — the name of a room they have only
+  been invited to, on an event that may arrive from a foreign server that is wrong about it.
+  Synapse does this, the lab's test asserts it, and the alternative is an invitation that arrives
+  as a silent badge. Deliberate, written down, and worth revisiting if a gateway policy ever
+  distinguishes local from foreign rooms.
+- **Read the spec file, not the summary of it.** The report of this bug listed `highlight: false`
+  among the rule's actions; v1.11 lists two actions and no tweak, and Lattice had it right. The
+  module was fetched and kept (`.agent-work/v111/spec-push-v111.md`) so the next argument about a
+  rule is settled against a file rather than against a memory of one.
+- **What is not covered by a green test.** On an invite that arrives over federation, `room_name`
+  is whatever this server holds as the room's state at that moment; a room whose state was never
+  pulled is a knock without a name. The lab's test is same-server, so this is recorded rather than
+  fixed — and it is the kind of gap that only shows up between two servers.
