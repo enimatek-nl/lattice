@@ -23,7 +23,10 @@ func (s *Service) slidingRoomResult(ctx context.Context, userID string, fromPos,
 	plan slidingRoomPlan, isDM bool) (matrix.SlidingRoom, *persist.SlidingSyncRoom, error) {
 	roomID := plan.entry.roomID
 	known := plan.known
-	initial := known == nil || !known.Sent
+	// A room the connection has been told about is normally sent as a change. A row that
+	// [clampSlidingKnown] folded back describes an answer the client never acknowledged, so
+	// for this connection the room has not been sent yet and says so.
+	initial := known == nil || !known.Sent || plan.stale
 	room := matrix.SlidingRoom{
 		Membership: plan.entry.membership,
 		Lists:      plan.lists,

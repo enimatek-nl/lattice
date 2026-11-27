@@ -166,6 +166,10 @@ type slidingConn struct {
 	// is written back on commit, because it is the position a following request may carry
 	// again after cancelling one - see [Service.openSlidingConnection].
 	ack uint64
+	// stale names the rooms whose row in [slidingConn.known] was folded back by
+	// [clampSlidingKnown]: it describes an answer this client has never acknowledged, so
+	// whatever is sent for them now is sent as new to the connection.
+	stale map[string]bool
 }
 
 // openSlidingConnection finds the connection a request speaks for, or begins a new one.
@@ -230,7 +234,53 @@ func (s *Service) openSlidingConnection(ctx context.Context, userID, deviceID, c
 	for _, entry := range rows {
 		known[entry.RoomID] = entry
 	}
-	return &slidingConn{row: row, known: known, ack: tokenPos}, false, nil
+	// What the rows remember is what this server last *answered*, which is not what the
+	// client holds: the answer may have been cancelled on the way, and MSC4186 forbids
+	// counting it. So the memory is folded back to the position the client carried.
+	ackPos := row.AckPos
+	if tokenPos > ackPos {
+		ackPos = tokenPos
+	}
+	return &slidingConn{row: row, known: known, ack: tokenPos, stale: clampSlidingKnown(known, ackPos)}, false, nil
+}
+
+// clampSlidingKnown folds a connection's memory of each room back to the highest position
+// the client has proven it holds, and names the rooms that had to be folded.
+//
+// A row records what the server last put in an answer, and an answer is not a delivery.
+// "The server cannot assume that a client has received a response until it receives a new
+// request with the pos token set to the pos it returned in the response." A long poll is
+// answered the moment an event arrives; a phone that backgrounds itself closes the socket a
+// breath later, never having read it; and the next request carries the old position again -
+// which the connection accepts, and then answers from the position it had advanced to
+// itself. The event that arrived in the cancelled answer fell between the two and was never
+// sent on that connection again, with nothing in the response saying a window was cut. A
+// mobile client stops syncing exactly this way every time it goes to the background, so the
+// hole is not a test artefact.
+//
+// Folding the markers is enough because they are stream positions: anything behind the
+// position the client names is data the client may have, and anything in front of it is
+// data this server only believes it handed over. [persist.SlidingSyncRoom.BumpStamp] is
+// deliberately left alone: it is a timestamp, and folding it would invent activity.
+func clampSlidingKnown(known map[string]*persist.SlidingSyncRoom, ackPos uint64) map[string]bool {
+	stale := map[string]bool{}
+	for roomID, row := range known {
+		folded := false
+		if row.TimelinePos > ackPos {
+			// The count goes with the position: it counted the events in front of it.
+			row.TimelinePos = ackPos
+			row.TimelineCount = 0
+			folded = true
+		}
+		if row.StatePos > ackPos {
+			row.StatePos = ackPos
+			folded = true
+		}
+		if folded {
+			stale[roomID] = true
+		}
+	}
+	return stale
 }
 
 // pruneSlidingConnections bounds how many connections one device may leave standing, which
@@ -257,6 +307,10 @@ type slidingRoomPlan struct {
 	lists  []string
 	config slidingConfig
 	known  *persist.SlidingSyncRoom
+	// stale is set for a room whose remembered progress was folded back by
+	// [clampSlidingKnown]: the client has never acknowledged what the row describes, so the
+	// room is sent to it as new even though the connection has answered it before.
+	stale bool
 }
 
 // buildSlidingSync assembles one response. It writes nothing: a request that is going to be
@@ -297,7 +351,8 @@ func (s *Service) buildSlidingSync(ctx context.Context, userID, deviceID string,
 		config := configOf(list.TimelineLimit, list.RequiredState, userID)
 		from, to := slidingRangeBounds(list.Window(), len(rooms))
 		for i := from; i <= to; i++ {
-			addSlidingPlan(plans, rooms[i], name, config, conn.known[rooms[i].roomID])
+			addSlidingPlan(plans, rooms[i], name, config, conn.known[rooms[i].roomID],
+				conn.stale[rooms[i].roomID])
 		}
 	}
 	for roomID, sub := range req.RoomSubscriptions {
@@ -306,7 +361,8 @@ func (s *Service) buildSlidingSync(ctx context.Context, userID, deviceID string,
 				continue
 			}
 			addSlidingPlan(plans, entry, "",
-				configOf(sub.TimelineLimit, sub.RequiredState, userID), conn.known[roomID])
+				configOf(sub.TimelineLimit, sub.RequiredState, userID), conn.known[roomID],
+				conn.stale[roomID])
 			break
 		}
 		// A subscription to a room the user may not see, or that does not exist, is
@@ -379,16 +435,19 @@ func (c *slidingConn) knownToRows() []*persist.SlidingSyncRoom {
 // addSlidingPlan records that a room matched a rule, widening its config if it matched
 // another one too.
 func addSlidingPlan(plans map[string]*slidingRoomPlan, entry slidingRoomEntry, list string,
-	config slidingConfig, known *persist.SlidingSyncRoom) {
+	config slidingConfig, known *persist.SlidingSyncRoom, stale bool) {
 	plan, ok := plans[entry.roomID]
 	if !ok {
 		belong := []string{}
 		if list != "" {
 			belong = append(belong, list)
 		}
-		plans[entry.roomID] = &slidingRoomPlan{entry: entry, lists: belong, config: config, known: known}
+		plans[entry.roomID] = &slidingRoomPlan{
+			entry: entry, lists: belong, config: config, known: known, stale: stale,
+		}
 		return
 	}
+	plan.stale = plan.stale || stale
 	if list != "" {
 		plan.lists = append(plan.lists, list)
 	}

@@ -317,11 +317,11 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
       The sweep this prompted: 37 models combine soft delete with a unique index. Beyond the two
       sliding tables, no repository deletes one of them without `Unscoped()` — read site by site,
       the single other hit being a Go method named `Delete`, not a GORM one.
-- [ ] A sliding sync answer the client never read still counts as delivered, and the event it
-      carried is never sent on that connection again (measured 2026-11-27 by the lab on v0.2.25 and
-      v0.2.26 in `pausing_in_the_middle_of_syncing_loses_nothing`, and replayed here against both
-      binaries: **4 of 6 attempts lose the message**, identical on both releases — v0.2.26 only
-      moved the timing of the lab's pause. **Not built — waiting for a go.**
+- [x] A sliding sync answer the client never read no longer counts as delivered (measured
+      2026-11-27 by the lab on v0.2.25 and v0.2.26 in `pausing_in_the_middle_of_syncing_loses_nothing`,
+      and replayed here against both binaries: **4 of 6 attempts lost the message**, identical on
+      both releases — v0.2.26 only moved the timing of the lab's pause. Fixed for v0.2.27, on the
+      go @cybertim gave for this subject.
       `.agent-work/v111/sliding-abort-probe.py` is the repro: a room filled past the subscription's
       `timeline_limit` of 20, a long-poll on position P, one message, the socket closed unread
       after 0 to 500 ms, then the same request again with P. At 0 and 100 ms the long-poll was not
@@ -338,22 +338,31 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
       the client has never been given is then behind the connection's own line, and MSC4186 says
       it must not be: "The server cannot assume that a client has received a response until it
       receives a new request with the `pos` token set to the `pos` it returned in the response."
-      The shape of the fix, for whoever picks it up: the baseline for "what is new" is the position
-      **in the request**, and the connection's position and the per-room `Sent` / `TimelinePos` /
-      `StatePos` markers move only when a request arrives carrying the position the server last
-      returned — which is the acknowledgement, and is what `ack_pos` already records for the
-      refusal check. Until then the response must stay replayable, so an unacknowledged answer is
-      rebuilt from the same baseline rather than remembered as delivered. Two consequences to
-      expect in the tests: `initial` has to follow "was this room ever acknowledged on this
-      connection" instead of "was it ever sent", and a client that re-sends the latest position
-      for its own reasons gets that window a second time — which MSC4186 allows and clients
-      deduplicate by event id.
-      Adjacent, and measured rather than assumed: **`limited` is absent from every one of those
-      answers.** MSC4186 wants it true when there are more events since the previous sync than the
-      `timeline` field carried, and this server does not say so when a window is capped — which is
-      why the lab's client, told nothing, paged from the `prev_batch` it still trusted and found
-      only what preceded the gap. Worth its own assertion in `tests/compat/sliding_sync_test.go`
-      whatever happens to this item.
+      What was built: the rows still record what the server last answered, and the connection
+      forgets the part of that the client has not vouched for. `clampSlidingKnown` folds every
+      room's `TimelinePos` and `TimelineCount` back to the highest position the request carried —
+      the client's own statement of what it holds, already kept as `ack_pos` for the refusal check
+      — and names the rooms it folded, which the room builder then sends as `initial` again: a
+      room whose only delivery was an unacknowledged answer has not been sent to this connection.
+      `BumpStamp` is left alone, because it is a timestamp and folding it would invent activity.
+      The stored rows are not rewritten, so a connection that goes on to acknowledge simply finds
+      its markers already right. Two consequences, both intended and both in the new test: a client
+      that re-sends the latest position for its own reasons gets that window a second time, which
+      MSC4186 allows and clients deduplicate by event id; and `initial` now follows
+      "acknowledged on this connection" rather than "ever sent".
+      Measured after: the same probe, six attempts with the socket closed at 0 to 500 ms — **0
+      lost**, the room returning `initial: true` with `limited: true`. The v0.2.25 probe still
+      passes (`restart` and the cancel-and-resend checks), and a quiet minute is still two requests
+      per connection per minute, so nothing about the sleep was traded away. New compat test
+      `TestSlidingSyncRedeliversAnAnswerTheClientNeverAcknowledged`, which reads and discards an
+      answer rather than aborting one — MSC4186 lets a client "MUST NOT process any response it
+      receives for it", so the endpoint is not owed a broken socket to prove the point — and
+      verified to fail on the previous code at all three of its assertions.
+      One claim of the report above was wrong, and the correction matters for the next reader:
+      **`limited` is not missing from this server.** Measured again, a room sent with a window
+      cut short of what the room holds does carry `limited: true`. What the lab's log showed was an
+      answer with no room in it at all — nothing to be limited about. Now that the room is sent
+      again, the flag arrives with it, and the assertion is in the new test.
       Why it matters outside a test: any client that backgrounds an app closes its long-poll
       mid-flight, which is the normal way a phone stops syncing. A message that arrives in the
       moment the server is answering goes missing from that device's timeline for good, and the

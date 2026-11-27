@@ -368,6 +368,104 @@ func TestSlidingSyncRefusesAPositionThatIsNotItsOwn(t *testing.T) {
 	}
 }
 
+// TestSlidingSyncRedeliversAnAnswerTheClientNeverAcknowledged is the lab's report of
+// 2026-11-27: `pausing_in_the_middle_of_syncing_loses_nothing`, in which a reader pauses its
+// sync while messages arrive and afterwards finds events missing that no answer ever carried.
+//
+// MSC4186 names who decides that an answer was delivered: "The server cannot assume that a
+// client has received a response until it receives a new request with the `pos` token set to
+// the `pos` it returned in the response." A long poll is answered the moment something happens,
+// a phone that backgrounds itself closes the socket a breath later without reading it, and the
+// next request carries the old position again. Reading an answer and discarding it is the same
+// case one step later — "MUST NOT process any response it receives for it" — so this test lets
+// the answer arrive and throws it away, which is what the specification permits.
+//
+// Before the fix the retry answered with no room at all: the connection had moved its own line
+// past the event while building the answer nobody read, and the event was gone from this
+// connection for good, with no `limited` to notice by because no window was sent at all.
+func TestSlidingSyncRedeliversAnAnswerTheClientNeverAcknowledged(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	bob := server.Register("bob", "rubberduck")
+	roomID := server.CreateRoom(alice, map[string]any{"preset": "public_chat", "name": "Kiln"})
+	server.MustDo(http.MethodPost, "/_matrix/client/v3/join/"+roomID, bob.Token, nil, http.StatusOK)
+	// Fuller than the window below, so a single missing event cannot hide at the end of a
+	// timeline the client never asked to see in full.
+	for i := 0; i < 8; i++ {
+		server.Send(alice, roomID, fmt.Sprintf("fill-%d", i), fmt.Sprintf("filler %d", i))
+	}
+
+	request := func(pos string) map[string]any {
+		body := map[string]any{
+			"conn_id": "repro",
+			"room_subscriptions": map[string]any{
+				roomID: map[string]any{"timeline_limit": 5},
+			},
+		}
+		if pos != "" {
+			body["pos"] = pos
+		}
+		return body
+	}
+	// roomOf reads one room out of an answer without insisting that the answer carried a rooms
+	// section at all: answering this request with nothing is exactly the bug, and that is what
+	// the assertion below has to say in its own words.
+	roomOf := func(answer map[string]any) map[string]any {
+		rooms, _ := answer["rooms"].(map[string]any)
+		room, _ := rooms[roomID].(map[string]any)
+		return room
+	}
+	timelineOf := func(answer map[string]any) []string {
+		var ids []string
+		entries, _ := roomOf(answer)["timeline"].([]any)
+		for _, raw := range entries {
+			event, _ := raw.(map[string]any)
+			ids = append(ids, fmt.Sprint(event["event_id"]))
+		}
+		return ids
+	}
+
+	pos, _ := server.slidingSync(t, bob, request(""))["pos"].(string)
+	lost := server.Send(alice, roomID, "during-the-poll", "arrives while the answer is on its way")
+
+	// The answer the client throws away: it carried the event, which is what makes the next
+	// request a redelivery rather than a first delivery.
+	handed := server.slidingSync(t, bob, request(pos))
+	if !contains(timelineOf(handed), lost) {
+		t.Fatalf("the answer that is about to be discarded does not carry the event: %v",
+			timelineOf(handed))
+	}
+
+	repeat := server.slidingSync(t, bob, request(pos))
+	if ids := timelineOf(repeat); !contains(ids, lost) {
+		t.Errorf("asking again from the position the client still holds does not bring the event, "+
+			"so it is lost on this connection for good: %v", ids)
+	}
+
+	// And the room arrives as new to this connection, because everything the row remembered
+	// about it belongs to an answer the client never acknowledged.
+	room := roomOf(repeat)
+	if room["initial"] != true {
+		t.Errorf("a room resent after an unacknowledged answer is not marked initial: %v", room)
+	}
+	// A window cut to five of a fuller room says so: MSC4186 wants `limited` when there are
+	// more events than the timeline field carried, and this is what tells a client to page.
+	if room["limited"] != true {
+		t.Errorf("a timeline capped at the window is not marked limited: %v", room)
+	}
+
+	// The connection still works from the position it was just given, and does not repeat the
+	// events it has now delivered.
+	answer := server.slidingSync(t, bob, request(pos))
+	next, _ := answer["pos"].(string)
+	later := server.Send(alice, roomID, "afterwards", "a message after the redelivery")
+	followUp := server.slidingSync(t, bob, request(next))
+	if ids := timelineOf(followUp); !contains(ids, later) || contains(ids, lost) {
+		t.Errorf("the next delta carries %v: want the new message and not the one just "+
+			"redelivered", ids)
+	}
+}
+
 // TestSlidingSyncRefusesARidiculousRequest checks the limits the endpoint states: a hundred
 // lists is a bug or an attack, and an unknown presence value is a client that mistyped one.
 func TestSlidingSyncRefusesARidiculousRequest(t *testing.T) {

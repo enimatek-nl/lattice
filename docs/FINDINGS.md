@@ -1866,3 +1866,43 @@ type instead of from the rule that has to match it.
   is whatever this server holds as the room's state at that moment; a room whose state was never
   pulled is a knock without a name. The lab's test is same-server, so this is recorded rather than
   fixed — and it is the kind of gap that only shows up between two servers.
+
+## An answer is not a delivery (2026-11-27, v0.2.27)
+
+A message sent while a sliding sync long poll was held vanished from that connection for good.
+The event was in the room, in `/messages`, and in the answer the server had built — and the client
+had closed the socket before reading it. Two months of sliding sync had been counting *building an
+answer* as *the client having been told*.
+
+- **The shape to recognise.** Any endpoint that stores "what I have already shown you" and writes
+  that store while composing a response loses data the moment a client is allowed to cancel — and
+  MSC4186 does not merely allow it, it says the server "cannot assume that a client has received a
+  response until it receives a new request with the `pos` token set to the `pos` it returned". The
+  write has to hang off the client's next request, not off this response. `/sync` v2 keeps no such
+  store, which is why only the sliding endpoint leaked.
+- **A position makes a cheap acknowledgement.** The tempting fix is to stage the rows an answer
+  wrote and commit them on the next request; that doubles a write path and has to survive a client
+  that never comes back. What works instead is to keep writing the rows and *fold them back* on
+  read: every marker is a stream position, and the position the client carries in its request is
+  its own statement of what it holds, so a marker in front of that statement is a promise, not a
+  fact. One `min` per room, no new state, and the stored rows stay a monotone log of what the
+  server last said.
+- **`initial` means "not yet acknowledged", not "not yet sent".** A room whose only delivery was an
+  unacknowledged answer has not been sent to that connection, and a client that gets it without the
+  flag appends a timeline to a room it has never heard of. MSC4186's own wording — "the first time
+  the server is sending this data on this connection" — reads that way once "sending" is taken to
+  mean arriving.
+- **Break the socket in the test only if the bug needs it.** The lab's client aborted the request
+  at the HTTP level; the server cannot tell that from a client that read the answer and threw it
+  away, and MSC4186 explicitly permits the second ("MUST NOT process any response it receives for
+  it"). So the compat test reads the answer, discards it, and asks again — deterministic, no sleeps,
+  and it fails the old code at all three assertions.
+- **A symptom is not a second bug.** `limited` was reported missing from those answers, and it
+  looked like a companion defect in the same field. It was not: the answers carried no room at all,
+  so there was no window to call limited. Measured against a response that *does* send a cut
+  window, the flag is there. Fixing the delivery made the complaint disappear on its own.
+- **Correlation by release is often correlation by timing.** The lab saw the test pass three times
+  on v0.2.25 and fail twice on v0.2.26, and named the release. Both binaries lost the event in the
+  same four of six attempts; v0.2.26 had added a few milliseconds of push work per membership event,
+  which moved the test's pause from before the write to after it. The numbers, not the version,
+  are what settled it — so measure the old binary before believing the new one.
