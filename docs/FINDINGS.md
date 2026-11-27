@@ -1744,3 +1744,40 @@ server.
   sending HTTP requests to the Push Gateway using the supplied URL", and rules are processed "for
   each of the local users in the room (excluding the sender)" — which is why there is now a test
   in which alice's own gateway stays quiet.
+
+## A field read as one Go type is a field whose other values are silently not read (2026-11-27, v0.2.24)
+
+The lab's run against v0.2.23 came back with two findings about the same new code, and they are
+the same mistake wearing different clothes: something was assumed where the document says
+something more specific.
+
+- **The verb of a request can live in a field that is allowed to be null.**
+  `POST /pushers/set` with `{"app_id":…, "pushkey":…, "kind":null}` is the Rust SDK's delete. The
+  handler asked the body for a string at `kind`; a JSON null is not a string, so the assertion
+  failed, the code read that as "no kind given", defaulted it to `"http"`, and took the register
+  path — which overwrites the row. A working pusher became an empty one: `active: true`, no
+  `data.url`, no display names, and a 200 for it. The specification had said the thing plainly:
+  "`null` deletes the pusher". The lesson is about the failure mode rather than the line — a type
+  assertion that fails is not the same fact as a key that is absent, and treating them alike turns
+  one client's delete into another client's data loss, invisibly, because both answer 200.
+- **A destructive path deserves a refusal more than a guess.** Now a null or empty `kind` deletes,
+  and a body that names more than the scope while leaving `kind` out is refused with
+  `M_INVALID_PARAM`. The alternative was to keep guessing, and every guess there either ignores a
+  delete or destroys a pusher.
+- **The example is not the schema.** The gateway request had been written from the example body in
+  the Push Gateway API section, which is short: it has no `room_name`, no `sender_display_name`,
+  no `user_is_target`. The field table above it does, and says a homeserver is "expected to
+  include all of the event-related fields", that "counts whose value is zero should be omitted",
+  and that a device's `data` is the pusher's data "minus the `url` key". So every push on a locked
+  screen could say "Message" because the server had nothing to say about which room or who, and an
+  internal gateway address rode along in a payload that continues on to a push provider.
+- **The table can be wrong where practice is not.** The same table types `tweaks` as a dictionary,
+  and its example shows `{"sound": "bing"}`, while Synapse sends a list of `set_tweak` objects and
+  Sygnal parses that list. The list stays, and the divergence is recorded here rather than in the
+  request: the parser that has to accept it belongs to somebody else, and that somebody follows
+  Synapse.
+- **What this release deliberately does not do:** judge a membership event against the rules, so
+  an invite still reaches no gateway. The body it would need is now all there — `user_is_target`
+  included — and what is left is the decision about who the recipients are and what this server is
+  willing to tell a push gateway about a room a person has only been invited to. That is a choice
+  about behaviour, and it is not mine to make quietly.

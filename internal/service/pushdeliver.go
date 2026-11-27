@@ -73,26 +73,40 @@ type pushOwner struct {
 	PushKey string
 }
 
-// pushCounts is the badge the gateway puts on the app icon.
+// pushCounts is the badge the gateway puts on the app icon. Both fields are optional and
+// the specification adds "counts whose value is zero should be omitted", which is why they
+// are omitempty rather than always printed.
 type pushCounts struct {
-	Unread    int64 `json:"unread"`
-	Highlight int64 `json:"highlight"`
+	Unread int64 `json:"unread,omitempty"`
+	// Highlight is not in the v1.11 table of counts, but it is what Synapse sends and what
+	// an app reads to show the red dot; sending it costs nothing an app does not ignore.
+	Highlight int64 `json:"highlight,omitempty"`
 }
 
 // pushNotification is the body of one gateway request, as the Push Gateway API
 // describes it. `content` and `sender` are absent for a pusher registered with
 // `format: "event_id_only"`, which is what an app that fetches the event itself asks
 // for - and what the lab's gateway checks for.
+//
+// The specification also says a homeserver "is expected to include all of the
+// event-related fields in the /notify request", which is what `room_name`, `room_alias`,
+// `sender_display_name` and `user_is_target` are for. A client that is not open has no
+// room to read those out of, and a notification without a room name or a sender name is
+// a banner that says "Message".
 type pushNotification struct {
-	EventID string        `json:"event_id"`
-	RoomID  string        `json:"room_id,omitempty"`
-	Sender  string        `json:"sender,omitempty"`
-	Type    string        `json:"type,omitempty"`
-	Content matrix.Object `json:"content,omitempty"`
-	Counts  *pushCounts   `json:"counts,omitempty"`
-	Unread  bool          `json:"unread,omitempty"`
-	Prio    string        `json:"prio,omitempty"`
-	Devices []pushDevice  `json:"devices"`
+	EventID           string        `json:"event_id"`
+	RoomID            string        `json:"room_id,omitempty"`
+	RoomName          string        `json:"room_name,omitempty"`
+	RoomAlias         string        `json:"room_alias,omitempty"`
+	Sender            string        `json:"sender,omitempty"`
+	SenderDisplayName string        `json:"sender_display_name,omitempty"`
+	Type              string        `json:"type,omitempty"`
+	Content           matrix.Object `json:"content,omitempty"`
+	UserIsTarget      bool          `json:"user_is_target,omitempty"`
+	Counts            *pushCounts   `json:"counts,omitempty"`
+	Unread            bool          `json:"unread,omitempty"`
+	Prio              string        `json:"prio,omitempty"`
+	Devices           []pushDevice  `json:"devices"`
 }
 
 // pushTask is one prepared request. The body is rendered while the event is still
@@ -322,6 +336,15 @@ func firstLine(raw []byte) string {
 	return text
 }
 
+// pushEventFacts is what the notification says about the room and the sender beyond the
+// event itself. Read once per event rather than per recipient: three state lookups for a
+// message to a room of fifty is the difference between a notification and a stall.
+type pushEventFacts struct {
+	name       string
+	alias      string
+	senderName string
+}
+
 // queuePushesForEvent turns the notifications the rules allowed into requests. It runs
 // inside the send, so it only reads what is already in the database and renders; the
 // network happens on the loop.
@@ -329,6 +352,7 @@ func (s *Service) queuePushesForEvent(ctx context.Context, roomID string, event 
 	if event == nil || len(recipients) == 0 {
 		return
 	}
+	facts := s.pushFacts(ctx, roomID, event.Sender)
 	for _, recipient := range recipients {
 		pushers, err := s.db.PusherRepo.List(recipient.UserID)
 		if err != nil {
@@ -365,9 +389,11 @@ func (s *Service) queuePushesForEvent(ctx context.Context, roomID string, event 
 				AppID:     pusher.AppID,
 				PushKey:   pusher.PushKey,
 				PushKeyTS: pushkeyTS(pusher, s.now()),
-				// The pusher's own data travels along, so a gateway can tell two accounts
-				// of one app apart from the payload alone.
-				Data:   data,
+				// The pusher's own data travels along, minus the URL the gateway was
+				// found behind - which is what the Push Gateway API asks for, and what
+				// keeps an internal gateway address out of a payload that continues on
+				// to a push provider.
+				Data:   pusherDeviceData(data),
 				Tweaks: tweaksOf(recipient.Actions),
 			})
 		}
@@ -382,7 +408,7 @@ func (s *Service) queuePushesForEvent(ctx context.Context, roomID string, event 
 		for _, key := range order {
 			group := groups[key]
 			body, err := json.Marshal(map[string]any{
-				"notification": group.notification(event, recipient, counts, highlights),
+				"notification": group.notification(event, recipient, facts, counts, highlights),
 			})
 			if err != nil {
 				log.Printf("push: cannot render the notification for %s: %v", recipient.UserID, err)
@@ -414,11 +440,16 @@ type pushGroup struct {
 }
 
 // notification renders the body for one recipient.
-func (g *pushGroup) notification(event *persist.Event, recipient pushRecipient, counts, highlights int64) pushNotification {
+func (g *pushGroup) notification(event *persist.Event, recipient pushRecipient, facts pushEventFacts, counts, highlights int64) pushNotification {
 	body := pushNotification{
-		EventID: event.EventID,
-		RoomID:  event.RoomID,
-		Counts:  &pushCounts{Unread: counts, Highlight: highlights},
+		EventID:   event.EventID,
+		RoomID:    event.RoomID,
+		RoomName:  facts.name,
+		RoomAlias: facts.alias,
+		// The specification's `user_is_target`: true when this member event is about the
+		// person being notified, which is how an app tells an invite for itself from a
+		// membership change it only watches.
+		UserIsTarget: event.Type == matrix.TypeMember && event.StateKey == recipient.UserID,
 		// The specification sends this flag when there is more than one notification to
 		// read, which is how an app knows to show a number instead of a dot.
 		Unread: counts > 1,
@@ -426,6 +457,10 @@ func (g *pushGroup) notification(event *persist.Event, recipient pushRecipient, 
 		// one that is not may wait for the screen.
 		Prio:    "low",
 		Devices: g.devices,
+	}
+	// "Counts whose value is zero should be omitted": a badge of nothing is not a badge.
+	if counts > 0 || highlights > 0 {
+		body.Counts = &pushCounts{Unread: counts, Highlight: highlights}
 	}
 	if push.HasTweak(recipient.Actions, "sound") {
 		body.Prio = "high"
@@ -436,9 +471,51 @@ func (g *pushGroup) notification(event *persist.Event, recipient pushRecipient, 
 		return body
 	}
 	body.Sender = event.Sender
+	body.SenderDisplayName = facts.senderName
 	body.Type = event.Type
 	body.Content = contentWithDefaultPayload(event, g.devices)
 	return body
+}
+
+// pushFacts reads what a notification says about the room and the sender beyond the event.
+// Every one of these is optional in the gateway API, so an unreadable state event costs a
+// field and never costs the notification.
+func (s *Service) pushFacts(ctx context.Context, roomID, sender string) pushEventFacts {
+	facts := pushEventFacts{name: s.roomName(ctx, roomID), alias: s.roomAlias(ctx, roomID)}
+	if raw, err := s.db.StateRepo.Content(roomID, matrix.TypeMember, sender); err == nil {
+		var member matrix.MemberContent
+		if err := matrix.DecodeContent(raw, &member); err == nil {
+			facts.senderName = member.DisplayName
+		}
+	}
+	if facts.senderName == "" {
+		// The specification says "the current display name of the sender in the room", and a
+		// member event is the room's own answer. It is not always written with one - a person
+		// who chose their name after joining has it in their profile and not in that event -
+		// and a banner that cannot name anybody is worse than a name from the profile.
+		if summaries, err := s.profileSummaries(ctx, []string{sender}); err == nil {
+			facts.senderName = summaries[sender].DisplayName
+		}
+	}
+	return facts
+}
+
+// pusherDeviceData is the pusher's data as the Push Gateway API wants it in a request:
+// what the client registered, "minus the `url` key". The URL is where this server knocked,
+// not something the app registered for the payload; gateways forward what they get, and an
+// internal address has no business riding on to a push provider.
+func pusherDeviceData(data matrix.Object) matrix.Object {
+	if _, named := data["url"]; !named {
+		return data
+	}
+	copyData := matrix.Object{}
+	for key, value := range data {
+		if key == "url" {
+			continue
+		}
+		copyData[key] = value
+	}
+	return copyData
 }
 
 // contentWithDefaultPayload is the event content as a full-format pusher should see

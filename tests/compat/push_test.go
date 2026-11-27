@@ -294,6 +294,76 @@ func TestPusherDeletion(t *testing.T) {
 	}
 }
 
+// TestPusherKindNullDeletes is the specification's own word on the kind field: "null
+// deletes the pusher". The Rust SDK's delete sends exactly
+// {"app_id":…, "pushkey":…, "kind":null}, and a reader that only looks for a string in
+// that field lets the request fall through to the register path - which is how a delete
+// replaced a working pusher with an empty http row: answering 200, listed back as active,
+// and with no URL left to deliver to.
+func TestPusherKindNullDeletes(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	appID, pushKey := "dev.lattice.smaltino", "piens-phone"
+
+	register := func() {
+		server.MustDo(http.MethodPost, "/_matrix/client/v3/pushers/set", alice.Token, map[string]any{
+			"kind": "http", "app_id": appID, "pushkey": pushKey,
+			"app_display_name": "Smaltino", "device_display_name": "Repro device", "lang": "en",
+			"data": map[string]any{
+				"url": "https://push.example/lattice", "format": "event_id_only",
+			},
+		}, http.StatusOK)
+	}
+	count := func() int {
+		t.Helper()
+		return lenPushers(server.MustDo(http.MethodGet, "/_matrix/client/v3/pushers", alice.Token,
+			nil, http.StatusOK))
+	}
+	remove := func(body map[string]any) {
+		t.Helper()
+		server.MustDo(http.MethodPost, "/_matrix/client/v3/pushers/set", alice.Token, body, http.StatusOK)
+	}
+
+	register()
+	if got := count(); got != 1 {
+		t.Fatalf("the pusher should be registered before the delete, has %d", got)
+	}
+	remove(map[string]any{"app_id": appID, "pushkey": pushKey, "kind": nil})
+	if got := count(); got != 0 {
+		t.Errorf("kind null left %d pusher(s) behind, want none", got)
+	}
+	// Asked twice, the answer is still yes: the client wanted a state of affairs.
+	remove(map[string]any{"app_id": appID, "pushkey": pushKey, "kind": nil})
+
+	// An empty kind meant "not registering" before this field was read as JSON, and keeps
+	// meaning it.
+	register()
+	remove(map[string]any{"app_id": appID, "pushkey": pushKey, "kind": ""})
+	if got := count(); got != 0 {
+		t.Errorf("an empty kind left %d pusher(s) behind, want none", got)
+	}
+
+	// The two-key short form has always deleted here, and still does.
+	register()
+	remove(map[string]any{"app_id": appID, "pushkey": pushKey})
+	if got := count(); got != 0 {
+		t.Errorf("the two-key short form left %d pusher(s) behind, want none", got)
+	}
+
+	// A body that names more than the scope while leaving kind out is missing a Required
+	// field. Guessing either way costs somebody a notification endpoint, so it is refused.
+	resp := server.Do(http.MethodPost, "/_matrix/client/v3/pushers/set", alice.Token, map[string]any{
+		"app_id": appID, "pushkey": pushKey,
+		"data": map[string]any{"url": "https://push.example/lattice"},
+	})
+	if resp.Status != http.StatusBadRequest || resp.ErrCode() != "M_INVALID_PARAM" {
+		t.Errorf("a register body without kind: %d %s, want 400 M_INVALID_PARAM", resp.Status, resp.Raw)
+	}
+	if got := count(); got != 0 {
+		t.Errorf("a refused body still wrote a pusher: %d", got)
+	}
+}
+
 // TestPushRulesTravelAsAccountData reads MSC4010, the MSC that closed the hole around this
 // document: a change made through /pushrules "is sent to all clients via a m.push_rules event in
 // the account_data section in the next /sync", and the type is the server's to write. MSC4548

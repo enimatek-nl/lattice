@@ -724,16 +724,29 @@ func (s *Service) SetPusher(ctx context.Context, userID, sessionDeviceID string,
 	if pushKey == "" || appID == "" {
 		return matrix.ErrInvalidParam("pushkey and app_id are required")
 	}
-	deleting := len(body) == 2
-	if value, ok := body["kind"].(string); ok && value == "" {
-		deleting = true
-	}
-	if deleting {
+	// The specification names `kind` the field that decides what this request is: "http"
+	// and "email" register an endpoint, and "null deletes the pusher". Reading only a
+	// string out of the body was the bug: the delete a Rust SDK sends is
+	// {"app_id":…, "pushkey":…, "kind":null}, whose kind is present and null, so the request
+	// fell through to the register path and replaced a working pusher with an empty http
+	// row - answering 200, listed back as active, and with no URL left to deliver to.
+	rawKind, named := body["kind"]
+	switch {
+	case !named:
+		// No `kind` at all. The two-key short form has always meant delete here, and stays
+		// that way; a body that names more than the scope while leaving `kind` out is a
+		// request whose intent this server should not guess, because `kind` is Required.
+		if len(body) != 2 {
+			return matrix.ErrInvalidParam("kind is required: http, email, or null to delete")
+		}
+		return s.db.PusherRepo.Delete(userID, pushKey, appID)
+	case rawKind == nil:
 		return s.db.PusherRepo.Delete(userID, pushKey, appID)
 	}
-	kind, _ := body["kind"].(string)
+	kind, _ := rawKind.(string)
 	if kind == "" {
-		kind = "http"
+		// An empty kind is what an older client sent for "not registering".
+		return s.db.PusherRepo.Delete(userID, pushKey, appID)
 	}
 	data := matrix.Object{}
 	if raw, ok := body["data"].(matrix.Object); ok {

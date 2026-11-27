@@ -31,7 +31,7 @@ because it said nothing these steps do not.
 | Measure | Now |
 |---|---|
 | `make build vet` | clean (4 s, 2026-11-20); `make lint` reports the same **7 issues** (6 staticcheck: `QF1001`×3, `QF1006`×2, `S1011`; 1 `unused`: `internal/api/federation.go:1045 eventInBody`) — pre-existing quickfix-style findings, none from the 2026-11-18 work. Note for a session started from a service unit: `golangci-lint` lives in `~/go/bin`, which is not on that PATH — and on 2026-11-26 the chat session's environment had no `golangci-lint` installed anywhere on its PATH, so the lint tally above still belongs to 2026-11-20 |
-| this repository's own tests | **386** counted here — 214 client-API compatibility, 90 two-server federation, 82 offline unit (`go test ./tests/<pkg> -list '.*'`, all green on 2026-11-27: compat 102 s, federation 50 s). `internal/matrix` adds its own test functions, which this tally has never counted |
+| this repository's own tests | **389** counted here — 217 client-API compatibility, 90 two-server federation, 82 offline unit (`go test ./tests/<pkg> -list '.*'`, all green on 2026-11-27: compat 104 s, federation 49 s). `internal/matrix` adds its own test functions, which this tally has never counted |
 | Complement `tests/csapi` | **84 green of 106**, 2 skipped, in 345 s on v0.2.18 (2026-11-25; 338 s on v0.2.17, 340 s on v0.2.16). Two names less red than the 2026-11-20 tally: `TestPushSync` passes since the push rule set travels as `m.push_rules` account data, and `TestSearch` passes since `/search` speaks the specification's body and answer. The other 20 names are the same list, so the red list is stable rather than lucky. It could not be run to completion before 2026-11-18, see [COMPLEMENT.md](COMPLEMENT.md) |
 | Complement server-server (`tests`, not `tests/federation`) | **78 green of 91**, 13 red — re-measured 2026-11-20 for the first time since 2026-11-04, and the 13 are name for name the names recorded then, so the number was stale but honest. 338 s of own time; run beside the client-API suite it costs nothing extra, see `make complement-both` |
 | endpoints | **180 of 234** indexed routes implemented, 44 routes the index does not name (`make endpoints`, unchanged on 2026-11-20) |
@@ -434,17 +434,53 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
       of this: this server reads a rule without conditions as matching only underride rules, where
       the specification has it match everything — so this server never saw the silence it published.
       Complement and `make lint` were unavailable to this session too.
+- [x] A delete that did not delete, and a gateway body written from an example instead of from
+      the table (measured 2026-11-27 by the lab on v0.2.23; fixed for v0.2.24).
+      `POST /_matrix/client/v3/pushers/set` with `{"app_id":…, "pushkey":…, "kind":null}` — which
+      is what the Rust SDK sends for `PusherAction::Delete` — answered 200 and left an **empty
+      http pusher** where a working one was: `active: true`, no `data.url`, no display names.
+      `kind` was read as a string, a JSON null is not a string, and the request therefore landed
+      in the register path, which overwrites the row. The specification names that field as the
+      verb of the request: "`null` deletes the pusher". Now a null or empty `kind` deletes, the
+      two-key short form keeps deleting because that is what it has always answered here, and a
+      body that names more than the scope while leaving `kind` out is refused with
+      `M_INVALID_PARAM` instead of guessed at — a wrong guess in either direction costs a person
+      their notification endpoint. Tests: `TestPusherKindNullDeletes`.
+      The other half was the request this server sends. The specification expects "all of the
+      event-related fields in the `/notify` request", and mine had been written from that
+      section's example rather than its field table: no `room_name`, no `sender_display_name` (so
+      every banner on a locked screen said "Message", because a backgrounded app has no room to
+      read a name out of), no `user_is_target`, `counts` printing a zero the table says to omit,
+      and `devices[].data` carrying the pusher's `url`, which that table excludes in so many words
+      — "minus the `url` key". Tests: `TestPushGatewayNamesTheRoomAndTheSender`,
+      `TestPushGatewayCountsOmitZero`.
+      One divergence deliberately kept and recorded: `tweaks` is a dictionary in the type table and
+      the example, and a list of `set_tweak` objects in everything Synapse sends and Sygnal reads.
+      The list stays, because a gateway that is not the example is the one that has to parse it.
 - [ ] An invite never reaches a push gateway, because no rule is evaluated for one (measured
-      2026-11-26; not built). `notifyParticipants` returns for every event that is not
-      `m.room.message`, `m.room.encrypted` or `m.sticker`, so a membership change is never judged
-      against the rules of the recipient — which leaves the `.m.rule.invite_for_me` the previous item
+      2026-11-26; re-measured 2026-11-27 against v0.2.23, where the lab named the assertions this
+      needs; **not built — waiting for a go**). `notifyParticipants` returns for every event that is
+      not `m.room.message`, `m.room.encrypted` or `m.sticker`, so a membership change is never judged
+      against the rules of the recipient — which leaves the `.m.rule.invite_for_me` the earlier item
       finally gave its conditions unread by this server. Clients that walk the published rules
-      themselves are unaffected, and are what the 2026-11-26 lab run measured; a pusher is not, so a
-      phone whose app relies on the gateway learns of an invite only when the app next reads a sync.
-      Teaching the path membership events wants a decision about who is a recipient (the invite is not
-      in the room yet, so `Members(roomID, join)` is the wrong list) and about rooms this server does
-      not consider joined. A gateway to test against is no longer the obstacle on either side:
-      delivery exists as of v0.2.23 and the lab's suite brings its own fake gateway.
+      themselves are unaffected; a pusher is not, so a phone whose app relies on the gateway learns
+      of an invite only when the app next reads a sync.
+      What the lab's `a_browser_s_pusher_carries_its_subscription_and_the_names` waits for is a
+      `POST /_matrix/push/v1/notify` for the `m.room.member` event with `type` = `m.room.member`,
+      `user_is_target` = true, `content.membership` = `invite` and `room_name` — and then, for the
+      message that follows in the same room, `sender_display_name` and `room_name`. The body fields
+      are in v0.2.24; **this item is what is left**.
+      Two decisions have to be made before it is built, and neither is a detail. Who is a recipient:
+      the invited person is not in the room, so `Members(roomID, join)` is the wrong list — the
+      honest one is the `state_key` of the member event, plus this server having a reason to hold
+      that room at all. And which rooms count: a push body carries the room's name, so judging an
+      event from a room the person never joined means this server tells that person's push gateway,
+      and through it a push provider, the name of a room they are only invited to — which Synapse
+      does and Lattice would be choosing to do, on an event that arrives from a foreign server that
+      may be wrong about it. A knock that arrives for an invite is worth more than the leak of one
+      room name to one gateway; said out loud is cheaper than found later.
+      A gateway to test against is no longer the obstacle on either side: delivery exists as of
+      v0.2.23 and the lab's suite brings its own fake gateway.
 - [ ] A rule without conditions always matches, and this server disagrees (spun off from the item
       above on 2026-11-26; not built). `Matches()` reads an empty condition list as matching only for
       underride rules; the specification has it match every event. The consequence is two-sided, and

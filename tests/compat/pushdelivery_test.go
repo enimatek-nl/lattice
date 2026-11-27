@@ -396,3 +396,76 @@ func TestEmailPushersAreNotKnockedAt(t *testing.T) {
 		t.Errorf("the device was %v, not the http pusher", devices[0])
 	}
 }
+
+// TestPushGatewayNamesTheRoomAndTheSender covers the sentence the first version of this
+// loop missed: "the homeserver is expected to include all of the event-related fields in
+// the /notify request". A backgrounded app has no room to read a name out of, so a
+// notification without `room_name` and `sender_display_name` is a banner that says
+// "Message". The lab asked for exactly these two on the same run.
+func TestPushGatewayNamesTheRoomAndTheSender(t *testing.T) {
+	server := NewServer(t)
+	stop := server.svc.StartPushDelivery(t.Context())
+	t.Cleanup(stop)
+	alice := server.Register("alice", "wonderland")
+	bob := server.Register("bob", "rubberduck")
+	server.MustDo(http.MethodPut, profilePath(alice.UserID, "displayname"), alice.Token,
+		map[string]any{"displayname": "Major Tom"}, http.StatusOK)
+
+	gateway := newPushGateway(t)
+	registerPusher(t, server, bob, gateway.url(), "")
+	roomID := server.CreateRoom(alice, map[string]any{"name": "Mission Control", "invite": []string{bob.UserID}})
+	server.MustDo(http.MethodPost, "/_matrix/client/v3/join/"+roomID, bob.Token, nil, http.StatusOK)
+	server.Send(alice, roomID, "named-1", "the written word")
+
+	call, ok := gateway.await(t, 5*time.Second)
+	if !ok {
+		t.Fatalf("the homeserver never knocked at the gateway")
+	}
+	body := notification(t, call)
+	if name, _ := body["room_name"].(string); name != "Mission Control" {
+		t.Errorf("room_name is %v, want the name the room carries", body["room_name"])
+	}
+	if name, _ := body["sender_display_name"].(string); name != "Major Tom" {
+		t.Errorf("sender_display_name is %v", body["sender_display_name"])
+	}
+	if target, present := body["user_is_target"]; present {
+		t.Errorf("a message names no target, so user_is_target should be absent, got %v", target)
+	}
+	// The gateway device carries the pusher's data "minus the url key": the URL is where
+	// this server knocked, and a payload that continues on to a push provider has no
+	// business carrying an internal address.
+	devices, _ := body["devices"].([]any)
+	if len(devices) != 1 {
+		t.Fatalf("one device expected, got %v", body["devices"])
+	}
+	data, _ := devices[0].(map[string]any)["data"].(map[string]any)
+	if _, present := data["url"]; present {
+		t.Errorf("the pusher's gateway URL travelled inside the payload: %v", data)
+	}
+	if label, _ := data["account"].(string); label != "repro-account" {
+		t.Errorf("the rest of the pusher data should still travel along: %v", data)
+	}
+}
+
+// TestPushGatewayCountsOmitZero is the other half of the same table: "counts whose value is
+// zero should be omitted".
+func TestPushGatewayCountsOmitZero(t *testing.T) {
+	server, alice, bob, gateway := pushDeliveryTest(t)
+	roomID := twoPersonRoom(t, server, alice, bob)
+	server.Send(alice, roomID, "count-1", "one unread")
+
+	call, ok := gateway.await(t, 5*time.Second)
+	if !ok {
+		t.Fatalf("the homeserver never knocked at the gateway")
+	}
+	counts, ok := notification(t, call)["counts"].(map[string]any)
+	if !ok {
+		t.Fatalf("no counts, so the app has no badge to show: %s", call.raw)
+	}
+	if _, present := counts["highlight"]; present {
+		t.Errorf("a highlight count of zero was sent: %v", counts)
+	}
+	if unread, _ := counts["unread"].(float64); unread != 1 {
+		t.Errorf("counts.unread is %v, want 1", counts["unread"])
+	}
+}
