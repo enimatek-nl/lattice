@@ -303,7 +303,14 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
       eight continuations after a restart answered in 0.01 s each and re-sent every room; after the
       fix the same eight each waited the full timeout and sent nothing, and a message that arrived
       while one of them waited was answered promptly, with a position that moved and the room not
-      marked initial again (`.agent-work/v111/sliding-e2e.py`). Three compat tests, one of which is
+      marked initial again (`.agent-work/v111/sliding-e2e.py`). Measured the way the lab measured
+      it too: one quiet minute with a list connection and an extension-only connection, both
+      long-polling at 30 s, gives **2 requests per minute per connection** — the floor the timeout
+      sets, 60/30 — with no early answer and no room sent twice, against their 2845 per minute for
+      the room list and 4383 in the browser on v0.2.23 (`.agent-work/v111/sliding-quiet-minute.py`).
+      The extension loop sitting at the same floor matters: `to_device`, `e2ee`, typing and receipts
+      do not answer of their own.
+      Three compat tests, one of which is
       an older test of this repository's own that asserted the refused-retry behaviour MSC4186
       forbids — amended, with the sentence it was amended for written above it, so that it is not
       "fixed" back.
