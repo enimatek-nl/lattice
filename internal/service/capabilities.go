@@ -7,7 +7,7 @@ import (
 )
 
 // LatticeVersion is the version string of this homeserver implementation.
-const LatticeVersion = "0.2.24"
+const LatticeVersion = "0.2.25"
 
 // UnstableFeatures lists the spec features this server advertises, keyed by the
 // feature identifier used by /versions.

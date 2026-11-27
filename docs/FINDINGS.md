@@ -1781,3 +1781,47 @@ something more specific.
   included — and what is left is the decision about who the recipients are and what this server is
   willing to tell a push gateway about a room a person has only been invited to. That is a choice
   about behaviour, and it is not mine to make quietly.
+
+## A delete that only hides the row breaks the insert that follows it (2026-11-27, v0.2.25)
+
+The lab measured a sliding sync that answered fifteen times a second. Every request after a
+restart re-sent every room as `initial`, no request ever waited for its timeout, and the position
+never moved. Both reported symptoms — the busy loop and the `M_UNKNOWN_POS` that forces a restart
+— turned out to be about how this server remembers, and one of them was not in the sliding sync
+code at all.
+
+- **The mechanism, once, so the shape is recognisable.** Both sliding tables embed `gorm.Model`,
+  which carries `DeletedAt`, so `Delete` means "set a timestamp". A unique index does not read
+  that timestamp: the row keeps occupying the index. The next insert of the same key hits the
+  server's own `ON CONFLICT` clause and updates the hidden row, which every read then filters
+  out. Nothing fails; the data is simply unreachable forever. For a sliding sync connection that
+  meant it could never again learn which rooms it had shown — so it always had "news", never
+  slept, and re-sent the world.
+- **The bug was not where the symptom was.** Nothing in `internal/service/sliding*.go` was wrong.
+  The repository underneath it answered `SaveRooms` with success and `Rooms` with nothing, and
+  every caller behaved correctly on that lie. A delete that is really a hide is a fact about the
+  storage layer that shows up as a protocol bug two floors up.
+- **A suite that only walks forward cannot see a state machine that breaks on a repeat.** Every
+  sliding sync test here started a connection and moved on. The lab's client hit both bugs by
+  doing two legal and ordinary things: reloading the page, and cancelling an in-flight request to
+  open a room. Both are in MSC4186 in so many words — "Clients MAY change the request body if they
+  cancel a request and send a new one with the same `pos`", "the server MUST ensure that any
+  per-connection state it tracks correctly handles receiving multiple requests with the latest
+  `pos` token".
+- **One of this repository's own tests asserted the forbidden behaviour.** It was written as
+  "replaying a spent position must be refused", which sounds like a security assertion and is
+  exactly what the MSC rules out for the *latest* position. Amending it was the honest move, and
+  the amendment carries the sentence it was made for plus the eight live `M_UNKNOWN_POS` answers
+  that found it — because a test that asserts a wrong behaviour is how a wrong behaviour survives
+  the next refactor. A position two steps behind is still refused: the refusal was never the
+  problem, its scope was.
+- **Measured before and after, on the lab's own steps.** Eight continuations after a restart:
+  `0.01 0.02 0.01 0.01 0.02 0.02 0.01 0.01` seconds, every room re-sent. After the fix:
+  `1.50 1.50 1.50 1.50 1.50 1.51 1.51 1.50`, nothing sent, and a message that arrived while one
+  of them waited came back promptly with a position that had moved. The script is in
+  `.agent-work/v111/sliding-e2e.py`; timings, not assertions, are what convinced me.
+- **The sweep, because a class is worth counting.** 37 models combine soft delete with a unique
+  index. Read site by site, the sliding tables were the only ones whose deletes were not already
+  `Unscoped()`; the one other hit was a Go method named `Delete` that was not a GORM call at all.
+  What is still true is that every soft-deleted row of those 37 is kept forever — invisible to
+  reads, occupying its index. That is recorded as a change of shape rather than a fifth fix.

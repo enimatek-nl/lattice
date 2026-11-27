@@ -290,7 +290,14 @@ func TestSlidingSyncPosIsABatchToken(t *testing.T) {
 
 // TestSlidingSyncRefusesAPositionThatIsNotItsOwn covers the security rule of the connection
 // model: holding a position token grants nothing. A position issued to another device, or to
-// another user, or an older position of this same connection, is refused with M_UNKNOWN_POS.
+// another user, or an old position of this same connection, is refused with M_UNKNOWN_POS.
+//
+// "Old" is one step narrower than it looks. MSC4186 says a client may cancel an in-flight
+// request and send another one with the same pos, and that the server MUST keep its
+// per-connection state correct while that happens - so the last position a client asked about
+// is still its own, and refusing it is what pushed a web app into a restart per open-room tap
+// (the lab counted eight of them on 2026-11-27). One behind that is a client that lost the
+// thread, and that one is refused.
 func TestSlidingSyncRefusesAPositionThatIsNotItsOwn(t *testing.T) {
 	server := NewServer(t)
 	alice := server.Register("alice", "wonderland")
@@ -326,18 +333,37 @@ func TestSlidingSyncRefusesAPositionThatIsNotItsOwn(t *testing.T) {
 			resp.Status, resp.ErrCode())
 	}
 
-	// A position this connection has already moved past: the client that replays one must not
-	// be answered as though nothing had happened in between.
+	// A position this connection has moved two steps past: the client that replays one must
+	// not be answered as though nothing had happened in between.
 	next := server.slidingSync(t, alice, map[string]any{"conn_id": "main", "pos": alicePos})
 	nextPos, _ := next["pos"].(string)
 	if nextPos == alicePos {
 		t.Fatalf("the connection answered the same position twice: %q", nextPos)
 	}
+	// The step back a client is allowed to take: the position it last asked about is still its
+	// own, because the answer that moved the connection away may be a response it cancelled
+	// and never processed.
+	if resp := server.Do("POST", "/_matrix/client/v4/sync", alice.Token, map[string]any{
+		"conn_id": "main",
+		"pos":     alicePos,
+	}); resp.Status != 200 {
+		t.Errorf("a retry with the last position the client asked about: got %d %s, want 200",
+			resp.Status, resp.Raw)
+	}
+	// One step further back is not the same conversation any more. The message is what makes
+	// the position move: a connection with nothing to say answers with the position it was
+	// given, and then two steps behind cannot be told from one.
+	server.Send(alice, roomID, "two", "second")
+	latest := server.slidingSync(t, alice, map[string]any{"conn_id": "main", "pos": nextPos})
+	latestPos, _ := latest["pos"].(string)
+	if latestPos == nextPos {
+		t.Fatalf("the connection did not move past %q after a message", nextPos)
+	}
 	if resp := server.Do("POST", "/_matrix/client/v4/sync", alice.Token, map[string]any{
 		"conn_id": "main",
 		"pos":     alicePos,
 	}); resp.Status != 400 || resp.ErrCode() != "M_UNKNOWN_POS" {
-		t.Errorf("replaying a spent position: got %d %s, want 400 M_UNKNOWN_POS",
+		t.Errorf("replaying a position two steps behind: got %d %s, want 400 M_UNKNOWN_POS",
 			resp.Status, resp.ErrCode())
 	}
 }
@@ -2161,4 +2187,178 @@ func TestSlidingSyncAccountDataWakesAWaitingPoll(t *testing.T) {
 	case <-time.After(9 * time.Second):
 		t.Fatal("the waiting poll did not answer the account data change")
 	}
+}
+
+// TestSlidingSyncRestartsQuietly is the lab's report of 2026-11-27: after a restart of a
+// connection, every following request came back in nothing seconds with every room marked
+// initial again and the same pos, forever. A client that reloads - which is every page
+// refresh and every app start - is left asking fifteen times a second, because the server
+// never sleeps and never says "nothing new".
+//
+// The rule the MSC states twice: a room is returned when it has new data or has not been
+// sent before, and a response with nothing to say blocks until the timeout.
+func TestSlidingSyncRestartsQuietly(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	first := server.CreateRoom(alice, map[string]any{"preset": "public_chat", "name": "Down"})
+	second := server.CreateRoom(alice, map[string]any{"preset": "public_chat", "name": "Up"})
+
+	request := func(pos string, timeoutMS int) map[string]any {
+		body := map[string]any{
+			"conn_id": "room-list",
+			"lists":   slidingSyncListConfig(),
+			"timeout": timeoutMS,
+		}
+		if pos != "" {
+			body["pos"] = pos
+		}
+		return body
+	}
+
+	started := server.slidingSync(t, alice, request("", 0))
+	pos, _ := started["pos"].(string)
+	if pos == "" {
+		t.Fatalf("the start answered no position: %v", started)
+	}
+	if got := slidingRooms(t, started); len(got) != 2 {
+		t.Fatalf("a fresh connection should be shown both rooms, got %d", len(got))
+	}
+
+	// The continuation after a start is the case that works today, and it is the control
+	// for the one below: same request, same connection, one restart in between.
+	waited, quiet := server.slidingTimed(t, alice, request(pos, 1500))
+	if rooms := slidingRoomsOrEmpty(t, quiet); len(rooms) != 0 {
+		t.Errorf("the continuation after a start sent %d room(s) it had already sent", len(rooms))
+	}
+	if waited < 500*time.Millisecond {
+		t.Errorf("the continuation after a start answered in %v instead of waiting", waited)
+	}
+
+	// A restart, which is what the client does when it reloads: every room arrives again,
+	// marked initial, and that part is right.
+	restarted := server.slidingSync(t, alice, request("", 0))
+	rooms := slidingRooms(t, restarted)
+	if len(rooms) != 2 {
+		t.Fatalf("a restarted connection should be shown both rooms again, got %d", len(rooms))
+	}
+	for roomID, room := range rooms {
+		if initial, _ := room["initial"].(bool); !initial {
+			t.Errorf("the restarted connection was sent %s without initial: %v", roomID, room)
+		}
+	}
+	newPos, _ := restarted["pos"].(string)
+
+	// And now the same rule as after the start. This is what was broken: the restart had
+	// forgotten the rooms it had just sent, so every request looked like a first one.
+	for attempt := 1; attempt <= 3; attempt++ {
+		waited, quiet := server.slidingTimed(t, alice, request(newPos, 1500))
+		rooms := slidingRoomsOrEmpty(t, quiet)
+		if len(rooms) != 0 {
+			t.Fatalf("attempt %d after the restart sent %d room(s) again as initial: %v",
+				attempt, len(rooms), rooms)
+		}
+		if waited < 500*time.Millisecond {
+			t.Fatalf("attempt %d after the restart answered in %v instead of long-polling", attempt, waited)
+		}
+		if again, _ := quiet["pos"].(string); again != newPos {
+			t.Errorf("attempt %d answered position %q, want the one it was given", attempt, quiet["pos"])
+		}
+	}
+
+	// Silence is only correct while there is nothing to say: a message still has to arrive.
+	server.Send(alice, second, "after-restart", "still listening")
+	answered, body := server.slidingTimed(t, alice, request(newPos, 5000))
+	if room := slidingRoomsOrEmpty(t, body)[second]; room == nil {
+		t.Errorf("the restarted connection missed a message that arrived while it waited (%v)", answered)
+	}
+	if again, _ := body["pos"].(string); again == newPos {
+		t.Errorf("a response that sent a room still handed back the position it was given")
+	}
+	if room := slidingRoomsOrEmpty(t, body)[second]; room != nil {
+		if initial, present := room["initial"]; present && initial == true {
+			t.Errorf("a room the restarted connection already saw arrived marked initial again: %v", room)
+		}
+	}
+	if _, ok := slidingRoomsOrEmpty(t, body)[first]; ok {
+		t.Errorf("a room without changes was sent to the restarted connection")
+	}
+}
+
+// TestSlidingSyncAcceptsItsLatestPosAgain is the other half of the same loop: MSC4186 lets a
+// client cancel an in-flight request and send another one with the same pos - that is how a
+// client opens a room while it is waiting. Answering that with M_UNKNOWN_POS forces a
+// restart, and a restart lands the client in the bug above, which is how a normal web app
+// ended up polling fifteen times a second.
+func TestSlidingSyncAcceptsItsLatestPosAgain(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	roomID := server.CreateRoom(alice, map[string]any{"preset": "public_chat", "name": "Down"})
+
+	request := func(pos string, timeoutMS int) map[string]any {
+		body := map[string]any{
+			"conn_id": "room-list",
+			"lists":   slidingSyncListConfig(),
+			"timeout": timeoutMS,
+		}
+		if pos != "" {
+			body["pos"] = pos
+		}
+		return body
+	}
+
+	started := server.slidingSync(t, alice, request("", 0))
+	first, _ := started["pos"].(string)
+
+	// Something happens, and the server answers with a new position. The client in the lab's
+	// repro had already cancelled that request and never processed the answer.
+	server.Send(alice, roomID, "cancel-1", "on its way")
+	next := server.slidingSync(t, alice, request(first, 0))
+	second, _ := next["pos"].(string)
+	if second == first {
+		t.Fatalf("a response that sent a room kept the position %q", second)
+	}
+
+	// The client sends the position it last processed. That is the last one it handled, not
+	// the last one this server handed out, and the MSC names this case in so many words.
+	resp := server.Do("POST", "/_matrix/client/v4/sync", alice.Token, request(first, 0))
+	if resp.Status != 200 {
+		t.Errorf("a retry with the last processed position: %d %s, want 200", resp.Status, resp.Raw)
+	}
+
+	// A position this server never issued is still refused: the MSC lets a server say so,
+	// and a client that has lost the thread has to know to start over.
+	resp = server.Do("POST", "/_matrix/client/v4/sync", alice.Token, request("sZm9yZWlnbg", 0))
+	if resp.Status != 400 || resp.ErrCode() != "M_UNKNOWN_POS" {
+		t.Errorf("a position from nowhere: %d %s, want 400 M_UNKNOWN_POS", resp.Status, resp.Raw)
+	}
+
+	// And the connection is not ruined by the retry: its own latest position still works.
+	if body := server.slidingSync(t, alice, request(second, 0)); body["pos"] == nil {
+		t.Errorf("the connection stopped answering after the retry: %v", body)
+	}
+}
+
+// slidingTimed performs one sliding sync request and reports how long it took.
+func (s *Server) slidingTimed(t *testing.T, session *Session, body map[string]any) (time.Duration, map[string]any) {
+	t.Helper()
+	began := time.Now()
+	answer := s.slidingSync(t, session, body)
+	return time.Since(began), answer
+}
+
+// slidingRoomsOrEmpty reads the rooms section without insisting that it is there, because a
+// response that has nothing to say should not carry one.
+func slidingRoomsOrEmpty(t *testing.T, body map[string]any) map[string]map[string]any {
+	t.Helper()
+	rooms, ok := body["rooms"].(map[string]any)
+	if !ok {
+		return map[string]map[string]any{}
+	}
+	out := make(map[string]map[string]any, len(rooms))
+	for roomID, raw := range rooms {
+		if room, ok := raw.(map[string]any); ok {
+			out[roomID] = room
+		}
+	}
+	return out
 }

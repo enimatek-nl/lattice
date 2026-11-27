@@ -162,6 +162,10 @@ type slidingConn struct {
 	// point than the token handed out would make the client's next request look like a
 	// replay of an old one.
 	pendingPos uint64
+	// ack is the position this request carried: what the client says it has processed. It
+	// is written back on commit, because it is the position a following request may carry
+	// again after cancelling one - see [Service.openSlidingConnection].
+	ack uint64
 }
 
 // openSlidingConnection finds the connection a request speaks for, or begins a new one.
@@ -169,9 +173,12 @@ type slidingConn struct {
 // A request that carries no position starts a connection: whatever was recorded under that
 // connection id before is dropped, because the client has said it is starting over. A request
 // that carries one must carry one this server gave to this user on this device, and it must be
-// the position the connection is at now - the MSC allows a server to answer anything else with
-// M_UNKNOWN_POS, and a connection whose client has lost the thread is better restarted than
-// guessed at.
+// either the position the connection is at or the one the client last asked about: MSC4186
+// says a client may cancel an in-flight request and send another with the same position, and
+// that the server has to keep its per-connection state correct while that happens. Answering
+// the second with M_UNKNOWN_POS is what drove a web app into a restart per open-room tap.
+// Anything older than those two is a client that lost the thread, and the MSC lets a server
+// say so.
 func (s *Service) openSlidingConnection(ctx context.Context, userID, deviceID, connID, pos string) (*slidingConn, bool, error) {
 	if pos == "" {
 		row, err := s.db.SlidingSyncRepo.Connection(userID, deviceID, connID)
@@ -184,13 +191,14 @@ func (s *Service) openSlidingConnection(ctx context.Context, userID, deviceID, c
 			return nil, false, matrix.ErrInternal(err)
 		}
 		row.LastPos = s.committedStreamPos()
+		row.AckPos = row.LastPos
 		if err := s.db.SlidingSyncRepo.SaveConnection(row); err != nil {
 			return nil, false, matrix.ErrInternal(err)
 		}
 		if err := s.pruneSlidingConnections(userID, deviceID, row.ID); err != nil {
 			return nil, false, err
 		}
-		return &slidingConn{row: row, known: map[string]*persist.SlidingSyncRoom{}, initial: true}, true, nil
+		return &slidingConn{row: row, known: map[string]*persist.SlidingSyncRoom{}, initial: true, ack: row.LastPos}, true, nil
 	}
 
 	tokenConn, tokenPos, err := auth.ParseSlidingSyncPos(pos)
@@ -209,9 +217,10 @@ func (s *Service) openSlidingConnection(ctx context.Context, userID, deviceID, c
 		}
 		return nil, false, matrix.ErrInternal(err)
 	}
-	if tokenPos != row.LastPos {
+	if tokenPos != row.LastPos && tokenPos != row.AckPos {
 		return nil, false, matrix.ErrUnknownPos(
-			"the connection %q is at position %d, not %d; start it again", tokenConn, row.LastPos, tokenPos)
+			"the connection %q is at position %d and last heard %d, not %d; start it again",
+			tokenConn, row.LastPos, row.AckPos, tokenPos)
 	}
 	rows, err := s.db.SlidingSyncRepo.Rooms(row.ID)
 	if err != nil {
@@ -221,7 +230,7 @@ func (s *Service) openSlidingConnection(ctx context.Context, userID, deviceID, c
 	for _, entry := range rows {
 		known[entry.RoomID] = entry
 	}
-	return &slidingConn{row: row, known: known}, false, nil
+	return &slidingConn{row: row, known: known, ack: tokenPos}, false, nil
 }
 
 // pruneSlidingConnections bounds how many connections one device may leave standing, which
@@ -421,6 +430,11 @@ func (s *Service) trimSlidingRooms(conn *slidingConn, plans map[string]*slidingR
 // position the response answered with.
 func (s *Service) commitSliding(conn *slidingConn, written []*persist.SlidingSyncRoom) error {
 	conn.row.LastPos = conn.pendingPos
+	// The client's own claim only moves when this request is the one being answered: a
+	// request that is refused never moves the line the next one is checked against.
+	if conn.ack > conn.row.AckPos {
+		conn.row.AckPos = conn.ack
+	}
 	if err := s.db.SlidingSyncRepo.SaveConnection(conn.row); err != nil {
 		return matrix.ErrInternal(err)
 	}

@@ -20,8 +20,15 @@ type SlidingSyncConnection struct {
 	// ConnID is the client's own name for the loop; the empty string is a legal one.
 	ConnID string `json:"conn_id" gorm:"uniqueIndex:uq_slidingsync_conn;size:128"`
 	// LastPos is the stream position this connection has been answered up to. A request
-	// that names any other position is not this connection speaking.
+	// that names a position older than the one it acknowledged is not this connection
+	// speaking.
 	LastPos uint64 `json:"last_pos" gorm:"index"`
+	// AckPos is the highest position this connection has asked about - what the client says
+	// it has processed. It lags LastPos by one whenever a response was written and the
+	// client cancelled the request it answered, which MSC4186 allows on purpose: a client
+	// may cancel an in-flight request and send another one with the same position. Honouring
+	// only LastPos there answers a legal retry with M_UNKNOWN_POS and forces a restart.
+	AckPos uint64 `json:"ack_pos"`
 	// ListCount and SubCount remember how much the client last asked to be tracked, which
 	// is what an expiry decision is made against.
 	ListCount int `json:"list_count"`
@@ -88,7 +95,8 @@ type SlidingSyncRepo interface {
 	// SaveRooms writes the room rows of one connection, replacing any earlier row of the
 	// same room.
 	SaveRooms(rows []*SlidingSyncRoom) error
-	// UnsentRooms lists the rooms a connection has been told nothing about yet.
+	// ResetRooms drops everything a connection has been told about rooms, which is what
+	// makes a client that starts a connection over see every room as new.
 	ResetRooms(connKey uint) error
 	// TrimRooms drops the room rows of a connection for rooms outside the given set, so
 	// that a connection does not accumulate a row per room it will never see again.
@@ -118,16 +126,20 @@ func (r *SlidingSyncRepoImpl) SaveConnection(conn *SlidingSyncConnection) error 
 	}
 	return r.db.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "user_id"}, {Name: "device_id"}, {Name: "conn_id"}},
-		DoUpdates: clause.AssignmentColumns([]string{"last_pos", "list_count", "sub_count", "updated_at"}),
+		DoUpdates: clause.AssignmentColumns([]string{"last_pos", "ack_pos", "list_count", "sub_count", "updated_at"}),
 	}).Save(conn).Error
 }
 
 // Forget implements [SlidingSyncRepo].
+//
+// Both tables are dropped for real. A soft delete would keep the unique indexes occupied:
+// (user, device, conn_id) for the connection and (conn_key, room_id) for its rooms, and the
+// rows a later write conflicts with would then be the invisible ones - see [ResetRooms].
 func (r *SlidingSyncRepoImpl) Forget(connKey uint) error {
-	if err := r.db.Where("conn_key = ?", connKey).Delete(&SlidingSyncRoom{}).Error; err != nil {
+	if err := r.db.Where("conn_key = ?", connKey).Unscoped().Delete(&SlidingSyncRoom{}).Error; err != nil {
 		return err
 	}
-	return r.db.Delete(&SlidingSyncConnection{}, connKey).Error
+	return r.db.Unscoped().Delete(&SlidingSyncConnection{}, connKey).Error
 }
 
 // ConnectionsForDevice implements [SlidingSyncRepo].
@@ -160,17 +172,26 @@ func (r *SlidingSyncRepoImpl) SaveRooms(rows []*SlidingSyncRoom) error {
 }
 
 // ResetRooms implements [SlidingSyncRepo].
+//
+// The rows are dropped for real, and this one is not a tidy-up: a soft delete leaves the row
+// occupying the unique (conn_key, room_id) index while every read of it filters it out, so
+// the next [SaveRooms] hits its ON CONFLICT clause and quietly updates a row nobody will ever
+// read again. The connection then never learns that it has shown a room: every request marks
+// every room initial again, never has "nothing changed" to wait for, and answers at once -
+// which is how a client that reloads ends up polling fifteen times a second.
 func (r *SlidingSyncRepoImpl) ResetRooms(connKey uint) error {
-	return r.db.Where("conn_key = ?", connKey).Delete(&SlidingSyncRoom{}).Error
+	return r.db.Where("conn_key = ?", connKey).Unscoped().Delete(&SlidingSyncRoom{}).Error
 }
 
-// TrimRooms implements [SlidingSyncRepo].
+// TrimRooms implements [SlidingSyncRepo]. Dropped for real, for the reason written on
+// [ResetRooms]: a row that is invisible but still indexed is a row that can never be written
+// again.
 func (r *SlidingSyncRepoImpl) TrimRooms(connKey uint, keep []string) error {
 	query := r.db.Where("conn_key = ?", connKey)
 	if len(keep) > 0 {
 		query = query.Where("room_id NOT IN ?", keep)
 	}
-	return query.Delete(&SlidingSyncRoom{}).Error
+	return query.Unscoped().Delete(&SlidingSyncRoom{}).Error
 }
 
 // ConnectionsOlderThan implements [SlidingSyncRepo].

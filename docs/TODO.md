@@ -31,7 +31,7 @@ because it said nothing these steps do not.
 | Measure | Now |
 |---|---|
 | `make build vet` | clean (4 s, 2026-11-20); `make lint` reports the same **7 issues** (6 staticcheck: `QF1001`×3, `QF1006`×2, `S1011`; 1 `unused`: `internal/api/federation.go:1045 eventInBody`) — pre-existing quickfix-style findings, none from the 2026-11-18 work. Note for a session started from a service unit: `golangci-lint` lives in `~/go/bin`, which is not on that PATH — and on 2026-11-26 the chat session's environment had no `golangci-lint` installed anywhere on its PATH, so the lint tally above still belongs to 2026-11-20 |
-| this repository's own tests | **389** counted here — 217 client-API compatibility, 90 two-server federation, 82 offline unit (`go test ./tests/<pkg> -list '.*'`, all green on 2026-11-27: compat 104 s, federation 49 s). `internal/matrix` adds its own test functions, which this tally has never counted |
+| this repository's own tests | **391** counted here — 219 client-API compatibility, 90 two-server federation, 82 offline unit (`go test ./tests/<pkg> -list '.*'`, all green on 2026-11-27: compat 110 s, federation 49 s). `internal/matrix` adds its own test functions, which this tally has never counted |
 | Complement `tests/csapi` | **84 green of 106**, 2 skipped, in 345 s on v0.2.18 (2026-11-25; 338 s on v0.2.17, 340 s on v0.2.16). Two names less red than the 2026-11-20 tally: `TestPushSync` passes since the push rule set travels as `m.push_rules` account data, and `TestSearch` passes since `/search` speaks the specification's body and answer. The other 20 names are the same list, so the red list is stable rather than lucky. It could not be run to completion before 2026-11-18, see [COMPLEMENT.md](COMPLEMENT.md) |
 | Complement server-server (`tests`, not `tests/federation`) | **78 green of 91**, 13 red — re-measured 2026-11-20 for the first time since 2026-11-04, and the 13 are name for name the names recorded then, so the number was stale but honest. 338 s of own time; run beside the client-API suite it costs nothing extra, see `make complement-both` |
 | the author of smaltino's core lab tests | **71 of 88** on v0.2.24 (measured 2026-11-27 in that lab: own build of the tag, fresh database. The run before it: 61 of 82 on v0.2.18, 62 on v0.2.19, 52 on v0.2.20 — the release that made a rule set readable and every notification silent, 64 on v0.2.21, 70 of 88 on v0.2.22 after three CarPlay read-aloud tests were added, 70 on v0.2.23, 71 on v0.2.24 for `kind: null` deleting). It is a client suite for web, Android and iOS written against a homeserver contract, so a feature counts only when an app can use it — which is how a pusher that was stored and never contacted hid from every measure above. Nothing in this repository produces this number; the 17 that remain name other subjects (room settings, spaces, threads, upgrades, devices, verification), and one of them is the invite knock, which waits on a decision rather than on code |
@@ -276,6 +276,45 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
       probe is satisfied and they fail further along, on thread unread counts in `/sync` — see
       `TestThreadsEndpoint`'s row above. Invite filtering (MSC4155), relation filters in
       `/messages` (MSC3874), poll push rules (MSC3930).
+- [x] A sliding sync connection that never slept again after a restart, and the position token
+      that could not be shown twice (measured 2026-11-27 by the lab on v0.2.22 through v0.2.24;
+      fixed for v0.2.25, in the subject @cybertim chose).
+      Two reports, one machine behind both. **The restart that forgot it had spoken:** after a
+      client started a connection over, every following request answered in 0.01 s with every room
+      marked `initial` again and the same `pos`, forever — fifteen requests a second per device and
+      no long poll at all. The cause was not in the sliding sync code: both sliding tables embed
+      `gorm.Model`, so a delete is a *soft* delete, and `ResetRooms` left every room row occupying
+      its unique `(conn_key, room_id)` index while every read filtered it out. The next write hit
+      its own `ON CONFLICT` clause and quietly updated a row nobody would ever read again, so the
+      connection never learned that it had shown a room — and a connection that always has
+      something to say never waits. Same for `TrimRooms` and `Forget`. Fixed with `Unscoped()` on
+      all three, the way `PushRuleRepo.Delete` has done since the same trap was found in push rules.
+      **And the position that could not be shown twice:** MSC4186 says a client may cancel an
+      in-flight request and send another with the same `pos`, and that a server MUST keep its
+      per-connection state correct when several requests carry the latest token. This server
+      required the token to equal the position it had *last answered with*, so a client that
+      cancelled a request it had been answered for — which is what opening a room does — was told
+      `M_UNKNOWN_POS` and had to restart, which put it straight back into the bug above. The lab
+      counted eight of them and every one followed that pattern. A connection now remembers both
+      the position it is at and the highest position the client has asked about (`ack_pos`) and
+      honours either: one step back is a client retrying, one step further is a client that lost
+      the thread and is still answered with `M_UNKNOWN_POS`.
+      Measured rather than believed, before and after, against a real binary on the lab's own steps:
+      eight continuations after a restart answered in 0.01 s each and re-sent every room; after the
+      fix the same eight each waited the full timeout and sent nothing, and a message that arrived
+      while one of them waited was answered promptly, with a position that moved and the room not
+      marked initial again (`.agent-work/v111/sliding-e2e.py`). Three compat tests, one of which is
+      an older test of this repository's own that asserted the refused-retry behaviour MSC4186
+      forbids — amended, with the sentence it was amended for written above it, so that it is not
+      "fixed" back.
+      The sweep this prompted: 37 models combine soft delete with a unique index. Beyond the two
+      sliding tables, no repository deletes one of them without `Unscoped()` — read site by site,
+      the single other hit being a Go method named `Delete`, not a GORM one.
+- [ ] Soft delete is a standing trap for those 37 models, and it leaks: every soft-deleted row is
+      kept forever, invisible to every read and still occupying its unique index. Worth one change
+      of shape rather than one more fix — either the models behind a unique index stop embedding
+      `gorm.Model`, or maintenance gains a sweep that really deletes what `deleted_at` marks.
+      Found while fixing the sliding sync restart, 2026-11-27.
 - [x] Simplified sliding sync (MSC4186) at `/v4/sync` and the `org.matrix.msc3575` path, with the five extensions (step 22).
       Since 2026-11-22 `pos`, `timeout` and `set_presence` are also read from the query string where the body leaves
       them out, which is what a matrix-rust-sdk client sends — see the finding of that afternoon.
