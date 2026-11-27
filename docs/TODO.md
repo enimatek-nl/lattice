@@ -317,6 +317,47 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
       The sweep this prompted: 37 models combine soft delete with a unique index. Beyond the two
       sliding tables, no repository deletes one of them without `Unscoped()` — read site by site,
       the single other hit being a Go method named `Delete`, not a GORM one.
+- [ ] A sliding sync answer the client never read still counts as delivered, and the event it
+      carried is never sent on that connection again (measured 2026-11-27 by the lab on v0.2.25 and
+      v0.2.26 in `pausing_in_the_middle_of_syncing_loses_nothing`, and replayed here against both
+      binaries: **4 of 6 attempts lose the message**, identical on both releases — v0.2.26 only
+      moved the timing of the lab's pause. **Not built — waiting for a go.**
+      `.agent-work/v111/sliding-abort-probe.py` is the repro: a room filled past the subscription's
+      `timeline_limit` of 20, a long-poll on position P, one message, the socket closed unread
+      after 0 to 500 ms, then the same request again with P. At 0 and 100 ms the long-poll was not
+      answered yet and the retry delivers; at 200 ms and beyond the retry answers `{"pos":"P+1"}`
+      with no room, no timeline and no `limited`, and the event never returns — while a fresh
+      `conn_id` on the same device and room lists it immediately, and `/messages` from the
+      `prev_batch` the lab tried also has it. So the room is fine and this connection's window
+      simply stepped over it, with no flag saying so.
+      The mechanism is two lines apart, both in `internal/service/sliding.go`. `fromPos` for a
+      request is `conn.row.LastPos` rather than the position the request carries, and
+      `commitSliding` advances `LastPos` and each room's `TimelinePos` while the response is being
+      built — before anything has been written, let alone read. The lab saw exactly that in their
+      proxy log: the server had sent nothing back yet at the moment the client closed. A position
+      the client has never been given is then behind the connection's own line, and MSC4186 says
+      it must not be: "The server cannot assume that a client has received a response until it
+      receives a new request with the `pos` token set to the `pos` it returned in the response."
+      The shape of the fix, for whoever picks it up: the baseline for "what is new" is the position
+      **in the request**, and the connection's position and the per-room `Sent` / `TimelinePos` /
+      `StatePos` markers move only when a request arrives carrying the position the server last
+      returned — which is the acknowledgement, and is what `ack_pos` already records for the
+      refusal check. Until then the response must stay replayable, so an unacknowledged answer is
+      rebuilt from the same baseline rather than remembered as delivered. Two consequences to
+      expect in the tests: `initial` has to follow "was this room ever acknowledged on this
+      connection" instead of "was it ever sent", and a client that re-sends the latest position
+      for its own reasons gets that window a second time — which MSC4186 allows and clients
+      deduplicate by event id.
+      Adjacent, and measured rather than assumed: **`limited` is absent from every one of those
+      answers.** MSC4186 wants it true when there are more events since the previous sync than the
+      `timeline` field carried, and this server does not say so when a window is capped — which is
+      why the lab's client, told nothing, paged from the `prev_batch` it still trusted and found
+      only what preceded the gap. Worth its own assertion in `tests/compat/sliding_sync_test.go`
+      whatever happens to this item.
+      Why it matters outside a test: any client that backgrounds an app closes its long-poll
+      mid-flight, which is the normal way a phone stops syncing. A message that arrives in the
+      moment the server is answering goes missing from that device's timeline for good, and the
+      client has no flag to notice it by.
 - [ ] Soft delete is a standing trap for those 37 models, and it leaks: every soft-deleted row is
       kept forever, invisible to every read and still occupying its unique index. Worth one change
       of shape rather than one more fix — either the models behind a unique index stop embedding
