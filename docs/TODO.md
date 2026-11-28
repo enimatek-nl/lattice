@@ -124,6 +124,60 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
       this server does not make: a member who joined after the events were written is entitled to
       them under `shared`, and nothing asks a peer for them. Same family as the gap-filling line
       below, one floor down (queue C).
+- [ ] **A timeline is ordered by when it arrived, not by where it sits in the graph.** Measured
+      2026-11-28 against the live server and the deployed tag v0.2.27, in `#iaa`
+      (`!hezPjQIMauLaKRxQvc:cluephone.org`), where `@tim:lattice.cybertim.net` had just rejoined.
+      `EventRepoImpl.History` — which answers `/messages`, and `/relations` and `/threads` through
+      it — filters, orders and paginates by `stream_pos`, the local arrival counter, and
+      `EventRepoImpl.TimelineFor` picks a sync room's window from the highest `stream_pos` and
+      returns it in arrival order. Arrival order is graph order only while events happen to arrive
+      in graph order. In a federated room they do not, and after a join they certainly do not: a
+      peer hands its batch over walking backwards from the forward extremity, so the batch arrives
+      newest first. In that room 59 of the 73 events in the timeline have a lower `depth` than the
+      event that arrived before them. Two visible failures follow: `?dir=b`, which must start at
+      the newest and walk back, returned its first chunk starting at depth 381100
+      (`$jmPUWWkwR74RfzdLFiPRHCIe9om0ONRFEQT7898iRZw`, 11-27 20:07:20) and walking *up* through
+      `$8vMIxVv4jFbpWDiqKr0PSFwsl7348dhOP3rSP1moHys` and `$JvKbkaMd2V8ti_yuZqYYrQ3DSIfTztDZJjJNNG5K1c4`
+      — oldest first; and the room's newest event, `$xy33eSvsN9jeJLbtAC99-3cC6c5TuERPpCmvH3wt4NI`
+      (depth 381160, 11-28 14:46:22), was in no sync window at all, because the window was the
+      twenty highest `stream_pos` values, depths 381100 to 381119, an afternoon that had already
+      passed. A client that renders what sync gave and then paginates shows a room that looks empty
+      or backwards while the newest message sits outside every window it can be handed. Shape of
+      the fix: `/messages` and the first window of a room order by the graph (`depth`, then
+      `origin_server_ts`, then `event_id`) the way Synapse orders by `topological_ordering`; an
+      incremental sync may keep choosing *what* to send by stream position, but sends it in graph
+      order. Pagination tokens carry the ordering key, so they need a second token kind, and
+      sliding sync's `prev_batch` and stored `TimelinePos` read the same rows. The
+      `timestamp_to_event` line below is the same mistake one endpoint further.
+- [ ] **A departed member comes back when state arrives out of order, and then their server keeps
+      receiving the room.** `room_memberships` is written in arrival order, so of two member events
+      for one user the one that arrives last wins, not the one that is newer in the graph. Measured
+      in that same room: `@xiro:rixo.nl` (leave at 03-02, join at 03-01) is held as `join`;
+      `@sander:tessera.oele.net` (leave 11-06, and a leave and a join both stamped 10-29 13:57) is
+      held as `join`; `@leto:bedrageri.dk` (leave 02-23, join 02-21) is held as `join`; so is
+      `@enimatek:home.enimatek.nl` (leave 07-31, join 07-28). Those rows feed
+      `destinationsOfRoom`, which is right to ask the table who is in the room — so the server sends
+      that room's events and EDUs to four homeservers that have no member in it, which is noise in
+      the outbox (hours of retries to `rixo.nl`, whose name has no address at all, visible in the
+      log as `(0 PDU(s), 3 EDU(s))`) and a disclosure: a room's traffic to a server nobody in that
+      room uses. The rule the specification gives is the narrow one — a server belongs to a room
+      while it has at least one member with `join`. Shape of the fix: state and membership
+      projections compare events by the graph instead of taking the last write, which is the same
+      comparison the item above needs.
+- [ ] **Nothing says a room arrived.** An accepted inbound `/send` transaction is applied without a
+      log line, and Caddy in front of this deployment writes no access log at all, so an operator
+      watching a room that shows nothing can prove neither that a peer delivered it nor that nobody
+      did. That cost three rounds of this investigation: the room's operator could see only their
+      own failures, this server could see only its own, and the messages that had in fact arrived
+      turned the diagnosis around twice. At least one line per accepted transaction, naming the room
+      and how many PDUs it carried, at `info` with the sender at `debug`.
+- [ ] `Lattice never asks another server for events by ID.` `GET /_matrix/federation/v1/event/{eventId}`
+      is not registered: `PUT` on the path reaches a stub that only answers `m.room.redaction`, and
+      `GET` falls through to a message that offers `PUT`. Every peer that wants to fill a gap hits
+      it. Complement never notices because Synapse answers a `GET` on the path with `400 M_NOT_FOUND`
+      and the suite reads exactly that. It is also the read `backfill` would be built from, so the
+      line above about a late joiner's history waits on it. (measured 2026-11-28 on
+      `lattice.cybertim.net`, from a second Lattice pointed at it)
 - [x] `/messages` says when the walk is over: `end` is omitted once there is nothing further — at
       the beginning of the room and at a `to` bound — instead of repeating `from` for as long as the
       client is willing to ask. A conforming client stops on the absence, so an always-present `end`
