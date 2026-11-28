@@ -334,10 +334,7 @@ func ValidServerName(name string) bool {
 	}
 	// A name made only of punctuation is not a host. This is the same "does it carry
 	// something addressable" question the port check answers, one level in.
-	if strings.Trim(host, ".-[]:") == "" {
-		return false
-	}
-	return true
+	return strings.Trim(host, ".-[]:") != ""
 }
 
 // ValidRoomID reports whether the string is shaped like a room ID: an exclamation

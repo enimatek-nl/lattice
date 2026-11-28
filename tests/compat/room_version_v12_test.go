@@ -401,7 +401,7 @@ func TestRoomVersion12Upgrade(t *testing.T) {
 			t.Errorf("the successor's power levels name %s, who is a creator of it: %v", creator, users)
 		}
 	}
-	if got, _ := users[charlie.UserID]; got != nil {
+	if got := users[charlie.UserID]; got != nil {
 		t.Errorf("charlie kept a level in a room that made them a creator")
 	}
 }

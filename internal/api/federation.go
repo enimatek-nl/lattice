@@ -1035,21 +1035,6 @@ func (a *App) handleSendTransaction(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
-// federationBody reads a request body as an object with its numbers kept exactly as
-// written. A PDU inside a transaction is stored, hashed and identified by the bytes it
-// encodes to, so a body that passes through float64 on the way in becomes an event that
-// its own content hash does not cover - the difference is invisible in a log and fatal
-// at the first signature check.
-// eventInBody reads the event a knock endpoint carries. Unlike send_leave, whose body is
-// the event, the knock endpoints wrap it: {"event": ...}.
-func eventInBody(body matrix.Object) (matrix.Object, error) {
-	event, ok := body["event"].(matrix.Object)
-	if !ok {
-		return nil, matrix.ErrInvalidRequest("the body carries no event")
-	}
-	return event, nil
-}
-
 // sendEventBody reads the event a send_join or send_leave body carries. The older of these
 // endpoints put the event at the top of the body; the newer ones wrap it in {"event": ...},
 // and servers that were writing this protocol before the wrap arrived keep sending the bare
@@ -1066,6 +1051,11 @@ func sendEventBody(r *http.Request) (matrix.Object, error) {
 	return body, nil
 }
 
+// federationBody reads a request body as an object with its numbers kept exactly as
+// written. A PDU inside a transaction is stored, hashed and identified by the bytes it
+// encodes to, so a body that passes through float64 on the way in becomes an event that
+// its own content hash does not cover - the difference is invisible in a log and fatal
+// at the first signature check.
 func federationBody(r *http.Request) (matrix.Object, error) {
 	raw, err := io.ReadAll(io.LimitReader(r.Body, federation.MaxTransactionBytes))
 	if err != nil {

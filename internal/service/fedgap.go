@@ -507,9 +507,7 @@ func (s *Service) closeNamedHoles(ctx context.Context, version, peer, roomID str
 		// The event just fetched names its own parents. Those this server still does not hold
 		// are the next holes, and asking about them directly avoids re-scanning the room for
 		// every event that lands.
-		for _, parent := range s.unheld(idsOfPDUList(judged, "prev_events")) {
-			queue = append(queue, parent)
-		}
+		queue = append(queue, s.unheld(idsOfPDUList(judged, "prev_events"))...)
 	}
 	return closed
 }

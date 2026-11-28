@@ -681,7 +681,7 @@ func TestPublishedDefaultRulesAreTheSpecificationsDefinitions(t *testing.T) {
 		if err := json.Unmarshal([]byte(words.Replace(want.conditions)), &expected); err != nil {
 			t.Fatalf("the recorded conditions of %s: %v", want.id, err)
 		}
-		conditions := expected
+		var conditions any
 		if raw, has := rule["conditions"]; !has {
 			conditions = nil
 		} else {
