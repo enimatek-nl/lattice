@@ -1,0 +1,25 @@
+# The repository's lint gate: golangci-lint's default checks, with the quick-fix family off.
+#
+# QF* are staticcheck's quick-fix suggestions - "apply De Morgan's law", "lift this into the
+# loop condition" - rewrites of code that is already correct. Left on, five of them keep
+# `make lint` red without pointing at anything a reader would call a problem, and a gate that
+# is always red teaches nobody to read it. Everything correctness-shaped stays on: the err
+# checks, the S* staticcheck analyses, unused, ineffassign, gosimple's own rules.
+#
+# The list below is golangci-lint's own default, repeated here so that switching QF* off does
+# not silently widen the gate to the ST* naming conventions as well ("all" is broader than
+# the default, which is why the exclusions are spelled out).
+version: "2"
+linters:
+  settings:
+    staticcheck:
+      checks:
+        - all
+        - -ST1000
+        - -ST1003
+        - -ST1016
+        - -ST1020
+        - -ST1021
+        - -ST1022
+        - -ST1023
+        - -QF*

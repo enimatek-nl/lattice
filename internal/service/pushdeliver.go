@@ -258,7 +258,7 @@ func (s *Service) deliverPush(task pushTask) {
 		s.retryPush(task, "gateway unreachable: "+err.Error())
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, pushResponseLimit))
 
 	switch {

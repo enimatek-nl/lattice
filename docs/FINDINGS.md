@@ -554,6 +554,14 @@ make run                                  # dev server, 127.0.0.1:8008, /tmp/lat
 make image                                # the release image (Dockerfile) -> lattice:latest
 make complement-image                     # bin/lattice with CGO off, then the Complement image
 make swagger                              # docs/swagger/{swagger.json,swagger.yaml}
+```
+
+golangci-lint is not in the base image — `go install
+ github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest` puts 2.15.0 in `~/go/bin`, and
+ `make lint` only works with that on `PATH`. `.golangci.yml` repeats the tool's own default
+ check list with the QF* quick-fix family switched off: writing `all` instead would silently
+ widen the gate to the ST* naming conventions too, which is how a config change looks like a
+ new class of bugs.
 go test ./tests/compat/ -race
 go test ./tests/compat/ -run 'TestAnOperator|TestOperator'   # the account commands alone
 bin/lattice --addr 127.0.0.1:8008 --server-name localhost:8008 \
