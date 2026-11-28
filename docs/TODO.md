@@ -143,12 +143,23 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
       twenty highest `stream_pos` values, depths 381100 to 381119, an afternoon that had already
       passed. A client that renders what sync gave and then paginates shows a room that looks empty
       or backwards while the newest message sits outside every window it can be handed. Shape of
-      the fix: `/messages` and the first window of a room order by the graph (`depth`, then
-      `origin_server_ts`, then `event_id`) the way Synapse orders by `topological_ordering`; an
-      incremental sync may keep choosing *what* to send by stream position, but sends it in graph
-      order. Pagination tokens carry the ordering key, so they need a second token kind, and
-      sliding sync's `prev_batch` and stored `TimelinePos` read the same rows. The
-      `timestamp_to_event` line below is the same mistake one endpoint further.
+      the fix: `/messages` and the first window of a room order by the graph, and an incremental
+      sync may keep choosing *what* to send by stream position but sends it in graph order.
+      Ordering keys on the graph are a position **this server computes**, not the `depth` a sender
+      wrote: `depth` is the sending server's own claim, and a broken or willing peer can write any
+      number in it (asaroton's tracker #99 was exactly that). The position is the one asaroton
+      describes and the one Synapse keeps: walking known `prev_events`, take one past the highest
+      predecessor, and fall back to the claimed `depth` only where the predecessors are unknown,
+      with the stream position as tie-break. Measured on that room's 240 events, which is the
+      shape of a real late join rather than a clean test: 68 of the 73 in its timeline have all
+      their `prev_events` stored here, so 5 need the fallback - the walk alone is not enough - and
+      the walk runs out clean (one step where the timestamp goes backwards, and no conflict with
+      the claimed depths, so those senders told the truth here: the ordering was ours to lose, not
+      theirs to fake). `internal/service/dag.go` already computes that position on the sending
+      side (`depthAfter`), so the receiving side is the missing half. Pagination tokens carry the
+      ordering key, so they need a second token kind, and sliding sync's `prev_batch` and stored
+      `TimelinePos` read the same rows. The `timestamp_to_event` line below is the same mistake one
+      endpoint further.
 - [ ] **A departed member comes back when state arrives out of order, and then their server keeps
       receiving the room.** `room_memberships` is written in arrival order, so of two member events
       for one user the one that arrives last wins, not the one that is newer in the graph. Measured
@@ -161,9 +172,9 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
       the outbox (hours of retries to `rixo.nl`, whose name has no address at all, visible in the
       log as `(0 PDU(s), 3 EDU(s))`) and a disclosure: a room's traffic to a server nobody in that
       room uses. The rule the specification gives is the narrow one — a server belongs to a room
-      while it has at least one member with `join`. Shape of the fix: state and membership
-      projections compare events by the graph instead of taking the last write, which is the same
-      comparison the item above needs.
+      while it has at least one member with `join`. Shape of the fix: what the state is after an event
+      comes out of state resolution over the graph, not out of which write arrived last - the same
+      topological position the item above needs, and the reason asaroton gives for the same rule.
 - [ ] **Nothing says a room arrived.** An accepted inbound `/send` transaction is applied without a
       log line, and Caddy in front of this deployment writes no access log at all, so an operator
       watching a room that shows nothing can prove neither that a peer delivered it nor that nobody
