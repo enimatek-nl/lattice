@@ -160,6 +160,19 @@ unlock. `- [x]` marks what this plan has already closed, with the step that did 
       ordering key, so they need a second token kind, and sliding sync's `prev_batch` and stored
       `TimelinePos` read the same rows. The `timestamp_to_event` line below is the same mistake one
       endpoint further.
+- [x] **One redaction of an absent event made every sliding sync of a user a 500.** Same room as
+      the two lines above, measured 2026-11-28 from a copy of the live database: it holds three
+      `m.room.redaction` events whose `redacts` targets are absent from `events`, and
+      `slidingRedactions` wrapped that storage miss in `matrix.ErrInternal` — so
+      `POST /_matrix/client/v4/sync` answered `500 M_UNKNOWN: internal server error` for
+      `@tim:lattice.cybertim.net`, on every request, because one room in his list holds a redaction
+      of an event this server was never given. Absence is now read as absence: the target is
+      skipped, exactly as the `target == nil` guard beside it already meant. Covered by
+      `TestSlidingSyncSurvivesARedactionOfAnEventItDoesNotHold`, which seeds the row through
+      `EventRepo.Create` and asks both spellings of the endpoint — both answered 500 before the
+      fix. Grep the class:
+      `matrix.ErrInternal(err)` around a `Get`/`GetInRoom`/`Content` call is a missing row turned
+      into a fault; `persist.IsNotFound` is the mapping (FINDINGS.md).
 - [ ] **A departed member comes back when state arrives out of order, and then their server keeps
       receiving the room.** `room_memberships` is written in arrival order, so of two member events
       for one user the one that arrives last wins, not the one that is newer in the graph. Measured

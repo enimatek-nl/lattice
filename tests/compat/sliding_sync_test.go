@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/enimatek-nl/lattice/internal/matrix"
+	"github.com/enimatek-nl/lattice/internal/persist"
 	"github.com/enimatek-nl/lattice/internal/service"
 )
 
@@ -2459,4 +2460,107 @@ func slidingRoomsOrEmpty(t *testing.T, body map[string]any) map[string]map[strin
 		}
 	}
 	return out
+}
+
+// TestSlidingSyncSurvivesARedactionOfAnEventItDoesNotHold asks a connection over a room whose
+// timeline holds a redaction of an event this server was never given. A room that lives
+// elsewhere has its past filled in by peers, and a peer that sends a redaction without the
+// event it covers is honest rather than broken; the state that redaction hid was never here,
+// so there is nothing to name as gone. One such event may not take the user's whole room list
+// down with a 500.
+func TestSlidingSyncSurvivesARedactionOfAnEventItDoesNotHold(t *testing.T) {
+	server := NewServer(t)
+	alice := server.Register("alice", "wonderland")
+	roomID := server.CreateRoom(alice, map[string]any{"preset": "private_chat", "name": "Elsewhere"})
+	server.Send(alice, roomID, "here", "an event this server holds")
+	seedDanglingRedaction(t, server, roomID, alice)
+
+	request := map[string]any{
+		"conn_id": "room-list",
+		"timeout": 0,
+		"lists": map[string]any{"all_rooms": slidingList{
+			"range": []int{0, 19},
+			"required_state": map[string]any{
+				"include": []map[string]any{
+					{"type": matrix.TypeName, "state_key": ""},
+					{"type": "m.space.child"},
+				},
+				"lazy_members": true,
+			},
+			"timeline_limit": 1,
+		}},
+		"room_subscriptions": map[string]any{roomID: slidingList{
+			"required_state": map[string]any{
+				"include": []map[string]any{
+					{"type": matrix.TypeName, "state_key": ""},
+					{"type": "m.room.pinned_events", "state_key": ""},
+				},
+				"lazy_members": true,
+			},
+			"timeline_limit": 20,
+		}},
+		"extensions": map[string]any{
+			"account_data":                map[string]any{"enabled": true},
+			"receipts":                    map[string]any{"enabled": true},
+			"typing":                      map[string]any{"enabled": true},
+			"org.matrix.msc4262.profiles": map[string]any{"enabled": true},
+		},
+	}
+	// Both spellings of the endpoint read the same rows, so both are asked before anything is
+	// asserted: a 500 here is the fault, and one surface refusing while the other answers is not
+	// an outcome worth reporting as a pass.
+	server.MustDo(http.MethodPost, "/_matrix/client/unstable/org.matrix.simplified_msc3575/sync",
+		alice.Token, request, http.StatusOK)
+	answer := server.slidingSync(t, alice, request)
+	room := slidingRooms(t, answer)[roomID]
+	if room["initial"] != true {
+		t.Errorf("the subscribed room was not sent as new: %v", room)
+	}
+	window, _ := room["timeline"].([]any)
+	if len(window) == 0 {
+		t.Fatalf("the subscription carried no timeline: %v", room)
+	}
+	var types []string
+	seen := false
+	for _, raw := range window {
+		event, _ := raw.(map[string]any)
+		kind, _ := event["type"].(string)
+		types = append(types, kind)
+		seen = seen || kind == matrix.TypeRedaction
+	}
+	if !seen {
+		t.Errorf("the timeline left the redaction out, so a client cannot see it: %v", types)
+	}
+	if name, _ := room["name"].(string); name != "Elsewhere" {
+		t.Errorf("the subscription was not given the room's name: %v", room["name"])
+	}
+
+	// The classic and the unstable surfaces read the same rows, so they answer too.
+	if body := server.MustDo(http.MethodGet, "/_matrix/client/v3/sync?timeout=0", alice.Token,
+		nil, http.StatusOK); body.Body["rooms"] == nil {
+		t.Errorf("/v3/sync answered without a rooms section: %v", body.Body)
+	}
+}
+
+// seedDanglingRedaction writes a redaction of an event this server does not hold. The service
+// refuses to append one, which is right for a client, so the row a federation peer may leave
+// behind is written beside it.
+func seedDanglingRedaction(t *testing.T, server *Server, roomID string, session *Session) {
+	t.Helper()
+	pos := server.svc.StreamPos()
+	if err := server.db.EventRepo.Create(&persist.Event{
+		EventID:        "$dangling-redaction:test.server",
+		RoomID:         roomID,
+		StreamPos:      pos + 1,
+		TopoPos:        int64(pos + 1),
+		Type:           matrix.TypeRedaction,
+		Sender:         session.UserID,
+		OriginServerTS: time.Now().UnixMilli(),
+		Content: string(matrix.Encode(map[string]any{
+			"redacts": "$gone:cluephone.org",
+			"reason":  "the target was never sent to this server",
+		})),
+	}); err != nil {
+		t.Fatalf("storing a redaction of an event this server does not hold: %v", err)
+	}
 }

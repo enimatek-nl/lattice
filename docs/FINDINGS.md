@@ -1914,3 +1914,31 @@ answer* as *the client having been told*.
   same four of six attempts; v0.2.26 had added a few milliseconds of push work per membership event,
   which moved the test's pause from before the write to after it. The numbers, not the version,
   are what settled it — so measure the old binary before believing the new one.
+
+## Absence is not a fault: one unmapped record-not-found took a whole user's room list down (2026-11-28, fix pending release)
+
+A `POST /_matrix/client/v4/sync` that failed with `500 M_UNKNOWN: internal server error` in the
+lab reproduced in 240 ms locally, and one row of one room was the cause.
+
+- **The room, and the row.** `!hezPjQIMauLaKRxQvc:cluephone.org` (`#iaa`) holds three
+  `m.room.redaction` events whose targets are not in `events` — read from a copy of the live
+  database, so the shape was seen and not guessed. A peer that fills in a room's past sends some
+  events and not others, and a redaction of an event it did not send is a complete, honest event.
+- **One line, and why the guard beside it never fired.** `slidingRedactions` looked the target up
+  with `EventRepo.GetInRoom`, wrapped the storage error in `matrix.ErrInternal`, and returned —
+  while the next line already skipped `target == nil`. The absence had two spellings and only the
+  one that never happens was handled. Every sliding sync of that user answered 500, which is why
+  the live log repeats the same line about a minute apart: that is the Rust SDK's retry loop.
+- **What skipping means.** A redaction whose target is absent covers over state this server does
+  not hold either, so there is no state key to name as gone. Skipping is not a shrug, it is the
+  answer; a 500 says the room is broken when the room is fine and merely incomplete.
+- **The class to grep for, not just this line.** Any `matrix.ErrInternal(err)` wrapped around a
+  repo call that signals absence with `gorm.ErrRecordNotFound` (`Get`, `GetInRoom`, `Content`)
+  turns a missing row into a 500. `matrix.ErrAs(err, persist.IsNotFound)` and
+  `persist.IsNotFound` exist for exactly this; a sync endpoint that reads a whole room list fails
+  as one user's server, not as one room, so the fatal answer is the expensive one.
+- **A separate gap, found while seeding the row.** `PUT /_matrix/client/v3/rooms/{roomID}/
+  redaction/{eventID}/{txnID}` is not routed at all (`404 M_UNRECOGNIZED`), so a client cannot
+  redact anything on Lattice — see [TODO.md](TODO.md). The service refuses to append a redaction
+  of an unknown event, which is right for a client, so the compat test writes the row a peer may
+  leave behind straight through `EventRepo.Create`.

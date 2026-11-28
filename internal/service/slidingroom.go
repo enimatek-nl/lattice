@@ -498,6 +498,16 @@ func (s *Service) slidingRedactions(roomID string, from uint64) (map[string]bool
 		}
 		target, err := s.db.EventRepo.GetInRoom(roomID, row.Matrix().Redacts)
 		if err != nil {
+			// A room that lives elsewhere redacts events this server may never have been
+			// given: a peer that fills in a room's past sends some events and not others,
+			// and a redaction of one that was not sent is a complete and honest event. The
+			// room therefore stands behind no state this redaction covered over, but there
+			// is also no key to name as gone - the state it hid was never here. Skipping is
+			// what the absence means; failing would answer the whole sync with a 500 because
+			// one room in one user's list holds a redaction of a stranger's event.
+			if persist.IsNotFound(err) {
+				continue
+			}
 			return nil, matrix.ErrInternal(err)
 		}
 		if target == nil || !target.IsState {
